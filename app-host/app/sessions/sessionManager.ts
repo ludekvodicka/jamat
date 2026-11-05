@@ -367,12 +367,13 @@ export class SessionManager {
     return terminal.projection.deltaSince(outputEpoch, sinceSeq)
   }
 
-  async terminalSnapshot(target: RuntimeRef): Promise<TerminalProjectionSnapshot> {
+  async terminalSnapshot(target: RuntimeRef, onCaptured?: () => void): Promise<TerminalProjectionSnapshot> {
     this.requireExact(target)
     const terminal = this.terminals.get(target.runtimeSessionId)
     if (!terminal || terminal.generation !== target.generation)
       throw new SessionError('not-found', `No terminal projection: ${target.runtimeSessionId}`)
-    return terminal.projection.snapshot(terminal.alive, TerminalProjection.attachOptionsConst)
+    return terminal.projection.snapshot(terminal.alive, onCaptured
+      ? { ...TerminalProjection.attachOptionsConst, onCaptured } : TerminalProjection.attachOptionsConst)
   }
 
   destroy(): void {

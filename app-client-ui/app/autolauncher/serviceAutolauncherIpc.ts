@@ -1,17 +1,17 @@
 import type { WebContents } from 'electron'
 
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
-import type { AutolauncherManager } from './autolauncherManager'
+import { ElectronServiceIpcBase } from '../shell/electronServiceIpcBase'
+import type { AutolauncherPort } from '../../../lib-orchestrator/clientApi/autolauncher'
 
-export class ServiceAutolauncherIpc extends ServiceIpcBase<typeof ServiceAutolauncherIpc.channelsConst> {
+export class ServiceAutolauncherIpc extends ElectronServiceIpcBase<typeof ServiceAutolauncherIpc.channelsConst> {
   static readonly channelsConst = {
     'autolauncher:get': true, 'autolauncher:enable': true, 'autolauncher:disable': true,
     'autolauncher:inspect': true,
   } as const
-  private readonly manager: AutolauncherManager
+  private readonly manager: AutolauncherPort
   private readonly acceptsRenderer: (sender: WebContents) => boolean
 
-  constructor(manager: AutolauncherManager, acceptsRenderer: (sender: WebContents) => boolean) {
+  constructor(manager: AutolauncherPort, acceptsRenderer: (sender: WebContents) => boolean) {
     super()
     this.manager = manager
     this.acceptsRenderer = acceptsRenderer
@@ -19,19 +19,19 @@ export class ServiceAutolauncherIpc extends ServiceIpcBase<typeof ServiceAutolau
 
   initialize(): void {
     this.register('autolauncher:get', event => {
-      this.assertSender(event.sender)
+      this.assertSender(this.sender(event))
       return this.manager.get()
     })
     this.register('autolauncher:inspect', (event, recipe) => {
-      this.assertSender(event.sender)
+      this.assertSender(this.sender(event))
       return this.manager.inspect(recipe)
     })
     this.register('autolauncher:enable', (event, invitation, selection) => {
-      this.assertSender(event.sender)
+      this.assertSender(this.sender(event))
       return this.manager.enable(invitation, selection)
     })
     this.register('autolauncher:disable', event => {
-      this.assertSender(event.sender)
+      this.assertSender(this.sender(event))
       return this.manager.disable()
     })
     this.assertComplete(ServiceAutolauncherIpc.channelsConst)

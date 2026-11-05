@@ -205,9 +205,13 @@ export class FinishUiScenario {
         await client.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 })
         await client.call('Input.insertText', { text })
       }
+      const paneAtEnd = `(() => { const pane = Array.from(document.querySelectorAll('.session-actions')).find(e => e.getBoundingClientRect().height > 0); return pane === undefined ? null : pane.scrollHeight - pane.scrollTop - pane.clientHeight })()`
+      const frames = 'new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null))))'
       const row = await ui.evaluate<{ x: number; y: number }>(`(() => { const rect = document.querySelector('[data-session="${id}"] .jamat-sessions__row').getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } })()`)
       await ui.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...row })
       await click(ui, `[data-session="${id}"] button`, 'Finish…')
+      // A live SVN worktree chooses in Session actions; Finish… itself starts nothing (r1014).
+      await click(ui, '.session-actions button', 'Commit & merge')
       await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(reviewVisible), 'Source automatically opened synced review')
       const firstView = (await ui.bridge<any>(`window.appClient.control.call('sessions.list', {})`)).value.sessions.find((row: any) => row.sessionId === id).worktreeView
       console.log(`[smoke:ui] DOM Finish opened the initial synced source review at lifecycle version ${firstView?.version}`)
@@ -263,14 +267,23 @@ export class FinishUiScenario {
       assert.equal(await ui.evaluate(`document.querySelector('.session-actions__review-header [role="status"]').textContent`), 'Ready for validation')
       console.log(`[smoke:ui] managed validation application PID ${validationRun!.pid} runs in the WT while publication waits`)
       await click(ui, '.session-actions__review button', 'Back to Session actions')
+      // A pane hidden behind another split tab loses its scroll position; shown again it must return to the end.
+      // A pane whose content fits proves nothing: a lower pane overflows, and the resize itself must keep the end.
+      await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(`Array.from(document.querySelectorAll('.session-actions')).some(e => e.getBoundingClientRect().height > 0 && !e.classList.contains('session-actions--review'))`), 'Session actions history shown')
+      await ui.evaluate(`(() => { const pane = Array.from(document.querySelectorAll('.session-actions')).find(e => e.getBoundingClientRect().height > 0); pane.dataset.followProof = '1'; pane.style.height = '120px' })()`)
+      assert(await ui.evaluate<boolean>(`(() => { const pane = document.querySelector('[data-follow-proof]'); return pane.scrollHeight > pane.clientHeight + 24 })()`), 'The lowered Session actions pane overflows')
+      await RemoteUiScenarios.until(async () => { const distance = await ui.evaluate<number | null>(paneAtEnd); return distance !== null && distance <= 24 }, 'Session actions keep the end after the pane got lower')
+      await ui.evaluate(`document.querySelector('[data-follow-proof]').style.display = 'none'`)
+      await ui.evaluate(frames)
+      assert.equal(await ui.evaluate<number>(`document.querySelector('[data-follow-proof]').getBoundingClientRect().height`), 0, 'The hidden pane was laid out hidden')
+      await ui.evaluate(`document.querySelector('[data-follow-proof]').style.display = ''`)
+      await RemoteUiScenarios.until(async () => { const distance = await ui.evaluate<number | null>(paneAtEnd); return distance !== null && distance <= 24 }, 'Session actions shown again return to the end')
+      console.log(`[smoke:ui] Session actions keep the end of a lowered pane and return to it after a hide and show: ${await ui.evaluate<number | null>(paneAtEnd)} px`)
+      await ui.evaluate(`(() => { const pane = document.querySelector('[data-follow-proof]'); pane.style.height = ''; delete pane.dataset.followProof })()`)
       await click(ui, '.session-actions button', 'Review changes')
-      const acknowledgement = externals ? 'I checked this repository message' : 'I checked this message'
-      const acknowledgementSelector = externals ? '.session-actions__repository label' : '.commit-actions label'
-      await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(`Array.from(document.querySelectorAll(${JSON.stringify(acknowledgementSelector)})).some(e => e.textContent.trim() === ${JSON.stringify(acknowledgement)})`), 'Proposed-message acknowledgement finding')
-      assert.equal(await ui.evaluate(commitEnabled), false, 'Unacknowledged proposed markdown blocks Commit')
-      assert.equal(await remote.evaluate(commitEnabled), false, 'Remote also blocks the proposed message')
-      await ui.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(acknowledgementSelector)})).find(e => e.textContent.trim() === ${JSON.stringify(acknowledgement)}).querySelector('input').click()`)
-      await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(commitEnabled), 'Current proposed-message acknowledgement enables Commit')
+      await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(commitEnabled), 'A proposed message with findings leaves Publish enabled')
+      assert.equal(await ui.evaluate(`Array.from(document.querySelectorAll('.session-actions__review label')).some(e => e.textContent.trim().startsWith('I checked this'))`), false,
+        'No message acknowledgement is asked')
       await click(remote, '.commit-pane button', 'Select none')
       await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(`Array.from(document.querySelectorAll('.commit-target input')).every(e => !e.checked)`), 'Source receives cleared remote selection')
       await click(remote, '.commit-target input', 'Include new-dir/nested/file.txt')
@@ -279,7 +292,6 @@ export class FinishUiScenario {
       await RemoteUiScenarios.until(async () => remote.evaluate<boolean>(messageIs('Shrnutí: U 043 zatím necommituj')), 'Shared person-written message')
       for (const client of clients) {
         await RemoteUiScenarios.until(async () => client.evaluate<boolean>(`!(${commitEnabled}) && document.body.innerText.includes('Include the whole verified change set')`), 'Incomplete selection blocks publication in both windows')
-        assert.equal(await client.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(acknowledgementSelector)})).some(e => e.textContent.trim() === ${JSON.stringify(acknowledgement)})`), false)
       }
       await message(ui, '[repository]  ')
       await RemoteUiScenarios.until(async () => remote.evaluate<boolean>(messageIs('[repository]  ')), 'Shared prefix-only message')
@@ -287,7 +299,7 @@ export class FinishUiScenario {
         await RemoteUiScenarios.until(async () => client.evaluate<boolean>(`!(${commitEnabled}) && document.body.innerText.includes('Enter a commit message')`), 'Prefix without description blocks nested-file commit')
       await capture(ui, 'message-blocked')
       assert.equal((await run('svn', owner, ['log', '--xml', '-r', '1:HEAD'])).match(/<logentry/g)?.length, 1, 'Invalid messages publish nothing')
-      console.log('[smoke:ui] proposed findings need acknowledgement; person-written hints do not; prefix-only message blocks selected nested file in both windows')
+      console.log('[smoke:ui] message findings are hints for every source; a prefix-only message blocks selected nested file in both windows')
       await click(remote, '.commit-target input', 'Include worker.txt')
       await message(remote, '[repository] Publish reviewed Finish UI change')
       await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(messageIs('[repository] Publish reviewed Finish UI change')), 'Source receives good remote message')
@@ -353,6 +365,10 @@ export class FinishUiScenario {
       await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(`Array.from(document.querySelectorAll('.session-actions__section[aria-label^="UPDATE"] .session-actions__toggle')).some(e => e.textContent === 'Show details: svn update')`), 'UPDATE log control')
       await click(ui, '.session-actions__section[aria-label^="UPDATE"] .session-actions__toggle', 'Show details: svn update')
       await RemoteUiScenarios.until(async () => ui.evaluate<boolean>(`Array.from(document.querySelectorAll('.task-view')).some(e => e.getBoundingClientRect().height > 0 && e.textContent.includes('Saved log') && e.querySelector('[data-testid="script-output-text"]')?.textContent.includes('worker.txt'))`), 'Saved UPDATE log after Host stop')
+      // The UPDATE section focused its history and expanded a log while the pane followed. The lowered,
+      // hidden and shown proof runs while the review waits: once the UPDATE ends, the session leaves the tree.
+      await RemoteUiScenarios.until(async () => { const distance = await ui.evaluate<number | null>(paneAtEnd); return distance !== null && distance <= 24 }, 'Session actions follow the end after the UPDATE section and its log')
+      console.log(`[smoke:ui] Session actions follow the end: ${await ui.evaluate<number | null>(paneAtEnd)} px from the end after the UPDATE log`)
       await capture(ui, 'update-saved-log')
       const afterUpdate = (await ui.bridge<any>(`window.appClient.control.call('sessions.list', {})`)).value.sessions.find((row: any) => row.sessionId === id)
       await writeFile(join(repo, '.aidocs/temp/finish-ui-update.json'), JSON.stringify(afterUpdate ?? { sessionRemoved: true }, null, 2) + '\n')

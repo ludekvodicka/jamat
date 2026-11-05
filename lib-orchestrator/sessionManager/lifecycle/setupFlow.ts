@@ -571,9 +571,10 @@ export class SetupFlow {
   }
 
   /**
-   * The next step: run first, gate second, launch third, the order `restart` keeps for crash safety.
-   * A client that dies after the run's write leaves it named by nobody, so the orphan rule marks it
-   * lost, the step before it is judged succeeded once more, and exactly one new run is launched.
+   * The next step: the run and the gate naming it in one write, then the launch. This flow also runs
+   * off the session queue (a local before step), so a reconcile pass between two writes would collapse
+   * the run as never launched and fail the session on "its setup session record is gone". A client
+   * that dies after the write leaves a starting run its gate names, which the next pass replays.
    */
   private async startStep(
     parent: SessionRecord,
@@ -583,8 +584,7 @@ export class SetupFlow {
   ): Promise<ReconcileChange | null> {
     const worktreePath = parent.worktree?.worktreePath ?? steps[cursor].process?.cwd ?? steps[cursor].commands[0].cwd
     const run = this.runOf(parent.sessionId, steps, cursor, worktreePath)
-    if (!await this.records.put(run)) return null
-    const advanced = await this.records.update(parent.sessionId, (current) =>
+    const advanced = await this.records.putWith(run, parent.sessionId, (current) =>
       current.pendingSetup?.setupSessionId === judgedRunId
         ? { ...current, pendingSetup: { setupSessionId: run.sessionId, steps, cursor } }
         : null)

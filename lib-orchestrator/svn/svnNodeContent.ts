@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { mkdtemp, rm, rmdir, unlink } from 'node:fs/promises'
+import { mkdtemp, open, rm, rmdir, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CommandRunner } from '../shared/commandInvoker.types'
 
 export class SvnNodeContent {
+  private static readonly bufferBytesConst = 65_536
+  /** One per concurrent file read of an assembly read (`SvnAssemblyReader.fileReadsConst`). */
+  private static readonly buffersKeptConst = 32
+  private static readonly buffers: Buffer[] = []
+
   static async exportedFiles(svn: CommandRunner, cwd: string, files: readonly { path: string; url: string }[], revision: number): Promise<Map<string, string>> {
     const hashes = new Map<string, string>()
     const groups = new Map<string, typeof files[number][]>()
@@ -34,10 +38,22 @@ export class SvnNodeContent {
     return hashes
   }
 
+  /**
+   * Reads through a reused buffer. A read stream allocates a new 64 KiB ArrayBuffer per file, and in
+   * Electron's main process that allocation was half the CPU of hashing a 7,800-file worktree.
+   */
   static async hash(file: string): Promise<string> {
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(file)) hash.update(chunk)
-    return hash.digest('hex')
+    const buffer = SvnNodeContent.buffers.pop() ?? Buffer.allocUnsafe(SvnNodeContent.bufferBytesConst)
+    try {
+      const handle = await open(file, 'r')
+      try {
+        const hash = createHash('sha256')
+        for (let read = await handle.read(buffer, 0, buffer.length, null); read.bytesRead > 0;
+          read = await handle.read(buffer, 0, buffer.length, null))
+          hash.update(buffer.subarray(0, read.bytesRead))
+        return hash.digest('hex')
+      } finally { await handle.close() }
+    } finally { if (SvnNodeContent.buffers.length < SvnNodeContent.buffersKeptConst) SvnNodeContent.buffers.push(buffer) }
   }
 
   static async exported(svn: CommandRunner, cwd: string, target: string, revision?: number | 'BASE', workingTranslation = false): Promise<string> {

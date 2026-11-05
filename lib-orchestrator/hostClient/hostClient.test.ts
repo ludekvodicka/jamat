@@ -12,6 +12,7 @@ import type {
 } from '../../app-host/app/wire/hostWire.js'
 import { FakeHost } from './fixtures/fakeHost'
 import { HostClient } from './hostClient'
+import { FedHostConnection, LocalHostConnection } from './hostConnection'
 import type { HostConnectionPresence } from './hostClient.types'
 
 /**
@@ -26,16 +27,21 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 describe('lib-orchestrator/hostClient/hostClient', () => {
   const hosts: FakeHost[] = []
   const clients: HostClient[] = []
+  const connections: LocalHostConnection[] = []
   const roots: string[] = []
 
   afterEach(async () => {
     for (const client of clients.splice(0)) await client.stop()
+    for (const connection of connections.splice(0)) await connection.stop()
     for (const host of hosts.splice(0)) await host.stop()
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
   interface Harness {
     client: HostClient
+    connection: LocalHostConnection
+    start: () => void
+    stop: () => Promise<void>
     descriptorFile: string
     presences: HostConnectionPresence[]
     events: HostEvent[]
@@ -55,20 +61,29 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-host-client-'))
     roots.push(root)
     const descriptorFile = join(root, 'descriptor.json')
+    const errors: string[] = []
+    const connection = new LocalHostConnection({
+      descriptorFile,
+      descriptorPollMilliseconds: 20,
+      onError: message => errors.push(message),
+    })
+    connections.push(connection)
     const state = {
+      connection,
+      start: () => { state.client.start(); connection.start() },
+      stop: async () => { await state.client.stop(); await connection.stop() },
       client: null as unknown as HostClient,
       descriptorFile,
       presences: [] as HostConnectionPresence[],
       events: [] as HostEvent[],
       resyncs: 0,
-      errors: [] as string[],
+      errors,
       publish: (host: FakeHost) =>
         writeFileSync(descriptorFile, JSON.stringify(host.descriptor()), 'utf8'),
       hide: () => unlinkSync(descriptorFile),
     }
     state.client = new HostClient({
-      descriptorFile,
-      descriptorPollMilliseconds: 20,
+      connection,
       onEvent: (event) => state.events.push(event),
       onPresence: (presence) => state.presences.push(presence),
       onResync: () => { state.resyncs += 1 },
@@ -100,7 +115,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
    */
   it('is unreachable while no Host has published, and refuses both kinds of call', async () => {
     const context = harness()
-    context.client.start()
+    context.start()
     expect(context.client.presence()).toBe('unreachable')
     expect(context.client.descriptor()).toBeNull()
     expect(await context.client.runtimeList()).toMatchObject({ ok: false, code: 'host-unreachable' })
@@ -109,10 +124,52 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     expect(context.errors).toEqual([])
   })
 
+  it('refuses a mutation through a fed source without a lease using the existing error', async () => {
+    const host = await startHost()
+    const connection = new FedHostConnection()
+    connection.update(host.descriptor(), null)
+    const client = new HostClient({
+      connection, onEvent: () => {}, onPresence: () => {}, onResync: () => {}, onError: () => {},
+    })
+    clients.push(client)
+    expect(await client.runtimeStop({ hostInstanceId: host.descriptor().hostInstanceId, runtimeSessionId: 'r', generation: 1 }))
+      .toEqual({ ok: false, code: 'no-lease', detail: 'runtime.stop: no live controller lease' })
+    expect(host.calls).toEqual([])
+  })
+
+  it('observes fed lease loss and regrant without reconnecting or stopping its source', async () => {
+    const host = await startHost()
+    const connection = new FedHostConnection()
+    connection.update(host.descriptor(), 'first')
+    const grants = vi.fn(), resyncs = vi.fn()
+    const client = new HostClient({
+      connection, onEvent: () => {}, onPresence: () => {}, onResync: resyncs,
+      onError: () => {}, onLeaseGranted: grants,
+    })
+    clients.push(client)
+    client.start()
+    await vi.waitFor(() => expect(client.presence()).toBe('running'))
+    expect(grants).toHaveBeenCalledTimes(1)
+    expect(resyncs).toHaveBeenCalledTimes(1)
+    connection.update({ ...host.descriptor() }, 'first')
+    expect(grants).toHaveBeenCalledTimes(1)
+    connection.update(host.descriptor(), null)
+    expect(client.controllerLeaseId()).toBeNull()
+    connection.update(host.descriptor(), 'second')
+    expect(grants).toHaveBeenCalledTimes(2)
+    expect(client.controllerLeaseId()).toBe('second')
+    expect(resyncs).toHaveBeenCalledTimes(1)
+    await client.stop()
+    connection.update(host.descriptor(), 'third')
+    expect(grants).toHaveBeenCalledTimes(2)
+    expect(connection.leaseId()).toBe('third')
+    expect(client.presence()).toBe('unreachable')
+  })
+
   it('accepts a manually stopped old instance without sending its target to the replacement Host', async () => {
     const host = await startHost('replacement'), context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'))
     const target = { hostInstanceId: 'previous', runtimeSessionId: 'check', generation: 1 }
     expect(await context.client.runtimeStop(target, true)).toMatchObject({ ok: true, value: { diagnostic: 'already-removed', target } })
@@ -122,7 +179,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
   it('removes a runtime of a previous instance without sending its target to the replacement Host', async () => {
     const host = await startHost('replacement'), context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'))
     const target = { hostInstanceId: 'previous', runtimeSessionId: 'run', generation: 1 }
     expect(await context.client.runtimeRemove(target)).toMatchObject({ ok: true, value: { diagnostic: 'already-removed', target } })
@@ -133,7 +190,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'), { timeout: 3_000 })
     expect(context.presences).toEqual(['running'])
     await vi.waitFor(() => expect(host.currentLeaseId()).not.toBeNull(), { timeout: 3_000 })
@@ -150,7 +207,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const context = harness()
     expect(await context.client.health()).toMatchObject({ ok: false, code: 'host-unreachable' })
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.descriptor()).not.toBeNull(), { timeout: 3_000 })
 
     expect(await context.client.health()).toEqual({ ok: true, value: FakeHost.healthConst })
@@ -161,7 +218,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.descriptor()).not.toBeNull(), { timeout: 3_000 })
 
     expect(await context.client.health()).toBeNull()
@@ -176,7 +233,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     }))
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     // The CLIENT'''s authority, not the Host'''s grant: the Host records a lease before its answer
     // lands here, so a mutation started on the Host'''s view alone is refused with no-lease.
     await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
@@ -195,7 +252,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
     const launch = { command: 'cmd.exe', args: [], cwd: 'C:\\', env: {}, cols: 120, rows: 30, stopDescendants: true as const }
     const request = { operationId: 'managed', runtimeSessionId: 'managed', launch }
@@ -209,7 +266,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     host.handle('runtime.create', () => ({ body: { session: session('run') } }))
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
     await context.client.runtimeCreate({ operationId: 'create', runtimeSessionId: 'run', launch: {
       command: 'cmd.exe', args: [], cwd: 'C:\\', env: {}, cols: 80, rows: 24, ...managed ? { stopDescendants: true } : {},
@@ -226,7 +283,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     })
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.controllerLeaseId()).not.toBeNull(), { timeout: 3_000 })
     expect(await context.client.stopHost('stale-host')).toMatchObject({ ok: false, code: 'host-unreachable' })
     expect(requests).toHaveLength(0)
@@ -241,7 +298,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     host.refuseLease(true)
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'), { timeout: 3_000 })
     expect(await context.client.runtimeStop({ hostInstanceId: 'h', runtimeSessionId: 'r1', generation: 1 }))
       .toMatchObject({ ok: false, code: 'no-lease' })
@@ -253,7 +310,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'), { timeout: 3_000 })
     host.publish({ kind: 'runtime-exited', session: { ...session('r1'), alive: false, exitCode: 0 } })
     await vi.waitFor(() => expect(context.events).toHaveLength(1), { timeout: 3_000 })
@@ -264,7 +321,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'), { timeout: 3_000 })
 
     context.hide()
@@ -279,7 +336,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const first = await startHost('host-1')
     const context = harness()
     context.publish(first)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(context.client.presence()).toBe('running'), { timeout: 3_000 })
     expect(context.resyncs).toBe(1)
 
@@ -302,7 +359,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost('host-debug')
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(host.currentLeaseId()).not.toBeNull(), { timeout: 3_000 })
 
     const pinged = await context.client.hello()
@@ -310,7 +367,7 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     if (!pinged.ok) throw new Error(pinged.detail)
     expect(pinged.value.hello.process.hostInstanceId).toBe('host-debug')
 
-    const view = context.client.debugView()
+    const view = { ...context.connection.debugView(), ...context.client.debugView() }
     expect(view.watcher.descriptorFile).toBe(context.descriptorFile)
     expect(view.watcher.identity).toBe(`host-debug:${host.descriptor().port}`)
     expect(view.eventsSocket.connected).toBe(true)
@@ -340,8 +397,8 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
       return published
     })
 
-    context.client.start()
-    await context.client.stop()
+    context.start()
+    await context.stop()
     clients.splice(clients.indexOf(context.client), 1)
     landed()
     // The read really did land after the stop - that is the precondition, so it is asserted rather
@@ -359,9 +416,9 @@ describe('lib-orchestrator/hostClient/hostClient', () => {
     const host = await startHost()
     const context = harness()
     context.publish(host)
-    context.client.start()
+    context.start()
     await vi.waitFor(() => expect(host.currentLeaseId()).not.toBeNull(), { timeout: 3_000 })
-    await context.client.stop()
+    await context.stop()
     clients.splice(clients.indexOf(context.client), 1)
     expect(host.currentLeaseId()).toBeNull()
     await vi.waitFor(() => expect(host.subscriberCount()).toBe(0), { timeout: 3_000 })

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { FileViewerLimits } from '../../lib-orchestrator/fileViewer/fileViewerLimits'
+import { MarkdownTaskLines } from '../../lib-orchestrator/fileViewer/markdownTaskLines'
 import { MdExtBudget } from './mdExtBudget'
 import { MdExtNames } from './mdExtNames'
 import { MdExtRenderer } from './mdExtRenderer'
@@ -12,6 +13,92 @@ import { renderArchify } from './renderers/archify/index'
 
 describe('mdext-renderer/renderer', () => {
   afterEach(cleanup)
+
+  const interactiveSource = '---\njamat: interactive\n---\n# Checks\n- [ ] Parent\n  - [x] Child\n'
+
+  it.each([
+    '- ```sh\n  npm test\n  ```\n\n- [ ] Real item',
+    '- Example\n  ~~~\n  - [ ] Code\n  ~~~\n\n- [ ] Real item',
+    '> ```\n> - [ ] Code\n\n- [ ] Real item',
+    '- Parent\nlazy continuation\n    - [ ] Real item',
+  ])('uses the same task lines after container fences: %s', (body) => {
+    const source = '---\njamat: interactive\n---\n' + body
+    const tasks = MarkdownTaskLines.parse(source), toggleTask = vi.fn()
+    render(<MdExtRenderer source={source} resolveImage={async () => null} onLink={vi.fn()}
+      interaction={{ enabled: true, toggleTask }} />)
+    expect(screen.getAllByRole('checkbox')).toHaveLength(tasks.length)
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Real item' }))
+    expect(toggleTask).toHaveBeenCalledWith(tasks[0]!.line, true)
+  })
+
+  it('retains sanitized task state and enables native controls only with the opt-in and capability', () => {
+    const resolveImage = async () => null, onLink = vi.fn(), toggleTask = vi.fn(), askAbout = vi.fn()
+    const view = render(<MdExtRenderer source={interactiveSource} resolveImage={resolveImage} onLink={onLink} />)
+    expect(view.container.querySelectorAll('li.task-list-item')).toHaveLength(2)
+    expect(screen.getAllByRole('checkbox').map((box) => (box as HTMLInputElement).checked)).toEqual([false, true])
+    for (const box of screen.getAllByRole('checkbox')) expect(box).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Ask about/ })).toBeNull()
+
+    view.rerender(<MdExtRenderer source={interactiveSource} resolveImage={resolveImage} onLink={onLink}
+      interaction={{ enabled: true, toggleTask, askAbout }} />)
+    const boxes = screen.getAllByRole('checkbox')
+    expect(boxes[0]).toHaveAccessibleName('Parent')
+    expect(boxes[1]).toHaveAccessibleName('Child')
+    fireEvent.click(boxes[1]!)
+    expect(toggleTask).toHaveBeenLastCalledWith(6, false)
+    fireEvent.click(boxes[0]!)
+    expect(toggleTask).toHaveBeenLastCalledWith(5, true)
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about this item: Child' }))
+    expect(askAbout).toHaveBeenCalledWith(6)
+    expect(boxes[0]?.tagName).toBe('INPUT')
+    expect((boxes[0] as HTMLInputElement).tabIndex).toBe(0)
+    expect((screen.getByRole('button', { name: 'Ask about this item: Parent' }) as HTMLButtonElement).tabIndex).toBe(0)
+
+    view.rerender(<MdExtRenderer source='- [ ] Plain' resolveImage={resolveImage} onLink={onLink}
+      interaction={{ enabled: true, toggleTask, askAbout }} />)
+    expect(screen.getByRole('checkbox')).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Ask about/ })).toBeNull()
+  })
+
+  it('disables busy toggles and omits Ask when no target is supplied', () => {
+    const toggleTask = vi.fn()
+    render(<MdExtRenderer source={interactiveSource} resolveImage={async () => null} onLink={vi.fn()}
+      interaction={{ enabled: false, toggleTask }} />)
+    for (const box of screen.getAllByRole('checkbox')) {
+      expect(box).toBeDisabled()
+      fireEvent.click(box)
+    }
+    expect(toggleTask).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /Ask about/ })).toBeNull()
+  })
+
+  it('keeps the drawn tree and focus when a confirmed task or busy state changes', () => {
+    const resolveImage = async () => null, onLink = vi.fn(), toggleTask = vi.fn()
+    const source = interactiveSource + '\n:::details[Keep open]\nContent\n:::\n\n```text\nCode\n```'
+    const view = render(<MdExtRenderer source={source} resolveImage={resolveImage} onLink={onLink}
+      interaction={{ enabled: true, toggleTask }} />)
+    const details = view.container.querySelector('.mdext-details') as HTMLDetailsElement
+    details.open = true
+    const code = view.container.querySelector('.mdext-source-block')
+    const checkbox = screen.getByRole('checkbox', { name: 'Parent' })
+    checkbox.focus()
+    view.rerender(<MdExtRenderer source={source.replace('[ ] Parent', '[x] Parent')}
+      resolveImage={resolveImage} onLink={onLink} interaction={{ enabled: true, toggleTask }} />)
+    expect(screen.getByRole('checkbox', { name: 'Parent' })).toBe(checkbox)
+    expect(checkbox).toHaveFocus()
+    expect(checkbox).toBeChecked()
+    expect(view.container.querySelector('.mdext-details')).toBe(details)
+    expect(details.open).toBe(true)
+    expect(view.container.querySelector('.mdext-source-block')).toBe(code)
+  })
+
+  it('maps a loose task inside a blockquote to its own absolute line', () => {
+    const toggleTask = vi.fn()
+    render(<MdExtRenderer source={'---\njamat: interactive\n---\n> - [ ] Quoted\n>\n>   Paragraph\n'}
+      resolveImage={async () => null} onLink={vi.fn()} interaction={{ enabled: true, toggleTask }} />)
+    fireEvent.click(screen.getByRole('checkbox'))
+    expect(toggleTask).toHaveBeenCalledWith(4, true)
+  })
 
   /*
    * The per-call ceilings bound ONE fence: 64 KiB of source to highlight, 50 000 characters of

@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, type Rectangle } from 'electron'
+import { BrowserWindow, screen, type Rectangle, type WebContents } from 'electron'
 
 import type { AppClientUiEventArgs, AppClientUiIpcEventMap } from '../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
@@ -24,6 +24,7 @@ export interface ShellWindowEntry {
 
 export interface ShellWindowDeps {
   store: ClientStateStore
+  onCreated?: (sender: WebContents) => void
   /** Wired at init: what polls behind the window slows down while nobody is looking at it. */
   onVisibilityChanged?: (visible: boolean) => void
   onClosed?: () => void
@@ -46,7 +47,11 @@ export abstract class ShellWindowBase {
   private window: BrowserWindow | null = null
   private boundsTimer: NodeJS.Timeout | null = null
 
-  constructor(private readonly deps: ShellWindowDeps) {}
+  private readonly deps: ShellWindowDeps
+
+  constructor(deps: ShellWindowDeps) {
+    this.deps = deps
+  }
 
   /** The second instance's answer: this process owns the state, so it shows the window it already has. */
   focus(): void {
@@ -79,7 +84,7 @@ export abstract class ShellWindowBase {
    * The two `isDestroyed` checks are not the whole of it: `send` also throws for a handle that is
    * still alive while its render frame has already gone, which is an ordinary moment during a
    * crash or a reload. One window in that moment must not stop a broadcast reaching the others,
-   * and must not travel back out through the library callback that started it - `AppHub.report`
+   * and must not travel back out through the library callback that started it - `MainHub.report`
    * broadcasts, so a throw here can arrive inside the error path of the thing being reported.
    */
   publish<K extends keyof AppClientUiIpcEventMap>(
@@ -169,6 +174,7 @@ export abstract class ShellWindowBase {
     })
     // Before the load, so an outcome that arrives early is not missed by a subclass waiting for it.
     this.onCreated(window)
+    this.deps.onCreated?.(window.webContents)
     const started = entry.devUrl
       ? window.loadURL(entry.devUrl)
       : window.loadFile(entry.filePath)

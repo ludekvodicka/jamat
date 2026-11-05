@@ -10,17 +10,15 @@ import type { RemoteSessionView } from '../../lib-orchestrator/remoteControl/rem
 import type { RemoteFileBytes } from '../../lib-orchestrator/remoteControl/remoteContentApi.types.js'
 import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol.js'
 
-import type { RemoteConnectionsManager } from '../../app-client-ui/app/remoteControl/remoteConnectionsManager.js'
-import type { RemoteReviewAccess } from '../../app-client-ui/app/remoteControl/remoteReviewAccess.js'
+import type { RemoteConnectionsManager } from '../../app-gateway/app/peers/remoteConnectionsManager.js'
+import type { RemoteReviewAccess } from '../../app-orchestrator/app/remoteControl/remoteReviewAccess.js'
 
 const requireUi = createRequire(import.meta.url)
-const { FileViewerAccess } = requireUi('../../app-client-ui/app/fileViewer/fileViewerAccess.ts') as typeof import('../../app-client-ui/app/fileViewer/fileViewerAccess.js')
+import { FileViewerAccess } from '../../app-orchestrator/app/fileViewer/fileViewerAccess.js'
 const { RemoteFileMediaSource } = requireUi('../../app-client-ui/app/fileViewer/remoteFileMediaSource.ts') as typeof import('../../app-client-ui/app/fileViewer/remoteFileMediaSource.js')
-const { RemoteContentAccess } = requireUi('../../app-client-ui/app/remoteControl/remoteContentAccess.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteContentAccess.js')
-type RemoteContentAccess = import('../../app-client-ui/app/remoteControl/remoteContentAccess.js').RemoteContentAccess
+import { RemoteContentAccess } from '../../app-orchestrator/app/remoteControl/remoteContentAccess.js'
 const { RemoteContentClient } = requireUi('../../app-client-ui/app/remoteControl/remoteContentClient.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteContentClient.js')
-const { RemoteSessionViews } = requireUi('../../app-client-ui/app/remoteControl/remoteSessionViews.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteSessionViews.js')
-type RemoteSessionViews = import('../../app-client-ui/app/remoteControl/remoteSessionViews.js').RemoteSessionViews
+import { RemoteSessionViews } from '../../app-orchestrator/app/remoteControl/remoteSessionViews.js'
 
 export class RemoteContentScenarios {
   readonly views: RemoteSessionViews

@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-client-ui",
-  "version": "3.16.1",
+  "version": "3.17.0",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -35,6 +35,7 @@
     "remark-gfm": "4.0.1",
     "shiki": "4.4.3",
     "vega": "6.4.0",
+    "vega-interpreter": "2.3.2",
     "vega-lite": "6.4.3",
     "ws": "8.21.1",
     "yaml": "2.9.0",
@@ -85,12 +86,16 @@
       {
         "from": "../out/codex",
         "to": "codex",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../out/skills-bundle",
         "to": ".",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../out/launcher",
@@ -123,6 +128,20 @@
       {
         "from": "../out/host-bundle/current/node_modules",
         "to": "host/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../out/orchestrator",
+        "to": "orchestrator",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../out/gateway",
+        "to": "gateway",
         "filter": [
           "**/*"
         ]

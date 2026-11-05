@@ -15,7 +15,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   RemarkableSidecarManifest,
   type RemarkableSidecarManifestValue as ResourceManifest,
-} from '../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js'
+} from '../../app-orchestrator/app/remarkable/sidecar/remarkableSidecarManifest.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 
 interface ResourceFile {

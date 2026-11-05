@@ -30,6 +30,8 @@ export interface PanelSplitFileItem {
   location?: FileViewerLocation
   /** Reading size for this file alone; absent is the configured size, which is what 100 % means. */
   zoomPercent?: number
+  /** Long lines wrap at the pane edge; absent scrolls them. */
+  wrapLines?: true
   /** Esc and Ctrl+W close the whole tab instead of it, and the session's split pins keep it. */
   pinned?: true
 }
@@ -105,14 +107,10 @@ export interface PanelSplitHandle {
  *
  * The transitions are static and pure because two callers share them: the hook here, and the
  * `open-file` arm in `WorkspacePanels`, which writes the same state from outside the React tree.
- * One copy of the cap and the dedupe, so an agent cannot open a ninth file the person cannot.
+ * One copy of the dedupe and the one-workflow rule, so an agent opens nothing the person cannot.
  */
 export class PanelSplitParams {
   private static readonly paramsKeyConst = 'split'
-  static readonly itemsMaxConst = 8
-  static readonly commitItemsMaxConst = 8
-  static readonly taskItemsMaxConst = 8
-  static readonly workflowItemsMaxConst = 1
   static readonly historyMaxConst = 50
   private static readonly ratioDefaultConst = 0.5
   private static readonly ratioMinConst = 0.15
@@ -216,6 +214,20 @@ export class PanelSplitParams {
     }
   }
 
+  /**
+   * An open that leaves the item in front where it is. It replaces the preview as a click does, so
+   * agent opens do not pile up as kept tabs. Only a preview that is the item in front is kept first,
+   * so the document the person reads does not change under them.
+   */
+  static openedBehind(state: PanelSplitState, item: PanelSplitItem): ReturnType<typeof PanelSplitParams.opened> {
+    const base = item.kind === 'file' && state.preview !== null && state.preview === state.active
+      ? PanelSplitParams.keptOpen(state, state.preview) : state
+    const result = PanelSplitParams.opened(base, item)
+    if (!result.ok || state.active === null)
+      return result
+    return { ok: true, state: { ...result.state, active: state.active, history: state.history, recent: state.recent } }
+  }
+
   static backTargetOf(state: PanelSplitState): PanelSplitFileItem | null {
     if (state.active === null)
       return null
@@ -264,16 +276,8 @@ export class PanelSplitParams {
         : item.kind === 'file' ? PanelSplitParams.withPin(item, PanelSplitParams.isPinnedItem(candidate)) : item)
       return { ok: true, state: { ...state, items, active: item.key } }
     }
-    if (item.kind === 'commit') {
-      if (state.items.filter((candidate) => candidate.kind === 'commit').length >= PanelSplitParams.commitItemsMaxConst)
-        return { ok: false, refusal: `The split already holds ${PanelSplitParams.commitItemsMaxConst} commit dialogs. Close one before opening another.` }
+    if (item.kind === 'commit' || item.kind === 'task')
       return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
-    }
-    else if (item.kind === 'task') {
-      if (state.items.filter((candidate) => candidate.kind === 'task').length >= PanelSplitParams.taskItemsMaxConst)
-        return { ok: false, refusal: `The split already holds ${PanelSplitParams.taskItemsMaxConst} task views. Close one before opening another.` }
-      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
-    }
     else if (item.kind === 'workflow') {
       if (state.items.some((candidate) => candidate.kind === 'workflow'))
         return { ok: false, refusal: 'The split already holds the workflow of another session.' }
@@ -292,12 +296,6 @@ export class PanelSplitParams {
         state: { ...state, items, active: file.key, preview: file.key },
       }
     }
-    if (state.items.filter((candidate) => candidate.kind === 'file').length >= PanelSplitParams.itemsMaxConst)
-      return {
-        ok: false,
-        refusal: `The split already holds ${PanelSplitParams.itemsMaxConst} files.`
-          + ' Close one before opening another.',
-      }
     return {
       ok: true,
       state: { ...state, items: [...state.items, file], active: file.key, preview: file.key },
@@ -367,8 +365,8 @@ export class PanelSplitParams {
 
   /**
    * The stored pins put back into a split. A held item keeps its own fields, which the layout wrote
-   * more recently than the pin store, and is only marked pinned. A missing one is appended while the
-   * file limit allows. Nothing changes the active item unless the split was empty.
+   * more recently than the pin store, and is only marked pinned. A missing one is appended. Nothing
+   * changes the active item unless the split was empty.
    */
   static withPinned(state: PanelSplitState, stored: readonly unknown[]): PanelSplitState {
     const items = [...state.items]
@@ -383,7 +381,7 @@ export class PanelSplitParams {
         if (heldItem.kind === 'file') items[held] = PanelSplitParams.withPin(heldItem, true)
         if (preview === parsed.key) preview = null
       }
-      else if (items.filter((candidate) => candidate.kind === 'file').length < PanelSplitParams.itemsMaxConst)
+      else
         items.push(PanelSplitParams.withPin(parsed, true))
     }
     if (JSON.stringify(items) === JSON.stringify(state.items))
@@ -418,18 +416,10 @@ export class PanelSplitParams {
         continue
       if (items.some((held) => held.key === item.key))
         continue
-      if (items.filter((held) => held.kind === item.kind).length >= PanelSplitParams.limitOf(item)) continue
+      if (item.kind === 'workflow' && items.some((held) => held.kind === 'workflow')) continue
       items.push(item)
     }
     return items
-  }
-
-  private static limitOf(item: PanelSplitItem): number {
-    if (item.kind === 'file') return PanelSplitParams.itemsMaxConst
-    else if (item.kind === 'commit') return PanelSplitParams.commitItemsMaxConst
-    else if (item.kind === 'task') return PanelSplitParams.taskItemsMaxConst
-    else if (item.kind === 'workflow') return PanelSplitParams.workflowItemsMaxConst
-    else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
   private static history(value: unknown): readonly PanelSplitFileItem[] {
@@ -493,6 +483,7 @@ export class PanelSplitParams {
       baselineHint: FileViewerSourceShape.hint(candidate.baselineHint),
       ...(location === undefined ? {} : { location }),
       ...(zoomPercent === undefined ? {} : { zoomPercent }),
+      ...(candidate.wrapLines === true ? { wrapLines: true as const } : {}),
       ...(candidate.pinned === true ? { pinned: true as const } : {}),
     }
   }
@@ -600,11 +591,10 @@ export function usePanelSplit(
     open: useCallback((item: PanelSplitItem, activate = true): string | null => {
       const currentParams = currentParameters()
       const previous = PanelSplitParams.of(currentParams)
-      const base = !activate && previous.preview !== null ? PanelSplitParams.keptOpen(previous, previous.preview) : previous
-      const result = PanelSplitParams.opened(base, item)
+      const result = activate ? PanelSplitParams.opened(previous, item) : PanelSplitParams.openedBehind(previous, item)
       if (!result.ok)
         return result.refusal
-      store(currentParams, !activate && previous.active !== null ? { ...result.state, active: previous.active, history: previous.history, recent: previous.recent } : result.state)
+      store(currentParams, result.state)
       return null
     }, [currentParameters, store]),
     back: useCallback((): string | null => {

@@ -91,7 +91,7 @@ async function harness() {
       return { state: 'removed', lines: [] }
     }) },
     stop: async () => { events.push('stop'); await h.records.update('worker', (record) => ({ ...record, life: 'ended' })); return { ok: true, value: undefined } },
-    stopRun: async () => true, awaitExit: async () => true, idle: () => true, holdInput: () => () => {},
+    stopRun: async () => true, awaitExit: async () => true, idle: () => true, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 },
     busyReason: (id: string) => deps.idle(id) ? null : 'the worker is working',
     liveness: async () => {}, landedDue: () => {}, ended: () => {}, proposalsSpent: () => {},
     changed: () => {}, detach: (promise: Promise<unknown>) => { promise.catch((error) => failures.push(String(error))) }, report: (line: string) => failures.push(line),
@@ -550,6 +550,44 @@ describe('FinishDriver', () => {
     expect(h.state().environment).toMatchObject({ source: 'setup' })
   })
 
+  it('goes from sync through one assembly read to the review when the owner declares no checks, with no Check step (D15)', async () => {
+    const h = await harness()
+    const assembly = h.deps.svn.assembly
+    const reads: boolean[] = []
+    h.deps.svn.assembly = async (...args: Parameters<typeof assembly>) => { reads.push(args[1] === true); return assembly(...args) }
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    expect(h.state()).toMatchObject({ step: 'reviewing', checks: { passed: true, configured: false }, preparation: { checks: 'none' } })
+    expect(h.state().preparation?.checkedAt).toBeDefined()
+    expect(reads).toEqual([false])
+    expect(h.deps.runs.launch).not.toHaveBeenCalled()
+    expect(h.events).toEqual(['sync'])
+    // The step that prepares the review, as Session actions draws it while it runs.
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, step: 'checking', review: undefined } }))
+    const workflow = SessionWorkflows.of(h.records.get('worker')!, () => null)!
+    const titles = workflow.rounds.flatMap((round) => round.steps.map((step) => step.title))
+    expect(titles).toContain('Prepare the review')
+    expect(titles.some((title) => title.startsWith('Check'))).toBe(false)
+    expect(workflow.badge).toBe('Preparing the synced review')
+    expect(workflow.summary).toBe('Preparing the synced review')
+  })
+
+  it('reads the assembly twice and runs the declared check as before when the owner declares checks (D15)', async () => {
+    const h = await harness()
+    h.setChecks([{ key: 'test', scriptId: 'checks', name: 'Test', commands: [{ cwd: h.root, command: 'test' }] }])
+    const assembly = h.deps.svn.assembly
+    let reads = 0
+    h.deps.svn.assembly = async (...args: Parameters<typeof assembly>) => { reads++; return assembly(...args) }
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    expect(h.state()).toMatchObject({ step: 'checking', preparation: { checks: 'pending' } })
+    expect(reads).toBe(2)
+    expect(h.deps.runs.launch).toHaveBeenCalledOnce()
+    const titles = SessionWorkflows.of(h.records.get('worker')!, () => null)!.rounds.flatMap((round) => round.steps.map((step) => step.title))
+    expect(titles).toContain('Check Test')
+    await completeCheck(h, true)
+    expect(h.state()).toMatchObject({ step: 'reviewing', checks: { passed: true, configured: true }, preparation: { checks: 'passed' } })
+    expect(reads).toBe(3)
+  })
+
   it('repeats checks for generated source, but bounds an unstable generator', async () => {
     const h = await harness()
     h.setChecks([{ key: 'generator', scriptId: 'checks', name: 'Generate and test', commands: [{ cwd: h.root, command: 'test' }] }])
@@ -578,7 +616,9 @@ describe('FinishDriver', () => {
 
   it('returns incoming repository changes to preparation without any update or commit', async () => {
     const h = await harness()
+    h.setChecks([{ key: 'test', scriptId: 'checks', name: 'Test', commands: [{ cwd: h.root, command: 'test' }] }])
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await completeCheck(h, true)
     h.deps.svn.assembly = async () => ({ ok: true, value: { ...testAssembly('hash', '1'), incoming: ['shared/lib/file.ts'] } })
     expect(await h.approve()).toMatchObject({ ok: false, code: 'review-stale', detail: expect.stringContaining('shared/lib/file.ts') })
     expect(h.events).toEqual(['sync'])
@@ -586,7 +626,9 @@ describe('FinishDriver', () => {
 
   it('keeps a refused incoming change through Recheck and withholds Publish until Update and prepare again', async () => {
     const h = await harness()
+    h.setChecks([{ key: 'test', scriptId: 'checks', name: 'Test', commands: [{ cwd: h.root, command: 'test' }] }])
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await completeCheck(h, true)
     const assembly = h.deps.svn.assembly
     h.deps.svn.assembly = async () => ({ ok: true, value: { ...testAssembly('hash', '1'), incoming: ['lib/ea/version.txt'] } })
     expect(await h.approve()).toMatchObject({ ok: false, code: 'review-stale' })
@@ -594,6 +636,7 @@ describe('FinishDriver', () => {
     // Recheck reads no repository freshness: the assembly answers without the incoming path.
     h.deps.svn.assembly = assembly
     expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window', refreshPreparation: true })).toMatchObject({ ok: true })
+    await completeCheck(h, true)
     expect(h.state()).toMatchObject({ step: 'reviewing', knownIncoming: { paths: ['lib/ea/version.txt'] } })
     expect(h.state().preparation?.checkedAt).toBeDefined()
     const actions = WorktreeWords.actions(h.state())
@@ -603,6 +646,32 @@ describe('FinishDriver', () => {
     expect(SessionWorkflows.of(h.records.get('worker')!, () => null)!.summary)
       .toBe('Repository changes are not in this worktree yet: lib/ea/version.txt. Press Update and prepare again before publication.')
     expect(await h.approve()).toMatchObject({ ok: false, code: 'review-stale', detail: expect.stringContaining('lib/ea/version.txt') })
+    expect(h.events).toEqual(['sync'])
+  })
+
+  it.each([
+    ['no declared checks, a research note of the owner', false, '.aidocs/research/x.md'],
+    ['no declared checks, a source file nothing publishes', false, 'lib/other.ts'],
+    ['declared checks, documentation only', true, 'docs/a.md'],
+  ] as const)('keeps a prepared review over incoming changes that do not matter: %s (D6)', async (_name, checks, incoming) => {
+    const h = await harness()
+    if (checks) h.setChecks([{ key: 'test', scriptId: 'checks', name: 'Test', commands: [{ cwd: h.root, command: 'test' }] }])
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    if (checks) await completeCheck(h, true)
+    h.deps.svn.assembly = async () => ({ ok: true, value: { ...testAssembly('hash', '1'), incoming: [incoming] } })
+    expect(await h.approve()).toMatchObject({ ok: true })
+    expect(h.state().knownIncoming).toBeUndefined()
+    expect(h.events).toContain('commit')
+  })
+
+  it.each([false, true])('returns a prepared review when an incoming change touches a published path, checks=%s (D6, I1)', async (checks) => {
+    const h = await harness()
+    if (checks) h.setChecks([{ key: 'test', scriptId: 'checks', name: 'Test', commands: [{ cwd: h.root, command: 'test' }] }])
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    if (checks) await completeCheck(h, true)
+    h.deps.svn.assembly = async () => ({ ok: true, value: { ...testAssembly('hash', '1'), incoming: ['a.txt'] } })
+    expect(await h.approve()).toMatchObject({ ok: false, code: 'review-stale', detail: expect.stringContaining('a.txt') })
+    expect(h.state().knownIncoming?.paths).toEqual(['a.txt'])
     expect(h.events).toEqual(['sync'])
   })
 
@@ -733,11 +802,11 @@ describe('FinishDriver', () => {
     const sync = new SyncStep({ records: h.records, commands: h.deps.commands,
       svn: { updateTargets: emptyUpdateTargets, revisionOf: async () => ({ ok: true, value: 1 }), headRevisionOf: async () => ({ ok: true, value: 1 }),
         scheduleMissing: async () => ({ ok: true, value: undefined }), conflictSet: async () => ({ ok: true, value: { revision: 1, facts: [], rows: [] } }),
-        unmoved: async () => ({ ok: true, value: false }) },
-      runner: { run: async () => { entered(); await gate; return { ok: true, output: '', exitCode: 0, runId: 'sync' } } },
+        unmoved: async () => ({ ok: true, value: false }), mountStates: async () => ({ ok: true, value: new Map() }) },
+      runner: { run: async () => { entered(); await gate; return { ok: true, output: '', exitCode: 0, runId: 'sync' } }, note: async () => 'note' },
       conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 1, paths: [] } } }),
         remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }), fix: async (action) => ({ kind: 'settled', action }) },
-      ready: { current: async () => true }, busyReason: () => null, holdInput: () => () => {}, changed: () => {} })
+      ready: { current: async () => true }, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
     h.deps.sync = sync
     if (operation === 'drive')
       await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'syncing',
@@ -1224,16 +1293,15 @@ describe('FinishDriver', () => {
     expect(h.events).not.toContain('commit')
   })
 
-  it('requires acknowledgements of a proposed message and preserves them in the final result', async () => {
+  it('refuses only an empty proposed message and publishes one with findings without an acknowledgement', async () => {
     const h = await harness()
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
     const press = { choice: 'commit' as const, requestedBy: 'window' as const, selection: [join(h.root, 'a.txt')],
       reviewVersion: h.state().version, messageSource: 'agent-proposal' as const }
     expect(await h.driver.start('worker', { ...press, message: '' })).toMatchObject({ ok: false, code: 'message-unchecked' })
-    expect(await h.driver.start('worker', { ...press, message: 'Fix file' })).toMatchObject({ ok: false, code: 'message-unchecked' })
     expect(h.events).not.toContain('commit')
-    expect(await h.driver.start('worker', { ...press, message: 'Fix file', acknowledgedFindings: ['no-prefix'] })).toMatchObject({ ok: true })
-    expect(h.results.list({})[0].acknowledgedFindings).toEqual(['no-prefix'])
+    expect(await h.driver.start('worker', { ...press, message: 'Fix file' })).toMatchObject({ ok: true })
+    expect(h.results.list({})[0].messageSource).toBe('agent-proposal')
   })
 
   it('refuses to discard setup source from the tested selection during publication', async () => {
@@ -1618,6 +1686,52 @@ describe('FinishDriver', () => {
     await h.driver.drive('worker')
     expect(h.events).toEqual(['sync'])
     expect(h.state()).toMatchObject({ phase: 'finishing', step: 'reviewing' })
+  })
+
+  // 133: "the worker is working ... press Sync now" stayed four minutes while the round's updates ran.
+  async function roundSeenFromIdleGate(press: (h: Awaited<ReturnType<typeof harness>>) => Promise<unknown>) {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'syncing',
+      wait: undefined, review: undefined, approvedAt: undefined, preparation: undefined, awaitingIdleAt: 5 } }))
+    h.deps.idle = () => false
+    await h.driver.drive('worker')
+    expect(h.state().awaitingIdleReason).toBe('the worker is working')
+    const sync = h.deps.sync as { run: (...args: unknown[]) => Promise<unknown> }
+    const synced = sync.run
+    const seen: { awaitingIdleAt?: number; awaitingIdleReason?: string; idleWait: string | null; detail: string | undefined }[] = []
+    sync.run = async (...args: unknown[]) => {
+      const record = h.records.get('worker')!
+      const step = SessionWorkflows.of(record, () => null)!.rounds.flatMap((round) => round.steps).find((row) => row.state === 'running' || row.state === 'waits')
+      seen.push({ awaitingIdleAt: record.worktreeLifecycle!.awaitingIdleAt, awaitingIdleReason: record.worktreeLifecycle!.awaitingIdleReason,
+        idleWait: WorktreeWords.idleWaitOf(record.worktreeLifecycle!), detail: step?.detail })
+      return synced(...args)
+    }
+    await press(h)
+    return { h, seen }
+  }
+
+  it('clears both idle fields before the first update once the worker is idle, so the round shows no wait', async () => {
+    const { h, seen } = await roundSeenFromIdleGate(async (h) => { h.deps.idle = () => true; await h.driver.drive('worker') })
+    expect(seen).toEqual([{ awaitingIdleAt: undefined, awaitingIdleReason: undefined, idleWait: null, detail: expect.not.stringContaining('Sync now') }])
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'reviewing' })
+  })
+
+  it('clears both idle fields when the person confirms Sync now for a busy worker, and runs the round without the wait', async () => {
+    const { h, seen } = await roundSeenFromIdleGate((h) => h.driver.start('worker', { choice: 'commit', requestedBy: 'window', confirmWorking: true }))
+    expect(seen).toEqual([{ awaitingIdleAt: undefined, awaitingIdleReason: undefined, idleWait: null, detail: expect.not.stringContaining('Sync now') }])
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'reviewing' })
+  })
+
+  it('arms the idle gate again when the round itself finds the worker busy after the gate passed', async () => {
+    const { h } = await roundSeenFromIdleGate(async (h) => {
+      h.deps.idle = () => true
+      ;(h.deps.sync as { run: unknown }).run = async () => ({ ok: false, code: 'session-working', detail: 'a message to the worker is not delivered yet' })
+      await h.driver.drive('worker')
+    })
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'syncing', awaitingIdleReason: 'a message to the worker is not delivered yet' })
+    expect(h.state().awaitingIdleAt).toBeGreaterThan(5)
+    expect(h.state().wait).toBeUndefined()
   })
 
   /** 023 looped: every Try again verified the same changed fingerprint, and nothing accepted it. */

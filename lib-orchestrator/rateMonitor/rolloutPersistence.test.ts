@@ -18,20 +18,31 @@ it.each([false, true])('retries an incremental rollout batch after persistence f
   const cached = { fetchedAt: now, windows: [{ durationMinutes: 300, usedPercent: 50, resetsAt: null }], extras: [] }
   writeFileSync(cache, JSON.stringify({ schemaVersion: 2, accounts: [{ key: { agentId: 'codex', accountId: 'main' }, entry: cached }] }))
   const reader = new RolloutRateReader(home, async () => []), readings = vi.fn(() => reader.read()), errors: string[] = []
+  let failureObserved: () => void = () => {}
+  const failure = new Promise<void>(resolve => { failureObserved = resolve })
+  let persistenceFinished: () => void = () => {}
+  const persisted = new Promise<void>(resolve => { persistenceFinished = resolve })
+  let calls = 0
   const original = RateHistoryStore.prototype.backfill
-  const backfill = vi.spyOn(RateHistoryStore.prototype, 'backfill').mockImplementationOnce(async function(this: RateHistoryStore, samples) {
-    if (partial) await original.call(this, samples.slice(0, 1))
-    throw new Error('fixture persistence refused')
+  const backfill = vi.spyOn(RateHistoryStore.prototype, 'backfill').mockImplementation(async function(this: RateHistoryStore, samples) {
+    if (calls++ === 0) {
+      if (partial) await original.call(this, samples.slice(0, 1))
+      throw new Error('fixture persistence refused')
+    }
+    await original.call(this, samples)
+    persistenceFinished()
   })
   const monitor = new RateMonitor({ configIdentity: 'fixture', channel: 'development', cacheFile: cache,
-    onChanged: () => {}, onError: error => errors.push(error), now: () => now, readings,
+    onChanged: () => {}, onError: error => { errors.push(error); failureObserved() }, now: () => now, readings,
     sources: () => [{ agentId: 'codex', read: async () => ({ kind: 'failed', reason: 'unused', oauthExpiresAt: null }), stop: () => {} }] })
   vi.useFakeTimers()
   try {
     await monitor.start()
-    await vi.waitFor(() => expect(errors).toHaveLength(1))
+    await failure
+    expect(errors).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(5_000)
-    await vi.waitFor(async () => expect(await monitor.readHistory({ from: 0, to: now })).toHaveLength(2))
+    await persisted
+    expect(await monitor.readHistory({ from: 0, to: now })).toHaveLength(2)
     expect((await monitor.readHistory({ from: 0, to: now })).map(sample => sample.windows[0].usedPercent)).toEqual([20, 30])
     expect(monitor.snapshot().providers.codex).toEqual({ kind: 'ok', fetchedAt: now, windows: cached.windows })
     await vi.advanceTimersByTimeAsync(5_000)

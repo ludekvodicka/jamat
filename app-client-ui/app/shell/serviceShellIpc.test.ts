@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,12 +62,12 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
       join(directory, 'snapshots'),
       () => {},
     )
-    service = new ServiceShellIpc(
+    service = bindService(new ServiceShellIpc(
       appInfoConst,
       store,
       (sender) => sender === holderSender ? 'holder' : sender === mainSender ? 'main' : null,
       (sender) => ready.push(sender),
-    )
+    ))
   })
 
   afterEach(() => {
@@ -144,7 +145,7 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
     expect(store.loadSplitPins('session-1')).toEqual(items)
   })
 
-  // That the subsets add up to the whole contract is AppHub's job now; this is the runtime half of
+  // That the subsets add up to the whole contract is MainHub's job now; this is the runtime half of
   // the shell's own share.
   it('registers a handler for every channel it declares', () => {
     service.initialize()
@@ -215,9 +216,8 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
 
   // The one-window transition this used to accommodate is over: the client has held several
   // windows since, and the fallback that took an unregistered sender for main outlived its
-  // reason. One preload serves the Debug window too, and that renderer is in no window
-  // registry - so the accommodation meant any layout it ever wrote or cleared was the MAIN
-  // window's. The two services beside this one already refuse an unknown sender.
+  // reason: a renderer in no window registry would have written or cleared the MAIN window's
+  // layout. The two services beside this one already refuse an unknown sender.
   it('refuses a layout read or write from a sender that is in no window', async () => {
     service.initialize()
     const refusal = 'Layout state was requested by an unknown workspace renderer'

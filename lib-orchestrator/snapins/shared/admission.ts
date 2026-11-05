@@ -49,7 +49,10 @@ export function admit(input: AdmissionInput): AdmissionAnswer {
   for (const kind of input.kinds) {
     if (kind.paused || !kind.listingAvailable) continue
     for (const { entry, item } of kind.queue) {
-      if (!item) { answer.dropped.push(entry.itemKey); continue }
+      if (!item || kind.attempts.some(({ record }) => record.itemKey === entry.itemKey && record.phase === 'completed')) {
+        answer.dropped.push(entry.itemKey)
+        continue
+      }
       let hold = item.hold
       if (!hold && entry.setupAgreement && entry.acknowledgeSetup !== entry.setupAgreement.hash) hold = 'Worktree commands need approval'
       if (!hold && kind.attempts.some(({ record }) => record.itemKey === item.key && (isOpen(record) || record.phase === 'review')))

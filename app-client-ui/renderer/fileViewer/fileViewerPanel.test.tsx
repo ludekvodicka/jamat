@@ -12,6 +12,7 @@ import type {
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { FileViewerPanel, type FileViewerPanelProps } from './fileViewerPanel'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
+import { TerminalInputRegistry } from '../shell/terminalInputRegistry'
 
 /**
  * The panel itself, which three renderer test files existed beside and none rendered.
@@ -170,6 +171,33 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it('offers no Ask when its terminal is in another window and tracks a local prompt target arriving', async () => {
+    const document = PanelHarness.document({ kind: { kind: 'markdown', flavor: 'markdown' }, modes: ['rendered', 'raw'], path: 'C:/work/a.md' })
+    const controller = PanelHarness.install([document])
+    controller.fileViewer.text.mockResolvedValue({ ok: true, value: { ok: true, kind: 'text',
+      text: '---\njamat: interactive\n---\n# Checks\n- [ ] Open page', contentVersion: '24:1' } })
+    Object.assign(controller.fileViewer, { toggleTask: vi.fn() })
+    const inputs = new TerminalInputRegistry()
+    const otherWindowInputs = new TerminalInputRegistry()
+    const insert = vi.fn(() => ({ ok: true as const }))
+    otherWindowInputs.registerPrompt('session-1', insert)
+    render(<FileViewerPanel {...PanelHarness.props(PanelHarness.workspaceParams())} inputs={inputs} />)
+    const item = await screen.findByText('Open page')
+    expect(screen.queryByRole('button', { name: /Ask about/ })).toBeNull()
+    const range = window.document.createRange()
+    range.selectNodeContents(item)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    fireEvent.contextMenu(item)
+    expect(screen.queryByRole('menuitem', { name: 'Ask' })).toBeNull()
+    let retire!: () => void
+    act(() => { retire = inputs.registerPrompt('session-1', insert) })
+    fireEvent.click(await screen.findByRole('button', { name: /Ask about/ }))
+    expect(insert).toHaveBeenCalledExactlyOnceWith('Mám dotaz k C:/work/a.md:5, kapitola „Checks“, bod „Open page“: ', 'insert')
+    act(() => retire())
+    expect(screen.queryByRole('button', { name: /Ask about/ })).toBeNull()
+  })
+
   it('remounts a standalone source panel after reconnect and target switch even when grant IDs are reused', async () => {
     const controller = PanelHarness.install()
     const panel = PanelHarness.panel({ ...PanelHarness.workspaceParams(), zoom: 1.25, ratio: 0.6 })
@@ -267,6 +295,31 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     expect(await screen.findByText('export const answer = 42')).toBeInTheDocument()
     expect(screen.getByLabelText('File viewer').style.getPropertyValue('--file-viewer-zoom'))
       .to.equal('1.25')
+  })
+
+  it('keeps line wrapping of this panel in the layout and marks the viewer with it', async () => {
+    PanelHarness.install()
+    const panel = PanelHarness.panel(PanelHarness.workspaceParams())
+    render(<FileViewerPanel {...panel.props} />)
+
+    expect(await screen.findByText('export const answer = 42')).toBeInTheDocument()
+    const wrap = screen.getByRole('button', { name: 'Wrap' })
+    expect(wrap).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByLabelText('File viewer')).not.toHaveAttribute('data-file-wrap')
+
+    fireEvent.click(wrap)
+
+    expect(panel.updateParameters).toHaveBeenCalledWith(expect.objectContaining({ wrapLines: true }))
+    await waitFor(() => expect(screen.getByLabelText('File viewer')).toHaveAttribute('data-file-wrap', 'true'))
+    expect(screen.getByRole('button', { name: 'Wrap' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('opens with remembered line wrapping', async () => {
+    PanelHarness.install()
+    render(<FileViewerPanel {...PanelHarness.props({ ...PanelHarness.workspaceParams(), wrapLines: true })} />)
+
+    expect(await screen.findByText('export const answer = 42')).toBeInTheDocument()
+    expect(screen.getByLabelText('File viewer')).toHaveAttribute('data-file-wrap', 'true')
   })
 
   it('reads the file from disk again when the reload button is pressed', async () => {

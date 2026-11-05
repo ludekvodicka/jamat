@@ -421,4 +421,28 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false } }])
     })
   })
+
+  it('offers below normal by default and saves a switch to normal', async () => {
+    const { saved, view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+    const select = view.getByLabelText('Agent sessions and script runs') as HTMLSelectElement
+    expect(select.value).toBe('below-normal')
+    expect([...select.options].map((option) => option.textContent)).toEqual(['Below normal (recommended)', 'Normal'])
+
+    fireEvent.change(select, { target: { value: 'normal' } })
+    await act(async () => { fireEvent.click(view.getByText('Save')) })
+
+    expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false }, processPriority: 'normal' }])
+  })
+
+  it('shows a stored normal and puts the default back without storing it', async () => {
+    const { saved, view } = await mount({ claude: { yolo: false }, codex: { yolo: false }, processPriority: 'normal' })
+    const select = view.getByLabelText('Agent sessions and script runs') as HTMLSelectElement
+    expect(select.value).toBe('normal')
+
+    fireEvent.change(select, { target: { value: 'below-normal' } })
+    await act(async () => { fireEvent.click(view.getByText('Save')) })
+
+    expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false } }])
+  })
+
 })

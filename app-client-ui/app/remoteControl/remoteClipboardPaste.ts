@@ -7,10 +7,10 @@ import {
   RemoteControlPasteFileConst,
   RemoteControlPasteImageConst,
 } from '../../../lib-orchestrator/remoteControl/remoteControlProtocol'
-import type { TerminalClipboardPaste } from '../../shared/terminalClipboardPaste'
+import type { TerminalClipboardPaste } from '../../../lib-orchestrator/sessionManager/terminalClipboardPaste'
 import { ClipboardAccess } from '../shared/clipboardAccess'
 import { ClipboardPastePaths } from '../shared/clipboardPastePaths'
-import type { RemoteConnectionsManager } from './remoteConnectionsManager'
+import type { RemoteOutboundPort } from '../../../lib-orchestrator/remoteControl/remoteOutbound.types'
 
 /**
  * This computer's clipboard, pasted into a terminal on another one.
@@ -22,20 +22,21 @@ import type { RemoteConnectionsManager } from './remoteConnectionsManager'
  * An image is sent the same way. Any other text is pasted as it is.
  */
 export class RemoteClipboardPaste {
-  private readonly outbound: Pick<RemoteConnectionsManager, 'terminalPasteImage' | 'terminalPasteFile'>
+  private readonly outbound: Pick<RemoteOutboundPort, 'terminalPasteImage' | 'terminalPasteFile'>
 
-  constructor(outbound: Pick<RemoteConnectionsManager, 'terminalPasteImage' | 'terminalPasteFile'>) {
+  constructor(outbound: Pick<RemoteOutboundPort, 'terminalPasteImage' | 'terminalPasteFile'>) {
     this.outbound = outbound
   }
 
-  async paste(endpointId: string, attachId: string): Promise<RemoteControlStepResult<TerminalClipboardPaste>> {
+  async paste(endpointId: string, attachId: string, signal?: AbortSignal): Promise<RemoteControlStepResult<TerminalClipboardPaste>> {
+    signal?.throwIfAborted()
     const text = ClipboardAccess.readText()
     if (text.length > 0) {
       const files = ClipboardPastePaths.filesOf(text)
-      return files === null ? { ok: true, value: { kind: 'text', text } } : this.sendFiles(endpointId, attachId, files)
+      return files === null ? { ok: true, value: { kind: 'text', text } } : this.sendFiles(endpointId, attachId, files, signal)
     }
     const dropped = ClipboardAccess.readFileDrop()
-    if (dropped !== null) return this.sendFiles(endpointId, attachId, [dropped])
+    if (dropped !== null) return this.sendFiles(endpointId, attachId, [dropped], signal)
     const read = ClipboardAccess.readImage(RemoteControlPasteImageConst.bytesMaxConst)
     if (read.kind === 'none') return { ok: true, value: { kind: 'empty' } }
     else if (read.kind === 'too-large')
@@ -52,15 +53,17 @@ export class RemoteClipboardPaste {
     endpointId: string,
     attachId: string,
     paths: readonly string[],
+    signal?: AbortSignal,
   ): Promise<RemoteControlStepResult<TerminalClipboardPaste>> {
     const pieces: string[] = []
     for (const path of paths) {
+      signal?.throwIfAborted()
       const size = (await stat(path)).size
       if (size > RemoteControlPasteFileConst.bytesMaxConst) {
         pieces.push(`${ClipboardPastePaths.textOf(path)} (not transferred: ${RemoteClipboardPaste.megabytesOf(size)}, the limit is ${RemoteClipboardPaste.megabytesOf(RemoteControlPasteFileConst.bytesMaxConst)})`)
         continue
       }
-      const sent = await this.sendFile(endpointId, attachId, path, size)
+      const sent = await this.sendFile(endpointId, attachId, path, size, signal)
       if (!sent.ok) return RemoteClipboardPaste.refusal(sent)
       pieces.push(ClipboardPastePaths.textOf(sent.value))
     }
@@ -73,6 +76,7 @@ export class RemoteClipboardPaste {
     attachId: string,
     path: string,
     size: number,
+    signal?: AbortSignal,
   ): Promise<RemoteControlStepResult<string>> {
     const uploadId = randomUUID()
     const fileName = basename(path)
@@ -80,10 +84,12 @@ export class RemoteClipboardPaste {
     try {
       let offset = 0
       do {
+        signal?.throwIfAborted()
         const buffer = Buffer.alloc(Math.min(RemoteControlPasteFileConst.chunkBytesConst, size - offset))
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset)
         if (bytesRead !== buffer.length)
           return { ok: false, error: { code: 'operation-failed', detail: `${fileName} changed while it was being sent` } }
+        signal?.throwIfAborted()
         const answer = await this.outbound.terminalPasteFile(endpointId, attachId, {
           uploadId,
           fileName,

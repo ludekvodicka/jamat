@@ -55,20 +55,23 @@ export class AppRestart {
     join('node_modules', 'electron-vite', 'bin', 'electron-vite.js')
   private static readonly graceMillisecondsConst = 1_000
 
-  constructor(private readonly deps: AppRestartDeps) {}
+  private readonly deps: AppRestartDeps
 
-  async restart(): Promise<void> {
+  constructor(deps: AppRestartDeps) { this.deps = deps }
+
+  async restart(): Promise<boolean> {
     if (this.deps.devRendererUrl !== undefined)
-      await this.restartDevPipeline()
+      return this.restartDevPipeline()
     else {
       this.deps.relaunch()
       this.deps.quit()
+      return true
     }
   }
 
-  private async restartDevPipeline(): Promise<void> {
+  private async restartDevPipeline(): Promise<boolean> {
     const child = this.spawnPipeline()
-    if (child === null) return
+    if (child === null) return false
     const evidence: { failed: string | null } = { failed: null }
     child.once('error', (error) => { evidence.failed = ErrorText.of(error) })
     // Any exit inside the grace is a failure: a pipeline that started is still building.
@@ -82,9 +85,10 @@ export class AppRestart {
       this.deps.report(
         `Restart failed: the dev pipeline ${evidence.failed}; see ${this.deps.logFile}`,
       )
-      return
+      return false
     }
     this.deps.quit()
+    return true
   }
 
   private spawnPipeline(): ChildProcess | null {
@@ -106,6 +110,7 @@ export class AppRestart {
           detached: true,
           stdio: ['ignore', log, log],
           windowsHide: true,
+          env: { ...process.env, JAMAT_V3_RESTART_PARENT_PID: String(process.pid) },
         },
       )
     } catch (error) {

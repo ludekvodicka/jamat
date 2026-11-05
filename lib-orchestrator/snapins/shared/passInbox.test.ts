@@ -27,6 +27,20 @@ describe('PassInbox', () => {
     expect(await readdir(directory)).toEqual(['brief.json'])
   })
 
+  it('preserves opaque direct-work data and accepts its started and ready events without PP metadata', async () => {
+    brief.work = { kind: 'perf-stall', process: 'main', name: 'records.commit', selfMs: 40,
+      profileId: null, instruction: 'Measure again after rebuilding', build: { inputHash: 'a'.repeat(64) } }
+    await PassInbox.create(directory, brief)
+    const inbox = await PassInbox.open(directory)
+    expect(await inbox.brief()).toEqual(brief)
+    await inbox.append({ kind: 'started', at: 1 })
+    await inbox.append({ kind: 'done', at: 2, outcome: 'ready', detail: 'Checks passed; waiting for human Finish' })
+    expect(await inbox.after(0)).toEqual([
+      { n: 1, event: { kind: 'started', at: 1 } },
+      { n: 2, event: { kind: 'done', at: 2, outcome: 'ready', detail: 'Checks passed; waiting for human Finish' } },
+    ])
+  })
+
   it('refuses a junction to a directory outside the owned pass', async () => {
     const outside = join(root, 'outside')
     await mkdir(outside)

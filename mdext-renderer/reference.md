@@ -218,16 +218,23 @@ error. Author-supplied attributes/classes on a block are ignored (the widget own
 - **Raw/embedded HTML** — stripped by default (never executed). Use Markdown or the typed blocks
   instead. (A host *can* opt into a sanitized raw-HTML hatch — see below — but don't author for it:
   it's off in the app's file viewer and always off for remote content.)
-- **Interactivity / scripts / forms** — the widget is render-only.
+- **Scripts and forms** are not supported. Interactive task lists use the optional host capability
+  described in [Interactive documents](./USAGE.md#interactive-documents); Markdown cannot run code.
 - **Auto-loading external images** - FileViewer resolves only relative resources within its grant.
 
 ## Host integration (for app developers)
 
 The maintained renderer and authoring contract live together in `AppJamatV3/mdext-renderer/`.
-FileViewer imports the public exports from `renderer/index.ts` and supplies capability-bound image
-and link handlers:
+FileViewer imports the public exports from `renderer/index.ts` and supplies capability-bound image,
+link and optional task handlers:
 
-`<MdExtRenderer source={text} resolveImage={resolveImage} onLink={onLink} className? />`.
+`<MdExtRenderer source={text} resolveImage={resolveImage} onLink={onLink} interaction? className? />`.
+
+`MdExtInteraction` carries `enabled`, `toggleTask(line, checked)` and optional `askAbout(line)`.
+The renderer uses it only when frontmatter contains `jamat: interactive`; without the capability,
+task lists stay read-only. Lines are absolute source lines, including frontmatter. FileViewer owns
+the file write, checklist strip, selection Ask and prompt insertion. MdExt owns no filesystem or
+terminal access. See the [runtime boundary](../docs/architecture/mdext-renderer.md#runtime-boundary).
 
 Thin discovery adapters under `AppJamatV3/skills/claude` and `AppJamatV3/skills/codex` point to this
 directory. `app-client-ui/app/skills/skillLinkInstaller.ts` owns both profile links. Update this

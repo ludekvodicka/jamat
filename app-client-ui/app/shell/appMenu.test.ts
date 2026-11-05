@@ -58,9 +58,8 @@ describe('app-client-ui/app/shell/appMenu', () => {
 
   function commandItemsOf(template: MenuItemConstructorOptions[]): MenuItemConstructorOptions[] {
     return template
-      .filter((section) => section.label !== 'Tasks')
       .flatMap((section) => (Array.isArray(section.submenu) ? section.submenu : []))
-      .filter((item) => item.type !== 'separator')
+      .filter((item) => item.type !== 'separator' && !item.id?.startsWith('snapin:'))
   }
 
   function click(item: MenuItemConstructorOptions): void {
@@ -74,19 +73,23 @@ describe('app-client-ui/app/shell/appMenu', () => {
     menuMock.installs = 0
   })
 
-  it('lays the sections out with a Tasks tail', () => {
+  it('lays the sections out with no separate Tasks menu', () => {
     const { template } = build()
     expect(template.map((section) => section.label))
-      .toEqual(['File', 'Tab', 'View', 'Tasks', 'Tools', 'Window', 'Debug'])
+      .toEqual(['File', 'Tab', 'View', 'Tools', 'Window', 'Debug'])
   })
 
-  it('opens the catalog snap-in and preserves Tasks when the window tail changes', () => {
+  it('ends Tools with the catalog snap-ins and keeps them when the window tail changes', () => {
     const { menu, template, focused } = build()
-    expect(readOut(submenuOf(template, 'Tasks'))).toEqual(['Review todos'])
-    click(submenuOf(template, 'Tasks')[0])
+    const snapins = () => submenuOf(menu.buildTemplate(), 'Tools').filter((item) => item.id?.startsWith('snapin:'))
+    expect(snapins().map((item) => item.label)).toEqual(['Review todos', 'Perf stalls'])
+    click(snapins()[0])
     expect(focused).toEqual(['snapin:review-todos'])
+    click(snapins()[1])
+    expect(focused).toEqual(['snapin:review-todos', 'snapin:perfStalls'])
     menu.updateWindowEntries([{ windowId: 'test', name: 'Test' }])
-    expect(readOut(submenuOf(menu.buildTemplate(), 'Tasks'))).toEqual(['Review todos'])
+    expect(snapins().map((item) => item.label)).toEqual(['Review todos', 'Perf stalls'])
+    expect(readOut(submenuOf(template, 'Tools')).slice(-3)).toEqual(['separator', 'Review todos', 'Perf stalls'])
   })
 
   it('separates the groups of a section and nothing else', () => {
@@ -119,10 +122,10 @@ describe('app-client-ui/app/shell/appMenu', () => {
     expect(readOut(submenuOf(template, 'File')))
       .toEqual(['New Session', 'Historic sessions', 'New Remote Session', 'Settings', 'separator', 'Quit'])
     expect(readOut(submenuOf(template, 'Tools')))
-      .toEqual(['Usage', 'Remarkable', 'separator', 'Check for Updates…'])
+      .toEqual(['Usage', 'Remarkable', 'separator', 'Check for Updates…', 'separator', 'Review todos', 'Perf stalls'])
     expect(readOut(submenuOf(template, 'Window'))).toEqual(['New Window', 'Window Settings'])
     expect(readOut(submenuOf(template, 'Debug')))
-      .toEqual(['Debug Window', 'New Lifecycle Probe', 'Reload', 'separator', 'Restart App'])
+      .toEqual(['Debug', 'Reload', 'separator', 'Restart App'])
   })
 
   it('holds exactly the catalog commands that declare the menu surface', () => {
@@ -187,7 +190,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
       ['Toggle File Tools', 'Ctrl+G'],
       ['Maximize Group', 'F11'],
       ['New Window', 'Ctrl+Shift+N'],
-      ['Debug Window', 'Ctrl+Shift+D'],
+      ['Debug', 'Ctrl+Shift+D'],
     ])
   })
 
@@ -216,12 +219,13 @@ describe('app-client-ui/app/shell/appMenu', () => {
       'view.toggleTabSidebar',
       'view.fileChanges',
       'view.maximizeToggle',
+      'tools.usage',
       'tools.remarkable',
       'window.settings',
-      'debug.newProbe',
+      'debug.open',
     ])
     expect(dispatched.main)
-      .toEqual(['tools.usage', 'app.checkForUpdates', 'window.new', 'debug.open', 'app.reload', 'app.restart'])
+      .toEqual(['app.checkForUpdates', 'window.new', 'app.reload', 'app.restart'])
   })
 
   /**

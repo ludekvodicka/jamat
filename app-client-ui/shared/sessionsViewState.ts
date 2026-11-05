@@ -1,4 +1,5 @@
-export type SessionsTabsView = 'together' | 'states'
+import type { SessionsTabsView } from '../../lib-orchestrator/clientApi/sessionsViewState.types'
+export type { SessionsTabsView } from '../../lib-orchestrator/clientApi/sessionsViewState.types'
 
 /**
  * The rules of the sessions panel's grouping choice, with no React and no DOM. It lives in `shared/`

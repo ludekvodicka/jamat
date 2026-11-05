@@ -48,6 +48,8 @@ export type RemoteControlRegistryParse =
   | { ok: false; requestId: string | null; operation: string | null; operationId: string | null; error: RemoteControlError }
 
 export interface RemoteControlRegistryDeps {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
+  onRegistered?(name: string): void
   onError(message: string): void
   /** Every successful write, after its answer is composed: the activity log hears of it here. */
   onWritten?(operation: string, context: RemoteControlCallContext, body: unknown): void
@@ -80,7 +82,10 @@ export class RemoteControlRegistry {
     if (this.specs.has(name)) throw new Error(`Operation ${name} is registered twice`)
     if (!/^[a-z][A-Za-z]*(\.[a-z][A-Za-z]*)+$/.test(name))
       throw new Error(`Operation name ${JSON.stringify(name)} is not <domain>.<verb>`)
-    this.specs.set(name, spec as RemoteControlOperationSpec<unknown, unknown>)
+    this.deps.onRegistered?.(name)
+    const monitored: RemoteControlOperationSpec<TBody, TValue> = { ...spec, run: (body, context) => this.deps.perf
+      ? this.deps.perf.operation(`op:${name}`, () => spec.run(body, context)) : spec.run(body, context) }
+    this.specs.set(name, monitored as RemoteControlOperationSpec<unknown, unknown>)
   }
 
   /**

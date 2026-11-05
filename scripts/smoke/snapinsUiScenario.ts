@@ -110,9 +110,9 @@ export class SnapinsUiScenario {
         await ui!.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...rect })
       }
       await start()
-      await menu('Review todos', 'Tasks')
+      await menu('Review todos', 'Tools')
       await RemoteUiScenarios.until(async () => ui!.evaluate<boolean>(`document.querySelector('.snapins')?.textContent.includes('status drift') === true`), 'Tasks listing and held status drift')
-      await menu('Review todos', 'Tasks')
+      await menu('Review todos', 'Tools')
       assert.equal(await ui!.evaluate(`document.querySelectorAll('.snapins').length`), 1, 'Tasks focuses its existing panel')
       await menu('Settings')
       await click('button', 'Snap-ins')
@@ -155,21 +155,20 @@ export class SnapinsUiScenario {
       await run('svn', tree, ['move', '.aidocs/review-todos/900-pending-p2-scratch.md', '.aidocs/review-todos/900-complete-p2-scratch.md'])
       await writeFile(join(tree, '.aidocs/review-todos/900-complete-p2-scratch.md'), '---\nstatus: complete\npriority: p2\n---\nCompleted fixture\n')
       await openWorker(first.sessionId!); await click(`[data-session="${first.sessionId}"] button`, 'Finish…')
+      await click('.session-actions button', 'Commit & merge')
       await RemoteUiScenarios.until(async () => ui!.evaluate<boolean>(`!!document.querySelector('.session-actions__review .commit-message textarea')`), 'Todo Finish review')
       await type('.session-actions__review .commit-message textarea', '[repository] Complete disposable todo')
-      await click('.session-actions__review button', 'Commit')
+      await click('.session-actions__review button', 'Publish verified changes')
       await RemoteUiScenarios.until(async () => (await state()).attempts[0]?.phase === 'completed', 'One approval immediately after typing completes the task')
       assert.equal((await state()).attempts[0]?.phase, 'completed', 'Published completed filename settles the attempt')
       const done = await session(first.sessionId!)
       if (done) { assert.equal(await group(first.sessionId!), 'completed'); assert.equal(done.note, 'Done') }
       assert.equal((await run('svn', owner, ['log', '--xml', '-r', '1:HEAD'])).match(/<logentry/g)?.length, 2)
       console.log('[smoke:ui] limit admits one collection WT; ready event waits; reviewed Finish publication completes the source task')
-      await menu('Review todos', 'Tasks')
-      // The listing reads files only; the stale main-copy filename is found by the svn check of the todo being started.
-      await ui!.evaluate(`Array.from(document.querySelectorAll('.snapins input[type="checkbox"]')).forEach(e => { const wanted = e.getAttribute('aria-label') === 'Select Todo 900: scratch'; if (e.checked !== wanted) e.click() })`)
-      await click('.snapins button', 'Solve selected')
-      await RemoteUiScenarios.until(async () => ui!.evaluate<boolean>(`document.body.innerText.includes('Published in SVN; update the main copy to receive the completed task')`), 'Solve explains the stale main-copy filename')
-      assert.equal((await state()).attempts.length, 1, 'A refused todo starts no worker')
+      await menu('Review todos', 'Tools')
+      // Since r823 the Finish updates the main copy by itself, so the completed todo leaves the selectable list.
+      await RemoteUiScenarios.until(async () => ui!.evaluate<boolean>(`!document.querySelector('.snapins input[aria-label="Select Todo 900: scratch"]')`), 'Completed todo is no longer selectable after the automatic UPDATE')
+      assert.equal((await state()).attempts.length, 1, 'A completed todo starts no worker')
       await ui!.evaluate(`Array.from(document.querySelectorAll('.snapins input[type="checkbox"]')).forEach(e => { const wanted = e.getAttribute('aria-label') === 'Select Todo 901: scratch'; if (e.checked !== wanted) e.click() })`)
       await click('.snapins button', 'Solve selected')
       await RemoteUiScenarios.until(async () => (await state()).attempts.length === 2 && !!(await state()).attempts[1]?.sessionId, 'Second worker starts')
@@ -184,7 +183,7 @@ export class SnapinsUiScenario {
       assert.equal((await state()).attempts.length, 2)
       assert.equal((await readFile(proofs, 'utf8')).trim().split('\n').length, 2, 'Restart did not create another worker')
       await openWorker(second.sessionId!); await click(`[data-session="${second.sessionId}"] button`, 'Finish…')
-      await click('.session-actions button', 'Back to Session actions')
+      // Finish… on a live worker offers Commit & merge and Discard; nothing started a review (r1014).
       await click('.session-actions button', 'Discard')
       await click('.session-actions button', 'Confirm Discard')
       await RemoteUiScenarios.until(async () => (await state()).attempts[1]?.phase === 'ended', 'Discard ends the attempt')
@@ -192,7 +191,7 @@ export class SnapinsUiScenario {
       assert.equal(await readFile(join(tools, 'Other/control.txt'), 'utf8'), 'unrelated application\n')
       assert.equal((await run('svn', tools, ['status', '--ignore-externals'])).trim(), '')
       console.log('[smoke:ui] offline replay preserves one worker; Discard ends its attempt; sibling bytes and main status stay unchanged')
-      await menu('Review todos', 'Tasks')
+      await menu('Review todos', 'Tools')
       await ui!.capture(join(screenshots, 'snapins-overnight-completed-1440x900.png'))
     } catch (error) {
       if (ui) {

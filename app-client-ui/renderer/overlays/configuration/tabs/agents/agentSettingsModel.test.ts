@@ -242,4 +242,15 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       expect(early.effects).toEqual([])
     })
   })
+
+  it('switches the process priority for every agent and reads a switch back as unmodified', () => {
+    const normal = AgentSettingsModel.transition(loaded(), { input: 'processPriority', value: 'normal' }).state
+    expect(normal.buffer).toEqual({ ...storedConst, processPriority: 'normal' })
+    expect(AgentSettingsModel.isModified(normal)).toBe(true)
+
+    const back = AgentSettingsModel.transition(normal, { input: 'processPriority', value: 'below-normal' }).state
+    expect(back.buffer).toEqual(storedConst)
+    expect(AgentSettingsModel.isModified(back)).toBe(false)
+  })
+
 })

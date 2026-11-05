@@ -1,4 +1,16 @@
 export type FileViewerViewMode = 'rendered' | 'raw' | 'diff' | 'preview' | 'hex'
+
+export interface FileViewerToggleTaskRequest {
+  documentId: string
+  line: number
+  checked: boolean
+  contentVersion: string
+}
+
+export type FileViewerToggleTaskResult =
+  | { ok: true; value: { contentVersion: string; line: number; checked: boolean } }
+  | { ok: false; code: 'document-changed' | 'not-interactive' | 'not-a-task'
+    | 'not-found' | 'invalid-document' | 'io-error'; detail: string }
 export type FileViewerDirectoryNodeKind = 'file' | 'directory' | 'symlink' | 'other'
 
 export type FileViewerDocumentKind =

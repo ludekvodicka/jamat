@@ -3,17 +3,21 @@ import { realpath } from 'node:fs/promises'
 import { basename, isAbsolute, join } from 'node:path'
 
 import type { WebContents } from 'electron'
+import type { ServiceCaller } from '../shared/serviceTransport.types'
+import type { FileViewerOpenResult } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 
 import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
-import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
+import type { OrchestratorNativeApi } from '../../../lib-orchestrator/clientApi/orchestratorProcess.types'
+
+type NativeDetector = { detect: OrchestratorNativeApi['detect']; pathOf: OrchestratorNativeApi['detectionPath']; markOpened: OrchestratorNativeApi['markOpened'] }
+type NativeSessions = { workingContext: OrchestratorNativeApi['workingContext']; snapshot: OrchestratorNativeApi['sessionsSnapshot']; conflictRootOf: OrchestratorNativeApi['conflictRoot'] }
 import { PathCompare } from '../../../lib-orchestrator/shared/pathCompare'
 import { TortoiseConflictEditor } from '../../../lib-orchestrator/shared/tortoiseConflictEditor'
 import type {
   TerminalDetectionHit,
-  TerminalDetector,
 } from '../../../lib-orchestrator/terminalDetector/terminalDetector'
 import { TerminalDetectorLimits } from '../../../lib-orchestrator/terminalDetector/terminalDetectorLimits'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import { ElectronServiceIpcBase } from '../shell/electronServiceIpcBase'
 import { ExternalOpener } from './externalOpener'
 import type { ServiceTerminalIpc } from './serviceTerminalIpc'
 import { VsCodeLauncher } from './vsCodeLauncher'
@@ -47,7 +51,7 @@ import { VsCodeWorkspace } from './vsCodeWorkspace'
  * `menu-open-conflict-editor` hands it to TortoiseSVN's conflict editor. `menu-open-merge-brief`
  * grants the merger's brief the session's action names, outside the worktree.
  */
-export class ServiceTerminalMenuIpc extends ServiceIpcBase<
+export class ServiceTerminalMenuIpc extends ElectronServiceIpcBase<
   typeof ServiceTerminalMenuIpc.channelsConst
 > {
   static readonly channelsConst = {
@@ -63,22 +67,24 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
   } as const
 
   private readonly ownersByRequest = new Map<string, WebContents>()
-  private readonly detector: TerminalDetector
-  private readonly viewer: FileViewer
-  private readonly sessions: SessionManager
+  private readonly callers: Map<string, WebContents>
+  private readonly detector: NativeDetector
+  private readonly viewer: Pick<FileViewer, 'openDetected' | 'releaseGrant'>
+  private readonly sessions: NativeSessions
   private readonly terminals: ServiceTerminalIpc
   private readonly ownerIdOf: (sender: WebContents) => string | null
   private readonly conflictEditor: Pick<TortoiseConflictEditor, 'open'>
 
   constructor(
-    detector: TerminalDetector,
-    viewer: FileViewer,
-    sessions: SessionManager,
+    detector: NativeDetector,
+    viewer: Pick<FileViewer, 'openDetected' | 'releaseGrant'>,
+    sessions: NativeSessions,
     terminals: ServiceTerminalIpc,
     ownerIdOf: (sender: WebContents) => string | null,
     conflictEditor: Pick<TortoiseConflictEditor, 'open'> = new TortoiseConflictEditor(),
   ) {
     super()
+    this.callers = new Map()
     this.detector = detector
     this.viewer = viewer
     this.sessions = sessions
@@ -88,24 +94,24 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
   }
 
   initialize(): void {
+    this.transport.onCaller('gone', caller => {
+      const sender = this.callers.get(caller.id)
+      this.callers.delete(caller.id)
+      if (sender) this.releaseAll(sender)
+    })
     this.register('terminal:menu-detect', async (event, attachId, capture) => {
-      if (!this.terminals.ownsAttach(event.sender, attachId))
-        throw new Error(`Terminal attach is not owned by this renderer: ${attachId}`)
-      const sessionId = this.terminals.sessionOfAttach(attachId)
+      const sessionId = await this.terminals.authorize(this.sender(event), attachId)
       if (sessionId === null)
         throw new Error(`Terminal attach has no session: ${attachId}`)
       const result = await this.detector.detect(sessionId, capture)
-      // The detect is the slow tier and the window can go during it. Claiming for a destroyed sender
-      // stores a WebContents whose `destroyed` and `did-start-navigation` have both already fired,
-      // so nothing ever releases it and it sits there until the ring evicts it - which is the leak
-      // the two listeners below exist to prevent.
-      if (event.sender.isDestroyed()) return result
-      this.claimRequest(result.requestId, event.sender)
+      // Detection can finish after reload; the departed caller must not reclaim its request.
+      if (!this.transport.isCurrent(event)) return result
+      this.claimRequest(result.requestId, event)
       return result
     })
     this.register('terminal:menu-open-file', async (event, requestId, detectionId) => {
-      const ownerId = this.ownerId(event.sender)
-      const hit = this.provenHit(event.sender, requestId, detectionId)
+      const ownerId = this.ownerId(this.sender(event))
+      const hit = await this.provenHit(event, requestId, detectionId)
       if (hit === null)
         return {
           ok: false,
@@ -115,17 +121,18 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       if (hit.kind !== 'file')
         return { ok: false, code: 'not-file', detail: `The detection is a ${hit.kind}` }
       const context = await this.sessions.workingContext(hit.sessionId)
-      const answer = await this.viewer.openDetected(
+      this.requireCurrent(event)
+      const answer = await this.granted(event, ownerId, this.viewer.openDetected(
         ownerId,
         hit.sessionId,
         context.ok ? context.value.cwd : null,
         hit.path,
-      )
+      ))
       if (answer.ok) this.detector.markOpened(answer.value.path, 'file')
       return answer
     })
     this.register('terminal:menu-open-directory', async (event, requestId, detectionId) => {
-      const hit = this.provenHit(event.sender, requestId, detectionId)
+      const hit = await this.provenHit(event, requestId, detectionId)
       if (hit === null)
         return {
           ok: false,
@@ -141,6 +148,7 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       catch {
         return { ok: false, code: 'not-directory', detail: 'The detected directory no longer exists' }
       }
+      this.requireCurrent(event)
       this.detector.markOpened(path, 'directory')
       return {
         ok: true,
@@ -152,7 +160,7 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       }
     })
     this.register('terminal:menu-open-external', async (event, requestId, detectionId) => {
-      const hit = this.provenHit(event.sender, requestId, detectionId)
+      const hit = await this.provenHit(event, requestId, detectionId)
       if (hit === null)
         return { ok: false, code: 'expired', detail: DetectionRefusal.detailOf('file') }
       // The detector answers this the same way it answered the row, so a renderer asking for the
@@ -164,8 +172,8 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
       if (refusal !== null) return { ok: false, code: 'failed', detail: refusal }
       return { ok: true }
     })
-    this.register('terminal:menu-open-vscode', (event, requestId, detectionId) => {
-      const hit = this.provenHit(event.sender, requestId, detectionId)
+    this.register('terminal:menu-open-vscode', async (event, requestId, detectionId) => {
+      const hit = await this.provenHit(event, requestId, detectionId)
       if (hit === null) return false
       if (hit.kind === 'file') VsCodeLauncher.open(hit.path, hit.line)
       else if (hit.kind === 'directory') VsCodeLauncher.open(hit.path, null)
@@ -177,34 +185,54 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
     this.register('terminal:menu-open-project-vscode', async (event, sessionId) => {
       // Called for its refusal: a sender from no known window throws here. The id it returns is of
       // no use, because the path comes from the session's own working context below.
-      this.ownerId(event.sender)
+      this.ownerId(this.sender(event))
       const context = await this.sessions.workingContext(sessionId)
       if (!context.ok) return false
+      this.requireCurrent(event)
+      const launcher = { open: (path: string, line: number | null): void => {
+        this.requireCurrent(event)
+        VsCodeLauncher.open(path, line)
+      } }
       const worktree = context.value.worktree
-      if (worktree === null) await VsCodeWorkspace.open(VsCodeLauncher, context.value.cwd, basename(context.value.cwd))
-      else await VsCodeWorkspace.open(VsCodeLauncher, worktree.worktreePath, basename(worktree.repositoryRoot))
+      if (worktree === null) await VsCodeWorkspace.open(launcher, context.value.cwd, basename(context.value.cwd))
+      else await VsCodeWorkspace.open(launcher, worktree.worktreePath, basename(worktree.repositoryRoot))
       return true
     })
     this.register('terminal:menu-open-conflict-file', async (event, sessionId, path) => {
-      const ownerId = this.ownerId(event.sender)
+      const ownerId = this.ownerId(this.sender(event))
       const place = await this.conflictPlaceOf(sessionId, path)
       if (!place.ok) return { ok: false, code: 'outside-root', detail: place.detail }
-      return this.viewer.openDetected(ownerId, sessionId, place.root, place.absolute, true)
+      this.requireCurrent(event)
+      return this.granted(event, ownerId, this.viewer.openDetected(ownerId, sessionId, place.root, place.absolute, true))
     })
     this.register('terminal:menu-open-conflict-editor', async (event, sessionId, path) => {
-      this.ownerId(event.sender)
+      this.ownerId(this.sender(event))
       const place = await this.conflictPlaceOf(sessionId, path)
       if (!place.ok) return place
+      this.requireCurrent(event)
       const opened = await this.conflictEditor.open(place.absolute)
       return opened.ok ? { ok: true } : { ok: false, detail: opened.detail }
     })
     this.register('terminal:menu-open-merge-brief', async (event, sessionId) => {
-      const ownerId = this.ownerId(event.sender)
-      const brief = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.svnAction?.mergeBrief
+      const ownerId = this.ownerId(this.sender(event))
+      const snapshot = await this.sessions.snapshot()
+      this.requireCurrent(event)
+      const brief = snapshot.sessions.find((session) => session.sessionId === sessionId)?.svnAction?.mergeBrief
       if (typeof brief !== 'string') return { ok: false, code: 'not-found', detail: `Session ${sessionId} has no merger brief` }
-      return this.viewer.openDetected(ownerId, sessionId, null, brief)
+      return this.granted(event, ownerId, this.viewer.openDetected(ownerId, sessionId, null, brief))
     })
     this.assertComplete(ServiceTerminalMenuIpc.channelsConst)
+  }
+
+  private requireCurrent(caller: ServiceCaller): void {
+    if (!this.transport.isCurrent(caller)) throw new Error('The renderer is no longer available')
+  }
+
+  private async granted(caller: ServiceCaller, ownerId: string, pending: Promise<FileViewerOpenResult>): Promise<FileViewerOpenResult> {
+    const result = await pending
+    if (this.transport.isCurrent(caller)) return result
+    if (result.ok) this.viewer.releaseGrant(ownerId, result.value.documentId)
+    throw new Error('The renderer is no longer available')
   }
 
   /** A root-relative path of a session's conflict, as an absolute path inside its main copy or worktree. */
@@ -223,11 +251,12 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
    * A request another window opened is a thrown channel, not a refusal: the renderer asking for it
    * is out of contract. An id this window does own but the store has forgotten is only expired.
    */
-  private provenHit(
-    sender: WebContents,
+  private async provenHit(
+    caller: ServiceCaller,
     requestId: string,
     detectionId: string,
-  ): TerminalDetectionHit | null {
+  ): Promise<TerminalDetectionHit | null> {
+    const sender = this.sender(caller)
     const owner = this.ownersByRequest.get(requestId)
     // Forgotten is not the same as somebody else's, which is what the comment above has always said
     // and what this line did not do: the ring drops the oldest owner past its ceiling, so an id this
@@ -236,16 +265,20 @@ export class ServiceTerminalMenuIpc extends ServiceIpcBase<
     if (owner === undefined) return null
     if (owner !== sender)
       throw new Error(`Terminal detection is not owned by this renderer: ${requestId}`)
-    return this.detector.pathOf(requestId, detectionId)
+    const hit = await this.detector.pathOf(requestId, detectionId)
+    this.requireCurrent(caller)
+    if (this.ownersByRequest.get(requestId) !== sender) return null
+    return hit
   }
 
-  private claimRequest(requestId: string, sender: WebContents): void {
+  private claimRequest(requestId: string, caller: ServiceCaller): void {
+    const sender = this.sender(caller)
+    this.callers.set(caller.id, sender)
     this.ownersByRequest.set(requestId, sender)
     for (const oldest of this.ownersByRequest.keys()) {
       if (this.ownersByRequest.size <= TerminalDetectorLimits.requestsMax) break
       this.ownersByRequest.delete(oldest)
     }
-    this.watchSender(sender, () => this.releaseAll(sender))
   }
 
   private releaseAll(sender: WebContents): void {

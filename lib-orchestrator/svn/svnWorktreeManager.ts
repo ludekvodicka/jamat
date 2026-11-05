@@ -33,6 +33,7 @@ import type {
   SvnLandingProof,
   SvnLandingReceipt,
   SvnLocalItem,
+  SvnMountState,
   SvnOwnCommitInput,
   SvnResult,
   SvnRemovalRow,
@@ -47,10 +48,12 @@ import type {
 } from './svn.types'
 import { type SvnConflictedRow, SvnConflictFacts, type SvnInfoConflicts } from './svnConflictFacts'
 import { SvnCommitManager, type SvnCommitTarget } from './svnCommitManager'
+import { SvnExternalDefinitions } from './svnExternalDefinitions'
 import { SvnFailures } from './svnFailures'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 import { SvnUpdateTargets } from './svnUpdateTargets'
 import { SvnAssemblyReader, type SvnAssembly } from './svnAssembly'
+import type { SvnAssemblyExecutor } from './svnAssemblyExecutor'
 import { SvnWcStamp } from './svnWcStamp'
 
 /** The properties of one conflicted parent and its children, by name; each value by property name. */
@@ -96,6 +99,7 @@ export class SvnWorktreeManager {
   private static readonly landingReadCharactersConst = 24_000
   private readonly svn: CommandRunner
   private readonly removeTree: TreeRemove
+  private readonly assemblyReader: SvnAssemblyExecutor
   /** Creates under way per owner: `.worktrees` stays while one runs, or its reservation loses its parent. */
   private readonly creating = new Map<string, number>()
   /** The removal of an empty `.worktrees` per owner, which a create waits out before it makes the directory. */
@@ -105,14 +109,15 @@ export class SvnWorktreeManager {
   /** `svn log -v` of one revision, which never changes. */
   private readonly landingLogs = new Map<string, string>()
 
-  constructor(svn: CommandRunner, removeTree: TreeRemove = TreeRemoval.node) {
+  constructor(svn: CommandRunner, removeTree: TreeRemove = TreeRemoval.node, assemblyReader: SvnAssemblyExecutor = new SvnAssemblyReader(svn)) {
     this.svn = svn
+    this.assemblyReader = assemblyReader
     this.updateTargets = new SvnUpdateTargets(svn)
     this.removeTree = removeTree
   }
 
   async assembly(root: string, freshness = false, progress?: (mount: string, files: number) => void): Promise<SvnResult<SvnAssembly>> {
-    return this.attempt(() => new SvnAssemblyReader(this.svn).read(root, freshness, progress))
+    return this.attempt(() => this.assemblyReader.read(root, freshness, progress))
   }
 
   /**
@@ -1255,6 +1260,44 @@ export class SvnWorktreeManager {
         if (behind > 0) return false
       }
       return true
+    })
+  }
+
+  /**
+   * Every directory mount below `worktreePath`, nested ones included, keyed by `PathCompare.comparable`
+   * of its path: one `status -v` of the whole tree, then `svn info` and `propget svn:externals` of the
+   * mounts in argument batches. A mount not on disk, without its own `.svn`, whose name svn cannot
+   * take, or whose own node svn does not list, has no entry.
+   */
+  async mountStates(worktreePath: string): Promise<SvnResult<ReadonlyMap<string, SvnMountState>>> {
+    return this.attempt(async () => {
+      const status = SvnWorktreeManager.must(await this.run(worktreePath, ['status', '-v', '--xml', '--', '.'])).stdout
+      const mounts = (await SvnWorktreeManager.mountsOf(worktreePath, SvnWorktreeEvidence.statusRows(status, worktreePath)))
+        .filter((mount) => SvnWorktreeEvidence.takesArgument(mount))
+      const nodes = SvnWorktreeEvidence.mountNodes(status, worktreePath, mounts)
+      const present = mounts.filter((mount) => nodes.has(mount))
+      const infos: SvnInfoEntry[] = []
+      const carriers: string[] = []
+      for (const batch of SvnCommitManager.batches(present.map((mount) => `${mount}@`))) {
+        const found = SvnWorktreeEvidence.infoEntries(SvnWorktreeManager.must(await this.run(worktreePath, ['info', '--xml', '--', ...batch])).stdout)
+        if (found.length !== batch.length) throw new Error(`svn info did not identify exactly one entry per mount: ${batch.join(', ')}`)
+        infos.push(...found)
+        const properties = SvnWorktreeManager.must(await this.run(worktreePath, ['propget', 'svn:externals', '-R', '--xml', '--', ...batch])).stdout
+        carriers.push(...Object.keys(SvnExternalDefinitions.properties(properties, worktreePath)))
+      }
+      const deepest = [...present].sort((a, b) => b.split('/').length - a.split('/').length)
+      const ownerOf = (carrier: string): string | undefined => {
+        const rel = relative(worktreePath, carrier).replace(/\\/g, '/')
+        return deepest.find((mount) => rel === mount || rel.startsWith(`${mount}/`))
+      }
+      const holding = new Set(carriers.map(ownerOf))
+      return new Map(present.flatMap((mount, index) => {
+        const info = infos[index]
+        if (info.kind !== 'dir') return []
+        const path = join(worktreePath, ...mount.split('/'))
+        const own = nodes.get(mount)!
+        return [[PathCompare.comparable(path), { ...own, path, url: info.url, repository: info.repository, carrier: own.propertyChanges || holding.has(mount) }] as const]
+      }))
     })
   }
 

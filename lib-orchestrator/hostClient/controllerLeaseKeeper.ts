@@ -1,7 +1,8 @@
 import type { ControllerLeaseResult, HostOpName } from '../../app-host/app/wire/hostWire.js'
+import type { RuntimeChannel } from '../shared/configIdentity.types'
 import type { HostDebugStatus } from '../sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../shared/errorText'
-import type { HostCallResult } from './hostClient.types'
+import type { ControllerLeaseRelease, HostCallResult } from './hostClient.types'
 
 export interface ControllerLeaseKeeperDeps {
   controllerId: string
@@ -12,6 +13,7 @@ export interface ControllerLeaseKeeperDeps {
    * terminal attached without it can attach again as a writer (UA1-J09-9). A renew says nothing.
    */
   onGranted: () => void
+  onChanged?: () => void
 }
 
 /**
@@ -47,8 +49,19 @@ export class ControllerLeaseKeeper {
   private chain: Promise<void> = Promise.resolve()
   private timer: ReturnType<typeof setTimeout> | null = null
   private failureReported = false
+  private expiryTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(private readonly deps: ControllerLeaseKeeperDeps) {}
+  private releaseOutcome: ControllerLeaseRelease
+  private readonly deps: ControllerLeaseKeeperDeps
+
+  constructor(deps: ControllerLeaseKeeperDeps) {
+    this.deps = deps
+    this.releaseOutcome = 'not-held'
+  }
+
+  static controllerId(configIdentity: string, channel: RuntimeChannel): string {
+    return `jamat-client-${configIdentity}-${channel}`
+  }
 
   /**
    * Take the lease at the Host reachable now, dropping whatever an earlier Host granted. A restarted
@@ -56,8 +69,9 @@ export class ControllerLeaseKeeper {
    * mutation instead of an honest `no-lease` until this succeeds.
    */
   async start(): Promise<void> {
+    this.releaseOutcome = 'not-held'
     this.clearTimer()
-    this.grant = null
+    this.setGrant(null)
     this.generation += 1
     this.running = true
     const generation = this.generation
@@ -90,9 +104,13 @@ export class ControllerLeaseKeeper {
    */
   async stop(): Promise<void> {
     this.running = false
+    this.clearExpiryTimer()
+    this.deps.onChanged?.()
     this.clearTimer()
     await this.enqueue(() => this.releaseTask())
   }
+
+  releaseResult(): ControllerLeaseRelease { return this.releaseOutcome }
 
   /**
    * One ordered lane for every lease call. The chain swallows its own rejections so one failed task
@@ -102,6 +120,26 @@ export class ControllerLeaseKeeper {
     const run = this.chain.then(task)
     this.chain = run.then(() => undefined, () => undefined)
     return run
+  }
+
+  private setGrant(grant: ControllerLeaseResult | null): void {
+    this.clearExpiryTimer()
+    this.grant = grant
+    if (grant !== null && this.running) {
+      // A pending renew can outlive the grant; fed readers must lose authority at its deadline.
+      this.expiryTimer = setTimeout(() => {
+        this.expiryTimer = null
+        this.deps.onChanged?.()
+      }, Math.max(0, grant.expiresAt - Date.now()))
+      this.expiryTimer.unref()
+    }
+    this.deps.onChanged?.()
+  }
+
+  private clearExpiryTimer(): void {
+    if (this.expiryTimer === null) return
+    clearTimeout(this.expiryTimer)
+    this.expiryTimer = null
   }
 
   private async acquireTask(generation: number): Promise<void> {
@@ -115,13 +153,13 @@ export class ControllerLeaseKeeper {
       const fresh = this.grant?.controllerLeaseId !== result.value.controllerLeaseId
       // Recorded even when a stop is already pending: the queued release is what consumes it, and
       // the answer is the only carrier of the id the Host is holding for us.
-      this.grant = result.value
+      this.setGrant(result.value)
       this.failureReported = false
       this.schedule(generation, ControllerLeaseKeeper.renewDelay(result.value.expiresAt))
       if (fresh && this.running) this.deps.onGranted()
       return
     }
-    this.grant = null
+    this.setGrant(null)
     if (!this.running) return
     this.report(`The Host controller lease could not be taken: ${result.detail}`)
     this.schedule(generation, ControllerLeaseKeeper.retryMillisecondsConst)
@@ -137,7 +175,7 @@ export class ControllerLeaseKeeper {
     )
     if (generation !== this.generation) return
     if (renewed.ok) {
-      this.grant = renewed.value
+      this.setGrant(renewed.value)
       this.failureReported = false
       this.schedule(generation, ControllerLeaseKeeper.renewDelay(renewed.value.expiresAt))
       return
@@ -145,7 +183,7 @@ export class ControllerLeaseKeeper {
     // A refused renew means the lease is gone, not that this client stops being the writer: taking
     // it again is the whole job. Unless a stop landed while the renew was in flight, in which case
     // taking it again would hand the Host authority nobody is left to use.
-    this.grant = null
+    this.setGrant(null)
     if (!this.running) return
     await this.acquireTask(generation)
   }
@@ -153,9 +191,13 @@ export class ControllerLeaseKeeper {
   /** Whatever the Host is holding for us goes back, whichever generation asked for it. */
   private async releaseTask(): Promise<void> {
     const lease = this.grant
-    this.grant = null
+    this.setGrant(null)
     if (lease === null) return
-    await this.deps.call('controller.release', { controllerLeaseId: lease.controllerLeaseId })
+    this.releaseOutcome = 'failed'
+    const result = await this.deps.call('controller.release', { controllerLeaseId: lease.controllerLeaseId })
+    if (result.ok === true) this.releaseOutcome = 'released'
+    else if (result.ok === false) this.deps.onError('The Host controller lease release was not confirmed: ' + result.detail)
+    else throw new Error('Unknown Host controller lease release result')
   }
 
   /**

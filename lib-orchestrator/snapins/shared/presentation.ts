@@ -48,7 +48,8 @@ export class Presentation {
         this.ensured ??= this.port.ensureGroups().catch(() => false)
         const ensured = await this.ensured
         if (!guard.open(kind) || this.stopped()) return
-        const assigned = this.port.assign(attempt.sessionId, value.group)
+        const assigned = await this.port.assign(attempt.sessionId, value.group)
+        if (!guard.open(kind) || this.stopped()) return
         if (assigned !== 'missing-session') {
           missingGroup = assigned === 'missing-group' && !ensured
           const note = await this.port.setNote(attempt.sessionId, value.note)

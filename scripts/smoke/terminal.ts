@@ -1,3 +1,4 @@
+import { SmokeTerminalOwner } from './smokeTerminalOwner'
 /**
  * End-to-end proof that the terminal attach works against a real AppHost, a real PTY and the real
  * projection: a session created through the manager, attached to as a writer, the screen it was
@@ -57,6 +58,7 @@ class SmokeTerminal extends SmokeHarness {
   private readonly descriptorFile: string
   private readonly errors: string[] = []
   private readonly frames: { attachId: string; frame: TerminalFrame }[] = []
+  private readonly terminalOwner: SmokeTerminalOwner
   private readonly manager: SessionManager
   private host: ChildProcess | null = null
 
@@ -73,7 +75,12 @@ class SmokeTerminal extends SmokeHarness {
       .configIdentity
     this.descriptorFile = HostDescriptorPaths
       .descriptorFile(configIdentity, SmokeTerminal.channelConst)
+    this.terminalOwner = new SmokeTerminalOwner({ configIdentity: configIdentity, channel: SmokeTerminal.channelConst,
+      controllerId: SmokeTerminal.controllerIdConst, onError: message => this.errors.push(message),
+      activity: { userInput: marks => this.manager.terminalActivity.userInput(marks),
+        pendingInputHint: counts => this.manager.terminalActivity.pendingInputHint(counts) } })
     this.manager = new SessionManager({
+      ...this.terminalOwner.sessionDeps,
       applicationRoot: SmokeTerminal.repoRootConst,
       // A source tree: the Host starts from `app-host/start.ts`, never from a packaged bundle.
       resourcesRoot: null,
@@ -84,7 +91,6 @@ class SmokeTerminal extends SmokeHarness {
       autoStartHost: false,
       onChanged: () => {},
       onError: (message) => { this.errors.push(message) },
-      controllerId: SmokeTerminal.controllerIdConst,
       spawnImpl: ((command: string, args: readonly string[], options: SpawnOptions) => {
         const child = spawn(command, args, options)
         this.host = child
@@ -107,6 +113,7 @@ class SmokeTerminal extends SmokeHarness {
   private async execute(): Promise<void> {
     this.host = this.spawnHost()
     await this.waitForDescriptor()
+    this.terminalOwner.start()
     await this.manager.start()
     await this.waitUntil(
       () => this.manager.snapshot().host.presence === 'running',
@@ -167,19 +174,19 @@ class SmokeTerminal extends SmokeHarness {
       after.hostVersion !== null && after.hostVersion === new HostTreeVersion(SmokeTerminal.repoRootConst).current())
     this.check('the running session is automatically restored', this.sessionOf(sessionId)?.life === 'live')
     this.check('the replacement Host granted a controller lease', this.manager.debugStatus().lease.leaseId !== null)
-    this.manager.terminalDetach(SmokeTerminal.secondAttachConst)
+    this.manager.terminals.detach(SmokeTerminal.secondAttachConst)
     this.frames.length = 0
-    const attached = this.manager.terminalAttach(SmokeTerminal.restartedAttachConst, { sessionId, size: null }, {
+    const attached = (await this.manager.terminals.attach(SmokeTerminal.restartedAttachConst, { sessionId, size: null }, {
       source: 'local',
       onFrame: (frame) => { this.frames.push({ attachId: SmokeTerminal.restartedAttachConst, frame }) },
-    })
+    }))
     this.check('the reopened session accepts a fresh attach', attached.ok)
     await this.waitForFrame(SmokeTerminal.restartedAttachConst, 'terminal.snapshot',
       'the reopened terminal never sent a snapshot')
   }
 
   private async checkAttach(sessionId: string): Promise<void> {
-    const attached = this.manager.terminalAttach(SmokeTerminal.firstAttachConst, {
+    const attached = (await this.manager.terminals.attach(SmokeTerminal.firstAttachConst, {
       sessionId,
       size: { cols: 100, rows: 30 },
     }, {
@@ -187,7 +194,7 @@ class SmokeTerminal extends SmokeHarness {
       onFrame: (frame) => {
         this.frames.push({ attachId: SmokeTerminal.firstAttachConst, frame })
       },
-    })
+    }))
     this.check('the attach was accepted', attached.ok)
 
     await this.waitForFrame(SmokeTerminal.firstAttachConst, 'terminal.attached',
@@ -208,7 +215,7 @@ class SmokeTerminal extends SmokeHarness {
   }
 
   private async checkInput(): Promise<void> {
-    this.manager.terminalInput(SmokeTerminal.firstAttachConst, `echo ${SmokeTerminal.markerConst}\r`)
+    (await this.manager.terminals.input(SmokeTerminal.firstAttachConst, `echo ${SmokeTerminal.markerConst}\r`))
     await this.waitUntil(
       () => this.textOf(SmokeTerminal.firstAttachConst).includes(SmokeTerminal.markerConst),
       'what was typed never came back out',
@@ -227,7 +234,7 @@ class SmokeTerminal extends SmokeHarness {
    */
   private async checkInputPastTheWireLimit(): Promise<void> {
     const long = 'x'.repeat(SmokeTerminal.oversizedInputCharactersConst)
-    this.manager.terminalInput(SmokeTerminal.firstAttachConst,
+    await this.manager.terminals.input(SmokeTerminal.firstAttachConst,
       `echo ${long}${SmokeTerminal.longMarkerConst}\r`)
     await this.waitUntil(
       () => this.textOf(SmokeTerminal.firstAttachConst).includes(SmokeTerminal.longMarkerConst),
@@ -243,7 +250,7 @@ class SmokeTerminal extends SmokeHarness {
    * box-drawing characters, so a resize that did not move must never leave this client.
    */
   private async checkResizeIsSentOnlyWhenItMoved(): Promise<void> {
-    this.manager.terminalResize(SmokeTerminal.firstAttachConst, 120, 40)
+    await this.manager.terminals.resize(SmokeTerminal.firstAttachConst, 120, 40)
     await this.waitUntil(
       () => this.resizesOf(SmokeTerminal.firstAttachConst)
         .some((frame) => frame.cols === 120 && frame.rows === 40),
@@ -252,15 +259,15 @@ class SmokeTerminal extends SmokeHarness {
     this.check('a resize that moved reached the PTY', true)
 
     const before = this.resizesOf(SmokeTerminal.firstAttachConst).length
-    this.manager.terminalResize(SmokeTerminal.firstAttachConst, 120, 40)
+    await this.manager.terminals.resize(SmokeTerminal.firstAttachConst, 120, 40)
     await SmokeHarness.sleep(SmokeTerminal.silenceMillisecondsConst)
     this.check('a resize to the size it already had reached nothing',
       this.resizesOf(SmokeTerminal.firstAttachConst).length === before)
   }
 
   private async checkSecondAttachRebuildsFromSnapshot(sessionId: string): Promise<void> {
-    this.manager.terminalDetach(SmokeTerminal.firstAttachConst)
-    const attached = this.manager.terminalAttach(SmokeTerminal.secondAttachConst, {
+    this.manager.terminals.detach(SmokeTerminal.firstAttachConst)
+    const attached = (await this.manager.terminals.attach(SmokeTerminal.secondAttachConst, {
       sessionId,
       size: null,
     }, {
@@ -268,7 +275,7 @@ class SmokeTerminal extends SmokeHarness {
       onFrame: (frame) => {
         this.frames.push({ attachId: SmokeTerminal.secondAttachConst, frame })
       },
-    })
+    }))
     this.check('a second attach on the same session was accepted', attached.ok)
 
     await this.waitForFrame(SmokeTerminal.secondAttachConst, 'terminal.snapshot',
@@ -289,7 +296,7 @@ class SmokeTerminal extends SmokeHarness {
       'the attach never heard that the runtime had gone')
     this.check('a stopped runtime reaches the attach as an exit', true)
     // The exit is the end of that attach: nothing after it is addressed to anybody.
-    this.manager.terminalDetach(attachId)
+    this.manager.terminals.detach(attachId)
     this.check('the session ended', this.sessionOf(sessionId)?.life === 'ended')
   }
 
@@ -351,6 +358,7 @@ class SmokeTerminal extends SmokeHarness {
   /** Detach, then take the Host down with the runtimes it owns: this root is about to be deleted. */
   private async retire(): Promise<void> {
     await this.manager.stop()
+    await this.terminalOwner.stop()
     const child = this.host
     this.host = null
     if (child === null || child.exitCode !== null) return

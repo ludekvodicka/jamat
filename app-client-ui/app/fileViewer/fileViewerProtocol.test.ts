@@ -11,6 +11,9 @@ import {
   FileContentReader,
 } from '../../../lib-orchestrator/fileViewer/content/fileContentReader'
 import { FileViewerProtocol } from './fileViewerProtocol'
+import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
+import { FileViewerMediaView } from '../../../lib-orchestrator/fileViewer/fileViewerMediaView'
+import { LocalFileMediaSource } from './localFileMediaSource'
 
 const protocolMock = vi.hoisted(() => ({
   registrations: [] as unknown[],
@@ -115,5 +118,71 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
     }))).status).toBe(416)
     await writeFile(resource.path, 'changed')
     expect((await handle(new Request('jamat-v3-file://resource/token'))).status).toBe(409)
+  })
+
+  async function localProtocol() {
+    await writeFile(resource.path, Buffer.alloc(65546, 65))
+    const viewer = new FileViewer()
+    const document = await viewer.openWorkspace('owner', 'session', directory, resource.path)
+    if (!document.ok) throw new Error(document.detail)
+    const granted = await viewer.exportResource('owner', document.value.documentId)
+    if (!granted.ok) throw new Error(granted.detail)
+    const media = new FileViewerMediaView(viewer)
+    const open = vi.fn((request: Parameters<FileViewerMediaView['open']>[0]) => media.open(structuredClone(request)))
+    const cancel = vi.fn((id: string) => media.cancel(id))
+    new FileViewerProtocol(new LocalFileMediaSource({ mediaMetadata: token => media.metadata(token), mediaOpen: open, mediaCancel: cancel })).initialize()
+    if (!protocolMock.handler) throw new Error('Protocol handler was not installed')
+    return { handle: protocolMock.handler, media, open, cancel, url: `jamat-v3-file://resource/${granted.value.resourceId}` }
+  }
+
+  it('keeps HEAD and range rejection free of byte reads through the local request boundary', async () => {
+    const { handle, open, url } = await localProtocol()
+    const head = await handle(new Request(url, { method: 'HEAD', headers: { Range: 'bytes=2-5' } }))
+    expect(head.status).toBe(206)
+    expect(head.headers.get('content-range')).toBe('bytes 2-5/65546')
+    expect(head.headers.get('content-length')).toBe('4')
+    expect(await head.text()).toBe('')
+    expect((await handle(new Request(url, { headers: { Range: 'bytes=90000-' } }))).status).toBe(416)
+    expect((await handle(new Request(url, { method: 'POST' }))).status).toBe(405)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('cancels a Range read by ID within its one active chunk and drops the late reply', async () => {
+    const { handle, media, open, cancel, url } = await localProtocol()
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    open.mockImplementationOnce(async request => {
+      const answer = await media.open(structuredClone(request))
+      entered()
+      await released
+      return answer
+    })
+    const controller = new AbortController()
+    const response = await handle(new Request(url, { headers: { Range: 'bytes=0-65545' }, signal: controller.signal }))
+    expect(response.status).toBe(206)
+    expect(open).not.toHaveBeenCalled()
+    const pending = response.body!.getReader().read()
+    const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await started
+    controller.abort()
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(open.mock.calls[0]![0].requestId)
+    release()
+    await rejected
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(open.mock.calls[0]![0].length).toBe(65536)
+  })
+
+  it('ends the local stream when the content version changes between chunks', async () => {
+    const { handle, open, url } = await localProtocol()
+    const response = await handle(new Request(url))
+    const reader = response.body!.getReader()
+    const first = await reader.read()
+    expect(first.done).toBe(false)
+    expect(first.value!.length).toBe(65536)
+    await writeFile(resource.path, Buffer.alloc(65547, 66))
+    await expect(reader.read()).rejects.toThrow('Resource changed')
+    expect(open).toHaveBeenCalledTimes(2)
+    expect(open.mock.calls.map(([request]) => [request.offset, request.length])).toEqual([[0, 65536], [65536, 10]])
   })
 })

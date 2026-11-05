@@ -2,6 +2,7 @@ import { lstat } from 'node:fs/promises'
 import { dirname, relative, resolve } from 'node:path'
 import type { CommandRunner } from '../shared/commandInvoker.types'
 import { PathCompare } from '../shared/pathCompare'
+import { SvnCommitManager } from './svnCommitManager'
 import { SvnExternalDefinitions } from './svnExternalDefinitions'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 import type { SvnInfoEntry } from './svn.types'
@@ -43,20 +44,7 @@ export class SvnUpdateTargets {
       ? SvnExternalDefinitions.properties(await this.run(target.path, ['propget', 'svn:externals', '-R', '--xml', '-r', 'BASE', '--', '.']), target.path)
       : properties
     const children: SvnUpdateTarget[] = [], missing: string[] = [], mismatched: string[] = []
-    const protectedMounts: NonNullable<SvnUpdateSnapshot['protectedMounts']> = []
-    if (protect) for (const definitions of [base, properties]) for (const [carrier, value] of Object.entries(definitions))
-      for (const definition of SvnExternalDefinitions.parse(carrier, value)) {
-        if (protectedMounts.some((mount) => PathCompare.comparable(mount.path) === PathCompare.comparable(definition.path))) continue
-        const disk = await lstat(definition.path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error })
-        if (disk === null) continue
-        if (disk.isSymbolicLink()) throw new Error(`External mount is a link: ${definition.path}`)
-        const cwd = disk.isDirectory() ? definition.path : dirname(definition.path)
-        const argument = disk.isDirectory() ? '.' : `${relative(cwd, definition.path)}@`
-        const local = await this.info(cwd, argument)
-        const status = SvnWorktreeEvidence.statusRows(await this.run(cwd, ['status', '--xml', '--', argument]), cwd)
-        if (status.some((row) => row.conflict || row.kind !== 'clean' && row.kind !== 'external'))
-          protectedMounts.push({ path: definition.path, url: local.url, repository: local.repository })
-      }
+    const protectedMounts = protect ? await this.protectedOf(target.path, [base, properties]) : []
     if (!discover) return { properties, localMappingChanges: JSON.stringify(properties) !== JSON.stringify(base), children, missing, mismatched, protectedMounts }
     // One svn info per group, not per definition: each call costs a process and a server round trip.
     const carriers = Object.keys(properties)
@@ -112,6 +100,35 @@ export class SvnUpdateTargets {
       if (!SvnWorktreeEvidence.registeredFileExternal(status)) throw new Error(`SVN lost file-external registration: ${target.path}`)
     }
     else if (target.kind !== 'dir') throw new Error(`Unknown update target kind: ${JSON.stringify(target.kind satisfies never)}`)
+  }
+
+  /**
+   * The mounts that hold a local change, once each, in the order the definitions name them: every
+   * mount defined at BASE or in the working copy that is on disk, read by `status` and `info` in
+   * argument batches from `root`, never two reads per mount.
+   */
+  private async protectedOf(root: string, definitions: readonly Record<string, string>[]): Promise<NonNullable<SvnUpdateSnapshot['protectedMounts']>> {
+    const mounts: string[] = []
+    for (const [carrier, value] of definitions.flatMap((properties) => Object.entries(properties)))
+      for (const definition of SvnExternalDefinitions.parse(carrier, value)) {
+        if (mounts.some((mount) => PathCompare.comparable(mount) === PathCompare.comparable(definition.path))) continue
+        const disk = await lstat(definition.path).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error })
+        if (disk === null) continue
+        if (disk.isSymbolicLink()) throw new Error(`External mount is a link: ${definition.path}`)
+        mounts.push(definition.path)
+      }
+    const own = (mount: string): string => relative(root, mount).replace(/\\/g, '/')
+    const changed: string[] = []
+    const infos: SvnInfoEntry[] = []
+    for (const batch of SvnCommitManager.batches(mounts.map((mount) => `${own(mount)}@`))) {
+      changed.push(...SvnWorktreeEvidence.statusRows(await this.run(root, ['status', '--xml', '--', ...batch]), root)
+        .filter((row) => row.conflict || row.kind !== 'clean' && row.kind !== 'external').map((row) => row.path))
+      const found = SvnWorktreeEvidence.infoEntries(await this.run(root, ['info', '--xml', '--', ...batch]))
+      if (found.length !== batch.length) throw new Error(`svn info did not identify exactly one entry per mount: ${batch.join(', ')}`)
+      infos.push(...found)
+    }
+    return mounts.flatMap((mount, index) => changed.some((path) => path === own(mount) || path.startsWith(`${own(mount)}/`))
+      ? [{ path: mount, url: infos[index].url, repository: infos[index].repository }] : [])
   }
 
   private localInfo(target: SvnUpdateTarget): Promise<SvnInfoEntry> {

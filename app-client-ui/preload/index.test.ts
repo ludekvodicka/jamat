@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AppClientUiBridgeCallsConst,
   AppClientUiBridgeEventsConst,
+  AppClientUiChannelOwnersConst,
+  type AppClientUiIpcInvokeMap,
   type AppClientUiBridgeCallTable,
   type AppClientUiChannelsOffTheBridge,
   type AppClientUiEventsOffTheBridge,
 } from '../shared/appClientUiIpc'
-import { AppHub } from '../app/appHub'
+import { MainHub } from '../app/appHub'
 
 /**
  * The one gate over the preload. It was written when the preload WAS over a hundred hand-written bindings from
@@ -34,7 +36,8 @@ const everyEventReachesTheRendererConst:
 /** More than the widest channel takes, so a member that drops a trailing argument shows up. */
 const argumentsConst: readonly string[] = ['one', 'two', 'three', 'four', 'five']
 
-const { invoked, subscribed, rawInvoked, rawSubscribed } = vi.hoisted(() => ({
+const { invoked, subscribed, rawInvoked, rawSubscribed, owners } = vi.hoisted(() => ({
+  owners: [] as string[],
   invoked: [] as [string, unknown[]][],
   subscribed: [] as [string, unknown][],
   /** What reached `ipcRenderer` directly, past the typed wrappers: only the updater does that. */
@@ -56,6 +59,7 @@ vi.mock('electron', () => ({
 
 vi.mock('../shared/typedIpc', () => ({
   invokeAppClientUi: (channel: string, ...args: unknown[]) => {
+    owners.push('main')
     invoked.push([channel, args])
     return Promise.resolve({ ok: true, value: undefined })
   },
@@ -65,7 +69,49 @@ vi.mock('../shared/typedIpc', () => ({
   },
 }))
 
+vi.mock('./windowGateway', () => ({ WindowGateway: class {
+  invoke(channel: string, ...args: unknown[]) {
+    owners.push('gateway')
+    invoked.push([channel, args])
+    return Promise.resolve({ ok: true, value: undefined })
+  }
+  subscribe(channel: string, callback: unknown) {
+    subscribed.push([channel, callback])
+    return () => undefined
+  }
+} }))
+vi.mock('./windowOrchestrator', () => ({ WindowOrchestrator: class {
+  invoke(channel: string, ...args: unknown[]) {
+    owners.push('orchestrator')
+    invoked.push([channel, args])
+    return Promise.resolve({ ok: true, value: undefined })
+  }
+  subscribe(channel: string, callback: unknown) {
+    subscribed.push([channel, callback])
+    return () => undefined
+  }
+} }))
+
 describe('app-client-ui/preload/index', () => {
+  it('assigns all 36 remote transport channels to gateway and only the three native actions to main', () => {
+    const remote = [
+      'remote:changes-request', 'remote:changes-page', 'remote:reviews-request', 'remote:reviews-page',
+      'remote:sidebar-request', 'remote:sidebar-page', 'remote:tasks-request', 'remote:tasks-page',
+      'remote:items-open', 'remote:items-request', 'remote:items-page', 'remote:files-request', 'remote:files-page',
+      'remote:view-detail', 'remote:view-open', 'remote:view-close', 'remote:view-press', 'remote:snapshot',
+      'remote:connect', 'remote:select-session', 'remote:disconnect', 'remote:release',
+      'remote:agents-describe', 'remote:accounts-list', 'remote:projects-list', 'remote:session-command',
+      'remote:sessions-create', 'remote:sessions-reopen', 'remote:sessions-finalize', 'remote:sessions-reference',
+      'remote:terminal-attach', 'remote:terminal-input', 'remote:terminal-resize', 'remote:terminal-active',
+      'remote:terminal-detach', 'remote:terminal-clipboard-paste',
+    ]
+    expect(remote).toHaveLength(36)
+    expect(Object.entries(AppClientUiChannelOwnersConst).filter(([channel]) => channel.startsWith('remote:')).sort())
+      .toEqual([...remote, 'remote:changed', 'remote:terminal-frame'].map(channel => [channel, 'gateway']).concat(
+        ['remote:start-image-drag', 'remote:export-file', 'remote:media-resource'].map(channel => [channel, 'main'])).sort())
+    for (const channel of ['remote:start-image-drag', 'remote:export-file', 'remote:media-resource'] as const)
+      expect(AppClientUiChannelOwnersConst[channel as keyof typeof AppClientUiChannelOwnersConst] ?? 'main').toBe('main')
+  })
   /** Every leaf of the table, as the path a renderer types and the channel it should reach. */
   function membersOf(
     table: AppClientUiBridgeCallTable,
@@ -101,6 +147,7 @@ describe('app-client-ui/preload/index', () => {
     subscribed.length = 0
     rawInvoked.length = 0
     rawSubscribed.length = 0
+    owners.length = 0
   })
 
   it('states at compile time that no channel is off the bridge', () => {
@@ -176,13 +223,13 @@ describe('app-client-ui/preload/index', () => {
     expect('autoUpdate' in AppClientUiBridgeCallsConst).toBe(false)
   })
 
-  it('covers every channel the main process handles, exactly once and nothing else', async () => {
+  it('covers every channel the client handles, exactly once and nothing else', async () => {
     const bridge = await bridgeUnderTest()
     for (const [path] of membersOf(AppClientUiBridgeCallsConst)) void memberAt(bridge, path)()
 
     const reached = invoked.map(([channel]) => channel)
 
-    expect([...reached].sort()).toEqual(Object.keys(AppHub.ipcChannelsConst).sort())
+    expect([...reached].sort()).toEqual(Object.keys(MainHub.ipcChannelsConst).sort())
     expect(reached).toHaveLength(new Set(reached).size)
   })
 
@@ -196,10 +243,12 @@ describe('app-client-ui/preload/index', () => {
 
     for (const [path, channel] of membersOf(AppClientUiBridgeCallsConst)) {
       invoked.length = 0
+      owners.length = 0
 
       void memberAt(bridge, path)(...argumentsConst)
 
       expect(invoked, path.join('.')).toEqual([[channel, [...argumentsConst]]])
+      expect(owners).toEqual([AppClientUiChannelOwnersConst[channel as keyof AppClientUiIpcInvokeMap] ?? 'main'])
     }
   })
 

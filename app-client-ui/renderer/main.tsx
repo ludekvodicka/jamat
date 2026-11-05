@@ -1,3 +1,4 @@
+import { RendererPerf } from './perf/rendererPerf'
 import { createRoot } from 'react-dom/client'
 
 import './styles/tokens.css'
@@ -7,6 +8,8 @@ import { HolderShell, MainShell } from './shell/appShell'
 import { WindowInfoStore } from './shell/windowInfoStore'
 import { UiSettingsStore } from './uiSettings/uiSettingsStore'
 import { WheelSpeed } from './uiSettings/wheelSpeed'
+
+RendererPerf.current.start(batch => { void window.appClient.perf.batch(batch).catch(() => undefined) })
 
 const root = document.getElementById('root')
 if (!root)

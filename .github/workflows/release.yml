@@ -84,9 +84,13 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: app-host
 
-      - name: Install orchestrator dependencies
+      - name: Install orchestration library dependencies
         run: pnpm install --frozen-lockfile
         working-directory: lib-orchestrator
+
+      - name: Install orchestration application dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-orchestrator
 
       - name: Install client shell dependencies
         run: pnpm install --frozen-lockfile

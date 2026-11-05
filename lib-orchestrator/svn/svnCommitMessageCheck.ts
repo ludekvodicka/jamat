@@ -1,8 +1,8 @@
 export type CommitMessageSource = 'agent-proposal' | 'person-local' | 'person-remote' | 'restored-draft' | 'kept-attempt' | 'unknown'
 
 export type CommitMessageFinding = 'empty' | 'no-prefix' | 'long-first-line' | 'chat-opening' | 'markdown' | 'reused-after-keep'
-/** `confirm`: the person must tick that they checked it, because they did not write the message. */
-export interface CommitMessageFindingInfo { id: CommitMessageFinding; text: string; confirm?: true }
+/** A hint shown with the message; only `empty` stops a commit. */
+export interface CommitMessageFindingInfo { id: CommitMessageFinding; text: string }
 
 export class SvnCommitMessageCheck {
   /**
@@ -41,14 +41,12 @@ export class SvnCommitMessageCheck {
   }
 
   static info(message: string, source: CommitMessageSource): CommitMessageFindingInfo[] {
-    const confirm = !SvnCommitMessageCheck.writtenByPerson(source)
-    return SvnCommitMessageCheck.findings(message, source).map((id) => ({ id, text: SvnCommitMessageCheck.wordOf(id), ...confirm && id !== 'empty' ? { confirm: true as const } : {} }))
+    return SvnCommitMessageCheck.findings(message, source).map((id) => ({ id, text: SvnCommitMessageCheck.wordOf(id) }))
   }
 
-  /** The findings that still stop a commit: an empty message, and a finding nobody confirmed in a message the person did not write. */
-  static blocking(message: string, source: CommitMessageSource, acknowledged: readonly CommitMessageFinding[]): CommitMessageFinding[] {
-    const confirm = !SvnCommitMessageCheck.writtenByPerson(source)
-    return SvnCommitMessageCheck.findings(message, source).filter((finding) => finding === 'empty' || confirm && !acknowledged.includes(finding))
+  /** Only an empty message stops a commit; every other finding is a hint, whoever wrote the message. */
+  static blocking(message: string): CommitMessageFinding[] {
+    return SvnCommitMessageCheck.empty(message) ? ['empty'] : []
   }
 
   /** A repository's prefix is known, so a message without one gets it instead of a finding. */

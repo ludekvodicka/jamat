@@ -10,7 +10,7 @@ export class CheckExecution {
   private readonly deps: Pick<FinishDriverDeps, 'commands' | 'newId' | 'now' | 'records' | 'runs' | 'stopRun' | 'awaitExit'>
   private readonly state: Pick<FinishState, 'changedHashes' | 'write' | 'writeWithRun' | 'retainAttempt' | 'keepAttempt'>
   private readonly checks: Pick<ChecksStep, 'recordChanges' | 'complete'>
-  private readonly preparation: Pick<PreparationStep, 'begin' | 'checked' | 'refreshed' | 'refreshFailed'>
+  private readonly preparation: Pick<PreparationStep, 'begin' | 'checked' | 'withoutChecks' | 'refreshed' | 'refreshFailed'>
 
   constructor(deps: CheckExecution['deps'], state: CheckExecution['state'], checks: CheckExecution['checks'], preparation: CheckExecution['preparation']) {
     this.deps = deps
@@ -39,6 +39,13 @@ export class CheckExecution {
           execution: { ...current.execution!, runId: undefined, verdict: undefined, checkBefore: undefined, checkCursor: 0 } }))
       }
       return this.preparation.begin(sessionId)
+    }
+    // An owner without declared checks runs none: no baseline of check outputs and no third read of
+    // the assembly, which cost Mirabia 44-105 s per preparation (D15).
+    if (execution.checks.length === 0) {
+      await this.preparation.withoutChecks(sessionId)
+      await this.checks.complete(sessionId, { passed: true, logPath: '', at: this.deps.now() })
+      return true
     }
     if (execution.checkBefore === undefined) {
       await this.deps.commands.verify(root)

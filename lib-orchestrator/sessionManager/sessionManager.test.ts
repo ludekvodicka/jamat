@@ -2,14 +2,14 @@ import { AgentAccounts, type StoredAccount } from '../agentAccounts/agentAccount
 import { WorkerReady } from '../worktrees/worktreeFinish'
 import { SyncStep } from '../worktrees/worktreeFinish'
 import { FinishDriver } from '../worktrees/finish/finishDriver'
-import type { ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants, getPriority, setPriority, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type {
   RuntimeInspectResult,
@@ -24,6 +24,8 @@ import { CheckpointLayout } from '../git/checkpointLayout'
 import { GitInvoker } from '../git/gitInvoker'
 import { FakeHost } from '../hostClient/fixtures/fakeHost'
 import { HostDescriptorPaths } from '../hostClient/hostDescriptorPaths'
+import { LocalHostConnection } from '../hostClient/hostConnection'
+import { TerminalAttachSocket } from '../hostClient/terminalAttachSocket'
 import { CommandInvoker } from '../shared/commandInvoker'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
 import { SvnInvoker } from '../svn/svnInvoker'
@@ -34,14 +36,18 @@ import type { WorktreeResultRecord } from '../worktrees/worktreeResults'
 import type { SessionRecord, SessionRecordsDocument } from './records/sessionRecord.types'
 import type { SessionInfo, SessionsOpResult, WorktreeResultsFilter } from './sessionManagerApi.types'
 import { SessionLifecycle } from './lifecycle/sessionLifecycle'
+import { RunTools } from './launch/runTools'
+import { TerminalGateway, type TerminalGatewayDeps } from './terminalGateway'
 import { SessionManager, type SessionManagerDeps } from './sessionManager'
+import { SessionRecordsArchive } from './records/sessionRecordsArchive'
+import { SessionRecordsStore } from './records/sessionRecordsStore'
 import { WorkFixtures } from './workState/fixtures/workFixtures'
 import { ScreenTail } from './workState/screenTail'
 
 describe('lib-orchestrator/sessionManager/sessionManager', () => {
   const roots: string[] = []
   const hosts: FakeHost[] = []
-  const managers: SessionManager[] = []
+  const managers: Client[] = []
   let previousStateRoot: string | undefined
 
   beforeEach(() => {
@@ -77,6 +83,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
 
   interface Client {
     manager: SessionManager
+    start(): Promise<void>
+    stop(): Promise<void>
     errors: string[]
     emits: () => number
     spawns: () => number
@@ -234,14 +242,29 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       exitClock?: SessionManagerDeps['exitClock']
       transcripts?: SessionManagerDeps['transcripts']
       versioningModeOf?: SessionManagerDeps['versioningModeOf']
-      terminalSocketFactory?: SessionManagerDeps['terminalSocketFactory']
+      processPriorityOf?: SessionManagerDeps['processPriorityOf']
+      terminalSocketFactory?: TerminalGatewayDeps['socketFactory']
+      closeTerminals?: () => Promise<void>
       onRemovedItself?: SessionManagerDeps['onRemovedItself']
       onScriptCollapsed?: SessionManagerDeps['onScriptCollapsed']
     },
   ): Client {
     const errors: string[] = []
     const counters = { emits: 0, spawns: 0 }
+    const connection = new LocalHostConnection({
+      descriptorFile: HostDescriptorPaths.descriptorFile(context.configIdentity, 'development'),
+      onError: message => manager.noteHostError(message),
+    })
+    const terminals = new TerminalGateway({ descriptorOf: () => connection.descriptor(), leaseIdOf: () => connection.leaseId(),
+      socketFactory: options?.terminalSocketFactory ?? (deps => new TerminalAttachSocket(deps)),
+      onError: message => errors.push(message), activity: {
+        userInput: marks => manager.terminalActivity.userInput(marks),
+        pendingInputHint: counts => manager.terminalActivity.pendingInputHint(counts),
+      } })
+    const unsubscribe = connection.onChanged(() => { if (connection.leaseId() !== null) terminals.leaseChanged() })
     const manager = new SessionManager({
+      connection, connectionDebug: () => connection.debugView(), terminals, terminalsFeed: terminals,
+      closeTerminals: options?.closeTerminals ?? (async () => terminals.closeAll()),
       accounts: options?.accounts,
       rates: options?.rates,
       applicationRoot: join(import.meta.dirname, '..', '..'),
@@ -263,20 +286,166 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       codexHome: options?.codexHome,
       transcripts: options?.transcripts,
       versioningModeOf: options?.versioningModeOf,
-      terminalSocketFactory: options?.terminalSocketFactory,
+      processPriorityOf: options?.processPriorityOf,
       onRemovedItself: options?.onRemovedItself,
       onScriptCollapsed: options?.onScriptCollapsed,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
-    managers.push(manager)
-    return { manager, errors, emits: () => counters.emits, spawns: () => counters.spawns }
+    const client: Client = { manager, errors, emits: () => counters.emits, spawns: () => counters.spawns,
+      start: async () => { const started = manager.start(); connection.start(); await started },
+      stop: async () => { try { await manager.stop() } finally { terminals.closeAll(); unsubscribe(); await connection.stop() } },
+    }
+    managers.push(client)
+    return client
   }
 
   function valueOf<T>(result: SessionsOpResult<T>): T {
     if (!result.ok) throw new Error(`the operation was refused with ${result.code}: ${result.detail}`)
     return result.value
   }
+
+  function svnAvailable(root: string): void {
+    const original = RunTools.prototype.resolve
+    // FakeHost never executes a launch; its tool availability must not depend on the person's PATH.
+    const resolution = vi.spyOn(RunTools.prototype, 'resolve').mockImplementation(function (this: RunTools, tool) {
+      if (tool === 'svn') return { ok: true, command: join(root, 'svn-fixture.exe'), prefixArgs: [], env: {} }
+      else if (tool === 'jamat-cli') return original.call(this, tool)
+      else throw new Error(`Unexpected test tool: ${tool satisfies never}`)
+    })
+    onTestFinished(() => resolution.mockRestore())
+  }
+
+  describe('quit settlement', () => {
+    it('joins pending records startup without opening the Host or starting a late poll', async () => {
+      const context = await world(), client = clientOf(context, { autoStartHost: true })
+      const load = SessionRecordsStore.load
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const loading = vi.spyOn(SessionRecordsStore, 'load').mockImplementation(async (...args) => { await gate; return load(...args) })
+      try {
+        const starting = client.manager.start()
+        let done = false
+        const stopped = client.manager.stop().then(() => { done = true })
+        await Promise.resolve()
+        expect(done).toBe(false)
+        expect(client.manager.recordsSettled()).toBe(false)
+        release()
+        await Promise.all([starting, stopped])
+        expect(client.manager.recordsSettled()).toBe(true)
+        expect(client.spawns()).toBe(0)
+        await client.manager.start()
+        expect(client.spawns()).toBe(0)
+        expect((client.manager as unknown as { timer: unknown }).timer).toBeNull()
+      } finally { release(); loading.mockRestore() }
+    })
+
+    it('does not confirm settlement before a final detached pass writes its records', async () => {
+      const context = await world(), client = clientOf(context)
+      await client.manager.start()
+      const internals = client.manager as unknown as { records: SessionRecordsStore; detached: Set<Promise<void>> }
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      let pass!: Promise<void>
+      pass = gate.then(async () => {
+        await internals.records.put({ sessionId: 'quit-record', kind: 'shell', title: 'Saved during quit',
+          directory: { mode: 'default' }, binding: null, life: 'ended', endedAt: 2, createdAt: 1 })
+      }).finally(() => internals.detached.delete(pass))
+      internals.detached.add(pass)
+      let done = false
+      const stopped = client.manager.stop().then(() => { done = true })
+      await Promise.resolve()
+      expect(done).toBe(false)
+      expect(client.manager.recordsSettled()).toBe(false)
+      release()
+      await stopped
+      expect(client.manager.recordsSettled()).toBe(true)
+      const records = await SessionRecordsStore.load(OrchestratorPaths.sessionRecordsFile(context.configIdentity, 'development'), {
+        snapshotsDirectory: join(context.root, 'quit-snapshots'), report: message => { throw new Error(message) },
+      })
+      expect(records.get('quit-record')?.title).toBe('Saved during quit')
+    })
+
+    it('does not confirm records while the operation queue keeps replacing itself beyond the settlement rounds', async () => {
+      const context = await world(), client = clientOf(context)
+      await client.manager.start()
+      const internals = client.manager as unknown as { queue: Promise<void> }
+      const queue = internals.queue
+      Object.defineProperty(internals, 'queue', { configurable: true, get: () => Promise.resolve() })
+      try {
+        await client.manager.stop()
+        expect(client.manager.recordsSettled()).toBe(false)
+        expect(client.errors.join(' ')).toContain('stopped with work still running')
+      } finally { Object.defineProperty(internals, 'queue', { configurable: true, writable: true, value: queue }) }
+    })
+  })
+
+  it('publishes the listing Host identity even when the current descriptor names another Host', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'listed', { life: 'live', binding: { hostInstanceId: 'listed-host', generation: 1 } })])
+    context.runtimes.set('listed', runtime('listed'))
+    context.host.handle('runtime.list', () => ({ body: { hostInstanceId: 'listed-host', throughRevision: 0, sessions: [...context.runtimes.values()] } satisfies RuntimeListResult }))
+    context.publishDescriptor()
+    const publish = vi.spyOn(TerminalGateway.prototype, 'publishRefs')
+    const client = clientOf(context)
+    try {
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+      expect(publish.mock.calls.flatMap(([changes]) => changes)).toContainEqual({ sessionId: 'listed',
+        resolution: { ok: true, alive: true, ref: { hostInstanceId: 'listed-host', runtimeSessionId: 'listed', generation: 1 } } })
+      expect(client.manager.snapshot().host.hostInstanceId).toBe('fake-host-1')
+    } finally { publish.mockRestore() }
+  })
+
+  it('withholds created and replaced runtime identities until their published refs are acknowledged', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+    const publish = TerminalGateway.prototype.publishRefs
+    let acknowledge!: () => void
+    let heldGeneration = 1
+    let published: Parameters<TerminalGateway['publishRefs']>[0] = []
+    const spy = vi.spyOn(TerminalGateway.prototype, 'publishRefs').mockImplementation(async function (this: TerminalGateway, changes) {
+      if (!changes.some(change => change.resolution.ok && change.resolution.ref.generation === heldGeneration)) return publish.call(this, changes)
+      published = changes
+      await new Promise<void>(resolve => { acknowledge = resolve })
+      await publish.call(this, changes)
+    })
+    let completed = false
+    const creating = client.manager.createSession({ kind: 'shell', directory: { mode: 'default' } }).then(result => { completed = true; return result })
+    try {
+      await vi.waitFor(() => expect(published.some(change => change.resolution.ok)).toBe(true))
+      const createdId = published.find(change => change.resolution.ok)!.sessionId
+      expect(completed).toBe(false)
+      expect(sessionOf(client, createdId)).not.toHaveProperty('runtime')
+      acknowledge()
+      const created = valueOf(await creating)
+      expect(sessionOf(client, created.sessionId)?.runtime).toBe('fake-host-1:1')
+      context.host.handle('runtime.stop', body => {
+        context.runtimes.set(created.sessionId, runtime(created.sessionId, { alive: false }))
+        return { body: { servedByHostInstanceId: 'fake-host-1', target: body.target, diagnostic: 'stopped' } }
+      })
+      context.host.handle('runtime.replace', () => {
+        const session = runtime(created.sessionId, { generation: 2 })
+        context.runtimes.set(created.sessionId, session)
+        return { body: { session, hostInstanceId: 'fake-host-1' } satisfies RuntimeResult }
+      })
+      published = []
+      heldGeneration = 2
+      completed = false
+      const replacing = client.manager.restartSession(created.sessionId).then(result => { completed = true; return result })
+      await vi.waitFor(() => expect(published.some(change => change.resolution.ok && change.resolution.ref.generation === 2)).toBe(true))
+      expect(completed).toBe(false)
+      expect(sessionOf(client, created.sessionId)).not.toHaveProperty('runtime')
+      acknowledge()
+      expect(await replacing).toEqual({ ok: true, value: undefined })
+      expect(sessionOf(client, created.sessionId)?.runtime).toBe('fake-host-1:2')
+    } finally { spy.mockRestore(); acknowledge?.() }
+  })
 
   it('refuses account removal while the real session chain waits for Host create', async () => {
     const context = await world()
@@ -297,7 +466,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     writeFileSync(marker, 'unchanged')
     client = clientOf(context, { accounts })
     context.publishDescriptor()
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     const cached = client.manager.snapshot()
@@ -326,7 +495,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     const client = clientOf(context)
     context.publishDescriptor()
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     const created = valueOf(await client.manager.createCommandSession({
@@ -349,7 +518,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       recordOf(context, 'main', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })])
     const client = clientOf(context, { accounts: { exists: () => true, launchEnv: async () => ({}),
       defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), labelOf: () => 'Work subscription' } })
-    await client.manager.start()
+    await client.start()
     expect(client.manager.snapshot().sessions.find(session => session.sessionId === 'added')?.agent)
       .toMatchObject({ accountId: 'work', accountLabel: 'Work subscription' })
     expect(client.manager.snapshot().sessions.find(session => session.sessionId === 'main')?.agent).not.toHaveProperty('accountLabel')
@@ -359,7 +528,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world(false)
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const result = await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: context.categoryRoot }, worktree: { slug: 'old-host' } })
     expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('Restart the Host') })
@@ -395,7 +564,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('shell', runtime('shell'))
     context.publishDescriptor()
     const client = clientOf(context, { spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
     context.host.handle('host.stop', () => {
@@ -411,6 +580,38 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.spawns()).toBe(0)
   }, 20_000)
 
+  it('runs an agent session below normal priority and leaves a shell the person types in alone', async () => {
+    const idle = (): ChildProcess => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore' })
+    const agentProcess = idle(), shellProcess = idle()
+    try {
+      // A runner that is itself below normal (an agent's shell tool) hands that to both children.
+      for (const child of [agentProcess, shellProcess]) setPriority(child.pid!, constants.priority.PRIORITY_NORMAL)
+      expect([agentProcess, shellProcess].map((child) => getPriority(child.pid!))).toEqual([constants.priority.PRIORITY_NORMAL, constants.priority.PRIORITY_NORMAL])
+      const context = await world()
+      seedRecords(context, [
+        recordOf(context, 'claude', { kind: 'agent', life: 'live', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'claude-conversation' } }),
+        recordOf(context, 'shell', { life: 'live' }),
+      ])
+      context.runtimes.set('claude', runtime('claude', { pid: agentProcess.pid }))
+      context.runtimes.set('shell', runtime('shell', { pid: shellProcess.pid }))
+      context.publishDescriptor()
+      let level: 'below-normal' | 'normal' = 'below-normal'
+      const client = clientOf(context, { processPriorityOf: () => level })
+      await client.start()
+      await writable(client)
+
+      await vi.waitFor(() => expect(getPriority(agentProcess.pid!)).toBe(constants.priority.PRIORITY_BELOW_NORMAL))
+      expect(getPriority(shellProcess.pid!)).toBe(constants.priority.PRIORITY_NORMAL)
+      // The setting taken back reaches the live session by the next listing.
+      level = 'normal'
+      await vi.waitFor(() => expect(getPriority(agentProcess.pid!)).toBe(constants.priority.PRIORITY_NORMAL), { timeout: 10_000 })
+      expect(client.errors).toEqual([])
+    } finally {
+      agentProcess.kill()
+      shellProcess.kill()
+    }
+  }, 20_000)
+
   it('restores only runtimes alive before an explicit Host restart, using the same agent conversations', async () => {
     const context = await world()
     seedRecords(context, [
@@ -424,7 +625,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('ended', runtime('ended', { alive: false }))
     context.publishDescriptor()
     const client = clientOf(context, { spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const replacement = await replacementHost(context)
     const held = replacement.hold('controller.acquire')
@@ -457,7 +658,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     for (const id of ['bad', 'good']) context.runtimes.set(id, runtime(id))
     context.publishDescriptor()
     const client = clientOf(context, { spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const replacement = await replacementHost(context)
     const runtimes: RuntimeSessionInfo[] = []
@@ -476,6 +677,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   // The worker lived until the restart, so the restore continues its lifetime (UA1-J13-3).
   it('keeps the history and script runs of a restored worktree session in any phase, kept included', async () => {
     const context = await world()
+    svnAvailable(context.root)
     const worktreePath = join(context.root, '.worktrees', 'kept')
     mkdirSync(worktreePath, { recursive: true })
     const entry = (runId: string) => ({ runId, phase: 'after' as const, scriptId: 'checks' as const, name: 'tests', title: `tests ${runId}`,
@@ -493,7 +695,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('kept', runtime('kept'))
     context.publishDescriptor()
     const client = clientOf(context, { spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await replacementHost(context)
     expect(await client.manager.restartHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
@@ -510,6 +712,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
    */
   it('reads a worker its liveness already resumed as restored and carries what the old Host could not stop', async () => {
     const context = await world()
+    svnAvailable(context.root)
     const worktreePath = join(context.root, '.worktrees', 'w1')
     mkdirSync(worktreePath, { recursive: true })
     seedRecords(context, [recordOf(context, 'w1', {
@@ -522,7 +725,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('w1', runtime('w1'))
     context.publishDescriptor()
     const client = clientOf(context, { spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await replacementHost(context)
     const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
@@ -555,7 +758,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('s1', runtime('s1'))
     context.publishDescriptor()
     const client = clientOf(context, { codexHome: join(context.root, 'empty-codex') })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     expect(await client.manager.restartHost('fake-host-1')).toMatchObject({ ok: false, code: 'live-refused' })
     expect(context.host.calls.some((call) => call.name === 'host.stop')).toBe(false)
@@ -577,7 +780,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     for (const id of ['legacy', 'unnamed', 'shell']) context.runtimes.set(id, runtime(id))
     context.publishDescriptor()
     const client = clientOf(context, { codexHome: join(context.root, 'empty-codex') })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const result = await client.manager.restartHost('fake-host-1')
     expect(result).toMatchObject({ ok: false, code: 'live-refused' })
@@ -682,6 +885,39 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     } finally { proof.mockRestore() }
   })
 
+  it('reads mainUpdating from the live UPDATE of the result\'s session, across a client restart, until the receipt is saved', async () => {
+    const context = await world()
+    // An UPDATE no drive takes up again by itself: it waits for the person after an svn failure.
+    seedRecords(context, [recordOf(context, 'worker', { svnAction: { kind: 'update-main', actionId: 'update-1', stage: 'updating', root: context.root,
+      checks: [], checkCursor: 0, rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1_000,
+      needs: { kind: 'svn-failed', reason: 'offline', at: 2_000 } } })])
+    const result: WorktreeResultRecord = {
+      actionId: 'finish-1', action: 'finish', result: 'committed', sessionId: 'worker', title: 'worker', tag: 'run-8',
+      worktreePath: join(context.root, '.worktrees', 'worker'), mainCopy: context.root, directoryId: null, removal: 'removed',
+      revisions: [{ repository: 'https://svn.test/app', revision: 50, label: 'receipt' }],
+      lines: [], logs: [], notify: null, at: Date.now(), acknowledgedAt: null,
+    }
+    const proof = vi.spyOn(SvnWorktreeManager.prototype, 'landingProof').mockResolvedValue({ ok: true, value: { holds: false, reason: 'not updated' } })
+    const read = async (client: ReturnType<typeof clientOf>) => valueOf(await client.manager.worktreeResults({})).results
+      .map((row) => ({ actionId: row.actionId, mainUpdating: row.mainUpdating, holdsLanded: row.holdsLanded }))
+    try {
+      const client = clientOf(context)
+      await client.manager.worktreeResultsStore().put(result)
+      await client.manager.worktreeResultsStore().put({ ...result, actionId: 'finish-gone', sessionId: 'removed-before-update' })
+      expect(await read(client)).toEqual([
+        { actionId: 'finish-1', mainUpdating: true, holdsLanded: false },
+        { actionId: 'finish-gone', mainUpdating: false, holdsLanded: false },
+      ])
+      await client.stop()
+
+      const restarted = clientOf(context)
+      expect((await read(restarted))[0]).toEqual({ actionId: 'finish-1', mainUpdating: true, holdsLanded: false })
+      proof.mockResolvedValue({ ok: true, value: { holds: true } })
+      await restarted.manager.worktreeResultsStore().put({ ...result, main: { revision: 50, by: 'person', at: 3_000 } })
+      expect((await read(restarted))[0]).toEqual({ actionId: 'finish-1', mainUpdating: false, holdsLanded: true })
+    } finally { proof.mockRestore() }
+  })
+
   it.each([false, null])('retries a result proof of %s on the next read until it holds, then keeps it', async (holds) => {
     const context = await world()
     const client = clientOf(context)
@@ -711,7 +947,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('p', runtime('p'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
 
@@ -748,7 +984,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
 
@@ -787,7 +1023,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
 
@@ -926,7 +1162,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })])
     const client = clientOf(context, { codexHome })
 
-    await client.manager.start()
+    await client.start()
 
     expect(client.manager.debugStatus().reconcile.lastReason).toBe('poll')
     expect(storedRecord(context, 'codex-old')?.agent?.nativeSessionId).toBe(captured ? conversationId : undefined)
@@ -967,6 +1203,80 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(context.runtimes.size).toBe(0)
   })
 
+  describe('archived records', () => {
+    function archiveFileOf(context: World): string {
+      return SessionRecordsArchive.fileOf(recordsFileOf(context))
+    }
+
+    function seedArchive(context: World, records: SessionRecord[]): void {
+      writeFileSync(archiveFileOf(context), JSON.stringify({ schemaVersion: 1, savedAt: 1, records }), 'utf8')
+    }
+
+    it('lists archived agent sessions in history and counts their numbers, but leaves them out of the snapshot', async () => {
+      const context = await world()
+      const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+      seedRecords(context, [recordOf(context, 'active', { endedAt: 3_000 })])
+      seedArchive(context, [recordOf(context, 'archived', { kind: 'agent', directory, title: '041 - old work', endedAt: 2_000,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'old-native' } })])
+      const client = clientOf(context)
+
+      expect((await client.manager.localHistory()).map((row) => [row.nativeSessionId, row.title])).toEqual([['old-native', '041 - old work']])
+      expect(await client.manager.nextSessionNumber(directory.projectPath)).toEqual({ ok: true, value: { token: '042' } })
+      expect(client.manager.snapshot().sessions.map((session) => session.sessionId)).toEqual(['active'])
+      expect(client.manager.usageRecords().map((record) => record.nativeSessionId)).toContain('old-native')
+    })
+
+    it('moves an archived session back to the records before it reopens it', async () => {
+      const context = await world()
+      context.publishDescriptor()
+      seedRecords(context, [])
+      seedArchive(context, [recordOf(context, 'archived', { title: 'old shell', endedAt: 2_000 })])
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+
+      expect(await client.manager.reopenSession('archived')).toMatchObject({ ok: true })
+
+      expect(storedRecord(context, 'archived')?.title).toBe('old shell')
+      expect(JSON.parse(readFileSync(archiveFileOf(context), 'utf8')).records).toEqual([])
+      await vi.waitFor(() => expect(sessionOf(client, 'archived')?.life).toBe('live'), { timeout: 5_000 })
+    }, 20_000)
+
+    it('opens an archived agent session from history as the same session, back in the records', async () => {
+      const context = await world()
+      context.publishDescriptor()
+      const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+      seedRecords(context, [])
+      seedArchive(context, [recordOf(context, 'archived-agent', { kind: 'agent', directory, title: '007 - old work', endedAt: 2_000,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'old-native' } })])
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+
+      const references = valueOf(await client.manager.historyReferences(directory)).references
+      expect(references.map((reference) => reference.sessionId)).toEqual(['archived-agent'])
+      const opened = valueOf(await client.manager.openHistorySession({ directory, agentId: 'claude', nativeSessionId: 'old-native',
+        providerName: 'Provider task', providerActive: false }))
+
+      expect(opened.sessionId).toBe('archived-agent')
+      expect(storedRecord(context, 'archived-agent')?.title).toBe('007 - old work')
+      expect(JSON.parse(readFileSync(archiveFileOf(context), 'utf8')).records).toEqual([])
+    }, 20_000)
+
+    it('archives an ended session a week old on the first poll', async () => {
+      const context = await world()
+      context.publishDescriptor()
+      seedRecords(context, [recordOf(context, 'old', { endedAt: 1_000 }), recordOf(context, 'fresh', { endedAt: Date.now() })])
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+
+      await vi.waitFor(() => expect(storedRecord(context, 'old')).toBeUndefined(), { timeout: 5_000 })
+      expect(JSON.parse(readFileSync(archiveFileOf(context), 'utf8')).records.map((record: SessionRecord) => record.sessionId)).toEqual(['old'])
+      expect(client.manager.snapshot().sessions.map((session) => session.sessionId)).toEqual(['fresh'])
+    }, 20_000)
+  })
+
   it('uses persisted user input and ignores newer runtime starts and output in history', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -979,7 +1289,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'live-native', model: 'saved-model' },
     })])
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     const revision = client.manager.snapshot().revision
@@ -1014,26 +1324,55 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // bound `history-input` to its runtime. That ordering used to arrive only under a loaded full
     // suite, and failed there; held, it arrives on every run.
     const listing = context.host.hold('runtime.list')
-    await client.manager.start()
+    await client.start()
     await writable(client)
     listing.release()
     await reconciled(client)
-    expect(client.manager.terminalAttach('history-panel', { sessionId: live.runtimeSessionId, size: null }, {
+    expect((await client.manager.terminals.attach('history-panel', { sessionId: live.runtimeSessionId, size: null }, {
       source: 'local', onFrame: () => undefined,
-    })).toEqual({ ok: true })
-    client.manager.terminalInput('history-panel', '\x1b[1;2R')
+    }))).toEqual({ ok: true })
+    await client.manager.terminals.input('history-panel', '\x1b[1;2R')
     expect((await client.manager.localHistory())[0]?.lastActivity).toBeNull()
     const before = Date.now()
-    expect(client.manager.terminalInput('history-panel', 'actual prompt\r')).toEqual({ kind: 'sent' })
+    expect((await client.manager.terminals.input('history-panel', 'actual prompt\r'))).toEqual({ kind: 'sent' })
     const lastUsed = (await client.manager.localHistory())[0]?.lastActivity
     expect(lastUsed).toBeGreaterThanOrEqual(before)
-    client.manager.terminalResize('history-panel', 110, 30)
-    client.manager.terminalInput('history-panel', '\x1b[I')
+    await client.manager.terminals.resize('history-panel', 110, 30)
+    await client.manager.terminals.input('history-panel', '\x1b[I')
     expect((await client.manager.localHistory())[0]?.lastActivity).toBe(lastUsed)
-    await client.manager.stop()
+    await client.stop()
     expect(storedRecord(context, live.runtimeSessionId)?.lastUserInputAt).toBe(lastUsed)
     expect((await clientOf(context).manager.localHistory())[0]?.lastActivity).toBe(lastUsed)
     expect(client.errors).toEqual([])
+  })
+
+  it('still persists received activity when the gateway drain rejects', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    context.runtimes.set('drain-failure', runtime('drain-failure'))
+    seedRecords(context, [recordOf(context, 'drain-failure', { life: 'live',
+      binding: { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 } })])
+    const client = clientOf(context, { closeTerminals: async () => { throw new Error('gateway disconnected') } })
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+    const at = Date.now()
+    client.manager.terminalActivity.userInput([{ sessionId: 'drain-failure', at }])
+    await client.stop()
+    expect(storedRecord(context, 'drain-failure')?.lastUserInputAt).toBe(at)
+    expect(client.errors).toContain('Terminal drain failed: gateway disconnected')
+  })
+
+  it('records forwarded Host OOM diagnostics in the orchestration gate', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+    client.manager.noteHostError('Host recorded ERR_WORKER_OUT_OF_MEMORY')
+    const created = await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: context.categoryRoot } })
+    expect(created).toMatchObject({ ok: false, detail: expect.stringContaining('ERR_WORKER_OUT_OF_MEMORY') })
+    expect(client.errors).toEqual(['Host recorded ERR_WORKER_OUT_OF_MEMORY'])
   })
 
   it('reads an agent session\'s input box off the Host projection and refuses what has none', async () => {
@@ -1062,7 +1401,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     if (fixture === undefined) throw new Error('missing work fixture claude-live-composer-text.json')
     context.screens.set('composer-agent', fixture.frame.wideScreenTail)
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     // The listing keeps the runtime; only `runtime.inspect` refuses it.
@@ -1128,7 +1467,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const text = fixtureOf('claude-live-composer-text.json')
     const dialog = fixtureOf('claude-live-permission-prompt.json')
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     const views: ({ screenScrollbackRows?: number } | undefined)[] = []
@@ -1188,7 +1527,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       branch: 'https://svn.test/app', baseCommit: 'r1', setupBaseline: { at: 1, hashes: baseline.value } } })])
     const client = clientOf(context)
     try {
-      await client.manager.start()
+      await client.start()
       expect(await client.manager.setupPaths('setup', [file, join(context.root, 'outside')])).toEqual({ ok: true, value: [file] })
       properties = 'worker'
       expect(await client.manager.setupPaths('setup', [file])).toEqual({ ok: true, value: [] })
@@ -1203,7 +1542,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const inProject = valueOf(await client.manager.createSession({
@@ -1277,7 +1616,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         },
       },
     })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const created = valueOf(await client.manager.createSession({
@@ -1342,7 +1681,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     expect(await client.manager.transcriptContext('provenance')).toEqual({
       ok: true,
@@ -1381,7 +1720,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     // Taken before the create, the way the create card takes it: a title may carry a number only
@@ -1420,7 +1759,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     }))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const projectPath = join(context.categoryRoot, projectName)
     const directory = { mode: 'adHoc', path: `${projectPath.replaceAll('\\', '/')}/` } as const
@@ -1440,10 +1779,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const custom = valueOf(await client.manager.createSession({ kind: 'shell', directory, number: 'i76', title: 'Ticket' }))
     expect(custom.number).toBe('i76')
 
-    await client.manager.stop()
+    await client.stop()
     rmSync(OrchestratorPaths.sessionNumbersFile(context.configIdentity, 'development'))
     const restarted = clientOf(context)
-    await restarted.manager.start()
+    await restarted.start()
     await writable(restarted)
     const next = valueOf(await restarted.manager.createSession({ kind: 'shell', directory, title: 'Next task' }))
     expect(next.number).toBe('002')
@@ -1453,7 +1792,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     for (const path of [join(context.categoryRoot, 'Alpha', 'src'), context.categoryRoot, join(context.root, 'elsewhere')]) {
       const directory = { mode: 'adHoc', path } as const
@@ -1469,7 +1808,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const context = await world()
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await writable(client)
 
       const opened = valueOf(await client.manager.openHistorySession({
@@ -1511,7 +1850,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const created = valueOf(await client.manager.createSession({
@@ -1531,7 +1870,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const notify = { sessionId: 'parent', text: 'child moved or ended', onGroups: ['waiting', 'unknown-group'] }
     expect(await client.manager.createSession({ kind: 'agent', directory: { mode: 'default' }, notify }))
@@ -1569,7 +1908,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const watch = vi.spyOn(client.manager.sessionNotifyStore(), 'watch')
     const notify = { sessionId: 'parent', text: 'left record woke', onGroups: [] }
@@ -1597,7 +1936,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const session = valueOf(await client.manager.createSession({
@@ -1629,7 +1968,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     seedRecords(context, [recordOf(context, 's1', { color: 'chartreuse' as never, life: 'lost' })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(sessionOf(client, 's1')?.title).toBe('s1')
@@ -1645,7 +1984,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     expect(sessionOf(client, 's1')?.titleParts).toEqual({ number: '014', name: 'alpha' })
     expect(sessionOf(client, 's1')?.note).toBe('why this one exists')
@@ -1661,7 +2000,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     expect(sessionOf(client, 's1')?.callerOperationId).toBe('op-create')
     expect(sessionOf(client, 's2')).not.toHaveProperty('callerOperationId')
@@ -1689,7 +2028,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     expect(sessionOf(client, 'worktree-child')?.parent).toEqual({ sessionId: 'p', kind: 'worktree', sameProject: true })
     expect(sessionOf(client, 'other-project')?.parent).toEqual({ sessionId: 'p', kind: 'ticket', sameProject: false })
@@ -1713,7 +2052,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     seedRecords(context, [recordOf(context, 's1', { life: 'lost' })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     const refusal = await client.manager.setSessionColor('s1', 'chartreuse' as never)
     expect(refusal.ok).toBe(false)
@@ -1726,7 +2065,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     seedRecords(context, [recordOf(context, 's1', { title: '014 - alpha', life: 'lost' })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     const before = client.manager.snapshot().revision
     expect(await client.manager.setSessionDetails('s1', {
@@ -1809,7 +2148,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('shell-installing', runtime('shell-installing'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     /*
@@ -1864,7 +2203,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const info = sessionOf(client, 'approval')
@@ -1927,7 +2266,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('install', runtime('install'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(sessionOf(client, 'merging')?.admits).not.toContain('discardWorktree')
@@ -1964,7 +2303,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const install = sessionOf(client, 'install')
@@ -2010,7 +2349,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const retired = sessionOf(client, 'retired')
@@ -2056,7 +2395,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const row = sessionOf(client, 'landed')
@@ -2097,8 +2436,10 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // svn cannot read this main copy, so it waits for the person.
     expect(await client.manager.updateMain('landed', [first.sessionId], 'cli'))
       .toMatchObject({ ok: true, value: { sessionId: 'landed' } })
-    await vi.waitFor(() => expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ actionId: wait.actionId, kind: 'update-main', root: owner, needs: { kind: 'svn-failed' } }), { timeout: 10_000 })
-    expect(sessionOf(client, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', needsKind: 'svn-failed' })
+    await vi.waitFor(() => {
+      expect(storedRecord(context, 'landed')?.svnAction).toMatchObject({ actionId: wait.actionId, kind: 'update-main', root: owner, needs: { kind: 'svn-failed' } })
+      expect(sessionOf(client, 'landed')?.svnAction).toMatchObject({ kind: 'update-main', needsKind: 'svn-failed' })
+    }, { timeout: 10_000 })
 
     // A live session in the main copy has no landed row; svn decides whether its directory is a main copy.
     expect(await client.manager.updateMain(first.sessionId, [], 'cli')).toMatchObject({ ok: false, code: 'invalid-spec' })
@@ -2130,7 +2471,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const shell = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: owner }, title: 'shell' }))
     valueOf(await client.manager.updateMain('landed', undefined, 'window'))
@@ -2173,7 +2514,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     writeFileSync(join(zone, 'Tools', '.appgroup'), '{"kind":"collection"}')
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     await expect(client.manager.withinSvnWrite(zone, [], async () => {})).rejects.toThrow(/holds other projects/)
@@ -2235,7 +2576,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const removedItself: string[] = []
     const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     await vi.waitFor(() => expect(sessionOf(client, 'landed')?.retiredWorktree?.landing?.behind).toBe(1), { timeout: 15_000 })
@@ -2290,7 +2631,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(await client.manager.removeSession('clean')).toEqual({ ok: true, value: undefined })
@@ -2337,7 +2678,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       worktree: { worktreePath: clean, branch: url, baseCommit: 'r0', repositoryRoot: owner, kind: 'svn' } })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(await client.manager.removeSession('clean')).toEqual({ ok: true, value: undefined })
@@ -2371,7 +2712,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const directory = join(group, 'Member', 'src')
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const session = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: directory }, worktree: { slug: 'fix' } }))
@@ -2403,7 +2744,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     client.manager.noteCommitted({ sessionId: 'plain', scopes: [{ scopeRoot: context.root, revision: null }], paths: [] })
@@ -2441,7 +2782,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const step = { text: 'Waiting for the svn lock', detail: 'relaunch 1 of 3', progress: null, startedAt: null }
@@ -2484,7 +2825,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const list = await client.manager.conflictsOf('waiting')
@@ -2577,7 +2918,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const removedItself: string[] = []
     const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(sessionOf(client, 'svn')?.worktree?.choices).toEqual(['commit', 'keep', 'discard'])
@@ -2697,7 +3038,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     ])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const opened: { sessionId: string; parentId: string; scopeRoot: string; proposal: string }[] = []
     const proposed: { sessionId: string; directory: string; message: string }[] = []
@@ -2795,7 +3136,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const removedItself: string[] = []
     const client = clientOf(context, { onRemovedItself: (sessionId) => removedItself.push(sessionId) })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     await vi.waitFor(() => {
@@ -2835,7 +3176,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const collapsed: Parameters<NonNullable<SessionManagerDeps['onScriptCollapsed']>>[0][] = []
     const client = clientOf(context, { onScriptCollapsed: (event) => collapsed.push(event) })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     await vi.waitFor(() => expect(collapsed).toHaveLength(2), { timeout: 5_000 })
@@ -2877,7 +3218,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
       launchEnv: async () => ({}), usable: async (_agent, id) => id === 'b' } })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     expect(client.manager.accountForLaunch('switch', 'launch-a', 2000)).toEqual({ agentId: 'claude', accountId: 'a' })
@@ -2909,7 +3250,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
       launchEnv: async () => ({ CLAUDE_CONFIG_DIR: home }), usable: async () => true } })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     const identities = OrchestratorPaths.claudeIdentitiesDirectory(context.configIdentity, 'development')
@@ -2953,7 +3294,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
       launchEnv: async () => ({ CLAUDE_CONFIG_DIR: home }), usable: async () => true } })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     context.host.handle('runtime.stop', () => ({ status: 409, body: { error: 'first stop refused' } }))
@@ -3022,7 +3363,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('switch', runtime('switch', { startedAt: at }))
     context.publishDescriptor()
     client = clientOf(context, { accounts, exitClock: virtualClock().clock })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     if (failure === 'refusal') context.host.handle('runtime.stop', () => ({ status: 409, body: { error: 'fixture stop refused' } }))
@@ -3039,9 +3380,9 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect((await switched).ok).toBe(false)
     expect(context.runtimes.get('switch')?.alive).toBe(true)
     await expect(accounts.remove(a.accountId)).rejects.toThrow('a session runs on A')
-    await client.manager.stop()
+    await client.stop()
     client = clientOf(context, { accounts, exitClock: virtualClock().clock })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     await reconciled(client)
     expect(storedRecord(context, 'switch')?.agent?.accountId).toBe(b.accountId)
@@ -3064,7 +3405,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: 'a' } })])
     const client = clientOf(context, { accounts: { exists: () => true, defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
       launchEnv: async () => ({}), usable: async () => false } })
-    await client.manager.start()
+    await client.start()
     const before = storedRecord(context, 'switch')
     const restart = vi.spyOn(client.manager, 'restartSession')
     expect(await client.manager.switchAccount('switch', 'a')).toEqual({ ok: false, code: 'invalid-spec', detail: 'already on this account' })
@@ -3081,7 +3422,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const launchEnv = vi.fn(async () => { throw new Error('registered identity no longer matches') })
     const client = clientOf(context, { accounts: { exists: () => true,
       defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }), launchEnv, usable: async () => true } })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const result = await client.manager.switchAccount('switch', 'b')
     expect(result.ok).toBe(false)
@@ -3100,12 +3441,52 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const client = clientOf(context, { rates: () => [{ key: { agentId: 'claude', accountId: 'b' }, label: 'B',
       state: { kind: 'ok', fetchedAt: 1000, windows: [{ durationMinutes: 300, usedPercent, resetsAt: null }] },
       estimated: null, source: 'statusline' }] })
-    await client.manager.start()
+    await client.start()
     expect(sessionOf(client, 'a')?.agent?.accountExhausted).toBeUndefined()
     expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBe(true)
     usedPercent = 10
     client.manager.ratesChanged()
     expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBeUndefined()
+  })
+
+  it('recomposes on a rate change only when an account becomes or stops being exhausted', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'b', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', accountId: 'b' } })])
+    let usedPercent = 50
+    const client = clientOf(context, { rates: () => [{ key: { agentId: 'claude', accountId: 'b' }, label: 'B',
+      state: { kind: 'ok', fetchedAt: 1000, windows: [{ durationMinutes: 300, usedPercent, resetsAt: null }] },
+      estimated: null, source: 'statusline' }] })
+    await client.start()
+    client.manager.ratesChanged()
+    client.manager.snapshot()
+    const recompose = vi.spyOn(client.manager as unknown as { recompose: () => unknown }, 'recompose')
+    usedPercent = 60
+    client.manager.ratesChanged()
+    client.manager.snapshot()
+    expect(recompose).not.toHaveBeenCalled()
+    usedPercent = 100
+    client.manager.ratesChanged()
+    expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBe(true)
+    expect(recompose).toHaveBeenCalledTimes(1)
+  })
+
+  it('recomposes on a rate change when the label of a session account changed', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'b', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', accountId: 'b' } })])
+    let label = 'Work'
+    const client = clientOf(context, {
+      accounts: { labelOf: () => label } as unknown as SessionManagerDeps['accounts'],
+      rates: () => [{ key: { agentId: 'claude', accountId: 'b' }, label: 'B',
+        state: { kind: 'ok', fetchedAt: 1000, windows: [{ durationMinutes: 300, usedPercent: 10, resetsAt: null }] },
+        estimated: null, source: 'statusline' }] })
+    await client.start()
+    client.manager.ratesChanged()
+    expect(sessionOf(client, 'b')?.agent?.accountLabel).toBe('Work')
+
+    label = 'Renamed'
+    client.manager.ratesChanged()
+
+    expect(sessionOf(client, 'b')?.agent?.accountLabel).toBe('Renamed')
   })
 
   it('restarts a live session by stopping it, waiting for it to go, and resuming it', async () => {
@@ -3118,7 +3499,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('s1', runtime('s1'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(await client.manager.restartSession('s1')).toEqual({ ok: true, value: undefined })
@@ -3155,7 +3536,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // This test is about the precondition, not about the budget: the virtual clock keeps the
     // five seconds the second restart spends off the wall clock.
     const client = clientOf(context, { exitClock: virtualClock().clock })
-    await client.manager.start()
+    await client.start()
     const waiting = writable(client).then(() => 'writable' as const)
     await vi.waitFor(
       () => expect(client.manager.snapshot().host.presence).toBe('running'),
@@ -3196,7 +3577,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     const virtual = virtualClock()
     const client = clientOf(context, { exitClock: virtual.clock })
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const refusal = await client.manager.restartSession('s1')
@@ -3216,7 +3597,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     seedRecords(context, [recordOf(context, 's1', { life: 'lost', binding: null })])
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     expect(await client.manager.restartSession('s1')).toEqual({ ok: true, value: undefined })
@@ -3228,7 +3609,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     const refusal = await client.manager.restartSession('nobody')
     expect(refusal.ok).toBe(false)
@@ -3239,7 +3620,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const stray = runtime('stray-1', { startedAt: 4_242 })
@@ -3265,7 +3646,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await vi.waitFor(
       () => expect(client.manager.debugStatus().reconcile.lastListingOk).toBe(true),
       { timeout: 5_000 },
@@ -3287,7 +3668,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       hostInstanceId: 'fake-host-1',
       hostVersion: '0.0.0-fake',
     })
-    expect(status.clientProtocol).toEqual({ major: 1, minor: 1 })
+    expect(status.clientProtocol).toEqual({ major: 1, minor: 2 })
     // Read here by a different route than the one under test, from the file the Host's own build
     // info falls back to.
     expect(status.expectedHostVersion).toBe((JSON.parse(readFileSync(
@@ -3311,7 +3692,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const created = valueOf(await client.manager.createSession({
@@ -3365,7 +3746,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.publishDescriptor()
     context.host.setHello({ runtimes: { live: 2, dead: 1 }, eventRevision: 9 })
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
 
     const pinged = await client.manager.pingHost()
@@ -3390,7 +3771,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   it('answers a ping with the reason while no Host is there, and asks nothing of the network', async () => {
     const context = await world()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
 
     const pinged = await client.manager.pingHost()
     expect(pinged.ok).toBe(false)
@@ -3403,7 +3784,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const created = valueOf(await client.manager.createSession({
       kind: 'shell',
@@ -3444,6 +3825,56 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(client.errors).toEqual([])
   }, 20_000)
 
+  describe('coalesced recompose', () => {
+    interface Internals {
+      changed(): void
+      records: { update(sessionId: string, change: (record: SessionRecord) => SessionRecord | null): Promise<boolean> }
+    }
+
+    async function settledClient(): Promise<{ client: Client; internals: Internals; sessionId: string }> {
+      const context = await world()
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      const created = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: context.root } }))
+      client.manager.snapshot()
+      await new Promise((done) => setTimeout(done, 100))
+      return { client, internals: client.manager as unknown as Internals, sessionId: created.sessionId }
+    }
+
+    it('turns a burst of changes into one emit and one revision', async () => {
+      const { client, internals, sessionId } = await settledClient()
+      const revision = client.manager.snapshot().revision
+      const emitted = client.emits()
+      await internals.records.update(sessionId, (record) => ({ ...record, note: 'burst' }))
+
+      for (let index = 0; index < 100; index += 1) internals.changed()
+      await new Promise((done) => setTimeout(done, 100))
+
+      expect(client.emits()).toBe(emitted + 1)
+      expect(client.manager.snapshot().revision).toBe(revision + 1)
+      expect(client.manager.snapshot().sessions.find((session) => session.sessionId === sessionId)?.note).toBe('burst')
+      expect(client.emits()).toBe(emitted + 1)
+    }, 20_000)
+
+    it('answers a pull while a change is pending with the new content, and emits for it once', async () => {
+      const { client, internals, sessionId } = await settledClient()
+      const revision = client.manager.snapshot().revision
+      const emitted = client.emits()
+      await internals.records.update(sessionId, (record) => ({ ...record, note: 'pulled' }))
+
+      internals.changed()
+      const pulled = client.manager.snapshot()
+
+      expect(pulled.revision).toBe(revision + 1)
+      expect(pulled.sessions.find((session) => session.sessionId === sessionId)?.note).toBe('pulled')
+      expect(client.emits()).toBe(emitted + 1)
+      await new Promise((done) => setTimeout(done, 100))
+      expect(client.emits()).toBe(emitted + 1)
+    }, 20_000)
+  })
+
   /*
    * One poll, one listing. The work-state monitor holds no timer and cannot ask for a listing at
    * all: it is handed the one the manager already fetched, and everything it learns arrives through
@@ -3467,7 +3898,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     try {
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await vi.waitFor(() => expect(sync).toHaveBeenCalledWith('ready', 'ready'))
       expect(client.errors).toContain('Ready sync for broken: Cannot prove the complete directory hash')
       expect(sync).not.toHaveBeenCalledWith('broken', 'ready')
@@ -3493,7 +3924,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     try {
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await writable(client)
       expect(resumed).not.toHaveBeenCalled()
       idle = true
@@ -3518,7 +3949,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     try {
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await vi.waitFor(() => expect(client.errors).toContain(
         'Finishing session unsaved after its worker became idle failed: The Finish lifecycle could not be saved'), { timeout: 10_000 })
     } finally { idleness.mockRestore(); resumed.mockRestore() }
@@ -3528,7 +3959,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const created = valueOf(await client.manager.createSession({
       kind: 'agent',
@@ -3587,7 +4018,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     context.host.handle('runtime.create', () => ({
       status: 400,
@@ -3628,7 +4059,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     const created = valueOf(await client.manager.createSession({
       kind: 'shell',
@@ -3656,7 +4087,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context, { autoStartHost: false })
-    await client.manager.start()
+    await client.start()
     await writable(client)
     expect(client.spawns()).toBe(0)
     expect(client.errors).toEqual([])
@@ -3665,7 +4096,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   it('makes exactly one automatic attempt when it was', async () => {
     const context = await world()
     const client = clientOf(context, { autoStartHost: true, spawnPublishes: true })
-    await client.manager.start()
+    await client.start()
     expect(client.spawns()).toBe(1)
     expect(client.manager.snapshot().host.presence).toBe('running')
     expect(client.errors).toEqual([])
@@ -3712,7 +4143,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('live-1', runtime('live-1'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await writable(client)
     // A refused operation is still a full reconcile pass, which is what the `live-1` claim needs.
     expect(await client.manager.removeSession('never-existed')).toMatchObject({ code: 'not-found' })
@@ -3791,7 +4222,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     context.runtimes.set('setup-5', runtime('setup-5'))
     context.publishDescriptor()
     const client = clientOf(context)
-    await client.manager.start()
+    await client.start()
     await vi.waitFor(
       () => expect(sessionOf(client, 'waiting-2')?.setup)
         .toEqual({ state: 'running', setupSessionId: 'setup-5', commands: ['exit 7'] }),
@@ -3861,7 +4292,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const context = await world()
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await writable(client)
       const project = await worktreeProject(context)
 
@@ -3891,7 +4322,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       context.publishDescriptor()
       let mode: 'checkpoints' | 'git' = 'checkpoints'
       const client = clientOf(context, { versioningModeOf: () => mode })
-      await client.manager.start()
+      await client.start()
       await writable(client)
       const project = await gitProject(context)
 
@@ -3942,7 +4373,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const stopping = handleStop(context, { exits: false })
       context.publishDescriptor()
       const client = clientOf(context, { exitClock: virtualClock().clock })
-      await client.manager.start()
+      await client.start()
       await writable(client)
       const project = await gitProject(context)
       const created = valueOf(await client.manager.createSession({ kind: 'shell',
@@ -3971,7 +4402,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const stopping = handleStop(context, { exits: true })
       context.publishDescriptor()
       const client = clientOf(context)
-      await client.manager.start()
+      await client.start()
       await writable(client)
       const project = await gitProject(context)
       writeFileSync(join(project, '.worktree.json'), JSON.stringify({
@@ -4026,7 +4457,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       const context = await world()
       context.publishDescriptor()
       const client = clientOf(context, { versioningModeOf: () => 'git' })
-      await client.manager.start()
+      await client.start()
       await writable(client)
       const project = await worktreeProject(context)
 

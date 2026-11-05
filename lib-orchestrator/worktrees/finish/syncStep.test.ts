@@ -16,6 +16,7 @@ import { TerminalGateway } from '../../sessionManager/terminals/terminalGateway'
 import { SyncStep } from './syncStep'
 import { emptyUpdateTargets } from './finishTestRecords'
 import { WorktreeWords } from '../view/worktreeWords'
+import { PathCompare } from '../../shared/pathCompare'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))) })
@@ -34,16 +35,17 @@ async function harness() {
   let facts: SvnConflictFact[] = []
   const set: SvnActionConflictSet = { entries: [], readAt: 2, revision: 2, baseRevision: 1, more: 0 }
   // svn 1.14 exits 0 with postponed conflicts and names them in its summary.
-  const runner = { run: vi.fn(async () => ({ ok: true as const, output: facts.length > 0 ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'At revision 2.\n', exitCode: 0, runId: 'run' })) }
+  const runner = { run: vi.fn(async () => ({ ok: true as const, output: facts.length > 0 ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'At revision 2.\n', exitCode: 0, runId: 'run' })), note: vi.fn(async () => 'note') }
   const deps: ConstructorParameters<typeof SyncStep>[0] = {
     records, runner, commands: { lease: new WorktreeLease('self', () => []), accept: vi.fn(async () => {}), verify: vi.fn(async () => {}) },
     svn: { updateTargets: emptyUpdateTargets, headRevisionOf: vi.fn(async () => { expect(held).toBe(1); return { ok: true as const, value: 2 } }),
       revisionOf: async () => ({ ok: true, value: 1 }), conflictSet: async () => ({ ok: true, value: { revision: 2, rows: [], facts } }),
-      scheduleMissing: vi.fn(async () => ({ ok: true as const, value: undefined })), unmoved: vi.fn(async () => ({ ok: true as const, value: false })) },
+      scheduleMissing: vi.fn(async () => ({ ok: true as const, value: undefined })), unmoved: vi.fn(async () => ({ ok: true as const, value: false })),
+      mountStates: vi.fn(async () => ({ ok: true as const, value: new Map() })) },
     conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 2, paths: [] } } }),
       remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }),
       fix: async (action) => ({ kind: 'settled', action }) },
-    ready: { current: async () => ready }, busyReason: () => idle ? null : 'the worker is working', holdInput: () => { held++; return () => { held-- } }, changed: () => {},
+    ready: { current: async () => ready }, busyReason: () => idle ? null : 'the worker is working', terminals: { inhibit: async () => { held++; return { release: () => { held-- } } }, pendingInput: async () => 0 }, changed: () => {},
   }
   return { step: new SyncStep(deps), deps, records, runner, path, set, held: () => held,
     idle: (value: boolean) => { idle = value }, ready: (value: boolean) => { ready = value }, facts: (value: SvnConflictFact[]) => { facts = value } }
@@ -340,23 +342,25 @@ describe('SyncStep', () => {
     let socket!: TerminalAttachSocketDeps
     const gateway = new TerminalGateway({
       descriptorOf: () => ({ hostInstanceId: 'host' }) as HostDescriptor,
-      leaseIdOf: () => 'controller', refOf: () => ({ ok: true, ref: { hostInstanceId: 'host', runtimeSessionId: 'worker', generation: 1 }, alive: true }),
+      leaseIdOf: () => 'controller', activity: { userInput: () => {}, pendingInputHint: () => {} },
       onError: (detail) => { throw new Error(detail) },
       socketFactory: (deps) => { socket = deps; return { connect: () => {}, send: (message) => { messages.push(message) }, close: () => {} } },
     })
-    gateway.attach('view', { sessionId: 'worker', size: null }, { source: 'local', onFrame: () => {} })
+    await gateway.publishRefs([{ sessionId: 'worker', resolution: { ok: true, ref: { hostInstanceId: 'host', runtimeSessionId: 'worker', generation: 1 }, alive: true } }])
+    await gateway.attach('view', { sessionId: 'worker', size: null }, { source: 'local', onFrame: () => {} })
     socket.onFrame({ type: 'terminal.attached', writer: true, session: { runtimeSessionId: 'worker', generation: 1, alive: true,
       cols: 80, rows: 24, outputSeq: 0, outputEpoch: 1, startedAt: 0, lastOutputAt: null } })
-    h.deps.holdInput = (id) => gateway.holdInput(id)
+    h.deps.terminals = gateway
     let finishHead!: () => void
     h.deps.svn.headRevisionOf = async () => { await new Promise<void>((done) => { finishHead = done }); return { ok: true, value: 2 } }
     const sync = h.step.run('worker', 'ready')
     await vi.waitFor(() => expect(finishHead).toBeDefined())
-    expect(gateway.input('view', 'next task\r')).toEqual({ kind: 'sent' })
-    expect(gateway.pendingInput('worker')).toBe(1)
+    const queued = gateway.input('view', 'next task\r')
+    expect((await gateway.pendingInput('worker'))).toBe(1)
     expect(messages.filter((message) => message.type === 'terminal.input')).toEqual([])
     finishHead()
     expect(await sync).toMatchObject({ ok: true })
+    expect(await queued).toEqual({ kind: 'sent' })
     expect(messages.filter((message) => message.type === 'terminal.input')).toEqual([{ type: 'terminal.input', data: 'next task\r' }])
     gateway.closeAll()
   })
@@ -440,5 +444,25 @@ describe('SyncStep', () => {
     expect(await h.step.run('worker', 'finish')).toMatchObject({ ok: false, detail: expect.stringContaining('changed outside') })
     expect(h.deps.commands.accept).not.toHaveBeenCalled()
     expect(h.runner.run).not.toHaveBeenCalled()
+  })
+
+  it('updates a clean external behind its target before it hands a root conflict to the worker (D5)', async () => {
+    const h = await harness()
+    const order: string[] = []
+    const mount = { path: join(h.path, 'shared', 'app'), url: 'https://svn.test/shared/app', repository: 'https://svn.test', revision: 301, kind: 'dir' as const, pinned: false }
+    const updateTargets: typeof emptyUpdateTargets = { ...emptyUpdateTargets, snapshot: async (target, discover = true) => ({ properties: {}, localMappingChanges: false,
+      children: discover && target.path === h.path ? [mount] : [], missing: [], mismatched: [] }) }
+    h.deps.svn.mountStates = vi.fn(async () => ({ ok: true as const, value: new Map([[PathCompare.comparable(mount.path), { path: mount.path, url: mount.url,
+      repository: mount.repository, base: 300, missing: false, switched: false, skipped: false, localChanges: false, propertyChanges: false, carrier: false }]]) }))
+    h.facts([{ path: 'app.ts', kind: 'text', properties: [] } as unknown as SvnConflictFact])
+    h.deps.runner.run = vi.fn(async (_id: string, _kind: string, cwd: string) => {
+      order.push(cwd)
+      return { ok: true as const, output: cwd === h.path ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'Updated to revision 301.\n', exitCode: 0, runId: 'run' }
+    }) as unknown as typeof h.deps.runner.run
+    h.deps.handoffs = { conflicts: vi.fn(async () => { order.push('handoff') }) }
+    h.deps.conflicts.remember = async () => ({ ok: true, value: { set: { ...h.set, entries: [{ path: 'app.ts', kind: 'text', shape: 'unrecognized', state: 'agent', options: [], facts: {} }] },
+      memory: { actionId: 'sync', readAt: 2, paths: [] } } })
+    expect(await new SyncStep({ ...h.deps, svn: { ...h.deps.svn, updateTargets } }).run('worker', 'finish')).toMatchObject({ ok: true, value: { conflicts: [{ path: 'app.ts' }] } })
+    expect(order).toEqual([h.path, mount.path, 'handoff'])
   })
 })

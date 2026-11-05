@@ -176,10 +176,10 @@ export class Reconciler {
   /**
    * A script run is worth launching only while its parent still names THIS one through its gate.
    *
-   * `mintSetup` writes the install record first and arms the waiting record second,
+   * `SetupFlow.restart` (a retry) writes the run record first and arms the waiting record second,
    * which is the right order - it is what stops a waiting record ever pointing at a setup that is
-   * already condemned - but it leaves a state on disk between the two writes: an install `starting`
-   * under its own pending pair, and an owner that still names the OLD install or none at all. The
+   * already condemned - but it leaves a state on disk between the two writes: a run `starting`
+   * under its own pending pair, and an owner that still names the OLD run or none at all. The
    * general rule above reads that install as a launch that never reached the Host and runs it, so
    * `pnpm install` executes in a worktree with nobody waiting on it and nobody to judge its exit
    * code. The gate loop does not catch it either: it is asked by the PARENT, and there is no parent.

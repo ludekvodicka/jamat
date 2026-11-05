@@ -1,4 +1,5 @@
 import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
+import { SessionPromptInsert } from '../../../../lib-orchestrator/sessionManager/sessionPromptInsert'
 import { SharedSessionViews } from './sharedSessionViews'
 import type { SessionOpen } from '../../../shared/sessionViewItems'
 import { UiSettingsStore } from '../../uiSettings/uiSettingsStore'
@@ -52,7 +53,7 @@ import type { PanelFocusRegistry, PanelFocusTarget } from '../../shell/panelFocu
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import type { SessionRefreshRegistry } from '../../shell/sessionRefreshRegistry'
 import type { TerminalDraftRegistry } from '../../shell/terminalDraftRegistry'
-import type { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
+import { TerminalInputRegistry, type PromptInsertMode, type PromptInsertResult } from '../../shell/terminalInputRegistry'
 import type { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { useSessionMarked } from '../../sessions/useSessionMarked'
 import { type SessionGlyph, SessionNodeState } from '../../views/sessionsTree/sessionNodeState'
@@ -292,14 +293,33 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   // An ended session can still read as `live` until its attach goes, and nothing typed reaches it.
   const writable = state.status === 'live' && !state.ended
   const agentId = info?.agent?.agentId ?? null
-  const pasteText = useCallback((text: string): boolean => {
-    const bytes = TerminalClipboard.pasteOf(text.trim())
+  const pasteText = useCallback((text: string, preserveWhitespace = false): boolean => {
+    const bytes = TerminalClipboard.pasteOf(preserveWhitespace ? text : text.trim())
     if (bytes === null || !writable || !sendCommand(bytes)) return false
     // Reported like typed keys: the pasted note is standing in the prompt and must hold off a compact.
     onTyped(bytes)
     setTimeout(focus, 0)
     return true
   }, [focus, onTyped, sendCommand, writable])
+  // Read when the Enter goes out, not when it was scheduled: a status move inside the delay re-makes it.
+  const pressEnter = useRef((): void => {})
+  useLayoutEffect(() => {
+    pressEnter.current = () => { if (sendCommand(TerminalInputRegistry.enterConst)) onTyped(TerminalInputRegistry.enterConst) }
+  }, [onTyped, sendCommand])
+  const insertPrompt = useCallback((text: string, mode: PromptInsertMode): PromptInsertResult => {
+    const refusal = info ? SessionPromptInsert.refusal(info) : 'not-live'
+    if (refusal !== null) return { ok: false, reason: refusal }
+    if (!pasteText(text, true)) return { ok: false, reason: 'not-writable' }
+    if (!props.api.isActive) props.api.setActive()
+    // A menu closed by the same click hands the caret back to the viewer after pasteText's focus.
+    setTimeout(() => requestAnimationFrame(focus), 0)
+    switch (mode) {
+      case 'insert': break
+      case 'submit': setTimeout(() => pressEnter.current(), TerminalInputRegistry.enterDelayMillisecondsConst); break
+      default: throw new Error(`Unknown prompt insert mode: ${mode satisfies never}`)
+    }
+    return { ok: true }
+  }, [focus, info, pasteText, props.api])
   // A session row dropped from the sessions tree pastes what its "Copy unique session id" copies.
   const onSessionDragOver = useCallback((event: React.DragEvent): void => {
     if (!SessionDrag.carries(event.dataTransfer)) return
@@ -452,6 +472,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   // this session without knowing an attach id or owning one. What it registers refuses
   // by itself while the surface is not live, and the unregister retires this entry alone.
   const { inputs } = props
+  useEffect(() => {
+    switch (target.kind) {
+      case 'local': return inputs.registerPrompt(sessionId, insertPrompt)
+      case 'remote': return
+      default: throw new Error(`Unknown terminal target: ${target satisfies never}`)
+    }
+  }, [inputs, target.kind, sessionId, insertPrompt])
   useEffect(() => {
     return inputs.register(targetKey, {
       writable: () => state.status === 'live',
@@ -770,6 +797,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           {(activeItem.kind === 'file' && workspace.files === null || activeItem.kind === 'task' && workspace.tasks === null
             || activeItem.kind === 'commit' && workspace.reviews === null) && <p role="status">This pane is unavailable for this session workspace.</p>}
           {activeItem.kind === 'file' && workspace.files !== null && <FileViewerPane ports={workspace.files}
+            insertPrompt={localTools ? insertPrompt : undefined}
             key={`${activeItem.key}:${contentRevision}`}
             ref={attachFilePane}
             item={activeItem}

@@ -70,15 +70,16 @@ export class AppMenu {
   buildTemplate(): MenuItemConstructorOptions[] {
     // The cast is what `satisfies` above earns: the literal has exactly the union's keys, and
     // `Object.entries` cannot say so on its own.
-    // Tasks is no command section: its entries are the snap-ins, so it joins the bar before Tools.
-    return Object.entries(AppMenu.sectionsConst).flatMap(([section, label]) => [
-      ...(section === 'tools' ? [{ label: 'Tasks', submenu: this.tasksTailOf() }] : []),
-      { label, submenu: this.submenuOf(section as CommandMenuSection) },
-    ])
+    return Object.entries(AppMenu.sectionsConst).map(([section, label]) =>
+      ({ label, submenu: this.submenuOf(section as CommandMenuSection) }))
   }
 
-  private tasksTailOf(): MenuItemConstructorOptions[] {
-    return this.snapins.map((entry) => ({ label: entry.title, click: () => this.openSnapin(entry.kind) }))
+  /** The snap-ins are no catalog commands, so their `id` names the snap-in, not a command. */
+  private snapinTailOf(): MenuItemConstructorOptions[] {
+    if (this.snapins.length === 0)
+      return []
+    return [{ type: 'separator' }, ...this.snapins.map((entry) =>
+      ({ id: `snapin:${entry.kind}`, label: entry.title, click: () => this.openSnapin(entry.kind) }))]
   }
 
   private submenuOf(section: CommandMenuSection): MenuItemConstructorOptions[] {
@@ -95,6 +96,8 @@ export class AppMenu {
       items.push(this.itemOf(descriptor))
       previousGroup = placement.group
     }
+    if (section === 'tools')
+      items.push(...this.snapinTailOf())
     if (section === 'window')
       items.push(...this.windowTailOf())
     return items

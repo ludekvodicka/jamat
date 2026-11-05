@@ -12,6 +12,7 @@ import type {
   SvnLogAction,
   SvnLogEntry,
   SvnLoggedRow,
+  SvnMountNodes,
   SvnOwnCommitInput,
   SvnProofInput,
   SvnReceiptInput,
@@ -176,6 +177,46 @@ export class SvnWorktreeEvidence {
         || status['@_copied'] !== 'true' && (item === 'normal' || item === 'modified' || item === 'merged') && Number(status['@_revision']) !== revision
       return incomplete ? [SvnWorktreeEvidence.relativeTo(root, path)] : []
     })
+  }
+
+  /**
+   * What `status -v --xml` of a whole tree says about each of `mounts` (root-relative with `/`). A
+   * node belongs to the innermost mount that holds it; a mount whose own node svn does not list is
+   * left out. The BASE follows `updateProblems`: copied, added, external and file-external nodes
+   * carry none of their own.
+   */
+  static mountNodes(xml: string, root: string, mounts: readonly string[]): Map<string, SvnMountNodes> {
+    const deepest = [...mounts].sort((a, b) => b.split('/').length - a.split('/').length)
+    const ownerOf = (path: string): string | undefined => deepest.find((mount) => path === mount || path.startsWith(`${mount}/`))
+    const found = new Map<string, SvnMountNodes & { revisions: Set<number>; own: number | null }>()
+    for (const { path, status } of SvnWorktreeEvidence.statusEntries(xml)) {
+      const item = SvnWorktreeEvidence.itemOf(status['@_item'])
+      if (item === 'external') continue
+      const rel = SvnWorktreeEvidence.relativeTo(root, path)
+      const mount = ownerOf(rel)
+      if (mount === undefined) continue
+      const props = SvnWorktreeEvidence.propsOf(status['@_props'])
+      const row: SvnMountNodes & { revisions: Set<number>; own: number | null } = found.get(mount) ?? { base: 'mixed', missing: false, switched: false, skipped: false, localChanges: false, propertyChanges: false,
+        revisions: new Set<number>(), own: null }
+      const revision = status['@_revision'] === undefined || status['@_revision'] === '-1' ? null : SvnWorktreeEvidence.revisionOf(status['@_revision'])
+      if (rel === mount) row.own = revision ?? 0
+      if (status['@_copied'] !== 'true' && status['@_file-external'] !== 'true' && revision !== null
+        && (item === 'normal' || item === 'modified' || item === 'merged')) row.revisions.add(revision)
+      const conflict = item === 'conflicted' || props === 'conflicted' || status['@_tree-conflicted'] === 'true'
+      row.missing ||= item === 'missing'
+      row.switched ||= status['@_switched'] === 'true'
+      row.skipped ||= conflict || item === 'incomplete' || item === 'obstructed'
+      row.propertyChanges ||= props === 'modified' || props === 'conflicted'
+      row.localChanges ||= conflict || props === 'modified' || item !== 'normal' && item !== 'none'
+      found.set(mount, row)
+    }
+    const nodes = new Map<string, SvnMountNodes>()
+    for (const [mount, { revisions, own, ...row }] of found) {
+      if (own === null) continue
+      const below = [...found].some(([other, entry]) => other !== mount && other.startsWith(`${mount}/`) && entry.localChanges)
+      nodes.set(mount, { ...row, base: revisions.size === 1 && revisions.has(own) ? own : 'mixed', localChanges: row.localChanges || below })
+    }
+    return nodes
   }
 
   /** Whether `svn status --xml` names a file external, which `--ignore-externals` still lists. */

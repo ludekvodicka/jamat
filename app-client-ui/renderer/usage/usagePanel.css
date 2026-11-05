@@ -1,0 +1,217 @@
+/* The Usage tab. Colours and sizes come from tokens.css alone; scripts/tokensGate.test.ts fails on a raw hex. */
+.jamat-usage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  height: 100%;
+  overflow: auto;
+  padding: var(--space-4);
+  box-sizing: border-box;
+  background: var(--color-background);
+  color: var(--color-text-2);
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+}
+
+.jamat-usage h2, .jamat-usage h3 { margin: 0; color: var(--color-text-1); font-weight: 600; }
+.jamat-usage h2 { font-size: var(--fs-title); }
+.jamat-usage h3 { font-size: var(--fs-base); }
+
+/* Two agents side by side when there is room for both charts. */
+.jamat-usage__quotas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr));
+  gap: var(--space-4);
+}
+
+.jamat-usage__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-hairline);
+  border-radius: var(--radius-surface);
+}
+
+.jamat-usage__card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); }
+
+.jamat-usage__muted { color: var(--color-text-4); font-size: var(--fs-secondary); }
+.jamat-usage__strong { color: var(--color-text-1); font-weight: 600; }
+.jamat-usage__spacer { flex: 1; }
+.jamat-usage__group { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; }
+
+.jamat-usage__chip {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-warn);
+  font-size: var(--fs-chip);
+  font-weight: normal;
+}
+
+.jamat-usage__alert {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-danger);
+}
+
+.jamat-usage__empty { margin: 0; padding: var(--space-3) 0; color: var(--color-text-4); }
+
+/* Figures: a row of small cards that wraps instead of a sentence per value. */
+.jamat-usage__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: var(--space-2);
+}
+
+.jamat-usage__tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-sunken);
+  border-left: 3px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+
+.jamat-usage__tile--ok { border-left-color: var(--color-ok); }
+.jamat-usage__tile--warn { border-left-color: var(--color-warn); }
+.jamat-usage__tile--danger { border-left-color: var(--color-danger); }
+
+.jamat-usage__tile-label {
+  color: var(--color-text-4);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+.jamat-usage__tile-value {
+  color: var(--color-text-1);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jamat-usage__tile-detail {
+  color: var(--color-text-4);
+  font-size: var(--fs-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Accounts: one grid, so the quota columns line up; a row is only a group of cells. */
+.jamat-usage__accounts { display: grid; column-gap: var(--space-4); }
+.jamat-usage__account { display: contents; }
+.jamat-usage__account > * { padding: var(--space-1) 0; border-bottom: 1px solid var(--color-border-hairline); }
+
+.jamat-usage__account--off > * { opacity: .55; }
+.jamat-usage__account-name { color: var(--color-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.jamat-usage__window { display: flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; white-space: nowrap; }
+.jamat-usage__window-name { flex: 0 0 auto; color: var(--color-text-4); font-size: var(--fs-secondary); }
+.jamat-usage__window-value { min-width: 3.5ch; text-align: right; font-variant-numeric: tabular-nums; }
+
+.jamat-usage__meter {
+  flex: 0 0 64px;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--color-surface-control);
+}
+
+.jamat-usage__meter > div { height: 100%; border-radius: 3px; }
+.jamat-usage__meter--ok > div { background: var(--color-ok); }
+.jamat-usage__meter--warn > div { background: var(--color-warn); }
+.jamat-usage__meter--danger > div { background: var(--color-danger); }
+
+/* A section's controls: title first, then compact choices, then actions on the right. */
+.jamat-usage__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.jamat-usage__segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+}
+
+.jamat-usage__segmented button {
+  padding: 2px var(--space-3);
+  border: none;
+  border-right: 1px solid var(--color-border-frame);
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-3);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+}
+
+.jamat-usage__segmented button:last-child { border-right: none; }
+.jamat-usage__segmented button:hover { background: var(--color-surface-control-hover); color: var(--color-text-1); }
+.jamat-usage__segmented button[aria-pressed='true'] { background: var(--color-surface-control); color: var(--color-text-1); box-shadow: inset 0 -2px 0 var(--color-accent); }
+
+.jamat-usage__toolbar > button, .jamat-usage__toolbar > input {
+  padding: 2px var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-secondary);
+}
+
+.jamat-usage__toolbar > button { cursor: pointer; }
+.jamat-usage__toolbar > button:hover:not(:disabled) { background: var(--color-surface-control-hover); color: var(--color-text-1); }
+.jamat-usage__toolbar > button:disabled { cursor: default; opacity: .5; }
+
+.jamat-usage__graph { width: 100%; overflow: hidden; min-height: 150px; }
+
+/* Tokens: two charts, then two tables, side by side when there is room. */
+.jamat-usage__pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.jamat-usage__pair figure { margin: 0; min-width: 0; }
+.jamat-usage__pair figcaption { margin-bottom: var(--space-1); color: var(--color-text-4); font-size: var(--fs-secondary); font-weight: 600; text-transform: uppercase; }
+
+.jamat-usage__table { width: 100%; border-collapse: collapse; font-size: var(--fs-secondary); }
+.jamat-usage__table th {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-frame);
+  color: var(--color-text-4);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.jamat-usage__table td { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--color-border-hairline); }
+.jamat-usage__table tbody tr:hover { background: var(--color-surface-control-hover); }
+.jamat-usage__number { text-align: right !important; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The row's share of the largest row, drawn behind its name. */
+.jamat-usage__share {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-1);
+  background: linear-gradient(to right, var(--color-surface-control) var(--share), transparent var(--share));
+}

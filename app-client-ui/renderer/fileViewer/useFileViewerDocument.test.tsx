@@ -270,6 +270,28 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerDocument', () => {
     expect(fileViewer.release).toHaveBeenCalledWith(document.documentId)
   })
 
+  it('marks retained reload text unready until the new grant read settles', async () => {
+    const first = FileViewerDocumentHarness.document('a.md', 'first')
+    const second = { ...first, documentId: 'second' }
+    const { fileViewer } = FileViewerDocumentHarness.install(first)
+    fileViewer.restore.mockResolvedValueOnce({ ok: true, value: { ok: true, value: first } })
+      .mockResolvedValueOnce({ ok: true, value: { ok: true, value: second } })
+    const view = renderHook(() => useFileViewerDocument(first.source, undefined,
+      FileViewerDocumentHarness.changes(), FileViewerDocumentHarness.workingTree(),
+      { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }))
+    await waitFor(() => expect(view.result.current.textReady).toBe(true))
+    const previous = view.result.current.text
+    let finish!: (value: Awaited<ReturnType<typeof fileViewer.text>>) => void
+    fileViewer.text.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    act(() => view.result.current.reload())
+    await waitFor(() => expect(view.result.current.document?.documentId).toBe('second'))
+    expect(view.result.current.text).toBe(previous)
+    expect(view.result.current.textReady).toBe(false)
+    await act(async () => finish({ ok: true, value: { ok: true, kind: 'text', text: 'fresh', contentVersion: '1:1' } }))
+    expect(view.result.current.textReady).toBe(true)
+    expect(view.result.current.text).toMatchObject({ text: 'fresh' })
+  })
+
   it('invalidates the pending restore in the layout phase when its source changes', () => {
     const first = FileViewerDocumentHarness.document('a.ts')
     const second = FileViewerDocumentHarness.document('b.ts')

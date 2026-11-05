@@ -95,6 +95,7 @@ describe('remote workspace composition', () => {
     const workspace = SessionWorkspaceProviders.forTarget(target, f.remote)
     const stopWorkspace = workspace.start()
     await workspace.files!.viewer.mediaResource('document')
+    expect(workspace.files!.viewer.toggleTask).toBeUndefined()
     expect(f.openView).toHaveBeenCalledTimes(1)
     f.change()
     await waitFor(() => expect(workspace.contentRevision()).toBeGreaterThan(0))

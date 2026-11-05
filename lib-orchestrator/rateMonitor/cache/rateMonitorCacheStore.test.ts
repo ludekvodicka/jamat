@@ -44,7 +44,7 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
       },
       codex: { fetchedAt: 1_700_000_001_000, windows: [], extras: [] },
     }
-    store.save({ providers, attempts: { claude: 1_700_000_002_000, codex: 1_700_000_003_000 } })
+    await store.save({ providers, attempts: { claude: 1_700_000_002_000, codex: 1_700_000_003_000 } })
 
     expect(await store.load()).toEqual({
       providers,
@@ -57,7 +57,7 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
   it('remembers when a provider was last asked, even though it never answered', async () => {
     const file = cacheFile()
     const store = new RateMonitorCacheStore(file)
-    store.save({ providers: {}, attempts: { claude: 1_700_000_000_000 } })
+    await store.save({ providers: {}, attempts: { claude: 1_700_000_000_000 } })
 
     expect(await store.load())
       .toEqual({ providers: {}, attempts: { claude: 1_700_000_000_000 } })
@@ -88,9 +88,9 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
 
   // The write goes through a temporary file so a crash half way cannot leave a document that parses
   // into half an answer; what must not survive the rename is the temporary file itself.
-  it('creates the state directory and leaves no temporary file behind', () => {
+  it('creates the state directory and leaves no temporary file behind', async () => {
     const file = cacheFile()
-    new RateMonitorCacheStore(file).save({
+    await new RateMonitorCacheStore(file).save({
       providers: { codex: { fetchedAt: 1, windows: [], extras: [] } },
       attempts: { codex: 1 },
     })
@@ -174,8 +174,17 @@ describe('lib-orchestrator/rateMonitor/cache/rateMonitorCacheStore', () => {
       accounts: [{ key: { agentId: 'claude', accountId: 'main' }, entry, attemptAt: 7 }] })
     const content = { providers: { claude: entry }, attempts: { claude: 7 },
       accounts: [{ key: { agentId: 'claude' as const, accountId: 'other' }, entry, attemptAt: 9 }] }
-    store.save(content)
+    await store.save(content)
     expect(await store.load()).toEqual(content)
   })
 
+  it('lands two saves in the order they were made', async () => {
+    const file = cacheFile()
+    const store = new RateMonitorCacheStore(file)
+    const first = store.save({ providers: {}, attempts: { claude: 1 } })
+    const second = store.save({ providers: {}, attempts: { claude: 2 } })
+    await Promise.all([first, second, store.flush()])
+
+    expect(await store.load()).toEqual({ providers: {}, attempts: { claude: 2 } })
+  })
 })

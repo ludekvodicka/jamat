@@ -57,6 +57,45 @@ describe('lib-orchestrator/fileViewer/access/fileViewerGrantStore', () => {
     grants.putDocument({ ownerId, rootPath: 'C:/work', document: documentOf(documentId, source) })
   }
 
+  it('discards only the exact late grant, preserving grants for the same owner and source', () => {
+    const grants = store(new Clock())
+    put(grants, 'late')
+    put(grants, 'replacement')
+    const directory = grants.putDirectory({ ownerId: 'window-1', rootPath: 'C:/work', path: 'C:/work', source: sourceOf('C:/work/a.ts') })
+    const resource = grants.putResource({ ownerId: 'window-1', documentId: 'replacement', rootPath: 'C:/work',
+      path: 'C:/work/image.png', mimeType: 'image/png', size: 4, contentVersion: 'v1' })
+    grants.revokeGrant('foreign', 'late')
+    expect(grants.document('late', 'window-1').ok).toBe(true)
+    grants.revokeGrant('window-1', 'late')
+    expect(grants.document('late', 'window-1').ok).toBe(false)
+    expect(grants.document('replacement', 'window-1').ok).toBe(true)
+    expect(grants.directory(directory, 'window-1').ok).toBe(true)
+    expect(grants.resource(resource.resourceId)).not.toBeNull()
+    grants.revokeGrant('window-1', directory)
+    grants.revokeGrant('window-1', resource.resourceId)
+    expect(grants.directory(directory, 'window-1').ok).toBe(false)
+    expect(grants.resource(resource.resourceId)).toBeNull()
+    expect(grants.document('replacement', 'window-1').ok).toBe(true)
+  })
+
+  it('refreshes only the owned grant and preserves already returned descriptors', () => {
+    const grants = store(new Clock())
+    put(grants, 'one')
+    put(grants, 'two')
+    const before = grants.document('one', 'window-1')
+    if (!before.ok) throw new Error(before.detail)
+    const descriptor = before.value.document
+    grants.refreshVersion('one', 'foreign', 'forbidden')
+    expect(before.value.document.contentVersion).toBe('v1')
+    grants.refreshVersion('one', 'window-1', 'v2')
+    expect(before.value.document.contentVersion).toBe('v2')
+    expect(descriptor.contentVersion).toBe('v1')
+    expect(grants.document('two', 'window-1')).toMatchObject({ ok: true, value: { document: { contentVersion: 'v1' } } })
+    grants.revokeDocument('one', 'window-1')
+    grants.refreshVersion('one', 'window-1', 'v3')
+    expect(grants.document('one', 'window-1').ok).toBe(false)
+  })
+
   describe('the two hours a grant lasts', () => {
     it('answers while the grant is inside its window and refuses once it is past', () => {
       const clock = new Clock()

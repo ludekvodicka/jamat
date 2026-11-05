@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { PassInbox } from '../../lib-orchestrator/snapins/passInboxView'
+import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore'
+import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
+import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths'
 import { describe, expect, it } from 'vitest'
 
 import type {
@@ -34,6 +37,76 @@ import {
   type AppClientCliClientPort,
   type AppClientCliDeps,
 } from './app'
+
+describe('offline perf CLI entry', () => {
+  it('reads the selected Host-state override while both processes are stopped', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offline-host-perf-'))
+    const previous = process.env.JAMAT_V3_HOST_STATE_DIR
+    process.env.JAMAT_V3_HOST_STATE_DIR = root
+    try {
+      const identity = randomUUID()
+      const directory = HostDescriptorPaths.perfDirectory(identity, 'development')
+      await mkdir(directory, { recursive: true })
+      const at = Date.now()
+      const host = { v: 1, at, process: 'host', pid: 123,
+        build: { version: '0.1.2', inputHash: 'b'.repeat(64), builtAt: new Date(at).toISOString() },
+        kind: 'sample', elu: 0.1, loopP50: null, loopP99: null, loopMax: null, heapMb: 10 }
+      await writeFile(join(directory, `host-${new Date(at).toISOString().slice(0, 10)}.jsonl`), JSON.stringify(host) + '\n')
+      const output: string[] = []
+      const cli = new AppClientCli(['perf', 'report', '--config-identity', identity, '--channel', 'development'], {
+        env: {}, discover: () => { throw new Error('must not discover') }, write: text => output.push(text), now: () => at,
+      })
+      expect(await cli.run()).toBe(0)
+      expect(JSON.parse(output[0]!).value.samples).toEqual([host])
+    } finally {
+      if (previous === undefined) delete process.env.JAMAT_V3_HOST_STATE_DIR
+      else process.env.JAMAT_V3_HOST_STATE_DIR = previous
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+  it('rejects invalid arguments before reading config or discovering a client', async () => {
+    for (const argv of [['--unknown'], ['--since', 'yesterday'], ['--computer', 'peer']]) {
+      let reads = 0
+      const cli = new AppClientCli(['perf', 'report', ...argv], {
+        loadConfig: () => { reads++; throw new Error('must not read') },
+        discover: () => { reads++; throw new Error('must not discover') }, write: () => {},
+      })
+      expect(await cli.run()).toBe(2)
+      expect(reads).toBe(0)
+    }
+  })
+
+  it('reads a strictly selected stopped instance without network discovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'offline-perf-'))
+    const previous = process.env.JAMAT_V3_LOCAL_STATE_DIR
+    process.env.JAMAT_V3_LOCAL_STATE_DIR = root
+    try {
+      const configDir = join(root, 'config')
+      const identity = ConfigIdentityStore.loadOrCreate(configDir, 'development')
+      const directory = OrchestratorPaths.clientPerfDirectory(identity.configIdentity, 'development')
+      await mkdir(directory, { recursive: true })
+      const at = Date.now()
+      await writeFile(join(directory, `main-${new Date(at).toISOString().slice(0, 10)}.jsonl`), JSON.stringify({
+        v: 1, at, process: 'main', pid: 1, build: { version: '3.10.0', inputHash: 'a'.repeat(64), builtAt: new Date(at).toISOString() },
+        kind: 'sample', elu: 0.1, loopP50: null, loopP99: null, loopMax: null, heapMb: 10,
+      }) + '\n')
+      const output: string[] = []
+      const cli = new AppClientCli(['perf', 'report', '--since', '1h', '--config-dir', configDir, '--channel', 'development'], {
+        env: {}, discover: () => { throw new Error('must not discover') },
+        client: () => { throw new Error('must not connect') }, write: value => output.push(value), now: () => at,
+      })
+      expect(await cli.run()).toBe(0)
+      expect(JSON.parse(output[0]!)).toMatchObject({ ok: true, value: { activeHours: { main: 1 / 60 }, top: [] } })
+      const absent: string[] = []
+      expect(await new AppClientCli(['perf', 'report'], { env: {}, write: value => absent.push(value) }).run()).toBe(2)
+      expect(JSON.parse(absent[0]!).error.detail).toContain('needs --config-dir')
+    } finally {
+      if (previous === undefined) delete process.env.JAMAT_V3_LOCAL_STATE_DIR
+      else process.env.JAMAT_V3_LOCAL_STATE_DIR = previous
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('offline pass CLI entry', () => {
   it('stores without a controller and rejects unsafe passes and invalid event flags before discovery', async () => {

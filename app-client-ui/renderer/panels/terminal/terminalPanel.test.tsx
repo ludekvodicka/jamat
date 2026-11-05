@@ -82,7 +82,7 @@ vi.mock('@xterm/xterm', () => ({
     open(): void {}
     reset(): void { xtermMock.resets += 1 }
     resize(): void {}
-    write(data: string): void { xtermMock.writes.push(data) }
+    write(data: string, complete?: () => void): void { xtermMock.writes.push(data); complete?.() }
     dispose(): void {}
     focus(): void { xtermMock.focuses += 1 }
   },
@@ -114,6 +114,7 @@ class PanelApiFake {
         id: this.panelId,
         isActive: this.startsActive,
         isVisible: true,
+        setActive: () => this.activate(),
         getParameters: () => this.parameters,
         updateParameters: (next: Record<string, unknown>) => this.writeParameters(next),
         onDidParametersChange: (listener: (params: Record<string, unknown>) => void) => {
@@ -147,6 +148,10 @@ class PanelApiFake {
       containerApi: {},
       params,
     } as unknown as IDockviewPanelProps
+  }
+
+  activate(): void {
+    this.emitActive(true)
   }
 
   emitActive(isActive: boolean): void {
@@ -687,7 +692,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
   function push(frame: TerminalFrame): void {
     if (serve === null || attachId === null) throw new Error('nothing has attached yet')
-    act(() => serve?.(attachId ?? '', frame))
+    act(() => { void serve?.(attachId ?? '', frame) })
   }
 
   function noteOf(view: RenderResult): string | null {
@@ -1222,9 +1227,9 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(releasedDocuments).toContain('changed-document')
     })
 
-    it('reports a ninth sidebar file and keeps the eight existing items', async () => {
+    it('opens a ninth sidebar file beside eight existing items', async () => {
       workingTreeAnswer = { ok: true as const, value: TerminalPanelFixtures.workingTree() }
-      const items = Array.from({ length: PanelSplitParams.itemsMaxConst }, (_, index) =>
+      const items = Array.from({ length: 8 }, (_, index) =>
         TerminalPanelFixtures.splitItem(index + 1))
       const api = new PanelApiFake('terminal:full-split')
       const view = mount(api, 'session-1', {
@@ -1236,12 +1241,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
       fireEvent.click(await view.findByRole('button', { name: 'report.ts, modified' }))
 
-      expect(await view.findByText(
-        'The split already holds 8 files. Close one before opening another.',
-      ))
-        .toBeInTheDocument()
-      expect(PanelSplitParams.of(api.paramsValue()).items).toHaveLength(8)
-      expect(releasedDocuments).toContain('changed-document')
+      await waitFor(() => expect(PanelSplitParams.of(api.paramsValue()).items).toHaveLength(9))
     })
 
     it('detaches into a full tab only after that tab opens', async () => {
@@ -1493,6 +1493,81 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
   })
 
   describe('the Notes tab', () => {
+    it('inserts a gated prompt as one bracketed paste, preserves its trailing space and refocuses', async () => {
+      const snapshot = SessionsFixtures.mixed()
+      snapshot.sessions[0] = { ...snapshot.sessions[0], sessionId: 'session-1', life: 'live', agent: { agentId: 'claude' }, activity: 'idle' }
+      await withSessions(snapshot)
+      const typed = vi.spyOn(drafts, 'typed')
+      mount(new PanelApiFake('terminal:prompt-insert', true))
+      attached('session-1')
+      await settled()
+      const focuses = xtermMock.focuses
+      expect(inputs.promptTarget('session-1')?.('Question: ', 'insert')).toEqual({ ok: true })
+      const bytes = '\x1b[200~Question: \x1b[201~'
+      expect(inputCalls).toEqual([{ attachId: attachIds.at(-1), data: bytes }])
+      expect(typed).toHaveBeenCalledWith('session-1', bytes)
+      expect(drafts.composing('session-1')).toBe(true)
+      await waitFor(() => expect(xtermMock.focuses).toBeGreaterThan(focuses + 1))
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      expect(inputCalls).toHaveLength(1)
+    })
+
+    it('submits a prompt with a delayed Enter and keeps the caret in the terminal', async () => {
+      const snapshot = SessionsFixtures.mixed()
+      snapshot.sessions[0] = { ...snapshot.sessions[0], sessionId: 'session-1', life: 'live', agent: { agentId: 'codex' }, activity: 'idle' }
+      await withSessions(snapshot)
+      const typed = vi.spyOn(drafts, 'typed')
+      mount(new PanelApiFake('terminal:prompt-submit', true))
+      attached('session-1')
+      await settled()
+      const focuses = xtermMock.focuses
+      expect(inputs.promptTarget('session-1')?.('Results', 'submit')).toEqual({ ok: true })
+      expect(inputCalls).toEqual([{ attachId: attachIds.at(-1), data: '\x1b[200~Results\x1b[201~' }])
+      await waitFor(() => expect(inputCalls).toEqual([
+        { attachId: attachIds.at(-1), data: '\x1b[200~Results\x1b[201~' },
+        { attachId: attachIds.at(-1), data: '\r' },
+      ]))
+      expect(typed).toHaveBeenLastCalledWith('session-1', '\r')
+      expect(xtermMock.focuses).toBeGreaterThan(focuses + 1)
+    })
+
+    it('activates a hidden owning terminal before the deferred prompt focus', async () => {
+      const snapshot = SessionsFixtures.mixed()
+      snapshot.sessions[0] = { ...snapshot.sessions[0], sessionId: 'session-1', life: 'live', agent: { agentId: 'claude' }, activity: 'idle' }
+      await withSessions(snapshot)
+      const api = new PanelApiFake('terminal:hidden-prompt')
+      const activate = vi.spyOn(api, 'activate')
+      mount(api)
+      attached('session-1')
+      await settled()
+      const focuses = xtermMock.focuses
+      expect(inputs.promptTarget('session-1')?.('Question: ', 'insert')).toEqual({ ok: true })
+      expect(activate).toHaveBeenCalledOnce()
+      await waitFor(() => expect(xtermMock.focuses).toBeGreaterThan(focuses + 2))
+      expect(inputCalls).toEqual([{ attachId: attachIds.at(-1), data: '\x1b[200~Question: \x1b[201~' }])
+    })
+
+    it('refuses prompt insertion while the agent waits for permission', async () => {
+      const snapshot = SessionsFixtures.mixed()
+      snapshot.sessions[0] = { ...snapshot.sessions[0], sessionId: 'session-1', life: 'live', agent: { agentId: 'claude' }, activity: 'waiting' }
+      await withSessions(snapshot)
+      const api = new PanelApiFake('terminal:prompt-wait')
+      const activate = vi.spyOn(api, 'activate')
+      mount(api)
+      attached('session-1')
+      await settled()
+      expect(inputs.promptTarget('session-1')?.('Question: ', 'insert')).toEqual({ ok: false, reason: 'agent-waiting' })
+      expect(inputCalls).toEqual([])
+      expect(activate).not.toHaveBeenCalled()
+    })
+
+    it('registers no prompt target for remote terminals', async () => {
+      const registerPrompt = vi.spyOn(inputs, 'registerPrompt')
+      mountRemote(new PanelApiFake('terminal:remote-prompt'))
+      await settled()
+      expect(inputs.promptTarget('remote-session')).toBeUndefined()
+      expect(registerPrompt).not.toHaveBeenCalled()
+    })
     function sidebarAt(activeView: string): Record<string, unknown> {
       return { sidebar: { visible: true, width: 440, activeView } }
     }

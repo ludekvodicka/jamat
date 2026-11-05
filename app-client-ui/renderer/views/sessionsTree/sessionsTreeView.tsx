@@ -811,10 +811,12 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   }, [ports, remotePorts, run, retrySetup, updateMain, onCloseTerminal, onRerunTerminal, sectionLabelOf])
 
   // A confirmed action acts on the second click of the same button. Ended Finish returns through
-  // the dialog path before confirmation; live Finish and Remove remain armed.
+  // the dialog path before confirmation; live Finish, worktree Finish and Remove remain armed.
   const request = useCallback((
     node: SessionTreeNode,
     action: SessionAction,
+    /** Chosen from a tab menu, which is deliberate already; the row button arms first. */
+    chosen = false,
   ): void => {
     if (!node.interactive) return
     // A pair still out is not asked again. The library serializes operations, so the second call
@@ -822,6 +824,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     const targetKey = TerminalTargetCodec.key(node.target)
     if (inFlight.has(SessionsTreeActions.keyOf(targetKey, action))) return
     if (awaitingAsk.has(targetKey)) return
+    const armedFor = (live: boolean, endedAt: number | null): boolean => pending?.targetKey === targetKey
+      && pending.action === action && pending.live === live && pending.endedAt === endedAt
     let currentNode = node
     if (action === 'finalize') {
       const current = currentSnapshots.current
@@ -836,14 +840,28 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
         }
         if (node.target.kind === 'local' && found.info.worktree !== undefined) {
           const sessionId = node.target.sessionId
-          setPending(null)
           const asked = SessionsTreeOperation.preparesOf(found.info.worktree) ? null
             : FinalizeAsks.of(found.info, node.target, found.scope, sectionLabelOf(node.group))
           if (asked !== null) {
+            setPending(null)
             onOpenTerminal(node.target, found.info.tabTitle, 'preview')
             onFinalizeAsk(asked)
             return
           }
+          const live = SessionNodeState.isLive(found.info.life)
+          // A running SVN worktree chooses in Session actions, Commit & merge or Discard; nothing starts before.
+          if (found.info.worktree.kind === 'svn' && live) {
+            setPending(null)
+            WorkflowPortsOf.openWorkflow(sessionId)
+            return
+          }
+          // No dialog asks first and Finish starts the commit at once, so a stray click only arms it.
+          const endedAt = found.info.endedAt ?? null
+          if (!chosen && !armedFor(live, endedAt)) {
+            setPending({ targetKey, target: node.target, action, live, endedAt })
+            return
+          }
+          setPending(null)
           // The answer comes once the Finish is saved; Session actions shows its steps while they run.
           WorkflowPortsOf.openWorkflow(sessionId)
           run(SessionsTreeActions.keyOf(targetKey, action), 'Finish', async () => {
@@ -894,10 +912,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       perform(currentNode, action)
       return
     }
-    if (pending?.targetKey === targetKey
-      && pending.action === action
-      && pending.live === currentNode.live
-      && pending.endedAt === currentNode.endedAt) {
+    if (armedFor(currentNode.live, currentNode.endedAt)) {
       setPending(null)
       perform(currentNode, action)
       return
@@ -915,7 +930,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   useEffect(() => finishRequests?.subscribe((sessionId) => {
     const node = trees === null ? null : SessionsTreeChoices.sessionNodeOf(trees, TerminalTargetCodec.key({ kind: 'local', sessionId }))
     if (node === null) return false
-    request(node, 'finalize')
+    request(node, 'finalize', true)
     return true
   }), [finishRequests, trees, request])
 
@@ -2342,14 +2357,15 @@ class SessionsTreeChoices {
 
 class SessionsTreeActions {
   /**
-   * A running Finish and Remove require a second click; ended Finish opens its decision dialog.
+   * A running Finish, a worktree Finish and Remove require a second click; ended Finish without a
+   * worktree opens its decision dialog.
    */
   private static readonly confirmedConst: readonly SessionAction[] =
     ['finalize', 'remove']
 
   static confirms(node: SessionTreeNode, action: SessionAction): boolean {
     return SessionsTreeActions.confirmedConst.includes(action)
-      && (action !== 'finalize' || node.live)
+      && (action !== 'finalize' || node.live || node.badges.worktree !== null)
   }
 
   static isArmed(
@@ -2396,7 +2412,7 @@ class SessionsTreeActions {
   /** The Remove of an SVN worktree session takes the worktree too when nothing is left in it. */
   static confirmLabelOf(node: SessionTreeNode, action: SessionAction, label: string | null): string {
     if (action === 'remove' && node.badges.worktree?.kind === 'svn') return 'Remove with worktree?'
-    return `${label ?? SessionNodeState.actionLabelOf(action)}?`
+    return `${(label ?? SessionNodeState.actionLabelOf(action)).replace(/…$/, '')}?`
   }
 }
 

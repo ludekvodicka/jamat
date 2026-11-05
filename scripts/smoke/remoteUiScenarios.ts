@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
@@ -13,23 +12,24 @@ import { ConfigStore } from '../../lib-orchestrator/configStore/configStore.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remoteControlPairing.js'
 
-const requireUi = createRequire(import.meta.url)
-const { RemotePeerCredentialStore } = requireUi('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js')
-const { RemoteEndpointIdentityStore } = requireUi('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js')
-const { RemoteControlSettingsSection } = requireUi('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js')
-const { RemoteControlSettings } = requireUi('../../app-client-ui/shared/remoteControlSettings.ts') as typeof import('../../app-client-ui/shared/remoteControlSettings.js')
-const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
+import { RemotePeerCredentialStore } from '../../app-orchestrator/app/remoteControl/remotePeerCredentialStore.js'
+import { RemoteEndpointIdentityStore } from '../../app-orchestrator/app/remoteControl/remoteEndpointIdentityStore.js'
+import { RemoteControlSettingsSection } from '../../app-orchestrator/app/remoteControl/remoteControlSettingsSection.js'
+import { ClientStatePaths } from '../../lib-orchestrator/shared/clientStatePaths.js'
 
 export class WorkspaceCdp {
   private readonly socket: WebSocket
+  readonly diagnostics: string[]
   readonly responses = new Map<string, { status: number; headers: Record<string, string> }>()
   private serial = 0
   private readonly pending = new Map<number, { resolve(value: any): void; reject(reason: Error): void; timer: ReturnType<typeof setTimeout> }>()
 
   constructor(socket: WebSocket) {
     this.socket = socket
+    this.diagnostics = []
     socket.on('message', (bytes) => {
       const answer = JSON.parse(bytes.toString())
+      if (answer.method === 'Log.entryAdded') this.diagnostics.push(answer.params.entry.text)
       if (answer.method === 'Network.responseReceived') this.responses.set(answer.params.response.url, { status: answer.params.response.status, headers: answer.params.response.headers })
       const pending = this.pending.get(answer.id)
       if (!pending) return
@@ -118,15 +118,16 @@ export class RemoteUiScenarios {
     const config = ConfigStore.load(configDir, { snapshotsDirectory: join(stateRoot, 'snapshots'), report: (detail) => { throw new Error(detail) } })
     process.env.JAMAT_V3_HOST_STATE_DIR = join(stateRoot, 'host')
     const hostFile = HostDescriptorPaths.descriptorFile(configIdentity, 'development')
-    return { stateRoot, configDir, config, credentials, identity, hostFile, port: await this.port(), debugPort: await this.port() }
+    return { stateRoot, configDir, config, credentials, identity, hostFile,
+      clientStateDirectory: ClientStatePaths.directory(configIdentity, 'development'), port: await this.port(), debugPort: await this.port() }
   }
 
   static pair(source: Awaited<ReturnType<typeof RemoteUiScenarios.seed>>, controller: Awaited<ReturnType<typeof RemoteUiScenarios.seed>>): void {
     source.credentials.trustInbound(controller.identity)
-    assert(source.config.saveSection(RemoteControlSettingsSection.spec, { profiles: [], listener: {
+    assert(source.config.saveSection(RemoteControlSettingsSection.spec, { ...source.config.readSection(RemoteControlSettingsSection.spec), listener: {
       enabled: true, bindHost: '127.0.0.1', advertisedHost: '127.0.0.1', port: source.port,
     } }).ok)
-    assert(controller.config.saveSection(RemoteControlSettingsSection.spec, { ...RemoteControlSettings.defaultValue(), profiles: [
+    assert(controller.config.saveSection(RemoteControlSettingsSection.spec, { ...controller.config.readSection(RemoteControlSettingsSection.spec), profiles: [
       RemoteControlPairing.profile(RemoteControlPairing.bundle(source.identity, { host: '127.0.0.1', port: source.port })),
     ] }).ok)
   }

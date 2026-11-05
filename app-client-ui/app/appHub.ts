@@ -1,164 +1,45 @@
-import { AccountProblem } from '../../lib-orchestrator/agentAccounts/accountProblem'
-import { SessionTaskAccess } from './sessionTasks/sessionTaskAccess'
-import type { SessionViewOpenRequest } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types'
-import { SessionViewItemsStore } from './tabs/sessionViewItemsStore'
-import { RemoteContentPages } from './remoteControl/remoteContentPages'
+/// <reference path="./processes/buildIdentity.d.ts" />
+import { ElectronShellPort } from './shell/electronShellPort'
+import { TabWindowRouter } from './shell/tabWindowRouter'
+import { ServiceFileViewerShellIpc } from './shell/serviceFileViewerShellIpc'
 import { FileViewerDragExport } from './fileViewer/fileViewerDragExport'
 import { FileViewerExport } from './fileViewer/fileViewerExport'
 import { LocalFileMediaSource } from './fileViewer/localFileMediaSource'
 import { RemoteFileMediaSource } from './fileViewer/remoteFileMediaSource'
 import { RemoteContentClient } from './remoteControl/remoteContentClient'
-import type { FileViewerResourceResult } from '../../lib-orchestrator/fileViewer/fileViewerApi.types'
-import { RemoteChangesAccess } from './remoteControl/remoteChangesAccess'
-import { RemoteSidebarAccess } from './remoteControl/remoteSidebarAccess'
-import { RemoteContentAccess } from './remoteControl/remoteContentAccess'
-import { RemoteReviewAccess } from './remoteControl/remoteReviewAccess'
-import { RemoteSessionViews } from './remoteControl/remoteSessionViews'
-import { RemoteSessionActions } from './remoteControl/remoteSessionActions'
-import { CatalogSection } from '../../lib-orchestrator/projectManager/catalog/catalogSection'
 import { AppClientUiReport } from '../shared/appClientUiReport'
-import { DetectionRefusal } from './shared/detectionRefusal'
-import { randomUUID } from 'node:crypto'
-import { createRequire } from 'node:module'
-import { homedir, tmpdir } from 'node:os'
+
 import { dirname, join } from 'node:path'
-
-import { app, dialog, net, Notification, safeStorage, type WebContents } from 'electron'
-
-import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
-import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
-import { VcsStatusView } from '../../lib-orchestrator/fileChangesManager/vcsStatusView'
-import { GitCommitManager } from '../../lib-orchestrator/git/gitCommitManager'
-import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker'
-import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager'
-import type { FileChangesContext } from '../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
-import { FileViewer } from '../../lib-orchestrator/fileViewer/fileViewer'
-import { PastedFileStore } from '../../lib-orchestrator/pastedFiles/pastedFileStore'
-import { ProjectManager } from '../../lib-orchestrator/projectManager/projectManager'
-import { RateMonitor } from '../../lib-orchestrator/rateMonitor/rateMonitor'
-import { AgentCliUpdates } from '../../lib-orchestrator/agentCliUpdates/agentCliUpdates'
-import { AgentCliUpdateSources } from '../../lib-orchestrator/agentCliUpdates/agentCliUpdateSources'
-import { ServiceAgentCliUpdatesIpc } from './agentCliUpdates/serviceAgentCliUpdatesIpc'
-import { RateMonitorSources } from '../../lib-orchestrator/rateMonitor/rateMonitorSources'
-import { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteControl'
-import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry'
-import { RemoteControlPeerClient } from '../../lib-orchestrator/remoteControl/remoteControlPeerClient'
-import { RemoteControlTerminal } from '../../lib-orchestrator/remoteControl/remoteControlTerminal'
-import { SessionManager, SessionNotifier, type SessionManagerDeps } from '../../lib-orchestrator/sessionManager/sessionManager'
-import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
-import { SessionTasks } from '../../lib-orchestrator/sessionTasks/sessionTasks'
-import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
-import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
-import { SnapinsManager } from '../../lib-orchestrator/snapins/snapinsManager'
-import { BuiltInSnapins } from '../../lib-orchestrator/snapins/builtInSnapinsView'
-import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker'
-import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager'
-import { SnapinsOperations } from './snapins/snapinsOperations'
-import { SnapinsPorts } from './snapins/snapinsPorts'
-import { SnapinsSettingsSection } from './snapins/snapinsSettingsSection'
-import { TortoiseCommitDialog } from '../../lib-orchestrator/shared/tortoiseCommitDialog'
-import { type TreeRemovalListener, type TreeRemovalProgress, TreeRemoval } from '../../lib-orchestrator/shared/treeRemoval'
-import { OpenedPathsStore } from '../../lib-orchestrator/terminalDetector/register/openedPathsStore'
-import {
-  TerminalDetector,
-  type TerminalDetectorDeps,
-} from '../../lib-orchestrator/terminalDetector/terminalDetector'
-import type {
-  AppClientUiEventArgs,
-  AppClientUiIpcEventMap,
-  AppClientUiIpcInvokeMap,
-} from '../shared/appClientUiIpc'
-import { AgentModels } from '../shared/agentModels'
-import { AgentSettings, type AgentSettingsAgentId } from '../shared/agentSettings'
+import { app, net, powerMonitor, utilityProcess, MessageChannelMain, type WebContents } from 'electron'
+import clientBuild from 'virtual:jamat-client-build'
+import { ChildProcessSupervisor } from './processes/childProcessSupervisor'
+import { WindowPorts } from './processes/windowPorts'
+import { GatewayChannelsConst, OrchestratorChannelsConst } from '../shared/appClientUiIpc'
+import type { ChildProcessKind } from '../../lib-orchestrator/shared/processWire.types'
+import { ProcessCalls } from '../../lib-orchestrator/shared/processCalls'
+import { ServicePerfIpc } from './perf/servicePerfIpc'
+import { IpcServiceTransport } from './shared/ipcServiceTransport'
+import { MachineLoadSampler } from './perf/machineLoadSampler'
+import { PerfMonitor } from '../../lib-orchestrator/perfMonitor/perfMonitor'
+import { PerfNames } from '../../lib-orchestrator/perfMonitor/perfNames'
+import { PerfProfiler } from '../../lib-orchestrator/perfMonitor/perfProfiler'
+import type { AppClientUiEventArgs, AppClientUiIpcEventMap, AppClientUiIpcInvokeMap } from '../shared/appClientUiIpc'
 import { AppCommands, type CommandId } from '../shared/commands'
 import { AutoUpdateMain } from '../shared/electron/autoUpdate/main/autoUpdateMain'
 import { ErrorText } from '../shared/errorText'
 import { FileViewerProtocolUrl } from '../shared/fileViewerProtocol'
-import { TerminalTargetCodec } from '../shared/terminalTarget'
-import type { RemoteControlListenerSettings } from '../shared/remoteControlSettings'
-import { AgentSettingsSection } from './agents/agentSettingsSection'
-import { AgentSettingsOperations } from './agents/agentSettingsOperations'
-import { AgentAccounts } from '../../lib-orchestrator/agentAccounts/agentAccounts'
-import { builtInAccountProfiles } from '../../lib-orchestrator/agentAccounts/builtInAccountsView'
-import { AccountsSection } from './accounts/accountsSection'
-import { AccountsOperations } from './accounts/accountsOperations'
 import type { AppContext } from './appContext'
-import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
-import { AutolauncherManager } from './autolauncher/autolauncherManager'
-import { AutolauncherTarget } from './autolauncher/autolauncherTarget'
 import { ServiceAutolauncherIpc } from './autolauncher/serviceAutolauncherIpc'
-import { WindowsLauncherSetup } from './autolauncher/windowsLauncherSetup'
 import { ClientStatePaths } from './clientState/clientStatePaths'
-import { ReviewInteractionAccess } from './versioning/reviewInteractionAccess'
-import { VersioningReviewStore } from './versioning/versioningReviewStore'
-import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
 import { ClientStateStore } from './clientState/clientStateStore'
-import { FinishAttention, type FinishAttentionNotice } from './sessions/finishAttention'
-import { AttentionQueue } from './attention/attentionQueue'
-import { ServiceAttentionIpc } from './attention/serviceAttentionIpc'
-import { SessionMarksAttention } from './attention/sessionMarksAttention'
-import { MainCopyUpdateNotice, type MainCopyUpdateNoticeView } from './sessions/mainCopyUpdateNotice'
-import { ExternalOpener } from './terminals/externalOpener'
-import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
-import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
-import { HostPingLoop } from './debug/hostPingLoop'
+import { DebugSectionPresence } from './debug/debugSectionPresence'
 import { ServiceDebugIpc } from './debug/serviceDebugIpc'
-import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
-import { FileChangesSettingsOperations } from './fileChanges/fileChangesSettingsOperations'
-import { VersioningSettingsOperations } from './versioning/versioningSettingsOperations'
-import { ServiceVersioningCommitIpc } from './versioning/serviceVersioningCommitIpc'
-import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
-import { VersioningCommitManager } from './versioning/versioningCommitManager'
-import { VersioningWorkflowAccess } from './versioning/versioningWorkflowAccess'
-import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
-import { WorktreeSettingsOperations } from './worktrees/worktreeSettingsOperations'
-import { VersioningSettings } from '../shared/versioningSettings'
-import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
-import { WorktreeSettingsSection } from './worktrees/worktreeSettingsSection'
-import { FileChangesAccess } from './fileChanges/fileChangesAccess'
-import { ServiceFileChangesIpc } from './fileChanges/serviceFileChangesIpc'
-import { FileViewerAccess } from './fileViewer/fileViewerAccess'
-import { ServiceFileViewerIpc } from './fileViewer/serviceFileViewerIpc'
 import { FileViewerProtocol } from './fileViewer/fileViewerProtocol'
-import { TokenUsageWorker } from './tokenUsage/tokenUsageWorker'
-import { TokenUsageOperations } from './tokenUsage/tokenUsageOperations'
-import { RateMonitorOperations } from './rateMonitor/rateMonitorOperations'
-import { SessionNotifyDelivery } from './sessions/sessionNotifyDelivery'
-import { RemarkableManager } from './remarkable/remarkableManager'
-import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
-import { RemarkableSettingsSection } from './remarkable/settings/remarkableSettingsSection'
-import { RemarkableStorageSection } from './remarkable/settings/remarkableStorageSection'
-import { RemarkableCli } from './remarkable/sidecar/remarkableCli'
-import { RemarkableSidecarInstaller } from './remarkable/sidecar/remarkableSidecarInstaller'
-import { RemarkableSidecarSource } from './remarkable/sidecar/remarkableSidecarSource'
-import { RemarkableCredentialStore } from './remarkable/storage/remarkableCredentialStore'
-import { RemarkableRunStore } from './remarkable/storage/remarkableRunStore'
-import { RemoteConnectionsManager } from './remoteControl/remoteConnectionsManager'
-import { RemoteControlInboundRegistry } from './remoteControl/remoteControlInboundRegistry'
-import { RemoteSessionSnapshots } from './remoteControl/remoteSessionSnapshots'
-import { RemoteControlPairingManager } from './remoteControl/remoteControlPairingManager'
-import { RemoteControlPeerServer } from './remoteControl/remoteControlPeerServer'
-import { RemoteControlServer } from './remoteControl/remoteControlServer'
-import { RemoteControlInstanceStore } from './remoteControl/remoteControlInstanceStore'
-import { RemoteControlSettingsSection } from './remoteControl/remoteControlSettingsSection'
-import { RemoteEndpointIdentityStore } from './remoteControl/remoteEndpointIdentityStore'
-import { RemoteInboundApprovalManager } from './remoteControl/remoteInboundApprovalManager'
-import { RemotePeerCredentialStore } from './remoteControl/remotePeerCredentialStore'
-import { RemotePeerListenerManager } from './remoteControl/remotePeerListenerManager'
-import { RemoteProfileLifecycle } from './remoteControl/remoteProfileLifecycle'
+import { RemoteClipboardPaste } from './remoteControl/remoteClipboardPaste'
+import { RemoteNativeActions } from './remoteControl/remoteNativeActions'
 import { ServiceRemoteControlIpc } from './remoteControl/serviceRemoteControlIpc'
-import { ServiceRemoteSettingsIpc } from './remoteControl/serviceRemoteSettingsIpc'
-import { SessionModelOperations } from './sessionModel/sessionModelOperations'
-import { SessionTasksOperations } from './sessionTasks/sessionTasksOperations'
-import { SessionTranscriptAccess } from './sessionTranscript/sessionTranscriptAccess'
-import { ServiceControlIpc } from './remoteControl/serviceControlIpc'
-import { HistoricSessionsOperations } from './sessions/historicSessionsOperations'
-import { HistoricSessions } from './sessions/history/historicSessions'
-import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import { AppMenu } from './shell/appMenu'
 import { AppRestart } from './shell/appRestart'
-import { UsageWindow } from './shell/usageWindow'
-import { DebugWindow } from './shell/debugWindow'
 import { ServiceClipboardIpc } from './shell/serviceClipboardIpc'
 import { ServiceDialogIpc } from './shell/serviceDialogIpc'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
@@ -166,164 +47,188 @@ import { ServiceWindowsIpc } from './shell/serviceWindowsIpc'
 import { WindowIcon } from './shell/windowIcon'
 import { WorkspaceWindows } from './shell/workspaceWindows'
 import { ServiceTabsIpc } from './tabs/serviceTabsIpc'
-import { TabControlBroker } from './tabs/tabControlBroker'
-import { TabFileOpenResolver } from './tabs/tabFileOpenResolver'
 import { TabTransferBroker } from './tabs/tabTransferBroker'
 import { WorkspacePanelIndex } from './tabs/workspacePanelIndex'
 import { ServiceTerminalIpc } from './terminals/serviceTerminalIpc'
 import { ServiceTerminalMenuIpc } from './terminals/serviceTerminalMenuIpc'
-import { RemoteSessionGroups } from './sessionGroups/remoteSessionGroups'
-import { SessionGroupsOperations } from './sessionGroups/sessionGroupsOperations'
-import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
-import { UiSettingsOperations } from './uiSettings/uiSettingsOperations'
-import { UiSettingsSection } from './uiSettings/uiSettingsSection'
+import { OrchestratorApiClient } from './processes/orchestratorApiClient'
+import type { OrchestratorBootstrap, OrchestratorEvent, OrchestratorNativeApi, ShellSnapshot } from '../../lib-orchestrator/clientApi/orchestratorProcess.types'
+import type { RemoteConnectionsSnapshot } from '../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
+import { ConfigSectionsCache } from './shared/configSectionsCache'
+import { ServiceChannels } from './shared/serviceChannels'
 
-type TerminalDetectorPathHints = Awaited<ReturnType<TerminalDetectorDeps['changedPaths']>>
-
-/**
- * The one composition layer, the same lesson as `app-host/app/appHub.ts`: V2 reached its domains
- * through classes that only forwarded calls, so a new method had to be written three times before it
- * was reachable. Everything the shell owns is assembled here and exposed only to app.ts.
- */
-/** Every key of every table in the tuple, which is what an intersection of them has. */
-type MergedChannels<T extends readonly unknown[]> =
-  T extends readonly [infer Head, ...infer Rest] ? Head & MergedChannels<Rest> : unknown
-
-export class AppHub {
+export class MainHub {
   private static readonly smokeTimeoutMillisecondsConst = 60_000
   private static readonly smokePhaseTimeoutMillisecondsConst = 15_000
   private static readonly smokePollMillisecondsConst = 25
-  /** One burst of right clicks in one place, and short enough that a file just written is found. */
-  private static readonly changedPathHintTtlMillisecondsConst = 5_000
-  /**
-   * The services' channel tables, in ONE list, merged into the whole contract.
-   *
-   * Two proofs ride on it and both used to name the services separately: `satisfies` fails
-   * the compile the day the contract carries a channel no service claims, and the merge throws the
-   * day two services claim the same one - which would otherwise reach only whichever registered
-   * second, while the other silently handled nothing. The sum that proved the second was a list of
-   * `Object.keys(...).length` expressions beside this one, so a service missing from IT reported
-   * "a channel unaccounted for" about a contract that was whole.
-   */
-  static readonly ipcChannelsConst = AppHub.mergedChannelsOf([
+  static readonly ipcChannelsConst = ServiceChannels.merge([
+    OrchestratorChannelsConst,
+    ServicePerfIpc.channelsConst,
     ServiceShellIpc.channelsConst,
     ServiceWindowsIpc.channelsConst,
     ServiceDialogIpc.channelsConst,
     ServiceClipboardIpc.channelsConst,
     ServiceRemoteControlIpc.channelsConst,
-    ServiceRemoteSettingsIpc.channelsConst,
     ServiceTabsIpc.channelsConst,
     ServiceTerminalIpc.channelsConst,
+    GatewayChannelsConst,
     ServiceTerminalMenuIpc.channelsConst,
     ServiceDebugIpc.channelsConst,
-    ServiceVersioningCommitIpc.channelsConst,
     ServiceAutolauncherIpc.channelsConst,
-    ServiceFileChangesIpc.channelsConst,
-    ServiceFileViewerIpc.channelsConst,
-    ServiceRemarkableIpc.channelsConst,
-    ServiceContextCompactionIpc.channelsConst,
-    ServiceAgentCliUpdatesIpc.channelsConst,
-    ServiceAttentionIpc.channelsConst,
-    ServiceControlIpc.channelsConst,
+    ServiceFileViewerShellIpc.channelsConst,
   ] as const) satisfies Record<keyof AppClientUiIpcInvokeMap, true>
-
-  /**
-   * Which agents `agents.describe` answers about. Typed off `AgentSettingsAgentId`, so a name that
-   * is not an agent fails here; a THIRD agent added there needs this line, exactly like the pairs
-   * `AgentSettings` and `AgentModels` already branch over.
-   */
-  private static readonly describedAgentsConst: readonly AgentSettingsAgentId[] = ['claude', 'codex']
-
+  private readonly orchestrator: OrchestratorNativeApi
+  private readonly orchestratorClient: OrchestratorApiClient
+  private readonly bootstrap: Omit<OrchestratorBootstrap, 'shell'>
+  private privateChannel: MessageChannelMain | null
+  private remoteState: RemoteConnectionsSnapshot
+  private readonly configCache: ConfigSectionsCache
+  private readonly perfIpc: ServicePerfIpc
+  private readonly serviceTransport: IpcServiceTransport
+  private readonly machineLoad: MachineLoadSampler
+  private readonly perf: PerfMonitor
+  private readonly children: ChildProcessSupervisor
+  private readonly windowPorts: WindowPorts
+  private readonly gatewayCalls: ProcessCalls
+  private quitting: boolean
   private readonly store: ClientStateStore
   private readonly panelIndex: WorkspacePanelIndex
   private readonly workspaceWindows: WorkspaceWindows
   private readonly transferBroker: TabTransferBroker
-  private readonly tabControlBroker: TabControlBroker
-  private readonly debugWindow: DebugWindow
-  private readonly usageWindow: UsageWindow
-  private usageVisible = false
+  private readonly tabWindowRouter: TabWindowRouter
+  private readonly shell: ElectronShellPort
+  private readonly fileViewerShellIpc: ServiceFileViewerShellIpc
+  private readonly debugSections: DebugSectionPresence
   private readonly shellIpc: ServiceShellIpc
   private readonly windowsIpc: ServiceWindowsIpc
   private readonly dialogIpc: ServiceDialogIpc
-  private readonly clipboardIpc = new ServiceClipboardIpc()
-  private readonly projects: ProjectManager
-  private readonly sessions: SessionManager
-  private readonly remoteControlServer: RemoteControlServer
-  private readonly remoteControl: RemoteControl
-  private readonly controlIpc: ServiceControlIpc
-  private readonly remoteConnections: RemoteConnectionsManager
-  private readonly remoteInbound: RemoteControlInboundRegistry
-  private readonly remoteIpc: ServiceRemoteControlIpc
-  private readonly remoteSettingsIpc: ServiceRemoteSettingsIpc
-  private readonly remotePairing: RemoteControlPairingManager
-  private readonly remoteInboundApproval: RemoteInboundApprovalManager
-  private readonly remoteListener: RemotePeerListenerManager
-  /** Read where it is used, never cached: the listener is applied again whenever it changes. */
-  private readonly remoteListenerSettings: () => RemoteControlListenerSettings
-  private readonly skillLinks: SkillLinkInstaller
+  private readonly clipboardIpc: ServiceClipboardIpc
   private readonly tabsIpc: ServiceTabsIpc
   private readonly terminalsIpc: ServiceTerminalIpc
-  private readonly terminalDetector: TerminalDetector
   private readonly terminalMenuIpc: ServiceTerminalMenuIpc
   private readonly debugIpc: ServiceDebugIpc
-  private readonly commits: VersioningCommitManager
-  private readonly versioningCommitIpc: ServiceVersioningCommitIpc
   private readonly autolauncherIpc: ServiceAutolauncherIpc
-  private readonly fileDiffWorker: FileDiffWorker
-  private readonly fileChanges: FileChangesManager
-  private readonly fileViewer: FileViewer
-  private readonly fileChangesAccess: FileChangesAccess
-  private readonly fileChangesIpc: ServiceFileChangesIpc
-  private readonly remoteChangesAccess: RemoteChangesAccess
-  private readonly remoteContentAccess: RemoteContentAccess
-  private readonly fileViewerAccess: FileViewerAccess
-  private readonly fileViewerIpc: ServiceFileViewerIpc
+  private readonly remoteIpc: ServiceRemoteControlIpc
   private readonly remoteDrag: FileViewerDragExport
   private readonly remoteMedia: RemoteFileMediaSource
   private readonly contentClient: RemoteContentClient
   private readonly fileViewerProtocol: FileViewerProtocol
-  private readonly remarkable: RemarkableManager
-  private readonly remarkableIpc: ServiceRemarkableIpc
-  /** The settings sections the window edits, registered as operations once the registry exists. */
-  private readonly settingsOperations: readonly { register(registry: RemoteControl['registry']): void }[]
-  private readonly contextCompactionIpc: ServiceContextCompactionIpc
-  private readonly directoryNotes: DirectoryNotesOperations
-  private readonly rateMonitor: RateMonitor
-  private readonly cliUpdates: AgentCliUpdates
-  private readonly cliUpdatesIpc: ServiceAgentCliUpdatesIpc
-  private readonly tokenUsage: TokenUsageWorker
-  private readonly sessionNotifier: SessionNotifier
-  private readonly snapins: SnapinsManager
-  /** Tells the person when a local Finish starts to wait; a click opens its workflow tab. */
-  private readonly finishAttention: FinishAttention
-  /** What wants the person, and when it takes the screen; the status bar shows what waits. */
-  private readonly attention: AttentionQueue
-  private readonly attentionIpc: ServiceAttentionIpc
-  private readonly sessionMarks: SessionMarksAttention
-  /** The notifications on screen: Electron drops the click of one nothing holds. */
-  private readonly notices = new Set<Notification>()
-  private readonly pingLoop: HostPingLoop
-  private readonly menu: AppMenu
+  private menu: AppMenu | null
   private readonly appRestart: AppRestart
   private readonly autoUpdate: AutoUpdateMain
-  private readonly visibleWorkspaceWindowIds = new Set<string>()
-  private readonly changedPathHintCache = new Map<
-    string,
-    { expiresAt: number; hints: Promise<TerminalDetectorPathHints> }
-  >()
-  private debugVisible = false
-  private remoteRevision = 0
-
-  private readonly accounts: AgentAccounts
-
-  constructor(context: AppContext) {
-    this.finishAttention = new FinishAttention({ show: (notice) => {
-      this.showNotice(notice)
-      this.queueFinishWait(notice)
-    } })
+  private readonly visibleWorkspaceWindowIds: Set<string>
+  private readonly workspaceWindowIds: Set<string>
+  private readonly onSuspend: () => void
+  private readonly onResume: () => void
+  private powerEpoch: number
+  constructor(context: AppContext, onChildExit: (kind: ChildProcessKind) => void) {
+    this.quitting = false
+    this.menu = null
+    this.privateChannel = null
+    this.remoteState = { revision: 0, outbound: [], inbound: [] }
+    this.bootstrap = { config: context.config, smoke: context.smoke, appVersion: context.appVersion,
+      privateStateRoot: context.privateStateRoot, applicationRoot: dirname(app.getAppPath()), resourcesPath: process.resourcesPath, isPackaged: app.isPackaged }
+    this.clipboardIpc = new ServiceClipboardIpc()
+    this.visibleWorkspaceWindowIds = new Set()
+    this.workspaceWindowIds = new Set()
+    this.configCache = new ConfigSectionsCache()
+    this.serviceTransport = new IpcServiceTransport()
+    this.powerEpoch = 0
+    this.onSuspend = () => this.power('suspend')
+    this.onResume = () => this.power('resume')
+    powerMonitor.on('suspend', this.onSuspend)
+    powerMonitor.on('resume', this.onResume)
     const configIdentity = context.config.identity.configIdentity
     const channel = context.config.runtimeChannel
-    const applicationRoot = dirname(app.getAppPath())
+    const perfNames = new PerfNames(Object.keys(MainHub.ipcChannelsConst))
+    const build = clientBuild
+    this.perf = new PerfMonitor({
+      process: 'main', build,
+      directory: ClientStatePaths.perfDirectory(configIdentity, channel),
+      profiler: new PerfProfiler(join(ClientStatePaths.perfDirectory(configIdentity, channel), 'profiles'), 'main'),
+      names: perfNames, report: message => this.report(message),
+    })
+    this.perfIpc = new ServicePerfIpc(this.perf, build)
+    this.gatewayCalls = new ProcessCalls({ send: message => this.children.send('gateway', message),
+      invoke: (target, method, args, context) => {
+        if (target === 'outbound-work') {
+          if (method !== 'clipboard') throw new Error(`Unknown outbound main operation: ${method}`)
+          const [windowId, epoch, endpointId, privateId] = args as [string, string, string, string]
+          const identity = { windowId, epoch }
+          const sender = this.windowPorts.sender(identity)
+          const signal = this.windowPorts.signal(identity)
+          if (!sender || !signal || !this.workspaceWindows.acceptsRenderer(sender)) throw new Error('The workspace window is closing')
+          context.pending()
+          return new RemoteClipboardPaste({
+            terminalPasteImage: (...values) => this.gatewayCalls.call('windows', 'remote-paste-image', [identity.windowId, identity.epoch, ...values], { signal: AbortSignal.any([context.signal, signal]) }),
+            terminalPasteFile: (...values) => this.gatewayCalls.call('windows', 'remote-paste-file', [identity.windowId, identity.epoch, ...values], { signal: AbortSignal.any([context.signal, signal]) }),
+          }).paste(endpointId, privateId, AbortSignal.any([context.signal, signal]))
+        }
+        throw new Error(`Unknown main call target: ${target}`)
+      },
+      event: (target, name, payload) => {
+        if (target !== 'outbound-work') throw new Error('Unknown native gateway event: ' + target)
+        if (name === 'release-media') {
+          const value = payload as { endpointId: string; viewId: string; documentId?: string }
+          this.remoteMedia.releaseView(value.endpointId, value.viewId, value.documentId)
+        } else if (name === 'state') {
+          this.remoteState = payload as RemoteConnectionsSnapshot
+          this.remoteMedia.reconcile()
+        } else throw new Error('Unknown outbound main event: ' + name)
+      }, report: message => this.report(message) })
+    this.children = new ChildProcessSupervisor({ build,
+      smoke: context.smoke,
+      identity: { configIdentity, channel, stateDirectory: ClientStatePaths.directory(configIdentity, channel) },
+      initialization: kind => {
+        const identity = { configIdentity, channel, stateDirectory: ClientStatePaths.directory(configIdentity, channel) }
+        if (kind === 'gateway') return { message: { type: 'initialize', identity, smoke: context.smoke } }
+        else if (kind === 'orchestrator') {
+          if (!this.privateChannel) throw new Error('Orchestration channel is not brokered')
+          return { message: { type: 'initialize', identity, bootstrap: { ...this.bootstrap, shell: this.shellSnapshot() } }, ports: [this.privateChannel.port2] }
+        } else throw new Error('Unknown child process: ' + kind)
+      },
+      record: event => this.perf.event(event),
+      fork: kind => {
+        switch (kind) {
+          case 'gateway': return utilityProcess.fork(context.gatewayBundlePath, [], { serviceName: 'Jamat gateway' })
+          case 'orchestrator': {
+            const child = utilityProcess.fork(context.orchestratorBundlePath, [], { serviceName: 'Jamat orchestrator', stdio: 'pipe' })
+            child.stdout?.on('data', bytes => process.stdout.write(bytes))
+            child.stderr?.on('data', bytes => process.stderr.write(bytes))
+            return child
+          }
+          default: throw new Error(`Unknown child process: ${kind}`)
+        }
+      },
+      onExit: onChildExit,
+      onMessage: (kind, message) => {
+        if (message.type === 'host-connection') throw new Error('Host connection belongs to the gateway-orchestrator port')
+        if (kind === 'gateway') this.gatewayCalls.receive(message)
+        else if (kind === 'orchestrator') this.orchestratorClient.receive(message)
+        else throw new Error('Unknown child process: ' + kind)
+      },
+      onHeartbeat: kind => {
+        if (kind === 'gateway') this.gatewayCalls.alive()
+        else if (kind === 'orchestrator') this.orchestratorClient.alive()
+        else throw new Error('Unknown child process: ' + kind)
+      },
+      onClosed: kind => {
+        if (kind === 'gateway') { this.gatewayCalls.close(); this.remoteState = { revision: 0, outbound: [], inbound: [] }; this.remoteMedia.reconcile() }
+        else if (kind === 'orchestrator') this.orchestratorClient.close()
+        else throw new Error('Unknown child process: ' + kind)
+      },
+      report: message => this.report(message),
+    })
+    this.windowPorts = new WindowPorts({
+      orchestration: { open: (caller, port, windowId) => this.children.orchestratorWindow(caller, port, windowId),
+        close: (caller, reason, windowId) => this.children.closeOrchestratorWindow(caller, reason, windowId) },
+      open: (windowId, epoch, port, accepting) => this.children.windowPort(windowId, epoch, port, accepting),
+      close: (windowId, epoch) => this.children.closeWindow(windowId, epoch),
+      setAccepting: (windowId, epoch, accepting) => this.children.setWindowAccepting(windowId, epoch, accepting),
+      acceptsRenderer: sender => this.workspaceWindows.acceptsRenderer(sender),
+      authorize: (windowId, epoch, attachId) => this.gatewayCalls.call('windows', 'authorize', [windowId, epoch, attachId]),
+      report: message => this.report(message),
+    })
     this.store = new ClientStateStore(
       ClientStatePaths.stateFile(configIdentity, channel),
       ClientStatePaths.snapshotsDirectory(configIdentity, channel),
@@ -336,22 +241,23 @@ export class AppHub {
         this.workspaceVisibilityChanged(windowId, visible),
       onRendererGone: (windowId) => this.workspaceRendererGone(windowId),
       onClosed: (windowId) => this.workspaceWindowClosed(windowId),
+      onAcceptingChanged: (windowId, accepting) => {
+        const contents = this.workspaceWindows.window(windowId)?.windowHandle()?.webContents
+        if (contents) this.windowPorts.setAccepting(contents, accepting)
+        this.presentationChanged()
+      },
       confirmMainWindowClose: (parent, holderCount) =>
         this.dialogIpc.confirmMainWindowClose(parent, holderCount),
       requestQuit: () => app.quit(),
       explicitlyClosing: (windowId) => this.transferBroker.cancelClosingWindow(windowId),
-      onPersonActive: () => this.attention.personActive(),
+      onFocusChanged: () => this.presentationChanged(),
+      onPersonActive: () => { this.presentationChanged(); this.orchestrator.personActive() },
       report: (message) => this.report(message),
     })
+    this.tabWindowRouter = new TabWindowRouter(this.workspaceWindows, this.panelIndex)
     this.transferBroker = new TabTransferBroker(this.workspaceWindows, this.panelIndex)
-    this.debugWindow = new DebugWindow(context, {
-      store: this.store,
-      onVisibilityChanged: (visible) => this.debugVisibilityChanged(visible),
-    })
-    this.usageWindow = new UsageWindow(context, { store: this.store, onVisibilityChanged: visible => {
-      this.usageVisible = visible
-      this.refreshVisibilityConsumers()
-    } })
+    this.debugSections = new DebugSectionPresence((section) => this.orchestrator.setDebugSection(section))
+    this.serviceTransport.onCaller('gone', (caller) => this.debugSections.forget(caller.id))
     this.shellIpc = new ServiceShellIpc(
       context.appInfo,
       this.store,
@@ -370,397 +276,63 @@ export class AppHub {
         : this.workspaceWindows.window(windowId)?.windowHandle() ?? null)
         ?? this.workspaceWindows.main().windowHandle()
     })
-    // One writer over config.json for the whole process: every section owner is handed this same
-    // instance, so two of them cannot each hold their own idea of what the file says.
-    const configStore = ConfigStore.load(context.config.configDir, {
-      // Without a snapshots directory the store is read-only and every save throws.
-      snapshotsDirectory: OrchestratorPaths.configSnapshotsDirectory(configIdentity, channel),
-      report: (message) => this.report(message),
-      // Whose the key-less snapshots are is the consumer's to say, and on this machine they are the
-      // catalog's: it was the only writer of config.json until `ui` arrived.
-      legacySnapshotSection: CatalogSection.spec.key,
+    this.shell = new ElectronShellPort({ dialogs: this.dialogIpc, parent: () => this.workspaceWindows.main().windowHandle(),
+      tabs: this.tabWindowRouter, groups: this.store, restart: () => this.appRestart.restart(), quit: () => app.quit() })
+    this.orchestratorClient = new OrchestratorApiClient({ send: message => this.children.send('orchestrator', message),
+      shell: this.shell, shellSnapshot: () => this.shellSnapshot(), event: event => this.orchestratorEvent(event),
+      publish: (channel, args) => this.serviceTransport.publish(channel, 'all', ...args as never), report: message => this.report(message) })
+    this.orchestrator = this.orchestratorClient.api
+    this.autolauncherIpc = new ServiceAutolauncherIpc({ get: () => this.orchestrator.autolauncherGet(), inspect: (...args) => this.orchestrator.autolauncherInspect(...args), enable: (...args) => this.orchestrator.autolauncherEnable(...args), disable: () => this.orchestrator.autolauncherDisable() }, sender => this.workspaceWindows.acceptsRenderer(sender))
+    const localMedia = new LocalFileMediaSource({
+      mediaMetadata: resourceId => this.orchestrator.mediaMetadata(resourceId),
+      mediaOpen: request => this.orchestrator.mediaOpen(request),
+      mediaCancel: requestId => this.orchestrator.mediaCancel(requestId),
     })
-    this.projects = new ProjectManager({
-      claudeHomes: () => accounts.homesOf('claude'),
-      configStore,
-      configIdentity,
-      channel,
-      onError: (message) => this.report(message),
-      removeTree: (path, onProgress) => AppHub.removeTree(path, onProgress),
-    })
-    const launcherDirectory = join(dirname(OrchestratorPaths.defaultMachineRoot()), 'JamatLauncher')
-    this.autolauncherIpc = new ServiceAutolauncherIpc(new AutolauncherManager({
-      configDir: context.config.configDir, configIdentity, runtimeChannel: channel,
-      ...AutolauncherTarget.recipe(app.isPackaged, applicationRoot, process.execPath,
-        process.env.JAMAT_V3_SOURCE_CHECKOUT),
-    }, launcherDirectory, process.platform === 'win32', new WindowsLauncherSetup(
-      app.isPackaged ? join(process.resourcesPath, 'launcher') : join(applicationRoot, 'out', 'launcher'),
-      launcherDirectory,
-    ), new AutolauncherConnection(), snapshot => this.broadcast('autolauncher:changed', snapshot),
-    app.isPackaged ? join(process.resourcesPath, 'launcher', 'node.exe') : join(applicationRoot, 'out', 'launcher', 'node.exe')),
-    sender => this.workspaceWindows.acceptsRenderer(sender))
-    this.fileDiffWorker = new FileDiffWorker(context.fileDiffWorkerPath)
-    // The project manager's view, not one of its own: it is the only one in this process whose
-    // Codex index carries a memo, and the resolve happens on every read this manager makes.
-    this.fileChanges = new FileChangesManager({
-      diffExecutor: this.fileDiffWorker,
-      transcriptResolver: this.projects.transcripts,
-    })
-    this.fileViewer = new FileViewer()
-    const localMedia = new LocalFileMediaSource(this.fileViewer)
-    this.contentClient = new RemoteContentClient((endpointId, request) => this.remoteConnections.sessionView(endpointId, request))
-    this.remoteMedia = new RemoteFileMediaSource(this.contentClient, (endpointId, epoch) => this.remoteConnections.viewEpoch(endpointId) === epoch)
+    this.contentClient = new RemoteContentClient((endpointId, request) => this.gatewayCalls.call('outbound', 'session-view', [endpointId, request]))
+    this.remoteMedia = new RemoteFileMediaSource(this.contentClient, (endpointId, epoch) => this.remoteState.outbound.some(endpoint => endpoint.remoteEndpointId === endpointId && endpoint.status === 'connected' && endpoint.connectionId === epoch))
     this.remoteDrag = new FileViewerDragExport(join(ClientStatePaths.directory(configIdentity, channel), 'drag-exports'), this.remoteMedia)
     this.fileViewerProtocol = new FileViewerProtocol({
       metadata: (token) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).metadata(token),
       read: (token, version, offset, length, signal) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).read(token, version, offset, length, signal),
     })
-    const sessionGroupsOperations = new SessionGroupsOperations(configStore, this.store, () => this.broadcast('state:session-groups-changed'))
-    this.settingsOperations = [
-      new UiSettingsOperations(configStore, () => this.broadcast('ui:settings-changed')),
-      // The same event an assignment sends, because a tree reads both back together: which sections
-      // exist and which session is in one are two halves of one picture, and a window that learned
-      // about the first alone would redraw with rows still filed under a section it just lost.
-      sessionGroupsOperations,
-      new AgentSettingsOperations(configStore, () => this.broadcast('agents:settings-changed')),
-      new WorktreeSettingsOperations(configStore, (projectPath) => this.projects.authorizeProjectPath(projectPath)),
-      new FileChangesSettingsOperations(configStore),
-      new VersioningSettingsOperations(configStore),
-    ]
-    const accounts = new AgentAccounts({
-      ...builtInAccountProfiles(process.env),
-      accountsRoot: join(context.config.configDir, 'accounts'),
-      rates: () => this.rateMonitor?.snapshot().accounts ?? [],
-      stored: () => configStore.readSection(AccountsSection.spec),
-      store: value => {
-        const result = configStore.saveSection(AccountsSection.spec, value)
-        if (!result.ok) throw new Error(result.detail)
+    this.machineLoad = new MachineLoadSampler({
+      emit: (event, at) => this.perf.record([{ ...event, v: 1, at, process: 'machine', pid: process.pid, build }]),
+      roots: () => this.orchestrator.processTree().roots,
+      ownPids: () => {
+        const hostPid = this.orchestrator.processTree().hostPid
+        return [...app.getAppMetrics().map(metric => metric.pid), ...(hostPid === null ? [] : [hostPid])]
       },
-      login: {
-        open: async request => {
-          const created = await this.sessions.createCommandSession({ directory: { mode: 'adHoc', path: request.home },
-            account: { agentId: request.agentId, accountId: request.accountId }, title: `Login: ${request.label}` }, request.command, request.prepare)
-          if (!created.ok) throw new AccountProblem(created.detail)
-          await this.tabControlBroker.openTab(created.value.sessionId, created.value.tabTitle, { activate: true })
-          return { sessionId: created.value.sessionId }
-        },
-        result: id => this.sessions.terminalResult(id),
-        stop: async id => {
-          const stopped = await this.sessions.stopSession(id)
-          if (!stopped.ok) throw new AccountProblem(stopped.detail)
-        },
-      },
-      hasRunningSession: (agentId, accountId) => this.sessions.hasAccountSession(agentId, accountId),
-      onChanged: () => { this.broadcast('agents:settings-changed'); this.broadcast('usage:changed'); this.rateMonitor?.accountsChanged() },
+      power: powerMonitor, notify: row => this.orchestrator.runaway(row), report: message => this.report(message),
     })
-    this.accounts = accounts
-    this.cliUpdates = new AgentCliUpdates(
-      AgentCliUpdateSources.create(process.env, join(accounts.homeOf('claude', 'main'), 'settings.json')),
-      () => this.broadcast('agentCliUpdates:changed'),
-    )
-    this.cliUpdatesIpc = new ServiceAgentCliUpdatesIpc(this.cliUpdates)
-    const statusLineRates = RateMonitorSources.statusLine(join(OrchestratorPaths.directory(configIdentity, channel), 'rates'),
-      (sessionId, launchId, at) => this.sessions.accountForLaunch(sessionId, launchId, at))
-    const rolloutRates = RateMonitorSources.rollouts(accounts.homeOf('codex', 'main'), () => accounts.list())
-    this.rateMonitor = new RateMonitor({
-      readings: async () => [...await statusLineRates.read(), ...await rolloutRates.read()],
-      accounts: () => accounts.list(),
-      sourceForAccount: (account, hooks) => RateMonitorSources.forAccount(account,
-        accounts.homeOf(account.agentId, account.accountId), hooks, accounts.homeOf(account.agentId, 'main'),
-        undefined, read => accounts.withProfile(account.agentId, account.accountId, read)),
-      configIdentity,
-      channel,
-      // The same path the session snapshot takes: every workspace window draws the widget and the
-      // Debug window draws the section, and the monitor only says this when the content moved.
-      onChanged: () => { this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged() },
-      onError: (message) => this.report(message),
-    })
-    const remoteIdentity = {
-      configIdentity,
-      runtimeChannel: channel,
-      instanceId: randomUUID(),
-      startedAt: Date.now(),
-      applicationVersion: context.appVersion,
-    }
-    this.sessions = new SessionManager({
-      accounts,
-      rates: () => this.rateMonitor.snapshot().accounts ?? [],
-      instanceId: remoteIdentity.instanceId,
-      skillRoots: () => this.skillLinks.roots(),
-      // Electron's app path is this package; `app-host` stands beside it. It is named here rather
-      // than measured in the library, which is bundled into `out/main` and can only measure that.
-      applicationRoot,
-      // The other place a Host can come from, and the only composer that has one: an installed
-      // client ships the Host as a bundle under `resources/host`. In a development run there is no
-      // such bundle - `process.resourcesPath` then names Electron's own resources - so it is `null`
-      // and the source entry beside `applicationRoot` is what starts.
-      resourcesRoot: app.isPackaged ? process.resourcesPath : null,
-      configDir: context.config.configDir,
-      configIdentity,
-      channel,
-      autoStartHost: !context.smoke,
-      onChanged: () => { accounts.sessionsChanged(); this.sessionsChanged() },
-      onError: (message) => this.report(message),
-      // A session whose worktree ended goes as Remove takes it, and Remove's caller closes the tab.
-      onRemovedItself: (sessionId) =>
-        this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
-      onMainCopyUpdated: (update) => this.showUpdateNotice(MainCopyUpdateNotice.of(update)),
-      onScriptCollapsed: (event) => this.scriptCollapsed(event),
-      removeTree: (path, onProgress) => AppHub.removeTree(path, onProgress),
-      // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
-      // moved, so the switch in the tab reaches the next launch without a notification of its own.
-      // The same shape and the same reason as `yoloFor` below: read per operation, so switching
-      // the mode in the tab reaches the next one without a notification of its own.
-      versioningModeOf: () => configStore.readSection(VersioningSettingsSection.spec).mode,
-      platformSettingsOf: () => configStore.readSection(WorktreeSettingsSection.spec),
-      yoloFor: (agentId) =>
-        AgentSettings.yoloFor(configStore.readSection(AgentSettingsSection.spec), agentId),
-      modelFor: (agentId) =>
-        AgentSettings.modelFor(configStore.readSection(AgentSettingsSection.spec), agentId),
-      effortFor: (agentId) =>
-        AgentSettings.effortFor(configStore.readSection(AgentSettingsSection.spec), agentId),
-      // The same view the two transcript readers below take, for the same reason: resolving a Codex
-      // rollout is not free, and a view of one's own has no memo behind its index.
-      transcripts: this.projects.transcripts,
-    })
-    const modelReader = new SessionModelReader({
-      transcripts: this.projects.transcripts,
-      claudeContextSnapshots: OrchestratorPaths.claudeContextSnapshotsDirectory(configIdentity, channel),
-    })
-    const historicSessions = new HistoricSessions(this.projects, this.sessions, modelReader)
-    // Each reader is handed over rather than held: there is no timer to stop and no child to end.
-    // The transcript view is the project manager's, because resolving a Codex rollout is not free -
-    // a view of one's own has no memo behind its index, and this pair is POLLED.
-    const sessionModel = new SessionModelOperations(modelReader, this.sessions)
-    // The broker is built further down; an open reaches it only after the hub is composed.
-    const sessionTasks = new SessionTasksOperations(new SessionTasks(this.projects.transcripts), this.sessions,
-      {
-        openTask: (tabTitle, item, intentId) => this.tabControlBroker.openTask(tabTitle, item, intentId),
-        openWorkflow: (sessionId, tabTitle, intentId) => this.tabControlBroker.openWorkflow(sessionId, tabTitle, intentId),
-      })
-    const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
-    const transcriptAccess = new SessionTranscriptAccess(this.sessions, transcriptReader)
     const workspaceOwnerIdOf = (sender: WebContents): string | null =>
       this.workspaceWindows.acceptsRenderer(sender)
         ? this.workspaceWindows.windowIdOf(sender)
         : null
-    const remarkableCredentialStore = new RemarkableCredentialStore(
-      ClientStatePaths.remarkableCredentialFile(configIdentity, channel),
-      configIdentity,
-      channel,
-      {
-        available: async () => await safeStorage.isAsyncEncryptionAvailable(),
-        encrypt: async (value) => await safeStorage.encryptStringAsync(value),
-        decrypt: async (value) => await safeStorage.decryptStringAsync(value),
-      },
-    )
-    const remarkableInstaller = new RemarkableSidecarInstaller({
-      sourceDirectory: RemarkableSidecarSource.resolve(
-        app.isPackaged,
-        applicationRoot,
-        process.resourcesPath,
-      ),
-      toolsDirectory: ClientStatePaths.remarkableToolsDirectory(),
-    })
-    this.remarkable = new RemarkableManager({
-      readSettings: () => configStore.readSection(RemarkableSettingsSection.spec),
-      readStorage: () => configStore.readSection(RemarkableStorageSection.spec),
-      workingContext: (sessionId) => this.sessions.workingContext(sessionId),
-      credentialStore: remarkableCredentialStore,
-      installer: remarkableInstaller,
-      cli: new RemarkableCli({ executable: remarkableInstaller }),
-      runStore: new RemarkableRunStore({
-        runsDirectory: ClientStatePaths.remarkableRunsDirectory(configIdentity, channel),
-        importsDirectory: ClientStatePaths.remarkableImportsDirectory(configIdentity, channel),
-      }),
-    })
-    this.remarkableIpc = new ServiceRemarkableIpc(
-      this.remarkable,
-      configStore,
-      remarkableCredentialStore,
-      workspaceOwnerIdOf,
-    )
-    this.fileChangesAccess = new FileChangesAccess(
-      this.fileChanges,
-      this.fileViewer,
-      this.sessions,
-      configStore,
-    )
-    this.fileChangesIpc = new ServiceFileChangesIpc(this.fileChangesAccess, workspaceOwnerIdOf)
-    const commitGit = new GitInvoker()
-    const reviewInteractions = new ReviewInteractionAccess()
-    const externalDiff = new ExternalDiffLauncher({
-      readBaseline: (request) => this.fileChanges.readBaseline(request),
-      fileAccess: (owner, snapshot, file) => this.fileChangesAccess.ownedFileAccess(owner, snapshot, file),
-      toolOf: () => configStore.readSection(VersioningSettingsSection.spec).diffTool,
-      reportError: (detail) => AppClientUiReport.error(detail),
-    })
-    this.commits = new VersioningCommitManager({
-      workflow: new VersioningWorkflowAccess(this.sessions, this.sessions.worktreeResultsStore()),
-      interactions: reviewInteractions,
-      splitReview: async (sessionId, vcs, scopeRoot, operationId) => {
-      const title = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? 'Commit review'
-      const answer = await this.tabControlBroker.openCommit(sessionId, title, vcs, scopeRoot, null, { intentId: operationId })
-      if (!answer.ok) throw new Error(answer.error.detail)
-      if (!answer.value.commitSessionId) throw new Error('The source did not create a separate review')
-      return answer.value.commitSessionId
-    },
-      externalDiff: (owner, request) => externalDiff.launch(owner, request),
-      externalDiffAvailable: () => {
-        const tool = configStore.readSection(VersioningSettingsSection.spec).diffTool
-        return tool.kind === 'external' && VersioningSettings.isDiffTool(tool)
-      },
-      reviews: new VersioningReviewStore(join(ClientStatePaths.directory(configIdentity, channel), 'commit-reviews.json'), (message) => this.report(message)),
-      messages: new VersioningCommitMessageStore(ClientStatePaths.commitMessagesFile(configIdentity, channel), (message) => this.report(message)),
-      sessions: this.sessions,
-      vcsStatus: new VcsStatusView(),
-      fileAccess: (owner, snapshot, file) => this.fileChangesAccess.ownedFileAccess(owner, snapshot, file),
-      snapshotOf: (owner, snapshot) => this.fileChangesAccess.ownedWorkingTreeSnapshot(owner, snapshot),
-      git: new GitCommitManager(commitGit),
-      svn: new SvnCommitManager(this.sessions.svnCommands, (root, paths, work) => this.sessions.withinSvnWrite(root, paths, work)),
-      tortoise: new TortoiseCommitDialog(),
-      onChanged: () => {
-        this.broadcast('versioning:commit-changed')
-        this.tabControlBroker.commitsChanged()
-        this.remoteControl.activity.publish('commits.changed')
-        this.remoteInbound?.publishEvent('sessions.changed')
-      },
-      committed: (receipt) => this.sessions.noteCommitted(receipt),
-    })
-    this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceOwnerIdOf, this.fileChangesAccess, async (sessionId, vcs, scope) => {
-      const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
-      if (info?.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
-      return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { showRefusal: true })
-    }, reviewInteractions)
-    this.terminalDetector = new TerminalDetector({
-      workingContext: (sessionId) => this.sessions.workingContext(sessionId),
-      // Names only. What an agent wrote about narrows which file a half-written token means, and it
-      // authorizes opening none of them: every open still goes the file viewer's proven way.
-      changedPaths: (context) => this.changedPathHints(context),
-      register: OpenedPathsStore.load(
-        OrchestratorPaths.terminalOpenedPathsFile(configIdentity, channel),
-        (message) => this.report(message),
-      ),
-    })
-    const sessionViewItems = new SessionViewItemsStore(join(ClientStatePaths.directory(configIdentity, channel), 'session-view-items.json'), (message) => this.report(message))
-    const itemPages = new RemoteContentPages()
-    sessionViewItems.subscribe(() => {
-      this.workspaceWindows.broadcast('tabs:open-terminal-targets', this.panelIndex.openTerminalTargetKeys())
-      this.remoteInbound.publishEvent('tabs.changed')
-    })
-    const tabFileResolver = new TabFileOpenResolver(this.sessions, this.fileViewer, this.terminalDetector)
-    this.attention = new AttentionQueue({
-      front: () => {
-        const focused = this.workspaceWindows.focusedWorkspace()
-        return focused === null ? null : { panelId: this.activePanelOf(focused.windowId) }
-      },
-      lastActivePanel: () => {
-        const last = this.workspaceWindows.lastFocusedWorkspace()
-        return last === null ? null : this.activePanelOf(last.windowId)
-      },
-      focus: async (panelId) => {
-        const focused = await this.tabControlBroker.focus(panelId)
-        if (!focused.ok) this.report(`The tab before the attention queue could not be brought back: ${focused.error.detail}`)
-      },
-      idleMilliseconds: () => VersioningSettings.idleMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
-      returnEnabled: () => configStore.readSection(VersioningSettingsSection.spec).returnToPreviousSessionAfterCommit !== false,
-      returnWindowMilliseconds: () => VersioningSettings.returnWindowMilliseconds(configStore.readSection(VersioningSettingsSection.spec)),
-      onChanged: () => this.broadcast('attention:changed'),
-      report: (message) => this.report(message),
-    })
-    this.attentionIpc = new ServiceAttentionIpc(this.attention)
-    this.tabControlBroker = new TabControlBroker(
-      this.workspaceWindows,
-      this.panelIndex,
-      tabFileResolver,
-      this.commits,
-      this.attention,
-      {
-        recordOpen: (open) => sessionViewItems.record(open),
-        reportError: (message) => this.report(message),
-        activateSessionOnCommit: () => configStore.readSection(VersioningSettingsSection.spec).activateSessionOnCommit !== false,
-        activateSessionOnDocument: () => configStore.readSection(UiSettingsSection.spec).activateSessionOnDocument === true,
-      },
-    )
-    this.sessionMarks = new SessionMarksAttention(this.attention, (sessionId, tabTitle) => this.tabControlBroker.showSession(sessionId, tabTitle))
-    this.sessions.setReviewPort(new SessionReviewPortAdapter(this.commits))
-    this.fileViewerAccess = new FileViewerAccess({
-      viewer: this.fileViewer,
-      sessions: this.sessions,
-      restoreExternal:
-      (ownerId, source, supportsDiff) =>
-        this.fileChangesAccess.restoreExternal(ownerId, source, supportsDiff),
-      // A detected panel proves itself again out of the register of opens, which main alone writes
-      // and keeps across restarts for a week: a stored layout path that it never proved still
-      // refuses rather than reopening itself unchecked.
-      restoreDetected: (ownerId, source, supportsDiff) =>
-        this.terminalDetector.wasOpened(source.path)
-          ? this.fileViewer.openDetected(ownerId, source.sessionId, null, source.path, supportsDiff)
-          : Promise.resolve({
-            ok: false as const,
-            code: 'proof-expired' as const,
-            detail: DetectionRefusal.detailOf('file'),
-          }),
-      allowsDetected: (path) => this.terminalDetector.wasOpened(path),
-      restoreWorkingTree: (ownerId, source) => this.fileChangesAccess.restoreWorkingTree(ownerId, source),
-    })
-    const openSharedItem = async (owner: string, sessionId: string, body: SessionViewOpenRequest) => {
-      if (!this.sessions.snapshot().sessions.some((session) => session.sessionId === sessionId)) throw new Error('Source session no longer exists')
-      if (body.item.kind === 'file') {
-        const answer = await this.fileViewer.document(owner, body.item.documentId)
-        if (!answer.ok) throw new Error(answer.detail)
-        if (answer.value.source.sessionId !== sessionId) throw new Error('Shared file belongs to another session')
-        return sessionViewItems.record({ openId: body.openId, sessionId, key: answer.value.documentKey, title: answer.value.name,
-          item: { kind: 'file', source: answer.value.source } })
-      } else if (body.item.kind === 'workflow') return sessionViewItems.record({ openId: body.openId, sessionId, key: `workflow:${sessionId}`, title: 'Session actions', item: body.item })
-      else if (body.item.kind === 'task') {
-        const item = await sessionTasks.itemOf(sessionId, body.item.task)
-        return sessionViewItems.record({ openId: body.openId, sessionId, key: item.key, title: item.title, item: body.item })
-      } else throw new Error('Unknown shared item request')
-    }
-    this.remoteContentAccess = new RemoteContentAccess(this.fileViewerAccess, this.fileViewer, tabFileResolver, this.sessions)
-    this.remoteChangesAccess = new RemoteChangesAccess(this.fileChangesAccess,
-      (view, source) => this.remoteContentAccess.allowsSource(view, source),
-      (view, source) => this.remoteContentAccess.admitSource(view, source))
-    this.fileViewerIpc = new ServiceFileViewerIpc(this.fileViewer, this.fileViewerAccess, workspaceOwnerIdOf)
+    this.fileViewerShellIpc = new ServiceFileViewerShellIpc({ path: (...args) => this.orchestrator.viewerPath(...args), imageDragPath: (...args) => this.orchestrator.viewerImageDragPath(...args) }, workspaceOwnerIdOf)
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
       this.panelIndex,
       this.transferBroker,
-      this.tabControlBroker,
+      this.tabWindowRouter,
       () => this.tabsPresenceChanged(),
-      { page: (sessionId, cursor) => sessionViewItems.page(sessionId, cursor),
-        open: (owner, sessionId, body) => openSharedItem(owner, sessionId, body) },
     )
-    // One store for both directions: a local paste and an image or file sent from another computer.
-    const pastedFiles = new PastedFileStore(OrchestratorPaths.pastedFilesDirectory(configIdentity, channel))
     this.terminalsIpc = new ServiceTerminalIpc(
-      this.sessions,
-      (sender) => this.workspaceWindows.acceptsRenderer(sender),
-      pastedFiles,
+      this.windowPorts,
+      { saveImage: (...args) => this.orchestrator.saveImage(...args) },
+      this.shell,
     )
     this.terminalMenuIpc = new ServiceTerminalMenuIpc(
-      this.terminalDetector,
-      this.fileViewer,
-      this.sessions,
+      { detect: (...args) => this.orchestrator.detect(...args), pathOf: (...args) => this.orchestrator.detectionPath(...args), markOpened: (...args) => this.orchestrator.markOpened(...args) },
+      { openDetected: (...args) => this.orchestrator.viewerOpenDetected(...args), releaseGrant: (...args) => this.orchestrator.viewerReleaseGrant(...args) },
+      { workingContext: (...args) => this.orchestrator.workingContext(...args), conflictRootOf: (...args) => this.orchestrator.conflictRoot(...args), snapshot: () => this.orchestrator.sessionsSnapshot() },
       this.terminalsIpc,
       workspaceOwnerIdOf,
     )
-    this.pingLoop = new HostPingLoop({
-      ping: () => this.sessions.pingHost(),
-      // To the Debug window alone: it asked for it, and the workspace has nowhere to put it.
-      publish: (result) => this.debugWindow.publish('debug:host-ping-result', result),
-    })
     this.debugIpc = new ServiceDebugIpc({
-      sectionActive: (section) => this.pingLoop.setActiveSection(section),
+      smoke: context.smoke,
+      block: request => this.orchestratorClient.block(request),
+      sectionActive: (callerId, section) => this.debugSections.report(callerId, section),
     })
-    this.menu = new AppMenu(
-      (id) => this.runMainCommand(id),
-      (id) => this.publishRendererCommand(id),
-      (windowId) => this.workspaceWindows.focusOrRecreate(windowId),
-      BuiltInSnapins.all(),
-      (kind) => this.openSnapin(kind),
-    )
     this.appRestart = new AppRestart({
       devRendererUrl: context.rendererDevUrl,
       // Electron's app path is this package, which is where the dev pipeline must start.
@@ -775,406 +347,142 @@ export class AppHub {
         ? `https://github.com/ludekvodicka/jamat/releases/tag/v${version}`
         : 'https://github.com/ludekvodicka/jamat/releases',
     })
-
-    const remoteTerminal = new RemoteControlTerminal(this.sessions, {
-      onError: (message) => this.report(message),
-      files: pastedFiles,
-    })
-    // The same terminal the control API delivers through, so a compact and a remote deliver to one
-    // session share its one-delivery-at-a-time guard.
-    this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess)
-    // The same terminal again, so an import never erases a prompt a compact or a remote deliver is
-    // typing into.
-    this.directoryNotes = new DirectoryNotesOperations(
-      configStore,
-      this.sessions,
-      remoteTerminal,
-      (directory) => this.broadcast('directoryNotes:changed', directory),
-    )
-    const sessionGroups = new RemoteSessionGroups(
-      () => configStore.readSection(SessionGroupsSection.spec),
-      this.store,
-      () => this.broadcast('state:session-groups-changed'),
-    )
-    this.snapins = new SnapinsManager({ definitions: BuiltInSnapins.all(),
-      ports: SnapinsPorts.of({ sessions: this.sessions, svn: new SvnWorktreeManager(new SvnInvoker()),
-        projects: this.projects, tabs: this.tabControlBroker,
-        versioningMode: () => configStore.readSection(VersioningSettingsSection.spec).mode }),
-      settings: () => configStore.readSection(SnapinsSettingsSection.spec),
-      presentation: SnapinsPorts.presentation({ groups: sessionGroups, groupsOperations: sessionGroupsOperations, sessions: this.sessions }),
-      directory: OrchestratorPaths.snapinsDirectory(configIdentity, channel),
-      onChanged: (kind) => this.broadcast('snapins:changed', { kind }), report: (message) => this.report(message),
-    })
-    // The same terminal once more: a wake-up line never types into a prompt another delivery holds.
-    this.sessionNotifier = new SessionNotifier({
-      sources: [this.sessions.worktreeResultsStore().notifySource(), this.sessions.sessionNotifyStore(), this.sessions.svnWaitNotices(), this.sessions.workerHandoffs(),
-        this.commits.notifySource()],
-      watch: this.sessions.sessionNotifyStore(),
-      sessions: () => this.sessions.snapshot().sessions,
-      groups: (sessions) => sessionGroups.read(sessions),
-      port: new SessionNotifyDelivery(this.sessions, remoteTerminal, transcriptAccess),
-      now: () => Date.now(),
-      report: (message) => this.report(message),
-    })
-    const remoteControl = new RemoteControl({
-      accounts,
-      system: { identity: () => remoteIdentity },
-      projects: this.projects,
-      sessions: this.sessions,
-      host: this.sessions,
-      // A create or a repaint may name the section its session is filed under. Read per call, like
-      // every other section of the config this object takes: a person may have just edited it.
-      groups: sessionGroups,
-      tabs: this.tabControlBroker,
-      terminal: remoteTerminal,
-      transcript: transcriptAccess,
-      // The answer is composed HERE, from this computer's settings and this computer's catalog: a
-      // controller asking what to start an agent on is asking about the machine that will run it,
-      // and its own list would name the CLI versions of the wrong one. Read per call for the same
-      // reason `yoloFor` is - the settings tab reaches the next question without a notification.
-      agents: {
-        describe: () => {
-          const settings = configStore.readSection(AgentSettingsSection.spec)
-          return {
-            agents: AppHub.describedAgentsConst.map((agentId) => ({
-              agentId,
-              configuredModel: AgentSettings.modelFor(settings, agentId) ?? null,
-              models: AgentModels.optionsFor(agentId).map((option) => ({
-                id: option.id,
-                label: option.label,
-                kind: option.kind,
-                context: option.context,
-                efforts: option.efforts,
-                ...(option.note === undefined ? {} : { note: option.note }),
-              })),
-            })),
-          }
-        },
+    const remoteNative = new RemoteNativeActions({
+      content: this.contentClient, media: this.remoteMedia, drag: this.remoteDrag,
+      icon: path => app.getFileIcon(path, { size: 'normal' }),
+      selectFile: async defaultPath => {
+        const filePath = await this.shell.saveDialog({ title: 'Save source file copy', defaultPath })
+        return { canceled: filePath === null, filePath: filePath ?? undefined }
       },
-      onError: (message) => this.report(message),
+      save: (resourceId, path, signal) => new FileViewerExport(this.remoteMedia).save(resourceId, path, signal),
+      accepts: sender => this.workspaceWindows.acceptsRenderer(sender),
     })
-    this.remoteControl = remoteControl
-    HistoricSessionsOperations.register(remoteControl.registry, historicSessions)
-    for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
-    new SnapinsOperations(this.snapins, configStore).register(remoteControl.registry)
-    this.tokenUsage = new TokenUsageWorker(context.tokenUsageWorkerPath, async rescan => ({
-      kind: 'scan', rescan, cacheFile: join(OrchestratorPaths.directory(configIdentity, channel), 'token-usage.json'),
-      configDir: context.config.configDir, claudeHome: accounts.homeOf('claude', 'main'), codexHome: accounts.homeOf('codex', 'main'),
-      records: this.sessions.usageRecords(), accounts: await accounts.list(),
-    }), () => this.broadcast('usage:changed'))
-    new TokenUsageOperations(this.tokenUsage, accounts).register(remoteControl.registry)
-    new RateMonitorOperations(this.rateMonitor, this.accounts).register(remoteControl.registry)
-    new AccountsOperations(accounts).register(remoteControl.registry)
-    sessionModel.register(remoteControl.registry)
-    sessionTasks.register(remoteControl.registry)
-    this.directoryNotes.register(remoteControl.registry)
-    this.controlIpc = new ServiceControlIpc(
-      remoteControl.registry,
-      (sender) => this.workspaceWindows.windowIdOf(sender),
-    )
-    const credentials = RemotePeerCredentialStore.loadOrCreate(
-      ClientStatePaths.remotePeerCredentialsFile(),
-      ClientStatePaths.remoteMachineIdentityFile(),
-    )
-    const peerIdentity = RemoteEndpointIdentityStore.loadOrCreate(
-      ClientStatePaths.remoteEndpointIdentityFile(configIdentity, channel),
-      credentials.machineIdentity(),
-      configIdentity,
-      channel,
-    ).identity(credentials.machineIdentity())
-    this.remoteListenerSettings = () =>
-      configStore.readSection(RemoteControlSettingsSection.spec).listener
-    this.remotePairing = new RemoteControlPairingManager(
-      configStore,
-      credentials,
-      peerIdentity,
-      ClientStatePaths.remotePairingBundleFile(configIdentity, channel),
-      (request) => this.dialogIpc.confirmPairing(
-        this.workspaceWindows.main().windowHandle(),
-        request,
-      ),
-    )
-    const peerClient = new RemoteControlPeerClient(
-      peerIdentity,
-      (payload) => credentials.sign(payload),
-      { onError: (message) => this.report(message) },
-    )
-    this.remoteConnections = new RemoteConnectionsManager({
-      identity: peerIdentity,
-      profiles: () => configStore.readSection(RemoteControlSettingsSection.spec).profiles,
-      connect: (profile, signal) => peerClient.connect(profile, signal),
-      onChanged: () => this.remoteChanged(),
-      onSessionRemoved: (remoteEndpointId, sessionId) =>
-        this.tabsIpc.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId, sessionId })),
-      onError: (message) => this.report(message),
-    })
-    const taskAccess = new SessionTaskAccess(sessionTasks)
-    const sessionActions = new RemoteSessionActions(() => this.sessions.snapshot(), remoteControl.registry)
-    let sourceViews: RemoteSessionViews
-    const sidebarAccess = new RemoteSidebarAccess(remoteControl.registry, transcriptAccess, (view) => sourceViews.isActive(view), this.contextCompactionIpc)
-    const reviewAccess = new RemoteReviewAccess(this.commits, reviewInteractions, this.fileChangesAccess, (view) => sourceViews.isActive(view), (view, source) => this.remoteContentAccess.admitSource(view, source),
-      async (sessionId, vcs, result, openId) => {
-        await sessionViewItems.record({ sessionId, openId, key: result.value.draftId, title: result.value.title,
-          item: { kind: 'review', reviewId: result.value.draftId, vcs, scopeRoot: result.value.scopeRoot } })
-      })
-    sourceViews = new RemoteSessionViews({
-        read: async (view, request) => {
-          if (request.operation === 'sidebar.request') return sidebarAccess.request(view, request.body)
-          else if (request.operation === 'sidebar.page') return sidebarAccess.page(view, request.body)
-          else if (request.operation === 'reviews.request') return reviewAccess.request(view, request.body)
-          else if (request.operation === 'reviews.page') return Promise.resolve(reviewAccess.page(view, request.body))
-          else if (request.operation === 'items.open') {
-            const item = await openSharedItem(RemoteContentAccess.owner(view), view.sessionId, request.body)
-            return itemPages.put(RemoteContentAccess.owner(view), item)
-          }
-          else if (request.operation === 'items.request') {
-            const page = sessionViewItems.page(view.sessionId, request.body)
-            for (const entry of page.items) if (entry.item.kind === 'file') this.remoteContentAccess.admitSource(view, entry.item.source)
-            return Promise.resolve(itemPages.put(RemoteContentAccess.owner(view), page))
-          }
-          else if (request.operation === 'items.page') return Promise.resolve(itemPages.read(RemoteContentAccess.owner(view), request.body))
-          else if (request.operation === 'tasks.request') return taskAccess.request(view, request.body)
-          else if (request.operation === 'tasks.page') return taskAccess.page(view, request.body.task, request.body.cursor)
-          else if (request.operation === 'files.request') return this.remoteContentAccess.request(view, request.body)
-          else if (request.operation === 'files.page') return Promise.resolve(this.remoteContentAccess.page(view, request.body))
-          else if (request.operation === 'changes.request') return this.remoteChangesAccess.request(view, request.body)
-          else if (request.operation === 'changes.page') return Promise.resolve(this.remoteChangesAccess.page(view, request.body))
-          else throw new Error(`Unknown content operation: ${JSON.stringify(request)}`)
+    this.remoteIpc = new ServiceRemoteControlIpc({
+        authorizeView: async (sender, endpointId, viewId) => {
+          const identity = this.windowPorts.identity(sender)
+          if (!identity) return null
+          const signal = this.windowPorts.signal(identity)
+          if (!signal) return null
+          const view = await this.gatewayCalls.call<import('../../lib-orchestrator/remoteControl/remoteSessionApi.types').RemoteSessionView | null>('windows', 'remote-view', [identity.windowId, identity.epoch, endpointId, viewId], { signal })
+          return view && !signal.aborted && this.windowPorts.sender(identity) === sender ? { view, signal } : null
         },
-        release: (view) => { sidebarAccess.release(view); reviewAccess.release(view); taskAccess.release(view); itemPages.release(RemoteContentAccess.owner(view)); this.remoteChangesAccess.release(view); this.remoteContentAccess.release(view) },
-        exists: (sessionId) => this.sessions.snapshot().sessions.some((session) => session.sessionId === sessionId),
-        press: (view, body, operationId) => sessionActions.press(view, body, operationId),
-      })
-    this.remoteInbound = new RemoteControlInboundRegistry({
-      sessionViews: sourceViews,
-      sessionSnapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot(), () => this.commits.discovery()),
-      control: remoteControl,
-      terminal: remoteTerminal,
-      auditFile: ClientStatePaths.controlAuditFile(configIdentity, channel),
-      onChanged: () => this.remoteChanged(),
-      onError: (message) => this.report(message),
-    })
-    this.remoteInboundApproval = new RemoteInboundApprovalManager({
-      credentials,
-      confirm: (request) => this.dialogIpc.confirmInboundAccess(
-        this.workspaceWindows.main().windowHandle(),
-        request,
-      ),
-      onChanged: () => this.remoteChanged(),
-      onError: (message) => this.report(message),
-    })
-    this.remoteListener = new RemotePeerListenerManager({
-      serverFactory: () => new RemoteControlPeerServer({
-        identity: peerIdentity,
-        sign: (payload) => credentials.sign(payload),
-        trustedInbound: (remoteComputerId, remoteEndpointId) =>
-          credentials.trustedInbound(remoteComputerId, remoteEndpointId),
-        onConnection: (connection) => this.remoteInbound.add(connection),
-        onUnknownPeer: (claimant, remoteAddress) =>
-          this.remoteInboundApproval.request(claimant, remoteAddress),
-        pairingBundleText: () => {
-          try { return JSON.stringify(this.remotePairing.bundle()) } catch { return null }
-        },
-        onError: (message) => this.report(message),
-      }),
-      onBound: (host, port) => this.publishPairingEndpoint(host, port),
-      onChanged: () => this.remoteChanged(),
-    })
-    this.remoteControlServer = new RemoteControlServer({
-      identity: remoteIdentity,
-      control: remoteControl,
-      terminal: remoteTerminal,
-      descriptorFile: ClientStatePaths.controlInstanceDescriptorFile(
-        configIdentity,
-        channel,
-        remoteIdentity.instanceId,
-        remoteIdentity.startedAt,
-      ),
-      compatibilityDescriptorFile: ClientStatePaths.controlDescriptorFile(configIdentity, channel),
-      instanceStore: new RemoteControlInstanceStore(
-        RemoteControlInstanceRegistry.fileOf(
-          configIdentity,
-          channel,
-          remoteIdentity.instanceId,
-          remoteIdentity.startedAt,
-        ),
-      ),
-      auditFile: ClientStatePaths.controlAuditFile(configIdentity, channel),
-      onError: (message) => this.report(message),
-      local: {
-        snapshot: () => ({
-          revision: this.remoteRevision,
-          outbound: this.remoteConnections.snapshot().outbound,
-          inbound: this.remoteInbound.snapshot(),
-        }),
-        execute: (remoteEndpointId, request) =>
-          this.remoteConnections.execute(remoteEndpointId, request),
-        pairingBundle: () => this.remotePairing.bundle(),
-        importPairing: async (bundle) => {
-          const imported = await this.remotePairing.import(bundle)
-          if (imported.ok) {
-            this.remoteConnections.reloadProfiles()
-            return { ok: true, value: imported.value }
-          } else if (imported.code === 'config-refused')
-            return { ok: false, error: { code: 'operation-failed', detail: imported.detail } }
-          else if (imported.code === 'invalid-bundle')
-            return { ok: false, error: { code: 'invalid-request', detail: imported.detail } }
-          else if (imported.code === 'identity-conflict')
-            return { ok: false, error: { code: 'conflict', detail: imported.detail } }
-          // Refused by the person at the machine, which is a refusal and not a fault: the CLI says
-          // so plainly rather than reporting something that looks like a bug.
-          else if (imported.code === 'not-confirmed')
-            return { ok: false, error: { code: 'forbidden', detail: imported.detail } }
-          // Not reachable over the control API, which takes a bundle and never an address; named
-          // anyway, because a code with no arm here would reach the CLI as a thrown sentence.
-          else if (imported.code === 'probe-failed')
-            return { ok: false, error: { code: 'unavailable', detail: imported.detail } }
-          else
-            throw new Error(`Unknown pairing import result: ${JSON.stringify(imported)}`)
-        },
-      },
-    })
-    this.remoteIpc = new ServiceRemoteControlIpc(
-      this.remoteConnections,
-      this.remoteInbound,
-      {
-        startImageDrag: async (sender, endpointId, view, documentId) => {
-          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, { kind: 'media', documentId })
-          if (!result.ok) throw new Error(result.detail)
-          const resource = this.remoteMedia.issue(endpointId, view, documentId, result.value)
-          try {
-            const path = await this.remoteDrag.copy(resource.resourceId, new AbortController().signal)
-            const icon = await app.getFileIcon(path, { size: 'normal' })
-            if (sender.isDestroyed() || !this.workspaceWindows.acceptsRenderer(sender) || icon.isEmpty()
-              || (await this.remoteMedia.metadata(resource.resourceId)).kind !== 'ready') return false
-            sender.startDrag({ file: path, icon })
-            return true
-          } finally { this.remoteMedia.releaseToken(resource.resourceId) }
-        },
-        exportFile: async (sender, endpointId, view, documentId, name) => {
-          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, { kind: 'export', documentId })
-          if (!result.ok) throw new Error(result.detail)
-          const resource = this.remoteMedia.issue(endpointId, view, documentId, result.value)
-          try {
-            const selected = await dialog.showSaveDialog({ title: 'Save source file copy', defaultPath: name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 255) })
-            if (selected.canceled || !selected.filePath || sender.isDestroyed()) return false
-            await new FileViewerExport(this.remoteMedia).save(resource.resourceId, selected.filePath, new AbortController().signal)
-            return true
-          } finally { this.remoteMedia.releaseToken(resource.resourceId) }
-        },
-        mediaResource: async (endpointId, view, documentId, reference) => {
-          const result = await this.contentClient.read<FileViewerResourceResult>(endpointId, view, reference === null
-            ? { kind: 'media', documentId } : { kind: 'relative', documentId, reference })
-          return result.ok ? { ok: true, value: this.remoteMedia.issue(endpointId, view, documentId, result.value) } : result
-        },
-        releaseMedia: (endpointId, viewId, documentId) => this.remoteMedia.releaseView(endpointId, viewId, documentId),
-        revision: () => this.remoteRevision,
+        startImageDrag: remoteNative.startImageDrag.bind(remoteNative),
+        exportFile: remoteNative.exportFile.bind(remoteNative),
+        mediaResource: remoteNative.mediaResource.bind(remoteNative),
         acceptsRenderer: (sender) => this.workspaceWindows.acceptsRenderer(sender),
-      },
-    )
-    this.remoteSettingsIpc = new ServiceRemoteSettingsIpc({
-      configStore,
-      identity: peerIdentity,
-      listener: this.remoteListener,
-      lifecycle: new RemoteProfileLifecycle({
-        configStore,
-        connections: this.remoteConnections,
-      }),
-      pairing: this.remotePairing,
-      credentials,
-      inbound: this.remoteInbound,
-      connections: this.remoteConnections,
-      onChanged: () => this.remoteChanged(),
-    })
-    this.skillLinks = new SkillLinkInstaller({
-      repoRoot: applicationRoot,
-      homeRoot: homedir(),
-      skip: process.env.JAMAT_V3_SKIP_SKILL_LINKS === '1',
-      ...(process.env.CODEX_HOME === undefined ? {} : { codexHome: process.env.CODEX_HOME }),
-      report: (message) => this.report(`Skill link: ${message}`),
     })
   }
-
-  initialize(): void {
+  async initialize(): Promise<void> {
+    this.perf.start()
+    await this.children.start('gateway')
+    if (this.quitting) return
+    this.privateChannel = new MessageChannelMain()
+    this.children.orchestrationPort(this.privateChannel.port1)
+    await this.children.start('orchestrator')
+    this.orchestratorClient.initialized()
+    if (this.quitting) return
+    this.menu = new AppMenu(
+      (id) => this.runMainCommand(id),
+      (id) => this.publishRendererCommand(id),
+      (windowId) => this.workspaceWindows.focusOrRecreate(windowId),
+      this.orchestrator.snapinDefinitions(),
+      (kind) => this.orchestrator.openSnapin(kind),
+    )
+    this.machineLoad.start()
+    this.perfIpc.setTransport(this.serviceTransport).setCallerAccess(this.serviceTransport)
+    this.perfIpc.initialize()
+    for (const service of [this.shellIpc, this.windowsIpc, this.dialogIpc, this.clipboardIpc,
+      this.remoteIpc, this.tabsIpc, this.fileViewerShellIpc, this.terminalsIpc, this.terminalMenuIpc,
+      this.debugIpc, this.autolauncherIpc]) {
+      service.setTransport(this.serviceTransport)
+      service.setPerfSpans(this.perf)
+    }
+    for (const service of [this.shellIpc, this.windowsIpc, this.dialogIpc, this.remoteIpc,
+      this.tabsIpc, this.terminalsIpc, this.terminalMenuIpc, this.autolauncherIpc, this.fileViewerShellIpc])
+      service.setCallerAccess(this.serviceTransport)
     // Handlers before the window: the renderer's first call must not reach an empty channel.
     this.shellIpc.initialize()
     this.windowsIpc.initialize()
     this.dialogIpc.initialize()
     this.clipboardIpc.initialize()
-    this.controlIpc.initialize()
     this.remoteIpc.initialize()
-    this.remoteSettingsIpc.initialize()
     this.tabsIpc.initialize()
+    this.fileViewerShellIpc.initialize()
     this.terminalsIpc.initialize()
     this.terminalMenuIpc.initialize()
     this.debugIpc.initialize()
-    this.versioningCommitIpc.initialize()
     this.autolauncherIpc.initialize()
-    this.fileChangesIpc.initialize()
-    this.fileViewerIpc.initialize()
     this.fileViewerProtocol.initialize()
-    this.remarkableIpc.initialize()
-    this.contextCompactionIpc.initialize()
-    this.cliUpdatesIpc.initialize()
-    this.attentionIpc.initialize()
     // Its channels return raw values rather than IpcResult, so they sit outside the contract above.
     this.autoUpdate.start()
     this.menu.install()
     this.workspaceWindows.restoreAtStart()
-    const skipSkillLinks = this.skillLinks.skipReason()
-    if (skipSkillLinks !== null) this.report(`skill links skipped: ${skipSkillLinks}`)
-    else this.skillLinks.install()
-    void this.remoteControlServer.start().catch((error: unknown) =>
-      this.report(`Remote control server could not start: ${ErrorText.of(error)}`))
-    this.remoteConnections.start()
-    // Reports its own failure, the same as the three starts below it: a listener that cannot bind
-    // leaves the client working and says so in its own state.
-    void this.startRemoteListener()
-    // Finishing an interrupted rename is not worth delaying the window for, and it reports its own
-    // failures; a rejection here would only mean the sweep itself is broken.
-    void this.projects.start()
-    // Same reasoning, and the manager reports through the same channel: reaching the Host, reading
-    // what it has and possibly starting one all take longer than a window should wait for.
-    void this.sessions.start().then(() => this.tokenUsage.start())
-    // The cache first, and then a live read of whatever it could not answer for. The windows are
-    // already up by this line, so a provider whose cached success is older than one interval is read
-    // now, and on a machine with no cache at all that is both of them. The monitor reports its own
-    // failures.
-    void this.rateMonitor.start()
-    this.cliUpdates.start()
-    this.sessionNotifier.start()
-    this.snapins.wake()
+    this.orchestrator.startBackground()
   }
-
-  /**
-   * Detach: the socket closes and the controller lease is released if it still can be. Nothing is
-   * stopped and no record is rewritten, so a client killed hard is not a worse outcome - it only
-   * leaves the lease to expire by its TTL, and every PTY belongs to the Host either way.
-   */
   async dispose(): Promise<void> {
-    this.remarkable.beginStop()
-    this.fileDiffWorker.beginStop()
-    this.tokenUsage.beginStop()
-    this.remoteControlServer.beginStop()
-    this.remoteListener.beginStop()
-    this.remoteConnections.stop()
-    await this.settleStep('the agent CLI updater', () => this.cliUpdates.stop())
-    // reMarkable first because it may be waiting for an atomic copy or a child; the monitor remains
-    // before the two servers because it owns a Codex app-server child. Every step is guarded, so a
-    // rejection costs its own step and no other.
-    await this.settleStep('the reMarkable manager', () => this.remarkable.stop())
-    await this.settleStep('the remote image exports', () => this.remoteDrag.dispose())
-    await this.settleStep('the file diff worker', () => this.fileDiffWorker.stop())
-    await this.settleStep('the token usage worker', () => this.tokenUsage.stop())
-    this.accounts.stop()
-    await this.settleStep('the rate monitor', () => this.rateMonitor.stop())
-    await this.settleStep('the session notifier', () => { this.sessionNotifier.stop() })
-    await this.settleStep('the snap-ins manager', () => this.snapins.stop())
-    await this.settleStep('the updater', () => { this.autoUpdate.stop() })
-    await this.settleStep('the control server', () => this.remoteControlServer.stop())
-    await this.settleStep('the peer listener', () => this.remoteListener.stop())
-    await this.settleStep('the inbound registry', () => { this.remoteInbound.stop() })
-    await this.settleStep('the session manager', () => this.sessions.stop())
+    this.orchestratorClient.beginQuit()
+    const native = Promise.all([
+      this.settleStep('the machine load sampler', () => this.machineLoad.stop()),
+      this.settleStep('the remote image exports', () => this.remoteDrag.dispose()),
+      this.settleStep('the updater', () => this.autoUpdate.stop()),
+      this.settleStep('the performance monitor', () => this.perf.stop()),
+    ])
+    let timer!: ReturnType<typeof setTimeout>
+    const boundedNative = Promise.race([native, new Promise<void>(resolve => { timer = setTimeout(() => {
+      this.report('Native disposal exceeded 15000 ms; cleanup remains unsettled')
+      resolve()
+    }, 15_000) })]).finally(() => clearTimeout(timer))
+    await this.settleStep('the client child processes', () => this.children.stopAll())
+    this.orchestratorClient.close()
+    this.gatewayCalls.close()
+    await boundedNative
+    powerMonitor.removeListener('suspend', this.onSuspend)
+    powerMonitor.removeListener('resume', this.onResume)
+  }
+  beginQuit(): void {
+    this.quitting = true
+    this.orchestratorClient.beginQuit()
+    this.children.beginQuit()
+    this.windowPorts.stop()
+    this.transferBroker.cancelAll()
+    this.tabWindowRouter.cancelAll()
+    this.shell.dispose()
+    this.workspaceWindows.beginQuit()
+  }
+  private orchestratorEvent(event: OrchestratorEvent): void {
+    switch (event.kind) {
+      case 'projection': return
+      case 'host-ping-result': this.workspaceWindows.broadcast('debug:host-ping-result', event.value); return
+      case 'config': this.configCache.update(event.value); return
+      case 'remote-changed': this.remoteMedia.reconcile(); return
+      case 'session-items-changed': this.workspaceWindows.broadcast('tabs:open-terminal-targets', this.panelIndex.openTerminalTargetKeys()); return
+      case 'close-terminal': this.tabsIpc.closeTerminalPanels(event.key); return
+      case 'script-collapsed': this.tabsIpc.scriptRunCollapsed(...event.args); return
+      default: throw new Error(`Unknown orchestration event: ${JSON.stringify(event satisfies never)}`)
+    }
+  }
+  private shellSnapshot(): ShellSnapshot {
+    return { groups: this.shell.sessionGroups.assignments(), lastFocusedWindowId: this.shell.tabs.lastFocusedWindowId(),
+      panels: this.shell.tabs.snapshot().map(panel => ({ ...panel, terminalTargetKey: WorkspacePanelIndex.terminalTargetKeyOf(panel) })) }
+  }
+  private presentationChanged(): void {
+    this.orchestratorClient.shellChanged()
+    const focused = this.workspaceWindows.focusedWorkspace()
+    const last = this.workspaceWindows.lastFocusedWorkspace()
+    this.orchestrator.setPresentation({
+      anythingVisible: this.visibleWorkspaceWindowIds.size > 0,
+      accepting: [...this.workspaceWindowIds].filter(windowId => this.workspaceWindows.acceptsWindow(windowId)),
+      seen: this.panelIndex.snapshot().flatMap(panel => panel.active && panel.sessionId !== null && this.visibleWorkspaceWindowIds.has(panel.windowId) ? [panel.sessionId] : []),
+      front: focused === null ? null : { panelId: this.activePanelOf(focused.windowId) },
+      lastActivePanel: last === null ? null : this.activePanelOf(last.windowId),
+    })
+  }
+  private power(event: 'suspend' | 'resume'): void {
+    const message = { type: 'power' as const, epoch: ++this.powerEpoch, event }
+    this.gatewayCalls.power(message)
+    this.orchestratorClient.power(message)
+    this.children.power(message)
+    this.windowPorts.power(message)
   }
 
   private async settleStep(subject: string, run: () => void | Promise<void>): Promise<void> {
@@ -1185,134 +493,31 @@ export class AppHub {
     }
   }
 
-  beginQuit(): void {
-    this.remarkable.beginStop()
-    this.fileDiffWorker.beginStop()
-    this.tokenUsage.beginStop()
-    this.remoteControlServer.beginStop()
-    this.remoteListener.beginStop()
-    this.remoteConnections.stop()
-    this.transferBroker.cancelAll()
-    this.tabControlBroker.cancelAll()
-    this.attention.stop()
-    this.usageWindow.close()
-    this.workspaceWindows.beginQuit()
-  }
+  restart(): Promise<boolean> { return this.shell.restart('requested') }
 
-  /**
-   * Spreading a tuple of table types gives their intersection, so the merged value carries a key for
-   * every channel any service claims and `satisfies` can be read against the whole contract.
-   *
-   * It runs when this class is first loaded rather than at `initialize`, which is earlier than the
-   * boot check it replaces: a duplicate is a programming mistake and there is nothing to be gained
-   * from letting the process reach a window first.
-   */
-  /**
-   * Electron's `fs` reads every `*.asar` as an archive and keeps one it opened locked until this
-   * process exits, so Node's `rm` could not delete a worktree that holds the `electron` package.
-   * `original-fs` is the unpatched `fs`; it is required on the first removal, because the node tests
-   * import this file and plain Node has no such module. The counted walk reads through it too.
-   */
-  private static removeTree(path: string, onProgress?: TreeRemovalListener): Promise<void> {
-    return TreeRemoval.over(AppHub.originalFs().promises)(path, onProgress)
-  }
-
-  private static originalFs(): typeof import('original-fs') {
-    return createRequire(__filename)('original-fs') as typeof import('original-fs')
-  }
-
-  private static mergedChannelsOf<T extends readonly Record<string, true>[]>(
-    tables: T,
-  ): MergedChannels<T> {
-    const merged: Record<string, true> = {}
-    for (const table of tables)
-      for (const channel of Object.keys(table)) {
-        if (channel in merged)
-          throw new Error(`Two IPC services claim the same channel: ${channel}`)
-        merged[channel] = true
-      }
-    return merged as MergedChannels<T>
-  }
-
-  /** What a second launch of the same {configIdentity, channel} gets instead of a second window. */
   focusWindow(): void {
     this.workspaceWindows.main().focus()
   }
 
-  /**
-   * Held for a moment because `list()` puts a snapshot into a store bounded at 32 that drops the
-   * oldest first, and the one made for a detection is owned by nobody: without this, a run of right
-   * clicks evicts the owner-bound snapshots that open File Changes and diff panels depend on.
-   */
-  private async changedPathHints(context: FileChangesContext): Promise<TerminalDetectorPathHints> {
-    const now = Date.now()
-    for (const [key, entry] of this.changedPathHintCache)
-      if (entry.expiresAt <= now) this.changedPathHintCache.delete(key)
-    const cacheKey = `${context.sessionId}\0${context.cwd}`
-    const held = this.changedPathHintCache.get(cacheKey)
-    if (held !== undefined) return await held.hints
-    // The PROMISE is what is held, not its answer: a second right click while the first list is
-    // still running would otherwise miss, call `list()` again and push a second snapshot into
-    // the same bounded ring - the eviction this cache exists to prevent, from two clicks.
-    const hints = this.readChangedPathHints(context)
-    this.changedPathHintCache.set(cacheKey, { expiresAt: Number.POSITIVE_INFINITY, hints })
-    // Dated when it settles rather than when it was asked for, or a slow list spends its whole
-    // life before anyone can be handed it.
-    void hints.then(
-      () => this.dateChangedPathHints(cacheKey),
-      () => this.changedPathHintCache.delete(cacheKey),
-    )
-    return await hints
-  }
-
-  private async readChangedPathHints(
-    context: FileChangesContext,
-  ): Promise<TerminalDetectorPathHints> {
-    const snapshot = await this.fileChanges.list(context)
-    if (!snapshot.ok) return []
-    const historical = snapshot.value.history.groups.flatMap((group) => group.entries)
-    return [...snapshot.value.entries, ...historical].map((entry) => ({ path: entry.path }))
-  }
-
-  private dateChangedPathHints(cacheKey: string): void {
-    const entry = this.changedPathHintCache.get(cacheKey)
-    if (entry === undefined) return
-    entry.expiresAt = Date.now() + AppHub.changedPathHintTtlMillisecondsConst
-  }
-
-  /**
-   * A state file this process cannot read is the user's problem, not only the log's: the renderer
-   * puts it on the console of the window they are looking at, and the console of a packaged main
-   * process is not.
-   */
   private report(message: string): void {
     AppClientUiReport.error(`${message}`)
     this.broadcast('app:error', message)
   }
 
-  /**
-   * What every workspace and Debug are entitled to hear: the snapshot moved, the font scales moved,
-   * and something failed. The scales are here rather than on one workspace because every document
-   * draws text.
-   * `menu:command` is not on this path - the Debug window registers no renderer command, and a role
-   * command acts on whichever window has the focus by itself. Publishing into a closed window is a
-   * no-op.
-   */
   private broadcast<K extends keyof AppClientUiIpcEventMap>(
     channel: K,
     ...args: AppClientUiEventArgs<K>
   ): void {
-    this.workspaceWindows.broadcast(channel, ...args)
-    this.debugWindow.publish(channel, ...args)
-    this.usageWindow.publish(channel, ...args)
+    this.serviceTransport.publish(channel, 'all', ...args)
   }
 
-  /**
-   * The cadence follows whether ANYTHING can be seen. A hidden workspace with the Debug window open
-   * keeps the two-second poll, which is the whole reason that window exists; both out of sight is
-   * fifteen seconds, exactly as before there was a second one.
-   */
   private workspaceWindowCreated(windowId: string): void {
+    this.workspaceWindowIds.add(windowId)
+    const contents = this.workspaceWindows.window(windowId)?.windowHandle()?.webContents
+    if (contents) {
+      this.windowPorts.watch(contents, { windowId, role: windowId === 'main' ? 'main' : 'workspace' })
+      this.serviceTransport.watch(contents, { windowId, role: windowId === 'main' ? 'main' : 'workspace' })
+    }
     this.visibleWorkspaceWindowIds.add(windowId)
     this.updateWindowMenu()
     this.refreshVisibilityConsumers()
@@ -1327,38 +532,30 @@ export class AppHub {
   }
 
   private workspaceWindowClosed(windowId: string): void {
-    this.commits.revokeOwner(windowId)
+    this.workspaceWindowIds.delete(windowId)
+    this.orchestrator.revokeCommitOwner(windowId)
     this.visibleWorkspaceWindowIds.delete(windowId)
     this.transferBroker.rendererGone(windowId)
-    this.tabControlBroker.rendererGone(windowId)
+    this.tabWindowRouter.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
-    this.fileChangesAccess.revokeOwner(windowId)
-    this.fileViewer.revokeOwner(windowId)
+    this.orchestrator.revokeOwner(windowId)
     this.updateWindowMenu()
     this.tabsPresenceChanged()
   }
 
   private workspaceRendererGone(windowId: string): void {
     this.transferBroker.rendererGone(windowId)
-    this.tabControlBroker.rendererGone(windowId)
+    this.tabWindowRouter.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
-    this.fileChangesAccess.revokeOwner(windowId)
-    this.fileViewer.revokeOwner(windowId)
+    this.orchestrator.revokeOwner(windowId)
     this.tabsPresenceChanged()
   }
 
-  private debugVisibilityChanged(visible: boolean): void {
-    this.debugVisible = visible
-    this.pingLoop.setWindowVisible(visible)
-    this.refreshVisibilityConsumers()
-  }
-
   private refreshVisibilityConsumers(): void {
-    const anythingVisible = this.visibleWorkspaceWindowIds.size > 0 || this.debugVisible || this.usageVisible
-    this.sessions.setWindowVisible(anythingVisible)
-    // The same expression rather than the workspace alone: the Debug window draws the rate section,
-    // so it is a surface these numbers are read on.
-    this.rateMonitor.setWindowVisible(anythingVisible)
+    this.presentationChanged()
+    // The Debug tab reports its node only while it is the visible tab of a visible document; this
+    // half closes the ping gate when every workspace window is hidden.
+    this.orchestrator.setDebugVisible(this.visibleWorkspaceWindowIds.size > 0)
     // Every workspace window, not only main: since the marks moved out of the sessions tree,
     // each window computes its own and a holder that never heard this would keep a mark lit on
     // the tab it is showing. The payload already names the active panel of every visible window.
@@ -1366,141 +563,10 @@ export class AppHub {
       'tabs:visible-terminal-targets',
       this.panelIndex.visibleTerminalTargetKeys(this.visibleWorkspaceWindowIds),
     )
-    this.attentionSeen()
-  }
-
-  /**
-   * The attention queue reads the new state: a finished item, a new mark, a session now in front.
-   * Sessions can change while the constructor runs, before the marks source exists.
-   */
-  private attentionSeen(): void {
-    try {
-      const lookedAt = new Set(this.panelIndex.snapshot().flatMap((panel) =>
-        panel.active && panel.sessionId !== null && this.visibleWorkspaceWindowIds.has(panel.windowId) ? [panel.sessionId] : []))
-      this.sessionMarks?.seen(this.sessions.snapshot().sessions, lookedAt)
-    } catch (error) { this.report(`The attention queue could not read the sessions: ${ErrorText.of(error)}`) }
   }
 
   private activePanelOf(windowId: string): string | null {
     return this.panelIndex.snapshot().find((panel) => panel.windowId === windowId && panel.active)?.panelId ?? null
-  }
-
-  /** A waiting Finish also waits in the attention queue, and holds it until the wait is answered. */
-  private queueFinishWait(notice: FinishAttentionNotice): void {
-    const title = this.tabTitleOf(notice.sessionId) ?? notice.title
-    this.attention.add({ key: `finish-wait:${notice.sessionId}:${notice.key}`, kind: 'finish-wait', sessionId: notice.sessionId,
-      title, automatic: true, holds: true, wanted: () => this.finishAttention.waits(notice.sessionId, notice.key),
-      show: async () => {
-        const opened = await this.tabControlBroker.openWorkflow(notice.sessionId, title)
-        return opened.ok ? opened.value.panelId : null
-      } })
-  }
-
-  private openSnapin(kind: string): void {
-    const definition = BuiltInSnapins.all().find((entry) => entry.kind === kind)
-    if (!definition) { this.report(`Unknown snap-in ${kind}`); return }
-    void this.tabControlBroker.openSnapin(kind, definition.title).then((answer) => {
-      if (!answer.ok) this.report(answer.error.detail)
-    }).catch((error: unknown) => this.report(ErrorText.of(error)))
-  }
-
-  private tabTitleOf(sessionId: string): string | null {
-    return this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)?.tabTitle ?? null
-  }
-
-  /** A run that went into its parent's history: its tab goes to the parent or closes. */
-  private scriptCollapsed(event: Parameters<NonNullable<SessionManagerDeps['onScriptCollapsed']>>[0]): void {
-    const runKey = TerminalTargetCodec.key({ kind: 'local', sessionId: event.runId })
-    if (event.handoff === 'parent-tab') {
-      const title = this.tabTitleOf(event.handoffTo)
-      this.tabsIpc.scriptRunCollapsed(
-        runKey,
-        title === null ? null : { target: { kind: 'local', sessionId: event.handoffTo }, title },
-      )
-    } else if (event.handoff === 'close') this.tabsIpc.scriptRunCollapsed(runKey, null)
-    else throw new Error(`Unknown script handoff: ${JSON.stringify(event.handoff)}`)
-  }
-
-  private sessionsChanged(): void {
-    try { this.commits?.workflowChanged() }
-    catch (error) { this.report(`Commit review marks could not be refreshed: ${ErrorText.of(error)}`) }
-    try { this.snapins?.wake() }
-    catch (error) { this.report(`Snap-ins wake failed: ${ErrorText.of(error)}`) }
-    this.noticeWaits()
-    this.attentionSeen()
-    this.broadcast('sessions:changed')
-    this.remoteControlServer.publishEvent('sessions.changed')
-    this.remoteInbound.publishEvent('sessions.changed')
-    this.remoteControl.activity.publish('sessions.changed')
-  }
-
-  /** A notice never stops the broadcast of the change it came with. */
-  private noticeWaits(): void {
-    try { this.finishAttention.seen(this.sessions.snapshot()) }
-    catch (error) { this.report(`A waiting Finish could not be told: ${ErrorText.of(error)}`) }
-  }
-
-  /** A Windows notification whose click brings Jamat forward with the session's workflow tab. */
-  private showNotice(notice: FinishAttentionNotice): void {
-    if (!Notification.isSupported()) return
-    const toast = new Notification({ title: notice.title, body: notice.body })
-    this.notices.add(toast)
-    toast.on('click', () => {
-      this.notices.delete(toast)
-      void this.tabControlBroker.openWorkflow(notice.sessionId, this.tabTitleOf(notice.sessionId) ?? notice.title).then((opened) => {
-        if (!opened.ok) this.report(`The workflow of session ${notice.sessionId} could not be opened: ${opened.error.detail}`)
-      })
-    })
-    toast.on('close', () => { this.notices.delete(toast) })
-    toast.show()
-  }
-
-  /**
-   * The UPDATE of a landed row, whose tab closes with the row: a click opens the UPDATE log the
-   * worktree result kept, or the session's workflow while there is no log.
-   */
-  private showUpdateNotice(notice: MainCopyUpdateNoticeView): void {
-    if (!Notification.isSupported()) return
-    const toast = new Notification({ title: notice.title, body: notice.body })
-    this.notices.add(toast)
-    toast.on('click', () => {
-      this.notices.delete(toast)
-      if (notice.log === null)
-        void this.tabControlBroker.openWorkflow(notice.sessionId, this.tabTitleOf(notice.sessionId) ?? notice.title).then((opened) => {
-          if (!opened.ok) this.report(`The workflow of session ${notice.sessionId} could not be opened: ${opened.error.detail}`)
-        })
-      else
-        void ExternalOpener.open(notice.log).then((refusal) => {
-          if (refusal !== null) this.report(`The update log ${notice.log} could not be opened: ${refusal}`)
-        })
-    })
-    toast.on('close', () => { this.notices.delete(toast) })
-    toast.show()
-  }
-
-  private remoteChanged(): void {
-    this.remoteMedia.reconcile()
-    this.remoteRevision += 1
-    this.broadcast('remote:changed')
-  }
-
-  private async startRemoteListener(): Promise<void> {
-    const listener = this.remoteListenerSettings()
-    // The bundle file exists even when nothing is listening: `remote pairing export` has to answer
-    // either way. A bind that succeeds rewrites it with the port that was really taken.
-    this.publishPairingEndpoint(listener.advertisedHost, listener.port)
-    const applied = await this.remoteListener.apply(listener)
-    if (!applied.ok)
-      this.report(`Remote peer listener could not start: ${applied.detail}`)
-  }
-
-  private publishPairingEndpoint(host: string, port: number): void {
-    try {
-      this.remotePairing.publish({ host, port })
-    } catch (error) {
-      // A bundle that could not be written costs pairing over the CLI, not the listener that is up.
-      this.report(`Remote pairing bundle could not be published: ${ErrorText.of(error)}`)
-    }
   }
 
   private tabsPresenceChanged(): void {
@@ -1512,27 +578,18 @@ export class AppHub {
       'tabs:open-terminal-targets',
       this.panelIndex.openTerminalTargetKeys(),
     )
-    this.remoteControlServer.publishEvent('tabs.changed')
-    this.remoteControl.activity.publish('tabs.changed')
+    this.orchestrator.tabsChanged()
   }
 
   private updateWindowMenu(): void {
-    this.menu.updateWindowEntries(this.workspaceWindows.namedWindows())
+    this.menu?.updateWindowEntries(this.workspaceWindows.namedWindows())
   }
 
-  /**
-   * Proves the whole composition boots, not just that its dependencies resolve. Waiting for
-   * `did-finish-load` alone was not that proof: a preload that threw and a React tree that never
-   * mounted both still finish loading. The renderer's own handshake is what closes the gap - it is
-   * sent only after the bridge answered and the shell rendered, so it cannot arrive without both.
-   * A run that hangs is a failure, so the timeout exits non-zero rather than leaving a headless
-   * Electron behind in CI.
-   */
   runSmoke(): void {
     const timer = setTimeout(() => {
       AppClientUiReport.error(`smoke timed out; state: ${this.smokeDiagnostics(null)}`)
       app.exit(1)
-    }, AppHub.smokeTimeoutMillisecondsConst)
+    }, MainHub.smokeTimeoutMillisecondsConst)
     void this.runSmokePhases()
       .then(() => {
         clearTimeout(timer)
@@ -1551,26 +608,26 @@ export class AppHub {
       this.workspaceWindows.main().whenLoaded(),
       this.workspaceWindows.whenRendererReady('main'),
     ])
-    AppHub.assertSmokeIcon('default', WindowIcon.of(null))
-    AppHub.assertSmokeIcon('tinted', WindowIcon.of('#336699'))
+    MainHub.assertSmokeIcon('default', WindowIcon.of(null))
+    MainHub.assertSmokeIcon('tinted', WindowIcon.of('#336699'))
     await this.checkSmokeFileDiffWorker()
     await this.checkSmokeFileProtocol()
-    await AppHub.checkSmokeTreeRemoval()
+    await this.orchestrator.checkTreeRemoval(MainHub.smokePhaseTimeoutMillisecondsConst)
 
     const before = new Set(this.panelIndex.entries().map((entry) => entry.panelId))
-    this.workspaceWindows.publishTo('main', 'menu:command', 'debug.newProbe')
+    this.workspaceWindows.publishTo('main', 'menu:command', 'tools.usage')
     const created = await this.waitForSmoke(
-      'probe creation',
+      'usage tab creation',
       () => {
         const added = this.panelIndex.entries().filter((entry) => !before.has(entry.panelId))
         if (added.length > 1)
-          throw new Error(`Smoke probe creation added several panels: ${JSON.stringify(added)}`)
+          throw new Error(`Smoke usage tab creation added several panels: ${JSON.stringify(added)}`)
         return added[0] ?? null
       },
       null,
     )
     if (created.windowId !== 'main')
-      throw new Error(`Smoke probe was created outside main: ${JSON.stringify(created)}`)
+      throw new Error(`Smoke usage tab was created outside main: ${JSON.stringify(created)}`)
 
     await this.waitForSmoke(
       'main durable add',
@@ -1603,7 +660,7 @@ export class AppHub {
     const after = Array.from({ length: 611 }, (_, index) => `after ${index + 1}`).join('\n')
     const startedAt = Date.now()
     let completed = false
-    const execution = this.fileDiffWorker.execute({ before, after }).then((result) => {
+    const execution = this.orchestrator.executeDiff({ before, after }).then((result) => {
       completed = true
       return result
     })
@@ -1626,58 +683,15 @@ export class AppHub {
       throw new Error(`Unknown smoke file diff result: ${JSON.stringify(result)}`)
   }
 
-  /**
-   * The client's remover against a tree that holds a real `*.asar`, as every worktree with the
-   * `electron` package does, and a junction to a directory outside it. Only Electron's own `fs` reads
-   * the archive as a directory, so no plain Node smoke can see the difference. The fixture is made
-   * with `original-fs` too: touching the archive through the patched `fs` would open it and keep it
-   * locked for the rest of the run. Both removals run: the one `rm` that project deletion takes and
-   * the counted walk of a worktree removal.
-   */
-  private static async checkSmokeTreeRemoval(): Promise<void> {
-    await AppHub.checkSmokeTreeRemovalOnce()
-    const seen: TreeRemovalProgress[] = []
-    await AppHub.checkSmokeTreeRemovalOnce((progress) => seen.push(progress))
-    if (!seen.some((progress) => progress.phase === 'deleting' && progress.total !== null && progress.total > 0 && progress.done === progress.total))
-      throw new Error(`Smoke tree removal reported no count: ${JSON.stringify(seen.slice(-3))}`)
-  }
-
-  private static async checkSmokeTreeRemovalOnce(onProgress?: TreeRemovalListener): Promise<void> {
-    const fs = AppHub.originalFs()
-    const tree = await fs.promises.mkdtemp(join(tmpdir(), 'jamat-v3-smoke-asar-'))
-    const outside = await fs.promises.mkdtemp(join(tmpdir(), 'jamat-v3-smoke-junction-'))
-    try {
-      await fs.promises.writeFile(join(outside, 'kept.txt'), 'kept')
-      const resources = join(tree, 'node_modules', 'electron', 'dist', 'resources')
-      await fs.promises.mkdir(resources, { recursive: true })
-      await fs.promises.copyFile(join(process.resourcesPath, 'default_app.asar'), join(resources, 'default_app.asar'))
-      await fs.promises.symlink(outside, join(tree, 'node_modules', 'linked'), 'junction')
-      let timer: NodeJS.Timeout | undefined
-      const deadline = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`Smoke tree removal of ${tree} did not finish`)),
-          AppHub.smokePhaseTimeoutMillisecondsConst)
-      })
-      try { await Promise.race([AppHub.removeTree(tree, onProgress), deadline]) }
-      finally { clearTimeout(timer) }
-      if (fs.existsSync(tree))
-        throw new Error(`Smoke tree removal left ${tree} behind`)
-      if (!fs.existsSync(join(outside, 'kept.txt')))
-        throw new Error(`Smoke tree removal followed the junction into ${outside}`)
-    }
-    finally {
-      await fs.promises.rm(outside, TreeRemoval.rmOptionsConst)
-    }
-  }
-
   private async checkSmokeFileProtocol(): Promise<void> {
     const path = process.env.JAMAT_V3_SMOKE_MEDIA_PATH
     if (!path)
       throw new Error('Smoke media path is missing')
-    const opened = await this.fileViewer.openWorkspace('main', 'smoke', dirname(path), path)
+    const opened = await this.orchestrator.viewerOpenWorkspace('main', 'smoke', dirname(path), path)
     if (!opened.ok)
       throw new Error(`Smoke media could not be opened: ${JSON.stringify(opened)}`)
     try {
-      const resource = await this.fileViewer.mediaResource('main', opened.value.documentId)
+      const resource = await this.orchestrator.viewerMediaResource('main', opened.value.documentId)
       if (!resource.ok)
         throw new Error(`Smoke media resource could not be issued: ${JSON.stringify(resource)}`)
       const response = await net.fetch(FileViewerProtocolUrl.resource(resource.value.resourceId), {
@@ -1695,7 +709,7 @@ export class AppHub {
           bytes: [...bytes],
         })}`)
     } finally {
-      this.fileViewer.release('main', opened.value.documentId)
+      this.orchestrator.viewerRelease('main', opened.value.documentId)
     }
   }
 
@@ -1704,12 +718,12 @@ export class AppHub {
     read: () => T | null,
     panelId: string | null,
   ): Promise<T> {
-    const deadline = Date.now() + AppHub.smokePhaseTimeoutMillisecondsConst
+    const deadline = Date.now() + MainHub.smokePhaseTimeoutMillisecondsConst
     while (Date.now() < deadline) {
       const value = read()
       if (value !== null)
         return value
-      await new Promise<void>((resolve) => setTimeout(resolve, AppHub.smokePollMillisecondsConst))
+      await new Promise<void>((resolve) => setTimeout(resolve, MainHub.smokePollMillisecondsConst))
     }
     throw new Error(`Smoke phase ${JSON.stringify(phase)} timed out; state: ${
       this.smokeDiagnostics(panelId)}`)
@@ -1752,17 +766,9 @@ export class AppHub {
       throw new Error(`Smoke ${label} window icon is empty`)
   }
 
-  /**
-   * The window in front, which is what Electron's own reload role would have done. This command
-   * exists only because that role registers Ctrl+R, the shell's reverse-search, and it keeps the
-   * role's meaning: a Debug window whose renderer has stopped answering is reloadable without
-   * taking the workspace down with it. Neither in front - the menu was reached some other way - is
-   * the workspace, which is the window this shell is for.
-   */
   private reloadFocused(): void {
-    if (this.usageWindow.focused()) this.usageWindow.reload()
-    else if (this.debugWindow.focused()) this.debugWindow.reload()
-    else (this.workspaceWindows.focusedWorkspace() ?? this.workspaceWindows.main()).reload()
+    const target = this.workspaceWindows.focusedWorkspace() ?? this.workspaceWindows.main()
+    target.reload()
   }
 
   private publishRendererCommand(id: CommandId): void {
@@ -1783,17 +789,6 @@ export class AppHub {
       throw new Error(`Unknown renderer window scope: ${JSON.stringify(descriptor.windowScope)}`)
   }
 
-  /**
-   * The main-process half of the dispatch. A role command never arrives here: the menu hands it to
-   * Electron whole, so anything else reaching this point is a command with no home.
-   */
-  /**
-   * Guarded, because a menu click is the one way into these with no boundary above it: the IPC
-   * path turns everything a handler throws into a refusal the renderer reports, and an exception
-   * out of an Electron menu handler has no owner at all - this package installs no
-   * `uncaughtException`. A refused extra window is a designed, reportable outcome of a state file
-   * this process cannot write; through the menu it used to be a crash box instead.
-   */
   private runMainCommand(id: CommandId): void {
     try {
       this.runMainCommandUnguarded(id)
@@ -1806,18 +801,15 @@ export class AppHub {
     if (id === 'app.reload')
       this.reloadFocused()
     else if (id === 'app.restart')
-      void this.appRestart.restart()
+      void this.shell.restart('menu')
         .catch((error: unknown) => this.report(`The restart failed: ${ErrorText.of(error)}`))
     else if (id === 'window.new')
       this.workspaceWindows.createHolder()
-    else if (id === 'tools.usage')
-      this.usageWindow.open()
-    else if (id === 'debug.open')
-      this.debugWindow.open()
     // The result is drawn by the status bar's update item, so the menu asks no question of its own.
     else if (id === 'app.checkForUpdates')
       void this.autoUpdate.check()
     else
       throw new Error(`Command has no main-process handler: ${id}`)
   }
+
 }

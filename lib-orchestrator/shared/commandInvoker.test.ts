@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CommandInvoker } from './commandInvoker'
+import type { PerfSpans } from '../perfMonitor/perfSpans'
 
 describe('lib-orchestrator/shared/commandInvoker', () => {
   class FakeChild extends EventEmitter {
@@ -24,6 +25,22 @@ describe('lib-orchestrator/shared/commandInvoker', () => {
   }
 
   afterEach(() => vi.useRealTimers())
+
+  it('records the command spawn and run by subcommand without its path argument', async () => {
+    const child = new FakeChild()
+    const spawnImpl = vi.fn(() => child) as unknown as typeof spawn
+    const names: string[] = []
+    const perf: PerfSpans = {
+      span: (name, work) => { names.push(`span:${name}`); return work() },
+      operation: async (name, work) => { names.push(`operation:${name}`); return work() },
+    }
+    const invoker = new CommandInvoker({ spawnImpl, perf })
+    const running = invoker.run({ command: 'svn', perfName: 'svn:update', args: ['update', 'Q:/private/project'], cwd: import.meta.dirname, env: {} })
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+    child.emit('close', 0)
+    expect(await running).toMatchObject({ code: 0, failure: null })
+    expect(names).toEqual(['operation:svn:update', 'span:svn:update'])
+  })
 
   it.each([true, false])('distinguishes a proved child close from the post-kill timer: close=%s', async (closes) => {
     vi.useFakeTimers()

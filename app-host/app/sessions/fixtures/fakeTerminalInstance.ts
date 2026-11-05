@@ -9,6 +9,7 @@ import type {
   TerminalInstanceFactory,
   TerminalProjectionDriver,
 } from '../../terminal/terminal.types.js'
+import type { TerminalSnapshotOptions } from '../../terminal/terminalProjection.js'
 
 export interface FakeTerminalInstanceRecord {
   readonly instance: TerminalInstanceDriver
@@ -90,9 +91,9 @@ export class FakeTerminalInstances {
         outputEpoch,
         truncated: false,
       }),
-      snapshot: async (alive: boolean) => {
+      snapshot: async (alive: boolean, options: TerminalSnapshotOptions) => {
         if (this.options.snapshotError) throw this.options.snapshotError
-        return {
+        const snapshot = {
           runtimeSessionId,
           generation,
           outputEpoch,
@@ -104,6 +105,8 @@ export class FakeTerminalInstances {
           alive,
           lastOutputAt: state.lastOutputAt,
         }
+        options.onCaptured?.()
+        return snapshot
       },
       dispose: () => undefined,
     } satisfies TerminalProjectionDriver

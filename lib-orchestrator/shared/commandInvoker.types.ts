@@ -1,3 +1,5 @@
+import type { PerfName } from '../perfMonitor/perfRecord.types'
+
 export type CommandFailure =
   | 'aborted'
   | 'command-missing'
@@ -35,6 +37,7 @@ export interface CommandRunOptions {
 }
 
 export interface CommandInvocation extends CommandRunOptions {
+  perfName?: PerfName
   command: string
   args: readonly string[]
   cwd: string

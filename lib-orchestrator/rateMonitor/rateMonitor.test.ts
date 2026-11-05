@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -446,6 +446,8 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     await first.rate.start()
     first.rate.setWindowVisible(true)
     await first.elapse(0)
+    // The cache is written off the loop; stopping waits for that write before the next start reads it.
+    await first.rate.stop()
 
     const second = harness({ cacheFile: file, startedAt: startClockConst + pollMillisecondsConst })
     await second.rate.start()
@@ -463,6 +465,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     await first.rate.start()
     first.rate.setWindowVisible(true)
     await first.elapse(0)
+    await first.rate.stop()
 
     const second = harness({ cacheFile: file, startedAt: startClockConst + 1_000 })
     await second.rate.start()
@@ -486,6 +489,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     first.rate.setWindowVisible(true)
     await first.elapse(0)
     expect(first.claude.reads).toBe(1)
+    await first.rate.stop()
 
     const second = harness({ cacheFile: file, startedAt: startClockConst + 1_000 })
     second.claude.reading = refused
@@ -510,6 +514,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     await first.elapse(0)
     first.claude.reading = { kind: 'failed', reason: 'refused', oauthExpiresAt: null }
     await first.elapse(pollMillisecondsConst)
+    await first.rate.stop()
 
     const second = harness({
       cacheFile: file,
@@ -707,6 +712,78 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     await vi.advanceTimersByTimeAsync(5_000)
     expect(rate.snapshot().revision).toBe(revision)
     await rate.stop()
+  })
+
+  it('takes a status line reading whose windows did not move only once the held one is five minutes old', async () => {
+    const file = cacheFile(), source = fakeSource('claude', [rateWindow(300, 1)])
+    let clock = startClockConst
+    let at = startClockConst - 100
+    let usedPercent = 37
+    const changes: number[] = []
+    const rate = new RateMonitor({ configIdentity: 'feed-repeat', channel: 'development', cacheFile: file,
+      now: () => clock, onChanged: () => changes.push(rate.snapshot().revision), onError: () => {}, sources: () => [source.source],
+      readings: async () => [{ key: { agentId: 'claude', accountId: 'main' }, at, source: 'statusline', windows: [rateWindow(300, usedPercent)] }] })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(existsSync(file)).toBe(true))
+    const taken = changes.length
+    rmSync(file)
+
+    at = startClockConst - 50
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(changes.length).toBe(taken)
+    expect(rate.snapshot().providers.claude).toEqual({ kind: 'ok', fetchedAt: startClockConst - 100, windows: [rateWindow(300, 37)] })
+
+    usedPercent = 38
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(changes.length).toBe(taken + 1)
+    expect(rate.snapshot().providers.claude).toEqual({ kind: 'ok', fetchedAt: startClockConst - 50, windows: [rateWindow(300, 38)] })
+
+    clock = startClockConst - 50 + 300_000
+    at = clock
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(changes.length).toBe(taken + 2)
+    await rate.stop()
+    expect(JSON.parse(readFileSync(file, 'utf8')).accounts[0].entry.fetchedAt).toBe(clock)
+  })
+
+  it('drops a status line reading below the held percent of the same reset, but not one of a new window', async () => {
+    const source = fakeSource('claude', [rateWindow(300, 1)])
+    const weekly = (usedPercent: number, resetsAt: string): RateWindow => ({ durationMinutes: 10080, usedPercent, resetsAt })
+    let reading = { at: startClockConst - 300, windows: [weekly(21, '2026-11-08T15:00:00.000Z')] }
+    const rate = new RateMonitor({ configIdentity: 'feed-stale', channel: 'development', cacheFile: cacheFile(),
+      now: () => startClockConst, onChanged: () => {}, onError: () => {}, sources: () => [source.source],
+      readings: async () => [{ key: { agentId: 'claude', accountId: 'main' }, source: 'statusline', ...reading }] })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+
+    reading = { at: startClockConst - 200, windows: [weekly(17, '2026-11-08T14:59:30.000Z')] }
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.claude).toMatchObject({ fetchedAt: startClockConst - 300, windows: [weekly(21, '2026-11-08T15:00:00.000Z')] })
+
+    reading = { at: startClockConst - 100, windows: [weekly(2, '2026-11-15T15:00:00.000Z')] }
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.claude).toMatchObject({ fetchedAt: startClockConst - 100, windows: reading.windows })
+    expect((await rate.readHistory({ from: 0, to: startClockConst })).map(sample => sample.windows[0].usedPercent)).toEqual([21, 2])
+  })
+
+  it('writes nothing for a status line reading that moved only its time', async () => {
+    const file = cacheFile(), source = fakeSource('claude', [rateWindow(300, 1)])
+    let at = startClockConst - 100
+    const rate = new RateMonitor({ configIdentity: 'feed-quiet', channel: 'development', cacheFile: file,
+      now: () => startClockConst, onChanged: () => {}, onError: () => {}, sources: () => [source.source],
+      readings: async () => [{ key: { agentId: 'claude', accountId: 'main' }, at, source: 'statusline', windows: [rateWindow(300, 37)] }] })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(existsSync(file)).toBe(true))
+    rmSync(file)
+    at += 10
+    await vi.advanceTimersByTimeAsync(5_000)
+    await rate.stop()
+    expect(existsSync(file)).toBe(false)
   })
 
   it('backfills rollout history behind a newer cache without rewinding the live reading', async () => {

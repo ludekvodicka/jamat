@@ -20,7 +20,7 @@ export interface RateWindow {
   model?: string
 }
 
-/** A fact with no window of its own, such as extra usage credits. Text for a tooltip and the Debug window. */
+/** A fact with no window of its own, such as extra usage credits. Text for a tooltip and the Debug tab. */
 export interface RateExtra {
   label: string
   detail: string

@@ -19,6 +19,7 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
     errors: string[]
     /** The lease each new grant made available, in order. */
     grants: string[]
+    changes: (string | null)[]
     grantTtl: (milliseconds: number) => void
     refuse: (refused: boolean) => void
     leaseId: () => string | null
@@ -78,17 +79,20 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
       throw new Error(`the keeper called an op it has no business with: ${name}`)
     }
     const grants: string[] = []
+    const changes: (string | null)[] = []
     const keeper = new ControllerLeaseKeeper({
       controllerId: 'test-controller',
       call,
       onError: (message) => errors.push(message),
       onGranted: () => grants.push(keeper.leaseId() ?? 'none'),
+      onChanged: () => changes.push(keeper.leaseId()),
     })
     return {
       keeper,
       calls,
       errors,
       grants,
+      changes,
       grantTtl: (milliseconds) => { ttl = milliseconds },
       refuse: (value) => { refused = value },
       leaseId: () => (granted === null ? null : granted.controllerLeaseId),
@@ -116,6 +120,63 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
     expect(context.calls.at(-1)).toBe('controller.renew')
     expect(context.grants).toEqual(['lease-1'])
     await context.keeper.stop()
+  })
+
+  it('presents the same id after restart and distinguishes identities and channels', async () => {
+    const presented: string[] = []
+    const owners = [
+      ['identity-one', 'development'],
+      ['identity-one', 'development'],
+      ['identity-one', 'production'],
+      ['identity-two', 'development'],
+    ] as const
+    const keepers = owners.map(([identity, channel]) => new ControllerLeaseKeeper({
+      controllerId: ControllerLeaseKeeper.controllerId(identity, channel),
+      call: async <T>(_name: HostOpName, body: Record<string, unknown>): Promise<HostCallResult<T>> => {
+        if ('controllerId' in body) presented.push(String(body.controllerId))
+        return { ok: false, code: 'op-rejected', status: 409, detail: 'test refusal' }
+      },
+      onError: () => {},
+      onGranted: () => {},
+    }))
+    for (const keeper of keepers) await keeper.start()
+    expect(presented).toEqual([
+      'jamat-client-identity-one-development',
+      'jamat-client-identity-one-development',
+      'jamat-client-identity-one-production',
+      'jamat-client-identity-two-development',
+    ])
+    for (const keeper of keepers) await keeper.stop()
+  })
+
+  it('distinguishes no lease from an acknowledged release and retains that result on repeated stop', async () => {
+    const context = harness()
+    await context.keeper.stop()
+    expect(context.keeper.releaseResult()).toBe('not-held')
+    await context.keeper.start()
+    const hold = context.holdNext('controller.release')
+    let done = false
+    const stopped = context.keeper.stop().then(() => { done = true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(done).toBe(false)
+    expect(context.keeper.releaseResult()).toBe('failed')
+    hold.release()
+    await stopped
+    expect(context.keeper.releaseResult()).toBe('released')
+    await context.keeper.stop()
+    expect(context.keeper.releaseResult()).toBe('released')
+  })
+
+  it('does not claim release when the Host refuses it, including repeated stop', async () => {
+    const context = harness()
+    await context.keeper.start()
+    context.refuse(true)
+    await context.keeper.stop()
+    expect(context.keeper.releaseResult()).toBe('failed')
+    expect(context.leaseId()).toBe('lease-1')
+    expect(context.errors).toContain('The Host controller lease release was not confirmed: controller.release answered 409')
+    await context.keeper.stop()
+    expect(context.keeper.releaseResult()).toBe('failed')
   })
 
   it('acquires on start and hands out the lease the Host granted', async () => {
@@ -151,6 +212,20 @@ describe('lib-orchestrator/hostClient/controllerLeaseKeeper', () => {
     vi.setSystemTime(Date.now() + 1_100)
     expect(context.keeper.leaseId()).toBeNull()
     await context.keeper.stop()
+  })
+
+  it('reports lease loss before a refused renewal retries and reports the later grant', async () => {
+    const context = harness(1_000)
+    await context.keeper.start()
+    expect(context.changes).toEqual([null, 'lease-1'])
+    context.refuse(true)
+    await vi.advanceTimersByTimeAsync(600)
+    expect(context.changes).toEqual([null, 'lease-1', null, null])
+    context.refuse(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(context.changes.at(-1)).toBe('lease-1')
+    await context.keeper.stop()
+    expect(context.changes.slice(-2)).toEqual([null, null])
   })
 
   it('takes the lease again after a refused renew', async () => {

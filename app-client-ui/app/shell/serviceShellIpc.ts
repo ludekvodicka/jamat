@@ -2,12 +2,12 @@ import type { WebContents } from 'electron'
 
 import type { AppInfo } from '../../shared/appClientUiIpc'
 import type { ClientStateStore } from '../clientState/clientStateStore'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import { ElectronServiceIpcBase } from './electronServiceIpcBase'
 
 /** The shell's share of the named allowlist: the window, its state, and nothing else. */
-export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.channelsConst> {
+export class ServiceShellIpc extends ElectronServiceIpcBase<typeof ServiceShellIpc.channelsConst> {
   /**
-   * The contract as data, and only this service's part of it. AppHub proves the parts add up to the
+   * The contract as data, and only this service's part of it. MainHub proves the parts add up to the
    * whole map, so a channel added to the contract with no service to own it still stops the boot.
    */
   static readonly channelsConst = {
@@ -34,13 +34,22 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
     'state:save-new-session-agent': true,
   } as const
 
+  private readonly appInfo: AppInfo
+  private readonly store: ClientStateStore
+  private readonly windowIdOf: (sender: WebContents) => string | null
+  private readonly onRendererReady: (sender: WebContents) => void
+
   constructor(
-    private readonly appInfo: AppInfo,
-    private readonly store: ClientStateStore,
-    private readonly windowIdOf: (sender: WebContents) => string | null,
-    private readonly onRendererReady: (sender: WebContents) => void,
+    appInfo: AppInfo,
+    store: ClientStateStore,
+    windowIdOf: (sender: WebContents) => string | null,
+    onRendererReady: (sender: WebContents) => void,
   ) {
     super()
+    this.appInfo = appInfo
+    this.store = store
+    this.windowIdOf = windowIdOf
+    this.onRendererReady = onRendererReady
   }
 
   /** An unregistered sender is refused here, the way the two services beside this one refuse one. */
@@ -53,63 +62,63 @@ export class ServiceShellIpc extends ServiceIpcBase<typeof ServiceShellIpc.chann
 
   initialize(): void {
     this.register('app:info', () => this.appInfo)
-    this.register('app:renderer-ready', (event) => void this.onRendererReady(event.sender))
+    this.register('app:renderer-ready', (event) => void this.onRendererReady(this.sender(event)))
     // These three are per WINDOW, so an unregistered sender is refused rather than taken for
     // main - the two services beside this one both refuse one. One preload serves the Debug
     // window too, and its renderer is in no window registry, so the fallback made every layout
     // it ever wrote or cleared the MAIN window's.
     this.register('state:load-layout', (event) =>
-      this.store.loadLayout(this.requireWindowId(event.sender)))
+      this.store.loadLayout(this.requireWindowId(this.sender(event))))
     this.register('state:save-layout', (event, layout) =>
-      this.store.saveLayout(this.requireWindowId(event.sender), layout))
+      this.store.saveLayout(this.requireWindowId(this.sender(event)), layout))
     this.register('state:clear-layout', (event) =>
-      this.store.clearLayout(this.requireWindowId(event.sender)))
+      this.store.clearLayout(this.requireWindowId(this.sender(event))))
     this.register('state:load-sidebars', () => this.store.loadSidebars())
     this.register('state:save-sidebars', (_event, sidebars) => this.store.saveSidebars(sidebars))
     this.register('state:load-sessions-view', () => this.store.loadSessionsView())
     this.register('state:save-sessions-view', (_event, view) => this.store.saveSessionsView(view))
     this.register('state:load-session-filters', (event) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.loadSessionFilters()
     })
     this.register('state:load-session-pins', (event) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.loadSessionPins()
     })
     this.register('state:save-session-pins', (event, pins) => {
-      if (this.requireWindowId(event.sender) !== 'main')
+      if (this.requireWindowId(this.sender(event)) !== 'main')
         throw new Error('Only the main window can save session pins')
       return this.store.saveSessionPins(pins)
     })
     this.register('state:save-session-filters', (event, filters) => {
-      if (this.requireWindowId(event.sender) !== 'main')
+      if (this.requireWindowId(this.sender(event)) !== 'main')
         throw new Error('Only the main window can save session filters')
       return this.store.saveSessionFilters(filters)
     })
     this.register('state:load-session-groups', (event) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.loadSessionGroups()
     })
     this.register('state:assign-session-group', (event, key, group) => {
-      if (this.requireWindowId(event.sender) !== 'main')
+      if (this.requireWindowId(this.sender(event)) !== 'main')
         throw new Error('Only the main window can save session groups')
       return this.store.assignSessionGroup(key, group)
     })
     this.register('state:load-hidden-when-remote', (event) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.loadHiddenWhenRemote()
     })
     this.register('state:set-hidden-when-remote', (event, key, hidden) => {
-      if (this.requireWindowId(event.sender) !== 'main')
+      if (this.requireWindowId(this.sender(event)) !== 'main')
         throw new Error('Only the main window can save Hidden when remote marks')
       return this.store.setHiddenWhenRemote(key, hidden)
     })
     this.register('state:load-split-pins', (event, sessionId) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.loadSplitPins(sessionId)
     })
     this.register('state:save-split-pins', (event, sessionId, items) => {
-      this.requireWindowId(event.sender)
+      this.requireWindowId(this.sender(event))
       return this.store.saveSplitPins(sessionId, items)
     })
     this.register('state:load-new-session-agent', () => this.store.loadNewSessionAgent())

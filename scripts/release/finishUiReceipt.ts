@@ -21,7 +21,7 @@ export class FinishUiReceipt {
       else throw new Error(`Unsupported Finish receipt input: ${path}`)
       visiting.delete(physical)
     }
-    for (const path of ['lib-orchestrator', 'app-client-ui', 'app-client-cli', 'app-host', 'app-codex', 'mdext-renderer',
+    for (const path of ['lib-orchestrator', 'app-client-ui', 'app-client-cli', 'app-host', 'app-codex', 'app-gateway', 'app-orchestrator', 'mdext-renderer',
       'scripts', 'configs', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json']) await visit(path)
     return hash.digest('hex')
   }

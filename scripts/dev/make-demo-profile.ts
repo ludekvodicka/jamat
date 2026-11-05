@@ -1,3 +1,4 @@
+import type { RemoteControlListenerSettings } from '../../lib-orchestrator/remoteControl/remotePeerListener.types'
 /**
  * Builds the demo profile the release screenshots are captured from: a neutral project tree, a
  * dirty ShopFront working copy, seeded config directories for a main and a peer instance, and the
@@ -27,7 +28,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, write
 import { extname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import type { RemoteControlListenerSettings } from '../../app-client-ui/shared/remoteControlSettings'
+
 
 type DemoStack = 'web' | 'backend' | 'ai' | 'home'
 
@@ -46,7 +47,7 @@ interface DemoCategory {
 }
 
 class MakeDemoProfile {
-  private static readonly repositoryRootConst = fileURLToPath(new URL('../../', import.meta.url))
+  private static readonly repositoryRootConst = fileURLToPath(new URL('../..', import.meta.url))
   private static readonly templateRootConst
     = join(MakeDemoProfile.repositoryRootConst, 'configs', 'demo', 'tree')
   /** V1's path, chosen over a more neutral one knowing the drive letter shows in every shot. */

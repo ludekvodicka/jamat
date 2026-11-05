@@ -158,6 +158,24 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunPlanning', () => {
       pendingOperationKind: 'create' })])).toEqual([])
   })
 
+  // A collapse or a lost mark planned before the pointer landed reads the parent again first.
+  it('names a launch as due only while the gate of its parent names the starting run', () => {
+    const starting = install('n', { life: 'starting', binding: null, exitCode: undefined, endedAt: undefined,
+      pendingOperationId: 'op-n', pendingOperationKind: 'create' })
+    expect(ScriptRunPlanning.launchDue(starting, waiting({ pendingSetup: { setupSessionId: 'n' } }))).toBe(true)
+    // The pointer names another run, or there is no parent: the plan still holds.
+    expect(ScriptRunPlanning.launchDue(starting, waiting())).toBe(false)
+    expect(ScriptRunPlanning.launchDue(starting, null)).toBe(false)
+    // Bound, over, or without its pending pair: not a launch on its way.
+    const named = waiting({ pendingSetup: { setupSessionId: 'n' } })
+    expect(ScriptRunPlanning.launchDue({ ...starting, binding: { hostInstanceId: 'h', generation: 1 } }, named)).toBe(false)
+    expect(ScriptRunPlanning.launchDue({ ...starting, life: 'ended' }, named)).toBe(false)
+    expect(ScriptRunPlanning.launchDue({ ...starting, pendingOperationId: undefined }, named)).toBe(false)
+    // A run no gate waits for is never one.
+    expect(ScriptRunPlanning.launchDue(requested('q', { life: 'starting', binding: null, pendingOperationId: 'op-q',
+      pendingOperationKind: 'create' }), record('p'))).toBe(false)
+  })
+
   /** A run the live parent `p` asked for, over and judged unless the overrides say otherwise. */
   function requested(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
     return install(sessionId, {

@@ -58,7 +58,6 @@ import { ProductGroup } from '../../lib-orchestrator/shared/productGroup.js'
 import { SvnConflictFacts } from '../../lib-orchestrator/svn/svnConflictFacts.js'
 import { SvnConflictResolutions } from '../../lib-orchestrator/svn/svnConflictResolutions.js'
 import { SvnCommitGate } from '../../lib-orchestrator/svn/svnCommitGate.js'
-import { SvnCommitMessageCheck } from '../../lib-orchestrator/svn/svnCommitMessageCheck.js'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SvnWorktreeEvidence } from '../../lib-orchestrator/svn/svnWorktreeEvidence.js'
 import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager.js'
@@ -219,10 +218,10 @@ class SmokeSvnActions {
       savedDirectoryOf: (id) => this.results.savedDirectoryOf(id), withMarkers: deps.resolver.withMarkers, unavailable: deps.resolver.unavailable, cli: deps.resolver.cli, now: deps.now })
     const handoffs = new WorkerHandoffs(() => records, (_record, args) => WorkerHandoffs.lineOf('jamat-v3', [], args, 'posix'))
     const sync = new SyncStep({ records, svn: manager, runner: deps.runner, commands, conflicts, handoffs, ready: { current: async () => true },
-      busyReason: () => null, holdInput: () => () => {}, changed: () => {} })
+      busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
     this.flow = new FinishDriver({ ...deps, commands, sync, update: new MainCopyUpdate({ ...deps, lease, commands }),
       handoffs,
-      idle: () => true, busyReason: () => null, holdInput: () => () => {}, awaitExit: async () => true, liveness: async () => {} })
+      idle: () => true, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, awaitExit: async () => true, liveness: async () => {} })
     // A press answers before its steps run (2026-10-30); the scenarios judge what the steps left behind.
     const press = this.flow.start.bind(this.flow)
     this.flow.start = async (sessionId, finishPress) => {
@@ -1316,11 +1315,9 @@ class SmokeSvnWorktree extends SmokeHarness {
     const chat = await session('rg07')
     await writeFile(join(chat, 'a.txt'), 'reviewed message\n')
     const message = 'Summary: **changed the file**'
-    const unchecked = await actions.finish('rg07', { message, messageSource: 'agent-proposal' })
-    const approved = await actions.finish('rg07', { message, messageSource: 'agent-proposal', acknowledgedFindings: SvnCommitMessageCheck.findings(message, 'agent-proposal') })
-    this.check('RG07 a proposed chat-shaped message requires acknowledgement of the current text',
-      !unchecked.answer.ok && unchecked.answer.code === 'message-unchecked' && approved.outcome?.result === 'committed'
-      && actions.results.list({ sessionId: 'rg07' })[0]?.acknowledgedFindings?.includes('chat-opening') === true)
+    const approved = await actions.finish('rg07', { message, messageSource: 'agent-proposal' })
+    this.check('RG07 a proposed chat-shaped message publishes without an acknowledgement; its findings are hints',
+      approved.outcome?.result === 'committed')
   }
 
   /**

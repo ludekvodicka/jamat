@@ -43,10 +43,10 @@ describe('SvnCommitMessageCheck', () => {
     expect(SvnCommitMessageCheck.findings(' \n ', 'kept-attempt')).toEqual(['empty'])
   })
   it.each<CommitMessageSource>(['person-local', 'person-remote', 'agent-proposal', 'restored-draft', 'kept-attempt', 'unknown'])
-    ('refuses a prefix without a description from %s even after acknowledgement and normalization', (source) => {
+    ('refuses a prefix without a description from %s even after normalization', (source) => {
       for (const text of ['[applications]', '[applications]  ', '  [applications]\t\r\n ']) {
         const message = SvnCommitMessageCheck.withPrefix(text, '[applications]')
-        expect(SvnCommitMessageCheck.blocking(message, source, ['empty', 'no-prefix', 'reused-after-keep'])).toEqual(['empty'])
+        expect(SvnCommitMessageCheck.blocking(message)).toEqual(['empty'])
         expect(SvnCommitMessageCheck.info(message, source)).toEqual([{ id: 'empty', text: 'Enter a commit message' }])
       }
       expect(SvnCommitMessageCheck.findings('[applications] \r\nDescribe the change', source)).not.toContain('empty')
@@ -57,12 +57,11 @@ describe('SvnCommitMessageCheck', () => {
     expect(SvnCommitMessageCheck.findings('- Fix it', 'unknown')).toEqual(['no-prefix', 'markdown'])
     expect(SvnCommitMessageCheck.findings('[Jamat] Fix it', 'kept-attempt')).toEqual(['reused-after-keep'])
   })
-  it('asks a confirmation only for a message the person did not write', () => {
-    expect(SvnCommitMessageCheck.blocking('Summary: fix', 'person-local', [])).toEqual([])
-    expect(SvnCommitMessageCheck.blocking('', 'person-remote', [])).toEqual(['empty'])
-    expect(SvnCommitMessageCheck.blocking('Summary: fix', 'agent-proposal', ['no-prefix'])).toEqual(['chat-opening'])
-    expect(SvnCommitMessageCheck.info('Summary: fix', 'person-local').some((finding) => finding.confirm)).toBe(false)
-    expect(SvnCommitMessageCheck.info('Summary: fix', 'agent-proposal').every((finding) => finding.confirm)).toBe(true)
+  it('stops only an empty message, whoever wrote it', () => {
+    expect(SvnCommitMessageCheck.blocking('Summary: fix')).toEqual([])
+    expect(SvnCommitMessageCheck.blocking('[Jamat] ' + 'a'.repeat(98))).toEqual([])
+    expect(SvnCommitMessageCheck.blocking('')).toEqual(['empty'])
+    expect(SvnCommitMessageCheck.info('Summary: fix', 'agent-proposal')).toEqual(SvnCommitMessageCheck.info('Summary: fix', 'person-local'))
   })
   it('adds a known repository prefix to a message without one', () => {
     expect(SvnCommitMessageCheck.withPrefix('  account provider', '[applications]')).toBe('[applications] account provider')

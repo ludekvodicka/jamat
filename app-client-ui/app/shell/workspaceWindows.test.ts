@@ -177,6 +177,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
   }
 
   class CloseControl {
+    readonly accepting: { windowId: string; accepting: boolean }[] = []
     readonly confirmations: { parent: unknown; holderCount: number }[] = []
     readonly explicitClose: string[] = []
     readonly acceptingDuringExplicit: boolean[] = []
@@ -197,8 +198,6 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
       this.askedBounds.push(key)
       if (key === 'main')
         return this.mainBounds
-      else if (key === 'debug')
-        return null
       else if (key !== null && typeof key === 'object')
         return this.extraWindows[key.extraWindowId]?.bounds ?? null
       else
@@ -264,6 +263,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
         onVisibilityChanged: (windowId, visible) => visibility.push({ windowId, visible }),
         onRendererGone: (windowId) => rendererGone.push(windowId),
         onClosed: (windowId) => closed.push(windowId),
+        onAcceptingChanged: (windowId, accepting) => close.accepting.push({ windowId, accepting }),
         confirmMainWindowClose: async (parent, holderCount) => {
           close.confirmations.push({ parent, holderCount })
           return close.confirmationResult
@@ -612,6 +612,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(context.registry.acceptsRenderer(sender)).toBe(false)
 
     context.registry.cancelClosing('main')
+    expect(context.close.accepting).toEqual([{ windowId: 'main', accepting: false }, { windowId: 'main', accepting: true }])
     expect(context.registry.acceptsRenderer(sender)).toBe(true)
 
     context.registry.beginQuit()

@@ -141,6 +141,34 @@ describe('SvnStepRunner', () => {
     expect(run).toHaveBeenCalledTimes(2)
     expect(h.store.get('parent')?.worktreeLifecycle?.journal).toHaveLength(2)
   })
+  it('keeps a 4 KiB tail of a large output in the journal and the whole output in the log and the result', async () => {
+    const h = await harness()
+    const output = `${'U    big/file.txt\n'.repeat(40_000)}svn: E170001: Authentication failed`
+    h.svn.run = vi.fn(async (_cwd, _args, options) => {
+      options?.onStderr?.(output)
+      return { code: 1, stdout: '', stderr: output, failure: null }
+    })
+    const intent = { stepId: 'sync', attempt: 1 }
+    const first = await h.runner.run('parent', 'update', h.directory, ['update'], intent, { runId: 'first' })
+
+    expect(first.output).toBe(output)
+    const entry = h.store.get('parent')?.worktreeLifecycle?.journal[0]
+    expect(Buffer.byteLength(entry?.output ?? '')).toBeLessThanOrEqual(SvnStepRunner.journalOutputBytesConst)
+    expect(entry?.output?.endsWith('Authentication failed')).toBe(true)
+    expect((await h.logs.read('parent', 'first', 1000))?.text).toContain('U    big/file.txt')
+
+    const second = await h.runner.run('parent', 'update', h.directory, ['update'], intent, { runId: 'second' })
+    expect(second.output).toMatch(/^Stopped after two identical failures: svn sign-in needed. Log: .*second/)
+    expect(Buffer.byteLength(h.store.get('parent')?.worktreeLifecycle?.stoppedFailure ?? '')).toBeLessThan(SvnStepRunner.journalOutputBytesConst + 300)
+  })
+
+  it('cuts the journal tail on a character boundary', () => {
+    const tail = SvnStepRunner.journalOutputOf(`a${'ž'.repeat(SvnStepRunner.journalOutputBytesConst)}`)
+    expect(Buffer.byteLength(tail)).toBe(SvnStepRunner.journalOutputBytesConst)
+    expect(tail).toBe('ž'.repeat(SvnStepRunner.journalOutputBytesConst / 2))
+    expect(SvnStepRunner.journalOutputOf('short')).toBe('short')
+  })
+
   it.each([['E170001', 'E170013'], ['E155011', 'E155011']])('allows different classes and the out-of-date exception (%s, %s)', async (first, second) => {
     const h = await harness()
     const run = vi.fn().mockResolvedValueOnce({ code: 1, stdout: '', stderr: first, failure: null })

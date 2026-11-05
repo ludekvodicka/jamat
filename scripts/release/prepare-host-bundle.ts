@@ -40,6 +40,7 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { build } from 'esbuild'
+import { BuildInfoSource } from '../../app-host/app/hostRuntime/buildInfo'
 
 interface HostBundleManifest {
   schemaVersion: 1
@@ -108,7 +109,8 @@ class PrepareHostBundle {
         js: `const ${PrepareHostBundle.moduleUrlIdentifierConst} = `
           + "require('node:url').pathToFileURL(__filename).href;",
       },
-      define: { 'import.meta.url': PrepareHostBundle.moduleUrlIdentifierConst },
+      define: { 'import.meta.url': PrepareHostBundle.moduleUrlIdentifierConst,
+        __JAMAT_V3_HOST_PERF_BUILD__: JSON.stringify(BuildInfoSource.perfBuild(PrepareHostBundle.hostPackageConst)) },
       legalComments: 'none',
       logLevel: 'warning',
     })

@@ -12,8 +12,4 @@ describe('app-client-ui/shared/appIdentity', () => {
   it('puts a named window after the application name', () => {
     expect(AppIdentity.titleOf('Review')).toBe('Jamat V3 - Review')
   })
-
-  it('names the debug window from the same word', () => {
-    expect(AppIdentity.debugNameConst).toBe('Jamat V3 Debug')
-  })
 })

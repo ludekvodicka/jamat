@@ -10,11 +10,12 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionRecord } from './sessionRecord.types'
 import { SessionRecordsStore } from './sessionRecordsStore'
 import { SessionAccounts } from '../sessionAccounts'
+import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 
 describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
   const created: string[] = []
@@ -66,6 +67,46 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
   function snapshotCount(directory: string): number {
     return existsSync(directory) ? readdirSync(directory).length : 0
   }
+
+  it('settlement waits for the actual record write and proves the record after reopening', async () => {
+    const h = harness(), store = await h.load(), write = AtomicJsonFile.writeAsync
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const writing = vi.spyOn(AtomicJsonFile, 'writeAsync').mockImplementation(async (...args) => { await gate; await write(...args) })
+    try {
+      const put = store.put(record('settled-record'))
+      let done = false
+      const settled = store.settlement().then(result => { done = true; return result })
+      await vi.waitFor(() => expect(writing).toHaveBeenCalled())
+      expect(done).toBe(false)
+      release()
+      expect(await put).toBe(true)
+      expect(await settled).toBe(true)
+      expect((await h.load()).get('settled-record')).toEqual(record('settled-record'))
+      await expect(store.settled()).resolves.toBeUndefined()
+    } finally { release(); writing.mockRestore(); await store.settled() }
+  })
+
+  it('settlement refuses a failed commit and pending input even if a later write succeeds', async () => {
+    const h = harness(), store = await h.load()
+    await store.put(record('a'))
+    store.noteUserInput('a', 100)
+    expect(await store.settlement()).toBe(false)
+    const writing = vi.spyOn(AtomicJsonFile, 'writeAsync').mockRejectedValueOnce(new Error('fixture disk refused'))
+    try { expect(await store.flushUserInput()).toBe(false) }
+    finally { writing.mockRestore() }
+    expect(await store.settlement()).toBe(false)
+    expect(await store.flushUserInput()).toBe(true)
+    expect((await h.load()).get('a')?.lastUserInputAt).toBe(100)
+    expect(await store.settlement()).toBe(false)
+  })
+
+  it('settlement refuses a records read latch', async () => {
+    const store = await harness('broken records').load()
+    expect(store.latched).toBe(true)
+    expect(await store.settlement()).toBe(false)
+    await expect(store.settled()).resolves.toBeUndefined()
+  })
 
   it('reads legacy agents as main without rewriting their stored shape', async () => {
     const legacy = record('legacy', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new' } })
@@ -254,6 +295,171 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       const onDisk = JSON.parse(readFileSync(it_.file, 'utf8')) as { records: { sessionId: string }[] }
       expect(onDisk.records).toHaveLength(5)
     })
+  })
+
+  describe('the indexes', () => {
+    function run(sessionId: string, parentId: string, overrides?: Partial<SessionRecord>): SessionRecord {
+      return record(sessionId, { life: 'ended', scriptOf: { sessionId: parentId, phase: 'inner', scriptId: 'requested', name: 'call' }, ...overrides })
+    }
+
+    function expectIndexed(store: SessionRecordsStore): void {
+      const all = store.list()
+      for (const entry of all) expect(store.get(entry.sessionId)).toBe(entry)
+      for (const parentId of new Set(all.map((entry) => entry.scriptOf?.sessionId ?? entry.sessionId)))
+        expect(store.runsOf(parentId)).toEqual(all.filter((entry) => entry.scriptOf?.sessionId === parentId))
+      expect(store.live()).toEqual(all.filter((entry) => entry.life === 'live' || entry.life === 'starting'))
+    }
+
+    it('follow put, update, remove, adopt, clearActions and a fresh load', async () => {
+      const h = harness()
+      const store = await h.load()
+      await store.put(record('p', { life: 'live' }))
+      await store.put(record('q', { life: 'ended' }))
+      await store.put(run('r1', 'p'))
+      await store.put(run('r2', 'p', { life: 'live' }))
+      await store.put(run('r3', 'q'))
+      expectIndexed(store)
+      expect(store.runsOf('p').map((entry) => entry.sessionId)).toEqual(['r1', 'r2'])
+
+      await store.update('r2', (current) => ({ ...current, life: 'ended' }))
+      expectIndexed(store)
+      expect(store.live().map((entry) => entry.sessionId)).toEqual(['p'])
+
+      await store.update('r3', (current) => ({ ...current, scriptOf: { ...current.scriptOf!, sessionId: 'p' } }))
+      expectIndexed(store)
+      expect(store.runsOf('q')).toEqual([])
+
+      await store.remove('r1')
+      expectIndexed(store)
+      expect(store.get('r1')).toBeNull()
+
+      await store.adopt(record('orphan', { life: 'live' }))
+      expectIndexed(store)
+
+      await store.clearActions('p')
+      expectIndexed(store)
+
+      const reloaded = await h.load()
+      expectIndexed(reloaded)
+      expect(reloaded.runsOf('p').map((entry) => entry.sessionId)).toEqual(['r2', 'r3'])
+    })
+
+    it('keep the old index when a write does not land', async () => {
+      const h = harness()
+      mkdirSync(h.file)
+      const store = await h.load()
+      expect(await store.put(run('r1', 'p', { life: 'live' }))).toBe(false)
+      expect(store.get('r1')).toBeNull()
+      expect(store.runsOf('p')).toEqual([])
+      expect(store.live()).toEqual([])
+    })
+  })
+
+  describe('the group commit', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
+    function recordsWrites(h: Harness): { documents: () => SessionRecord[][]; fail: (call: number) => void } {
+      const documents: SessionRecord[][] = []
+      const failing = new Set<number>()
+      const original = AtomicJsonFile.writeAsync.bind(AtomicJsonFile)
+      vi.spyOn(AtomicJsonFile, 'writeAsync').mockImplementation(async (file, value, options) => {
+        if (file !== h.file) return original(file, value, options)
+        documents.push((value as { records: SessionRecord[] }).records)
+        if (failing.has(documents.length)) throw new Error('disk full')
+        return original(file, value, options)
+      })
+      return { documents: () => documents, fail: (call) => { failing.add(call) } }
+    }
+
+    const idsOf = (records: readonly SessionRecord[]): string[] => records.map((entry) => entry.sessionId)
+    const onDisk = (h: Harness): string[] => idsOf(JSON.parse(readFileSync(h.file, 'utf8')).records)
+
+    it('lands two changes queued behind a write in one further write, and answers both after it', async () => {
+      const h = harness()
+      const store = await h.load()
+      const writes = recordsWrites(h)
+      const first = store.put(record('a'))
+      const landedAt: string[][] = []
+      const second = store.put(record('b')).then((ok) => { landedAt.push(onDisk(h)); return ok })
+      const third = store.put(record('c')).then((ok) => { landedAt.push(onDisk(h)); return ok })
+
+      expect(await Promise.all([first, second, third])).toEqual([true, true, true])
+      expect(writes.documents().map(idsOf)).toEqual([['a'], ['a', 'b', 'c']])
+      expect(landedAt).toEqual([['a', 'b', 'c'], ['a', 'b', 'c']])
+      expect(idsOf(store.list())).toEqual(['a', 'b', 'c'])
+    })
+
+    it('answers false to every change of a grouped write that failed, and leaves the file and the records as they were', async () => {
+      const h = harness()
+      const store = await h.load()
+      await store.put(record('a'))
+      const writes = recordsWrites(h)
+      writes.fail(2)
+      const blocker = store.put(record('x'))
+      const second = store.put(record('b'))
+      const third = store.update('a', (current) => ({ ...current, title: 'changed' }))
+
+      expect(await Promise.all([blocker, second, third])).toEqual([true, false, false])
+      expect(onDisk(h)).toEqual(['a', 'x'])
+      expect(store.get('b')).toBeNull()
+      expect(store.get('a')?.title).toBe('a')
+      expect(await store.put(record('d'))).toBe(true)
+      expect(onDisk(h)).toEqual(['a', 'x', 'd'])
+      expect(h.reports.some((report) => report.includes('disk full'))).toBe(true)
+    })
+
+    it('never merges a destructive write with another change', async () => {
+      const h = harness()
+      const store = await h.load()
+      await store.put(record('gone'))
+      const writes = recordsWrites(h)
+      const before = store.put(record('a'))
+      const removal = store.remove('gone')
+      const after = store.put(record('c'))
+
+      expect(await Promise.all([before, removal, after])).toEqual([true, true, true])
+      expect(writes.documents().map(idsOf)).toEqual([['gone', 'a'], ['a'], ['a', 'c']])
+      expect(snapshotCount(h.snapshotsDirectory)).toBe(1)
+    })
+
+    it('writes the records file without indentation', async () => {
+      const h = harness()
+      await (await h.load()).put(record('a'))
+      expect(readFileSync(h.file, 'utf8')).not.toContain('\n')
+    })
+
+    it('validates only the records a write changed', async () => {
+      const h = harness()
+      const store = await h.load()
+      await store.put(record('a'))
+      const damaged = store.get('a') as unknown as { title: unknown }
+      damaged.title = 42
+      expect(await store.put(record('b'))).toBe(true)
+      await expect(store.update('a', (current) => ({ ...current }))).rejects.toThrow(/title must be a string/)
+    })
+  })
+
+  it('cuts a whole svn output kept in a step journal to its tail on load, after a recovery point', async () => {
+    const worktree = { worktreePath: 'Q:/work', branch: 'https://svn.test/work', baseCommit: 'r1', repositoryRoot: 'Q:/main', kind: 'svn' as const }
+    const output = `${'A    huge/file.txt\n'.repeat(32_000)}Updated to revision 9.`
+    const stopped = `Stopped after two identical failures: svn other. Log: C:/logs/run.log\n${output}`
+    const lifecycle = { version: 3, actionId: null, phase: 'active', outOfDate: 0, stoppedFailure: stopped,
+      journal: [{ stepId: 'update', kind: 'update', runId: 'run', attempt: 1, startedAt: 1, endedAt: 2, outcome: 'ok', output, logPath: 'C:/logs/run.log' }],
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } } }
+    const h = harness({ schemaVersion: 1, savedAt: 1, records: [record('a', { life: 'live', worktree, worktreeLifecycle: lifecycle as unknown as SessionRecord['worktreeLifecycle'] })] })
+    expect(Buffer.byteLength(output)).toBeGreaterThan(600_000)
+
+    const store = await h.load()
+
+    const entry = store.get('a')?.worktreeLifecycle?.journal[0]
+    expect(Buffer.byteLength(entry?.output ?? '')).toBeLessThanOrEqual(4096)
+    expect(entry?.output?.endsWith('Updated to revision 9.')).toBe(true)
+    expect(entry?.logPath).toBe('C:/logs/run.log')
+    const failure = store.get('a')?.worktreeLifecycle?.stoppedFailure ?? ''
+    expect(failure.startsWith('Stopped after two identical failures: svn other. Log: C:/logs/run.log\n')).toBe(true)
+    expect(Buffer.byteLength(failure)).toBeLessThan(4096 + 200)
+    expect(snapshotCount(h.snapshotsDirectory)).toBe(1)
+    expect(readFileSync(h.file, 'utf8').length).toBeLessThan(20_000)
   })
 
   it('starts empty on a machine that has never had a session, without latching', async () => {

@@ -6,6 +6,12 @@ import { SvnInvoker } from './svnInvoker'
 describe('lib-orchestrator/svn/svnInvoker', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs() })
 
+  it('labels the subcommand without its path or global option values', async () => {
+    const run = vi.spyOn(CommandInvoker.prototype, 'run').mockResolvedValue({ code: 0, stdout: '', stderr: '', failure: null })
+    await new SvnInvoker().run(import.meta.dirname, ['--username', 'private-person', 'update', 'Q:/private/project'])
+    expect(run.mock.lastCall![0].perfName).toBe('svn:update')
+  })
+
   it('uses the command invoker with English output and no editor or SSH override', async () => {
     vi.stubEnv('SVN_EDITOR', 'editor')
     vi.stubEnv('SVN_SSH', 'ssh')

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 
 import type {
   SessionSubagentEntry,
@@ -6,6 +6,7 @@ import type {
   SessionSubagentTranscript,
 } from '../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import { SessionTaskGlyphs } from '../views/sessionsTree/sessionTaskRows'
+import { useFollowEnd } from './useFollowEnd'
 import './taskView.css'
 
 /**
@@ -16,17 +17,10 @@ export function SubagentTranscriptView(props: {
   transcript: Extract<SessionSubagentTranscript, { kind: 'transcript' }>
 }): React.JSX.Element {
   const { transcript } = props
-  const entries = useRef<HTMLDivElement | null>(null)
-  // Null until the first draw: a running agent opens at its latest step, a settled one at its prompt.
-  const stick = useRef<boolean | null>(null)
+  const [entries, setEntries] = useState<HTMLDivElement | null>(null)
   const running = transcript.header.state === 'running'
-
-  useLayoutEffect(() => {
-    const element = entries.current
-    if (element === null) return
-    if (stick.current === null) stick.current = running
-    if (stick.current) element.scrollTop = element.scrollHeight
-  }, [transcript, running])
+  // A running agent opens at its latest step, a settled one at its prompt.
+  useFollowEnd(entries, running)
 
   const prompt = transcript.entries.filter((entry) => entry.kind === 'prompt')
   const steps = transcript.entries.filter((entry) => entry.kind !== 'prompt')
@@ -34,15 +28,7 @@ export function SubagentTranscriptView(props: {
   return (
     <div className="task-view">
       <SubagentTranscriptHeader header={transcript.header} />
-      <div
-        className="task-view__entries"
-        ref={entries}
-        onScroll={(event) => {
-          const element = event.currentTarget
-          stick.current = element.scrollHeight - element.scrollTop - element.clientHeight
-            <= SubagentTranscriptText.bottomSlackPixelsConst
-        }}
-      >
+      <div className="task-view__entries" ref={setEntries}>
         {prompt.map((entry, index) => <SubagentTranscriptEntry key={`prompt-${index}`} entry={entry} />)}
         {transcript.earlierStepsOmitted && <p className="task-view__note">Earlier steps are not shown.</p>}
         {steps.map((entry, index) => <SubagentTranscriptEntry key={`step-${index}`} entry={entry} />)}
@@ -162,8 +148,6 @@ function SubagentEditPreview(props: { preview: string }): React.JSX.Element {
 
 export class SubagentTranscriptText {
   static readonly outputLinesConst = 20
-  /** How near the bottom still counts as at the bottom: a fractional scroll position never reaches 0. */
-  static readonly bottomSlackPixelsConst = 24
   // CSI, OSC and the two-character escapes: what a tool's coloured output leaves in its text.
   private static readonly controlPatternConst = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[@-Z\\-_]/g
 

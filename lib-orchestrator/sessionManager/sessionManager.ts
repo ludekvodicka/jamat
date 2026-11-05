@@ -1,4 +1,5 @@
-import { accountWindows } from '../agentAccounts/defaultAccount'
+import { isDeepStrictEqual } from 'node:util'
+import { accountExhausted } from '../agentAccounts/defaultAccount'
 import type { RateAccountState } from '../rateMonitor/rateMonitorApi.types'
 import { sessionUsageRecords } from './sessionUsageView'
 import { SessionAccounts } from './sessionAccounts'
@@ -10,6 +11,7 @@ import { WorkerLiveness } from '../worktrees/worktreeFinish'
 import { WorkerIdle, WorkerReady } from '../worktrees/worktreeFinish'
 import type { MainCopyUpdated } from '../worktrees/worktreeFinish'
 import { HostGate } from './hostGate'
+import { SessionProcessPriority } from './launch/sessionProcessPriority'
 import { WorktreeLease } from '../worktrees/worktreeLease'
 import { WorktreeTransitions } from '../worktrees/worktreeTransitions'
 import { WorktreeSvnCommands } from '../worktrees/worktreeSvnCommands'
@@ -31,9 +33,9 @@ import { GitMergeManager } from '../git/gitMergeManager'
 import { GitWorktreeManager } from '../git/gitWorktreeManager'
 import { StoreCutWorktrees } from '../git/storeCutWorktrees'
 import type { VersioningMode } from '../git/git.types'
+import type { HostConnectionSource, HostConnectionSnapshot } from '../hostClient/hostConnection'
 import { HostClient } from '../hostClient/hostClient'
-import { HostDescriptorPaths } from '../hostClient/hostDescriptorPaths'
-import { TerminalAttachSocket } from '../hostClient/terminalAttachSocket'
+import { SessionProcessTreeView, type SessionProcessRoot } from './sessionProcessTreeView'
 import {
   HostController,
   type HostControllerDeps,
@@ -60,6 +62,7 @@ import { ProductGroup } from '../shared/productGroup'
 import type { TreeRemove } from '../shared/treeRemoval'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { SvnWorktreeManager } from '../svn/svnWorktreeManager'
+import type { SvnAssemblyExecutor } from '../svn/svnAssemblyExecutor'
 import { HostMemoryWatch } from './hostMemory/hostMemoryWatch'
 import { AgentPresets } from './launch/agentPresets'
 import { FinalizeSteps } from '../worktrees/worktreeFinish'
@@ -102,7 +105,8 @@ import { CommandTrustStore } from './scripts/commandTrustStore'
 import { WorktreeResultsStore } from '../worktrees/worktreeResults'
 import { SessionNotifyStore } from './notifies/sessionNotifyStore'
 import { SvnWaitNotices } from '../worktrees/worktreeResults'
-import type { SessionChildInfo, SessionNotifyDto, SessionStepInfo } from './sessionManagerApi.types'
+import { WorktreeWords } from '../worktrees/worktreeViews'
+import type { SessionChildInfo, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
 import { RunOutputLines } from './scripts/runOutputLines'
 import { ScriptLogStore } from './scripts/scriptLogStore'
 import { type ScriptCollapsed, SessionScriptsManager } from './scripts/sessionScriptsManager'
@@ -148,8 +152,6 @@ import type {
   SessionConflictResolved,
   SvnConflictResolveRequest,
   SvnLabelledRevision,
-  TerminalAttachResult,
-  TerminalAttachSpec,
   TerminalComposerContentResult,
   TerminalComposerResult,
   WorktreeResultDto,
@@ -158,13 +160,7 @@ import type {
 import type { SessionReviewPort } from './sessionReviewPort.types'
 import { SessionReference } from './sessionReference'
 import { SessionWorkingDirectory } from './sessionWorkingDirectory'
-import type { TerminalRefResolution, TerminalSocketFactory } from './terminals/terminalAttachment'
-import {
-  TerminalGateway,
-  type TerminalAttachOwner,
-  type TerminalInputResult,
-  type TerminalResizeResult,
-} from './terminals/terminalGateway'
+import type { TerminalRefResolution, TerminalPort, TerminalSessionsFeed, TerminalRefChange, TerminalActivitySink } from './terminalPort'
 import { AgentComposerReader } from './workState/agentComposerReader'
 import { ScreenTail } from './workState/screenTail'
 import { WorkStateMonitor } from './workState/workStateMonitor'
@@ -172,6 +168,7 @@ import { WorkStateMonitor } from './workState/workStateMonitor'
 export { SessionNotifier, type NotifySource, type PendingNotify, type SessionNotifyPort } from './notifies/sessionNotifier'
 
 export interface SessionManagerDeps {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
   accounts?: import('./sessionAccounts').SessionAccountsPort
   rates?: () => readonly RateAccountState[]
   skillRoots?: () => readonly string[]
@@ -205,22 +202,24 @@ export interface SessionManagerDeps {
    * the parent, `close` closes it. Optional for the same reason as the one above.
    */
   onScriptCollapsed?: (event: ScriptCollapsed) => void
-  /**
-   * The writer identity this client takes at the Host. Random per process by default, because two
-   * clients sharing one id would take each other's lease; the smoke names it so that it can put a
-   * runtime on the Host under the same authority the manager already holds.
-   */
-  controllerId?: string
+  connection: HostConnectionSource
+  connectionDebug: () => HostConnectionSnapshot['debug']
+  terminals: TerminalPort
+  terminalsFeed: TerminalSessionsFeed
+  closeTerminals: () => Promise<void>
   instanceId?: string
   /** The tests script every Host launch through this; nothing in production passes it. */
   spawnImpl?: HostControllerDeps['spawnImpl']
-  /** The tests hand attaches a socket of their own; nothing in production passes it. */
-  terminalSocketFactory?: TerminalSocketFactory
   /**
    * How a worktree directory goes after its session. Optional: Node's own `rm` when absent
    * (`TreeRemoval`), which is wrong only inside Electron, so the client passes its own.
    */
   removeTree?: TreeRemove
+  /**
+   * Where a Finish reads the worktree assembly. Optional: in the caller's thread when absent; the
+   * client passes its worker thread, so reading every file of a worktree does not hold its main thread.
+   */
+  svnAssembly?: SvnAssemblyExecutor
   /** @deprecated Identity is confirmed by app-server. Retained for existing library callers. */
   codexHome?: string
   /** Where Claude keeps its config home. The tests and the smokes point it at a fixture; production does not. */
@@ -248,6 +247,11 @@ export interface SessionManagerDeps {
    * machine here runs on. `git` exists for somebody running AppJamatV3 without them.
    */
   versioningModeOf?: () => VersioningMode
+  /**
+   * The processor priority of agent sessions and script runs, read at every runtime listing so a
+   * changed setting reaches the live sessions within one poll. Absent means below normal.
+   */
+  processPriorityOf?: () => SessionProcessPriorityLevel
   /** This machine's install tier. Absent means the plain install of every family. */
   platformSettingsOf?: () => PlatformSettingsValue
   /**
@@ -342,6 +346,8 @@ export class SessionManager {
   /** How long a restart waits for the stopped process to actually be gone, and how often it looks. */
   /** How many times `stop` re-reads the work still in flight before it gives up on it out loud. */
   private static readonly settleRoundsConst = 8
+  private static readonly recomposeGapMillisecondsConst = 50
+  private static readonly archiveEveryMillisecondsConst = 60 * 60_000
   private static readonly exitBudgetMillisecondsConst = 5_000
   private static readonly exitPollMillisecondsConst = 250
   private static readonly realExitClockConst: ExitClock = {
@@ -360,7 +366,7 @@ export class SessionManager {
   private static readonly clientProtocolConst: {
     major: typeof HostWireConst.protocolMajor
     minor: typeof HostWireConst.protocolMinor
-  } = { major: 1, minor: 1 }
+  } = { major: 1, minor: 2 }
 
   private readonly client: HostClient
   private readonly controller: HostController
@@ -385,7 +391,12 @@ export class SessionManager {
   private readonly runLines: RunOutputLines
   /** What this client does for each session now; memory only, composed into `step`. */
   private readonly steps: SessionSteps
-  private readonly terminals: TerminalGateway
+  readonly terminals: TerminalPort
+  readonly terminalActivity: TerminalActivitySink
+  private readonly terminalsFeed: TerminalSessionsFeed
+  private acknowledgedRefs = new Map<string, TerminalRefResolution>()
+  private runtimeHostId: string | undefined
+  private pendingInputHints: ReadonlyMap<string, number> = new Map()
   private readonly scriptLogs: ScriptLogStore
   /** Outlives the sessions it reports; loaded and swept at start. */
   private readonly results: WorktreeResultsStore
@@ -403,6 +414,7 @@ export class SessionManager {
   private finishDriver: Pick<SessionLifecycle['svnActions'], 'workerIdle'> | null = null
   private readonly pendingDeliveries = new Map<string, number>()
   private readonly hostGate: HostGate
+  private readonly processPriority: SessionProcessPriority
   private readonly hostMemory: HostMemoryWatch
   private landedPass: Promise<void> | null = null
   /** An ending asked for another round while one was running. */
@@ -434,6 +446,14 @@ export class SessionManager {
   private runtimes = new Map<string, RuntimeSessionInfo>()
   private orphans: OrphanInfo[] = []
   private snapshotValue: SessionsSnapshot | null = null
+  /** A `changed()` the snapshot has not taken in yet; the scheduled flush or the next pull takes it. */
+  private dirty = false
+  private flushTimer: { kind: 'immediate'; handle: NodeJS.Immediate } | { kind: 'timeout'; handle: NodeJS.Timeout } | null = null
+  private lastFlushAt = 0
+  /** The revision `onChanged` last announced, or the one a pull composed without a change behind it. */
+  private emittedRevision = 0
+  /** The rate facts sessions show, as `ratesChanged` last saw them; null until its first call, which always recomposes. */
+  private exhaustedAccounts: string | null = null
   private readonly switchingAccounts = new Set<string>()
   private serializedValue = ''
   private queue: Promise<unknown> = Promise.resolve()
@@ -443,14 +463,28 @@ export class SessionManager {
   private readonly detached = new Set<Promise<void>>()
   private visible = true
   private started = false
+  private starting: Promise<void> | null
+  private stopping: boolean
+  private recordsSettlement: boolean
   private lastReconcile: Omit<HostDebugStatus['reconcile'], 'refreshPending'> =
     { lastAt: null, lastReason: null, lastListingOk: null }
   private lastTickAt: number | null = null
+  /** The first poll archives, then one in an hour: records only move once they are a week old. */
+  private lastArchiveAt = Number.NEGATIVE_INFINITY
   private launchViewValue: HostDebugStatus['launch'] | null = null
 
-  constructor(private readonly deps: SessionManagerDeps) {
+  private readonly deps: SessionManagerDeps
+
+  noteHostError(detail: string): void { this.hostGate?.record(detail); this.deps.onError(detail) }
+
+  constructor(deps: SessionManagerDeps) {
+    this.deps = deps
+    this.terminalActivity = {
+      userInput: marks => { for (const mark of marks) this.records?.noteUserInput(mark.sessionId, mark.at) },
+      pendingInputHint: counts => { this.pendingInputHints = counts },
+    }
     this.client = new HostClient({
-      descriptorFile: HostDescriptorPaths.descriptorFile(deps.configIdentity, deps.channel),
+      connection: deps.connection,
       // Every runtime event asks the same question - what does the Host have now - and one listing
       // answers it for all of them, so none of them is read for its own contents.
       onEvent: (event) => {
@@ -461,12 +495,9 @@ export class SessionManager {
       // listing's business, and the poll is what asks for that.
       onPresence: () => this.changed(),
       onResync: () => this.detach(this.refresh('resync'), 'A Host resync'),
-      onError: (detail) => { this.hostGate?.record(detail); deps.onError(detail) },
-      controllerId: deps.controllerId,
-      // A restarted client attaches before the dead client's lease lapses; its terminals take the
-      // lease that comes later without waiting for a keystroke (UA1-J09-9).
-      onLeaseGranted: () => this.terminals.leaseChanged(),
+      onError: detail => this.noteHostError(detail),
     })
+    this.processPriority = new SessionProcessPriority(deps.onError)
     this.hostGate = new HostGate(() => this.client.descriptor(), () => this.client.presence() === 'running',
       join(OrchestratorPaths.directory(deps.configIdentity, deps.channel), 'host-gate.json'))
     this.controller = new HostController({
@@ -482,8 +513,8 @@ export class SessionManager {
     })
     this.treeVersion = new HostTreeVersion(deps.applicationRoot)
     this.versioningModeOf = deps.versioningModeOf ?? (() => 'checkpoints')
-    this.worktrees = new GitWorktreeManager(new GitInvoker())
-    this.svnCommands = new WorktreeSvnCommands(new SvnInvoker(), new WorktreeLease(deps.instanceId ?? randomUUID()), async (root, reason) => {
+    this.worktrees = new GitWorktreeManager(new GitInvoker({ perf: deps.perf }))
+    this.svnCommands = new WorktreeSvnCommands(new SvnInvoker({ perf: deps.perf }), new WorktreeLease(deps.instanceId ?? randomUUID()), async (root, reason) => {
       const record = this.records?.list().find((item) => item.worktree !== undefined
         && PathCompare.comparable(item.worktree.worktreePath) === PathCompare.comparable(root))
       // The worker and its tools write svn while it works (for example, by setting svn:externals); only a
@@ -497,14 +528,14 @@ export class SessionManager {
       this.changed()
       return 'stop'
     })
-    this.svnWorktrees = new SvnWorktreeManager(this.svnCommands, deps.removeTree)
+    this.svnWorktrees = new SvnWorktreeManager(this.svnCommands, deps.removeTree, deps.svnAssembly)
     this.landedRows = new LandedRows({ svn: this.svnWorktrees, now: () => Date.now() })
     this.tools = new RunTools({
       applicationRoot: deps.applicationRoot,
       resourcesRoot: deps.resourcesRoot,
       environment: process.env,
     })
-    this.merge = new GitMergeManager(new GitInvoker())
+    this.merge = new GitMergeManager(new GitInvoker({ perf: deps.perf }))
     // Read-only by construction: with no snapshots directory every save is refused. The catalog has
     // one writer, the ProjectManager, and this is its second reader.
     this.catalog = CatalogView.load(deps.configDir, { report: deps.onError })
@@ -556,17 +587,8 @@ export class SessionManager {
     })
     this.steps = new SessionSteps({ changed: () => this.changed(), now: () => Date.now() })
     this.hostMemory = new HostMemoryWatch({ read: () => this.client.health(), now: () => Date.now() })
-    // The lease is shared rather than taken again: the Host holds one at a time, so a second
-    // controller identity here would take this client's own away from every `runtime.*` call.
-    this.terminals = new TerminalGateway({
-      descriptorOf: () => this.client.descriptor(),
-      leaseIdOf: () => this.client.controllerLeaseId(),
-      refOf: (sessionId) => this.terminalRefOf(sessionId),
-      onError: deps.onError,
-      onUserInput: (sessionId) => this.records?.noteUserInput(sessionId, Date.now()),
-      socketFactory: deps.terminalSocketFactory
-        ?? ((socketDeps) => new TerminalAttachSocket(socketDeps)),
-    })
+    this.terminals = deps.terminals
+    this.terminalsFeed = deps.terminalsFeed
     this.scriptLogs = new ScriptLogStore(OrchestratorPaths.scriptLogsDirectory(deps.configIdentity, deps.channel))
     this.results = new WorktreeResultsStore(OrchestratorPaths.worktreeResultsDirectory(deps.configIdentity, deps.channel), {
       now: () => Date.now(),
@@ -616,6 +638,9 @@ export class SessionManager {
       workflowOf: (record) => this.workflowOf(record),
       actionsOf: (record) => ({ sections: SessionWorkflows.sectionsOf(record, (runId) => this.records?.get(runId) ?? null, this.workflowLiveOf(record), this.scripts?.infoOf(record).scripts?.runs) }),
     })
+    this.starting = null
+    this.stopping = false
+    this.recordsSettlement = false
     this.waitNotices = new SvnWaitNotices(() => this.records)
     this.handoffs = new WorkerHandoffs(() => this.records, (record, args) => {
       const tool = this.tools.resolve('jamat-cli')
@@ -628,22 +653,28 @@ export class SessionManager {
   }
 
   /**
-   * Descriptor watch, connect, lease, first reconcile, events, monitor - and, when the client asked
-   * for it, the one automatic attempt at starting a Host. The client boots this as `void start()`,
+   * Read records, connect Host reads/events through the supplied connection, reconcile and monitor;
+   * when requested, attempt one automatic Host start. The client boots this as `void start()`,
    * so nothing here throws: everything that can go wrong is reported and the manager stays usable
    * with whatever did come up.
    */
-  async start(): Promise<void> {
-    if (this.started) return
+  start(): Promise<void> {
+    if (this.started || this.stopping) return this.starting ?? Promise.resolve()
     this.started = true
+    return this.starting = this.startNow()
+  }
+
+  private async startNow(): Promise<void> {
     try {
       // The records are read before anything else can run: a reconcile over an unloaded store would
       // find no sessions at all and call every live runtime on the Host an orphan.
       const lifecycle = await this.lifecycle()
+      if (this.stopping) return
       // Only folders: the runs an older build left are settled by the ordinary planning.
       await this.scripts?.sweep()
       await this.results.load()
       await this.notifyStore.load()
+      if (this.stopping) return
       this.client.start()
       this.armPoll()
       this.changed()
@@ -652,29 +683,37 @@ export class SessionManager {
         await lifecycle.nameConversationsOnStartup()
       })
       this.changed()
-      if (this.deps.autoStartHost) await this.controller.ensureRunningOnce()
+      if (!this.stopping && this.deps.autoStartHost) await this.controller.ensureRunningOnce()
     } catch (error) {
       this.deps.onError(`The session manager could not start: ${ErrorText.of(error)}`)
     }
   }
 
+  recordsSettled(): boolean { return this.recordsSettlement }
+
   /**
-   * Detach only: the socket closes, the lease is released if it can be, and no PTY dies.
-   *
-   * It is also the end of this manager. Starting it again would leave the descriptor watcher
-   * believing it had already reported the descriptor it is still holding, so the socket would never
-   * come back; the client builds one manager per process and disposes it when it quits.
+   * Quiesce terminal activity before flushing records, then settle orchestration work. The gateway
+   * remains alive with the Host lease until the composing app completes this drain and stops it.
+   * No PTY dies, and this disposed manager is not restarted.
    */
   async stop(): Promise<void> {
+    this.stopping = true
     this.started = false
     this.clearTimer()
     this.monitor.stop()
     this.runLines.stop()
-    this.terminals.closeAll()
-    await this.records?.flushUserInput()
+    await this.starting
+    try { await this.deps.closeTerminals() }
+    catch (error) {
+      try { this.deps.onError(`Terminal drain failed: ${ErrorText.of(error)}`) }
+      catch { /* Lost diagnostics must not skip persisted records during crash cleanup. */ }
+    }
+    const inputSettled = await this.records?.flushUserInput() ?? false
     await this.client.stop()
-    await this.settleWork()
-    await this.records?.settled()
+    const workSettled = await this.settleWork()
+    const recordsSettled = await this.records?.settlement() ?? false
+    this.flushChanged()
+    this.recordsSettlement = inputSettled && workSettled && recordsSettled
   }
 
   /**
@@ -692,22 +731,27 @@ export class SessionManager {
    * that will not drain must not hold a quit open for ever. Past the rounds this returns with work
    * still running and says so, which is the caller's cue that the directories are not theirs yet.
    */
-  private async settleWork(): Promise<void> {
+  private async settleWork(): Promise<boolean> {
     for (let round = 0; round < SessionManager.settleRoundsConst; round += 1) {
       const queue = this.queue
       await Promise.all([queue.catch(() => undefined), ...this.detached])
-      if (queue === this.queue && this.detached.size === 0) return
+      if (queue === this.queue && this.detached.size === 0) return true
     }
     this.deps.onError(
       'The session manager stopped with work still running: a queued operation or a detached pass '
       + 'did not finish in time, so something of this client may still be reading its directories',
     )
+    return false
   }
 
-  usageRecords() { return sessionUsageRecords(this.records?.list() ?? []) }
+  usageRecords() { return sessionUsageRecords(this.records?.listAll() ?? []) }
 
   snapshot(): SessionsSnapshot {
-    return this.snapshotValue ?? this.recompose()
+    if (this.dirty) this.flushChanged()
+    if (this.snapshotValue !== null) return this.snapshotValue
+    const composed = this.recompose()
+    this.emittedRevision = composed.revision
+    return composed
   }
 
   accountForLaunch(sessionId: string, launchId: string, at: number): import('./sessionAccounts').SessionAccountRef | null {
@@ -737,7 +781,7 @@ export class SessionManager {
     await this.lifecycle()
     const catalog = this.catalog.read()
     const entries: SessionLocalHistoryEntry[] = []
-    for (const record of this.records?.list() ?? []) {
+    for (const record of this.records?.listAll() ?? []) {
       switch (record.kind) {
         case 'shell': continue
         case 'agent': break
@@ -770,7 +814,7 @@ export class SessionManager {
         title: record.title,
         model: record.agent.model ?? null,
         createdAt: record.createdAt,
-        lastActivity: this.records?.lastUserInputAt(record.sessionId) ?? null,
+        lastActivity: this.records?.lastUserInputAt(record.sessionId) ?? record.lastUserInputAt ?? null,
         endedAt: record.endedAt ?? null,
         active: record.life === 'live' || record.life === 'starting',
       })
@@ -875,7 +919,7 @@ export class SessionManager {
 
   async transcriptContext(sessionId: string): Promise<SessionTranscriptContextResult> {
     await this.lifecycle()
-    const record = this.records?.get(sessionId)
+    const record = this.records?.getAny(sessionId)
     if (!record)
       return { ok: false, code: 'unknown-session', detail: `Session ${sessionId} does not exist` }
     const agent = record.kind === 'agent' ? record.agent : undefined
@@ -1003,6 +1047,8 @@ export class SessionManager {
     const held = new Map<string, boolean | null>()
     for (const record of this.results.list(filter)) {
       const dto = WorktreeResultsStore.dtoOf(record)
+      const session = this.records?.get(record.sessionId) ?? null
+      dto.mainUpdating = WorktreeResultsStore.mainUpdatingOf(record, session === null ? undefined : FinishProjection.action(session))
       if (filter.includeLandingProof !== false && (record.result === 'committed' || record.result === 'partial') && record.revisions.length > 0) {
         const key = LandedRows.proofKey(record.mainCopy, record.revisions)
         if (record.landedAt !== undefined) held.set(key, true)
@@ -1160,7 +1206,20 @@ export class SessionManager {
   async openHistorySession(
     spec: SessionHistoryOpenSpec,
   ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    await this.lifecycle()
+    for (const record of this.records?.archived() ?? []) {
+      if (record.agent?.agentId !== spec.agentId || record.agent.nativeSessionId !== spec.nativeSessionId) continue
+      const refused = await this.restored(record.sessionId)
+      if (refused !== null) return refused
+    }
     return this.tabTitled(this.operate((lifecycle) => lifecycle.openHistory(spec)))
+  }
+
+  /** An archived record goes back to the records file before an operation that needs it there. */
+  private async restored(sessionId: string): Promise<{ ok: false; code: 'op-rejected'; detail: string } | null> {
+    await this.lifecycle()
+    if (await this.records?.restore(sessionId) !== false) return null
+    return { ok: false, code: 'op-rejected', detail: `Session ${sessionId} is archived and could not be moved back to the records` }
   }
 
   async historyReferences(
@@ -1184,6 +1243,8 @@ export class SessionManager {
     sessionId: string,
     options?: { name?: string },
   ): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>> {
+    const refused = await this.restored(sessionId)
+    if (refused !== null) return refused
     return this.tabTitled(this.operate((lifecycle) => lifecycle.forkFrom(sessionId, options)))
   }
 
@@ -1215,6 +1276,8 @@ export class SessionManager {
 
   /** A person's resume, the window's Resume session and the worker-lost wait's Resume worker alike. */
   async reopenSession(sessionId: string): Promise<SessionsOpResult> {
+    const refused = await this.restored(sessionId)
+    if (refused !== null) return refused
     const result = await this.operate((lifecycle) => lifecycle.reopen(sessionId))
     // The session runs again whatever this write says; a refusal is reported, not answered.
     if (result.ok) await this.workerLiveness?.reopened(sessionId).catch((error: unknown) => this.deps.onError(`Session ${sessionId}: ${ErrorText.of(error)}`))
@@ -1306,7 +1369,15 @@ export class SessionManager {
    * finishing with something, and the reopen takes it off again, because running a session is the
    * opposite of being done with it. That is the established meaning of both, unchanged here.
    */
-  ratesChanged(): void { if (this.records) this.changed() }
+  ratesChanged(): void {
+    // The rate feed moves every few seconds while a session runs. A session shows only whether its
+    // account is exhausted and the account's label, which an account rename or removal reports here.
+    const exhausted = JSON.stringify((this.deps.rates?.() ?? []).map(rate => [rate.key, accountExhausted(rate),
+      this.deps.accounts?.labelOf?.(rate.key.agentId, rate.key.accountId) ?? null]))
+    if (exhausted === this.exhaustedAccounts) return
+    this.exhaustedAccounts = exhausted
+    if (this.records) this.changed()
+  }
 
   async switchAccount(sessionId: string, accountId: string): Promise<SessionsOpResult> {
     if (this.switchingAccounts.has(sessionId)) return { ok: false, code: 'locked', detail: 'An account switch is already in progress' }
@@ -1344,7 +1415,8 @@ export class SessionManager {
   }
 
   async restartSession(sessionId: string): Promise<SessionsOpResult> {
-    await this.lifecycle()
+    const refused = await this.restored(sessionId)
+    if (refused !== null) return refused
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
     if (record.life === 'live') {
@@ -1547,9 +1619,8 @@ export class SessionManager {
    */
   private liveIn(mainCopy: string, exceptId: string): SessionLiveState {
     if (!this.hostListed()) return { kind: 'unknown' }
-    return { kind: 'known', sessions: (this.records?.list() ?? [])
-      .filter((other) => other.sessionId !== exceptId && (other.life === 'live' || other.life === 'starting')
-        && other.scriptOf === undefined && other.worktree === undefined
+    return { kind: 'known', sessions: (this.records?.live() ?? [])
+      .filter((other) => other.sessionId !== exceptId && other.scriptOf === undefined && other.worktree === undefined
         && PathCompare.isInside(mainCopy, SessionWorkingDirectory.ofRecord(other)))
       .map((other) => ({ sessionId: other.sessionId, title: other.title, number: SessionTitle.partsOf(other.title).number })) }
   }
@@ -1769,7 +1840,7 @@ export class SessionManager {
     const placed = await (await this.lifecycle()).worktreePlacementOf(directory)
     if (!placed.ok) return placed
     const { countedProject, ...place } = placed.value
-    const token = countedProject === null ? null : await (await this.numbers()).next(countedProject, this.records?.list() ?? [])
+    const token = countedProject === null ? null : await (await this.numbers()).next(countedProject, this.records?.listAll() ?? [])
     return { ok: true, value: { ...place, token } }
   }
 
@@ -1803,7 +1874,7 @@ export class SessionManager {
     // The lifecycle load is what reads the records, and the records are one of the three seeds.
     await this.lifecycle()
     const numbers = await this.numbers()
-    const token = await work(numbers, this.records?.list() ?? [])
+    const token = await work(numbers, this.records?.listAll() ?? [])
     if (token === null)
       return {
         ok: false,
@@ -1903,46 +1974,9 @@ export class SessionManager {
   }
 
   /**
-   * A surface asks to watch one session and gets one answer now; everything after it arrives as
-   * frames under the same id. The id is the surface's own, minted per attempt, so a surface that was
-   * torn down and built again never collides with what it used to be.
-   *
-   * Not on the operation queue, and deliberately: attaching reads nothing the queue protects and
-   * changes no record. Queueing it would make opening a terminal wait behind a worktree install.
-   */
-  terminalAttach(
-    attachId: string,
-    spec: TerminalAttachSpec,
-    owner: TerminalAttachOwner,
-  ): TerminalAttachResult {
-    return this.terminals.attach(attachId, spec, owner)
-  }
-
-  terminalInput(attachId: string, data: string): TerminalInputResult {
-    return this.terminals.input(attachId, data)
-  }
-
-  terminalResize(attachId: string, cols: number, rows: number): TerminalResizeResult {
-    return this.terminals.resize(attachId, cols, rows)
-  }
-
-  terminalSetGeometryActive(attachId: string, active: boolean): TerminalResizeResult {
-    return this.terminals.setGeometryActive(attachId, active)
-  }
-
-  terminalDetach(attachId: string): void {
-    this.terminals.detach(attachId)
-  }
-
-  /** One client is gone. No runtime dies, exactly as when the whole manager stops. */
-  terminalDetachAll(attachIds: readonly string[]): void {
-    this.terminals.detachAll(attachIds)
-  }
-
-  /**
    * What one agent session's input box holds right now, with the work hint beside it, read from the
    * same `runtime.inspect` projection the work-state monitor classifies. One Host call, no attach.
-   * Not on the operation queue, for the reason `terminalAttach` is not: it reads nothing the queue
+   * Not on the operation queue, for the reason terminal attachment is not: it reads nothing the queue
    * protects, and a delivery polling it must not wait behind a worktree install.
    */
   async terminalComposer(sessionId: string): Promise<TerminalComposerResult> {
@@ -1996,7 +2030,7 @@ export class SessionManager {
    */
   debugStatus(): HostDebugStatus {
     const descriptor = this.client.descriptor()
-    const client = this.client.debugView()
+    const client = { ...this.deps.connectionDebug(), ...this.client.debugView() }
     return {
       capturedAt: Date.now(),
       presence: this.controller.presence(),
@@ -2038,6 +2072,12 @@ export class SessionManager {
         orphans: this.orphans.length,
       },
     }
+  }
+
+  processTree(): { roots: SessionProcessRoot[]; hostPid: number | null; hostStartedAt: number | null } {
+    const descriptor = this.client.descriptor()
+    return { roots: SessionProcessTreeView.roots([...this.runtimes.values()], this.snapshot().sessions),
+      hostPid: descriptor?.pid ?? null, hostStartedAt: descriptor?.processStartedAt ?? null }
   }
 
   /**
@@ -2129,6 +2169,7 @@ export class SessionManager {
     const listing = listed.ok ? listed.value : null
     if (listing !== null) this.applyListing(listing)
     const changes = await lifecycle.reconcile(listing)
+    await this.publishTerminalRefs()
     if (listing !== null) await this.workerLiveness?.observe(this.records?.list() ?? [], (text) => this.deps.onError(text))
     if (listing !== null) {
       this.applyOrphans(listing, changes)
@@ -2141,7 +2182,14 @@ export class SessionManager {
   }
 
   private applyListing(listing: RuntimeListResult): void {
+    this.runtimeHostId = listing.hostInstanceId
+    this.changed()
     this.runtimes = new Map(listing.sessions.map((session) => [session.runtimeSessionId, session]))
+    // Every operation ends with a listing, so a session started by one is lowered before it returns.
+    this.processPriority.observe(listing.sessions, (runtimeSessionId) => {
+      const record = this.records?.get(runtimeSessionId) ?? null
+      return record !== null && (record.kind === 'agent' || record.scriptOf !== undefined)
+    }, this.deps.processPriorityOf?.() ?? 'below-normal')
   }
 
   /** Which runtimes are orphans is the reconciler's verdict; what they are is the listing's. */
@@ -2174,6 +2222,7 @@ export class SessionManager {
         ),
         report: this.deps.onError,
         removeSessionLogs: (sessionId, keepIds) => this.scriptLogs.removeParent(sessionId, keepIds),
+        perf: this.deps.perf,
       },
     )
     this.records = records
@@ -2203,9 +2252,9 @@ export class SessionManager {
       cli: () => this.tools.agentCli(),
       instance: { configIdentity: this.deps.configIdentity, channel: this.deps.channel },
     }
-    const operations = new WorktreeOperations({ records, scripts, svn: this.svnWorktrees, commands: this.svnCommands,
+    const operations = new WorktreeOperations({ records, scripts, perf: this.deps.perf, svn: this.svnWorktrees, commands: this.svnCommands,
       results: this.results, handoffs: this.handoffs, resolver, now: () => Date.now(), newId: () => randomUUID(),
-      busyReason: (id) => this.workerBusy(id), holdInput: (id) => this.terminals.holdInput(id), changed: () => this.changed() })
+      busyReason: (id) => this.workerBusy(id), terminals: this.terminals, changed: () => this.changed() })
     this.ready = operations.ready
     this.syncStep = operations.sync
     const lifecycle = new SessionLifecycle({
@@ -2221,9 +2270,10 @@ export class SessionManager {
       // Deferred rather than the store itself: the numbers file is read on first use, and only a
       // create, a promotion, a history resume or a fork ever asks it anything.
       numbers: {
-        allocate: async (projectPath, list) => (await this.numbers()).allocate(projectPath, list),
+        // The archived records carry titles whose numbers are spent too.
+        allocate: async (projectPath, list) => (await this.numbers()).allocate(projectPath, [...list, ...this.records?.archived() ?? []]),
         highestIssued: async (projectPath, list) =>
-          (await this.numbers()).highestIssued(projectPath, list),
+          (await this.numbers()).highestIssued(projectPath, [...list, ...this.records?.archived() ?? []]),
       },
       codexSessions: new CodexSessionFiles({
         directory: join(OrchestratorPaths.directory(this.deps.configIdentity, this.deps.channel), 'codex-sessions'),
@@ -2245,8 +2295,8 @@ export class SessionManager {
         report: this.deps.onError,
       }),
       scripts,
-      finish: { commands: this.svnCommands, sync: this.syncStep, handoffs: this.handoffs,
-        idle: (id) => this.workerIdle(id), busyReason: (id) => this.workerBusy(id), holdInput: (id) => this.terminals.holdInput(id),
+      finish: { perf: this.deps.perf, commands: this.svnCommands, sync: this.syncStep, handoffs: this.handoffs,
+        idle: (id) => this.workerIdle(id), busyReason: (id) => this.workerBusy(id), terminals: this.terminals,
         awaitExit: (id) => this.awaitRuntimeExit(id), liveness: (id, step) => this.workerLiveness?.run(id, step) ?? Promise.resolve() },
       activityOf: (sessionId) => { const record = records.get(sessionId); return record === null ? null : this.activityOf(record) },
       svnActions: {
@@ -2339,9 +2389,19 @@ export class SessionManager {
       this.detach(this.observeHostMemory(), 'The Host memory reading')
       await this.refresh('poll')
       if (this.worktreeRecovery !== null) this.detach(this.worktreeRecovery.retry(), 'The interrupted worktree recovery')
+      if (this.lastTickAt - this.lastArchiveAt >= SessionManager.archiveEveryMillisecondsConst) {
+        this.lastArchiveAt = this.lastTickAt
+        this.detach(this.archiveEnded(), 'The archive of ended sessions')
+      }
     } finally {
       this.armPoll()
     }
+  }
+
+  /** Old ended records leave the records file; a landed row still waiting for its UPDATE stays. */
+  private async archiveEnded(): Promise<void> {
+    const moved = await this.records?.archiveEnded(Date.now(), (record) => LandedRows.landingOf(record) === null || record.completed === true) ?? 0
+    if (moved > 0) this.changed()
   }
 
   private async observeHostMemory(): Promise<void> {
@@ -2440,13 +2500,47 @@ export class SessionManager {
     return { ok: false, command: null, args: [], cwd: null, refusal: located.reason }
   }
 
+  /**
+   * Marks the snapshot stale and composes it once per burst: on the next turn of the loop, and at
+   * most once per `recomposeGapMillisecondsConst`. A pull in between composes at once, so a reader
+   * never gets older content than the last change; `onChanged` still fires once per moved revision.
+   */
   private changed(): void {
-    const previous = this.snapshotValue
-    if (this.recompose() !== previous) this.deps.onChanged()
+    if (this.dirty) return
+    this.dirty = true
+    const wait = this.lastFlushAt + SessionManager.recomposeGapMillisecondsConst - Date.now()
+    this.flushTimer = wait <= 0 ? { kind: 'immediate', handle: setImmediate(() => this.flushChanged()).unref() }
+      : { kind: 'timeout', handle: setTimeout(() => this.flushChanged(), wait).unref() }
+  }
+
+  private flushChanged(): void {
+    this.clearFlushTimer()
+    if (!this.dirty) return
+    this.dirty = false
+    this.lastFlushAt = Date.now()
+    const revision = this.recompose().revision
+    if (revision === this.emittedRevision) return
+    this.emittedRevision = revision
+    this.deps.onChanged()
+  }
+
+  private clearFlushTimer(): void {
+    const timer = this.flushTimer
+    if (timer === null) return
+    this.flushTimer = null
+    switch (timer.kind) {
+      case 'immediate': clearImmediate(timer.handle); break
+      case 'timeout': clearTimeout(timer.handle); break
+      default: throw new Error(`Unknown flush timer: ${JSON.stringify(timer satisfies never)}`)
+    }
   }
 
   /** The revision moves only where the content did, so the two are one answer and never two. */
   private recompose(): SessionsSnapshot {
+    return this.deps.perf ? this.deps.perf.span('sessions.recompose', () => this.composeSnapshot()) : this.composeSnapshot()
+  }
+
+  private composeSnapshot(): SessionsSnapshot {
     const composed = this.compose()
     const serialized = JSON.stringify(composed)
     const previous = this.snapshotValue
@@ -2503,7 +2597,7 @@ export class SessionManager {
       activity: this.activityOf(record),
       admits: this.admitsOf(record),
     }
-    if (record.binding !== null) info.runtime = `${record.binding.hostInstanceId}:${record.binding.generation}`
+    if (record.binding !== null && this.terminalAcknowledged(record.sessionId)) info.runtime = `${record.binding.hostInstanceId}:${record.binding.generation}`
     const activityDetail = this.monitor.activityDetail(record.sessionId)
     if (activityDetail !== null) info.activityDetail = activityDetail
     if (this.monitor.compacting(record.sessionId)) info.compacting = true
@@ -2512,10 +2606,8 @@ export class SessionManager {
         agentId: record.agent.agentId,
         nativeSessionId: record.agent.nativeSessionId,
         accountId: record.agent.accountId ?? 'main',
-        ...(accountWindows(this.deps.rates?.().find(rate => rate.key.agentId === record.agent!.agentId
-          && rate.key.accountId === (record.agent!.accountId ?? 'main'))).some(window => window.model === undefined
-          && (window.durationMinutes === 300 || window.durationMinutes === 10_080) && window.usedPercent >= 100)
-          ? { accountExhausted: true } : {}),
+        ...(accountExhausted(this.deps.rates?.().find(rate => rate.key.agentId === record.agent!.agentId
+          && rate.key.accountId === (record.agent!.accountId ?? 'main'))) ? { accountExhausted: true } : {}),
         ...(record.agent.accountId && record.agent.accountId !== 'main'
           ? { accountLabel: this.deps.accounts?.labelOf?.(record.agent.agentId, record.agent.accountId) ?? record.agent.accountId } : {}),
       }
@@ -2523,7 +2615,7 @@ export class SessionManager {
     if (record.worktree) info.worktree = this.worktreeInfoOf(record, record.worktree)
     if (record.worktreeLifecycle) info.worktreeView = WorktreeLifecycle.viewOf(record)
     const action = FinishProjection.action(record)
-    if (action) info.svnAction = SvnActionStages.infoOf(action)
+    if (action) info.svnAction = SvnActionStages.infoOf(action, WorktreeWords.conflictOwnerOf(record.worktreeLifecycle, action.kind))
     // A run has no client step and a parent no live line, so the two never compete.
     const step = this.steps.infoOf(record) ?? this.liveStepOf(record)
     if (step !== null) info.step = step
@@ -2705,8 +2797,7 @@ export class SessionManager {
     if (record.worktree === undefined) return false
     if (record.life === 'live' || record.life === 'starting') return false
     if (SessionScriptDefinitions.judging('finish', record)) return false
-    return !(this.records?.list() ?? []).some((run) => run.scriptOf?.sessionId === record.sessionId
-      && (run.life === 'live' || run.life === 'starting'))
+    return !(this.records?.runsOf(record.sessionId) ?? []).some((run) => run.life === 'live' || run.life === 'starting')
   }
 
   /**
@@ -2852,9 +2943,9 @@ export class SessionManager {
       return `a message to the worker is not delivered yet: ${line.length > 160 ? `${line.slice(0, 159)}…` : line}`
     }
     const busy = WorkerIdle.busyOf(this.activityOf(record), this.monitor.polledAt(sessionId),
-      this.terminals.pendingInput(sessionId) + (this.pendingDeliveries.get(sessionId) ?? 0))
+      (this.pendingInputHints.get(sessionId) ?? 0) + (this.pendingDeliveries.get(sessionId) ?? 0))
     if (busy !== null) return busy
-    const child = (this.records?.list() ?? []).find((child) => child.parent?.sessionId === sessionId && child.life === 'live'
+    const child = (this.records?.live() ?? []).find((child) => child.parent?.sessionId === sessionId && child.life === 'live'
       && (child.kind !== 'agent' || !WorkerIdle.of(this.activityOf(child), this.monitor.polledAt(child.sessionId), this.pendingDeliveries.get(child.sessionId) ?? 0)))
     return child === undefined ? null : `its child session ${child.title || child.sessionId} is still working`
   }
@@ -2866,14 +2957,40 @@ export class SessionManager {
 
   /**
    * The whole `RuntimeRef` an attach needs, out of what this class already holds: the session id is
-   * the runtime id forever, the generation comes from the listing and the Host names itself in the
-   * descriptor. It is resolved per attempt rather than handed out once, because a reopened session
-   * runs under a new generation and a Host that restarted has none of our runtimes at all.
+   * the runtime id forever; generation and Host identity come from one authoritative listing.
    */
+  private terminalAcknowledged(sessionId: string): boolean {
+    const current = this.terminalRefOf(sessionId)
+    const acknowledged = this.acknowledgedRefs.get(sessionId)
+    const binding = this.records?.get(sessionId)?.binding
+    return current.ok && acknowledged?.ok === true
+      && binding?.hostInstanceId === current.ref.hostInstanceId && binding.generation === current.ref.generation
+      && current.ref.hostInstanceId === acknowledged.ref.hostInstanceId
+      && current.ref.generation === acknowledged.ref.generation
+  }
+
+  private async publishTerminalRefs(): Promise<void> {
+    const next = new Map<string, TerminalRefResolution>()
+    for (const record of this.records?.list() ?? []) {
+      const resolution = this.terminalRefOf(record.sessionId)
+      next.set(record.sessionId, resolution)
+    }
+    const changes: TerminalRefChange[] = []
+    for (const [sessionId, resolution] of next)
+      if (!isDeepStrictEqual(resolution, this.acknowledgedRefs.get(sessionId)))
+        changes.push({ sessionId, resolution })
+    for (const sessionId of this.acknowledgedRefs.keys())
+      if (!next.has(sessionId)) changes.push({ sessionId, resolution: { ok: false, code: 'unknown-session' } })
+    if (changes.length === 0) return
+    await this.terminalsFeed.publishRefs(changes)
+    this.acknowledgedRefs = next
+    this.changed()
+  }
+
   private terminalRefOf(sessionId: string): TerminalRefResolution {
     if (!this.records?.get(sessionId)) return { ok: false, code: 'unknown-session' }
     const runtime = this.runtimes.get(sessionId)
-    const hostInstanceId = this.client.descriptor()?.hostInstanceId
+    const hostInstanceId = this.runtimeHostId
     // `not-live` is the Host having NO runtime for this record - what a restart of the machine
     // leaves behind. A runtime it still has and no longer runs is a different thing and resolves:
     // its last screen is what says why it stopped, and refusing it threw that away.

@@ -221,6 +221,118 @@ describe('app-host/app/attach/attachConnection', () => {
     }))
     expect(harness.terminals.latest().writes).toEqual([])
   })
+
+  it('keeps streamed output, resize and exit behind final consumption while input remains live', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    const lease = h.leases.acquire('stream-writer')
+    await h.send({ type: 'terminal.attach', target: h.target, snapshotStreamId: 'stream', role: 'interactive', controllerLeaseId: lease.controllerLeaseId })
+    expect(h.frames().map(frame => frame.type)).toEqual(['terminal.attached'])
+    await h.send({ type: 'terminal.input', data: 'initial' })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 0 })
+    await h.send({ type: 'terminal.input', data: 'during' })
+    h.terminals.latest().emitData('live')
+    h.manager.terminalResize(h.target, 101, 31)
+    h.terminals.latest().emitExit(7)
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 1 })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 2 })
+    expect(h.frames().map(frame => frame.type)).toEqual(['terminal.attached', 'terminal.snapshot-start', 'terminal.snapshot-chunk', 'terminal.snapshot-end'])
+    expect(h.terminals.latest().writes).toEqual(['initial', 'during'])
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 3 })
+    expect(h.frames().slice(-4).map(frame => frame.type)).toEqual(['terminal.data', 'terminal.resize', 'terminal.snapshot-complete', 'terminal.exit'])
+  })
+
+  it('resnapshots a resize-triggered live-buffer overflow instead of silently losing output or geometry', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    await h.send({ type: 'terminal.attach', target: h.target, snapshotStreamId: 'stream', role: 'observer' })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 0 })
+    h.terminals.latest().emitData('x'.repeat(1_048_400))
+    h.manager.terminalResize(h.target, 101, 31)
+    h.manager.terminalResize(h.target, 102, 32)
+    h.terminals.latest().emitExit(3)
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 1 })
+    expect(h.frames().at(-1)?.type).toBe('terminal.snapshot-end')
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'stream', index: 2 })
+    expect(h.frames().slice(-3).map(frame => frame.type)).toEqual(['terminal.stream-truncated', 'terminal.snapshot-complete', 'terminal.exit'])
+    expect(h.frames().filter(frame => frame.type === 'terminal.data')).toEqual([])
+  })
+
+  it('never sends or closes a replacement after an old snapshot promise resolves or rejects', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    const original = h.manager.terminalSnapshot.bind(h.manager)
+    const snapshot = await original(h.target)
+    let resolve!: (value: typeof snapshot) => void
+    vi.spyOn(h.manager, 'terminalSnapshot').mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const pending = h.send({ type: 'terminal.attach', target: h.target, role: 'observer' })
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'new' })
+    const before = h.frames().length
+    resolve(snapshot)
+    await pending
+    expect(h.frames()).toHaveLength(before)
+    expect(h.closed()).toBe(0)
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'old', index: 0 })
+    expect(h.frames()).toHaveLength(before)
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'new', index: 0 })
+    expect(h.frames().at(-1)?.type).toBe('terminal.snapshot-start')
+  })
+
+  it('streams valid replay without reset and uses a full snapshot for a truncated epoch', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    const delta = vi.spyOn(h.manager, 'terminalDelta')
+    delta.mockReturnValueOnce({ data: 'replay', outputSeq: 20, outputEpoch: 1, truncated: false })
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'replay', outputEpoch: 1, sinceSeq: 5 })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'replay', index: 0 })
+    expect(h.frames().at(-1)).toMatchObject({ type: 'terminal.snapshot-start', reset: false, projection: { outputSeq: 20 } })
+    delta.mockReturnValueOnce({ data: 'lost-ring', outputSeq: 40, outputEpoch: 2, truncated: true })
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'reset', outputEpoch: 1, sinceSeq: 5 })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'reset', index: 0 })
+    expect(h.frames().at(-1)).toMatchObject({ type: 'terminal.snapshot-start', reset: true })
+  })
+
+  it('drops only geometry and data covered by the exact capture tick, retaining later resize and exit', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    const original = h.manager.terminalSnapshot.bind(h.manager)
+    let capture!: () => Promise<void>
+    vi.spyOn(h.manager, 'terminalSnapshot').mockImplementationOnce((ref, onCaptured) => new Promise(resolve => {
+      capture = async () => resolve(await original(ref, onCaptured))
+    }))
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'capture' })
+    const starting = h.send({ type: 'terminal.snapshot-next', streamId: 'capture', index: 0 })
+    h.terminals.latest().emitData('covered')
+    h.manager.terminalResize(h.target, 101, 31)
+    await capture(); await starting
+    expect(h.frames().at(-1)).toMatchObject({ type: 'terminal.snapshot-start', projection: { cols: 101, rows: 31 } })
+    h.manager.terminalResize(h.target, 102, 32)
+    h.terminals.latest().emitExit(9)
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'capture', index: 1 })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'capture', index: 2 })
+    expect(h.frames().filter(frame => frame.type === 'terminal.resize')).toEqual([
+      { type: 'terminal.resize', runtimeSessionId: h.target.runtimeSessionId, generation: 1, cols: 102, rows: 32 },
+    ])
+    expect(h.frames().filter(frame => frame.type === 'terminal.data')).toEqual([])
+    expect(h.frames().at(-1)).toMatchObject({ type: 'terminal.exit', exitCode: 9 })
+  })
+
+  it('ignores a stale capture callback without clearing replacement output', async () => {
+    const h = await AttachConnectionTest.harness(directories)
+    const original = h.manager.terminalSnapshot.bind(h.manager)
+    const projection = await original(h.target)
+    let captured!: () => void, finish!: (value: typeof projection) => void
+    vi.spyOn(h.manager, 'terminalSnapshot').mockImplementationOnce((_ref, onCaptured) => new Promise(resolve => {
+      captured = onCaptured!; finish = resolve
+    }))
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'old' })
+    const old = h.send({ type: 'terminal.snapshot-next', streamId: 'old', index: 0 })
+    await h.send({ type: 'terminal.attach', target: h.target, role: 'observer', snapshotStreamId: 'new' })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'new', index: 0 })
+    h.terminals.latest().emitData('replacement output')
+    captured(); finish(projection); await old
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'new', index: 1 })
+    await h.send({ type: 'terminal.snapshot-next', streamId: 'new', index: 2 })
+    expect(h.frames().filter(frame => frame.type === 'terminal.data')).toEqual([
+      expect.objectContaining({ delta: 'replacement output' }),
+    ])
+    expect(h.closed()).toBe(0)
+  })
 })
 
 class AttachConnectionTest {

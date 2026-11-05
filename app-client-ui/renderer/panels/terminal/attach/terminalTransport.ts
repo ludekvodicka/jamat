@@ -1,3 +1,4 @@
+import { RendererPerf } from '../../../perf/rendererPerf'
 import type {
   TerminalFrame,
 } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
@@ -10,7 +11,7 @@ import type {
 } from '../../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type { IpcResult } from '../../../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../../../shared/appClientUiReport'
-import type { TerminalClipboardPaste } from '../../../../shared/terminalClipboardPaste'
+import type { TerminalClipboardPaste } from '../../../../../lib-orchestrator/sessionManager/terminalClipboardPaste'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import { IpcFailure } from '../../../ipc/ipcFailure'
 import { AppControl } from '../../../ipc/appControl'
@@ -61,7 +62,7 @@ export interface TerminalAttachTransport {
   /** What was under a right click, sent to be given meaning. */
   detect?(capture: TerminalMenuCapture): Promise<IpcResult<TerminalDetectResult>>
   /** Frames for THIS attach only; the returned function stops them. */
-  onFrame(handler: (frame: TerminalFrame) => void): () => void
+  onFrame(handler: (frame: TerminalFrame) => void | Promise<void>): () => void
 }
 
 /**
@@ -114,10 +115,10 @@ export class TerminalTransports {
           if (detail === null) return null
           return { detail, code: IpcFailure.codeOf(answer) }
         },
-        input: (data) => { void window.appClient.terminal.input(attachId, data) },
+        input: (data) => { RendererPerf.current.input(attachId); void window.appClient.terminal.input(attachId, data) },
         resize: (cols, rows) => { void window.appClient.terminal.resize(attachId, cols, rows) },
         setActive: (active) => { void window.appClient.terminal.active(attachId, active) },
-        detach: () => { void window.appClient.terminal.detach(attachId) },
+        detach: () => { RendererPerf.current.detach(attachId); void window.appClient.terminal.detach(attachId) },
         clipboardWrite: (text) => {
           // The answer is read, because it means something: false is another process holding the
           // clipboard for all eight attempts, so the copy is NOT there. Dropped, the user watched a
@@ -134,7 +135,7 @@ export class TerminalTransports {
         agentSharesClipboard: true,
         detect: (capture) => window.appClient.terminalMenu.detect(attachId, capture),
         onFrame: (handler) => window.appClient.onTerminalFrame((id, frame) => {
-          if (id === attachId) handler(frame)
+          if (id === attachId) { RendererPerf.current.frame(attachId, frame); return handler(frame) }
         }),
       }),
     }
@@ -170,6 +171,7 @@ export class TerminalTransports {
           return { detail, code }
         },
         input: (data) => {
+          RendererPerf.current.input(attachId)
           void window.appClient.remote.terminalInput(remoteEndpointId, attachId, data)
         },
         resize: (cols, rows) => {
@@ -178,7 +180,7 @@ export class TerminalTransports {
         setActive: (active) => {
           void window.appClient.remote.terminalActive(remoteEndpointId, attachId, active)
         },
-        detach: () => { void window.appClient.remote.terminalDetach(remoteEndpointId, attachId) },
+        detach: () => { RendererPerf.current.detach(attachId); void window.appClient.remote.terminalDetach(remoteEndpointId, attachId) },
         // The general clipboard rather than the attach-bound one: this machine is where the copy
         // has to land, and there is nothing on the far side to hold a clipboard against.
         clipboardWrite: (text) => { void window.appClient.clipboard.writeText(text) },
@@ -191,7 +193,7 @@ export class TerminalTransports {
         agentSharesClipboard: false,
         ...(detect ? { detect } : {}),
         onFrame: (handler) => window.appClient.onRemoteTerminalFrame((endpointId, id, frame) => {
-          if (endpointId === remoteEndpointId && id === attachId) handler(frame)
+          if (endpointId === remoteEndpointId && id === attachId) { RendererPerf.current.frame(attachId, frame); return handler(frame) }
         }),
       }),
     }

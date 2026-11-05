@@ -19,6 +19,8 @@ export interface TerminalProjectionDelta {
  * caller - it is this Host deciding that nothing has ever read a ring from an attach.
  */
 export interface TerminalSnapshotOptions {
+  /** Runs in the same tick as serialization, before later output or resizes can be observed. */
+  onCaptured?: () => void
   /** Characters of the ring from its end; `null` sends none and `'all'` sends the whole ring. */
   rawTailChars: number | 'all' | null
   /** Scrollback rows above the viewport; `null` serializes every row the buffer holds. */
@@ -217,7 +219,7 @@ export class TerminalProjection {
     const tail = this.writtenSeqValue >= this.outputSeqValue
       ? { data: '', truncated: false }
       : computeRingDelta(this.ring, this.outputSeqValue, this.writtenSeqValue)
-    return {
+    const snapshot: TerminalProjectionSnapshot = {
       runtimeSessionId: this.runtimeSessionId,
       generation: this.generation,
       outputEpoch: this.outputEpoch,
@@ -238,6 +240,8 @@ export class TerminalProjection {
       alive,
       lastOutputAt: this.lastOutputAtValue,
     }
+    options.onCaptured?.()
+    return snapshot
   }
 
   private screenLines(scrollbackRows: number): string[] {

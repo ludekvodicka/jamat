@@ -30,6 +30,12 @@ describe('projectPool', () => {
     const series = projectPool([sample(0, 90, hour), sample(2 * hour, 10)], account, 2 * hour, 3 * hour)
     expect(series.burnPerHour).toBe(5)
   })
+  it('counts a percent once when the status line and the poll round it differently', () => {
+    const statusLine = (at: number, used: number): RateSample => ({ ...sample(at, used), source: 'statusline' })
+    const series = projectPool([statusLine(0, 11), sample(0.25 * hour, 12), statusLine(0.5 * hour, 11),
+      sample(0.75 * hour, 12), statusLine(hour, 11), sample(1.5 * hour, 13), statusLine(2 * hour, 12)], account, 2 * hour, 3 * hour)
+    expect(series.burnPerHour).toBe(1)
+  })
   it('combines staggered accounts while distinguishing first empty, pool empty and a later reset', () => {
     const keys = [...account, { agentId: 'claude' as const, accountId: 'work' }]
     const work = (at: number, used: number): RateSample => ({ ...sample(at, used, 8 * hour), accountId: 'work' })

@@ -60,7 +60,7 @@ class CaptureWorkstate {
    * path that does not exist - and the corpus it exists to protect was writable after all.
    */
   private static readonly fixturesDirConst = join(
-    fileURLToPath(new URL('../../', import.meta.url)),
+    fileURLToPath(new URL('../..', import.meta.url)),
     'lib-orchestrator', 'sessionManager', 'workState', 'fixtures',
   )
   private static readonly descriptorFileNameConst = 'descriptor.json'

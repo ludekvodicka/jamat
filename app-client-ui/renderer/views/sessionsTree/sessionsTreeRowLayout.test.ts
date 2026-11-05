@@ -32,6 +32,11 @@ describe('app-client-ui/renderer/views/sessionsTree/row layout', () => {
     expect(RowCss.declarationsOf('.jamat-sessions__actions')).toMatch(/flex:\s*none;/)
   })
 
+  it('keeps the agent and worktree marks whole beside a long name', () => {
+    expect(RowCss.declarationsOf('.jamat-sessions__row > :is(.jamat-sessions__agent, .jamat-sessions__worktree)'))
+      .toMatch(/flex:\s*none;/)
+  })
+
   // Measured in Electron 43 with this stylesheet: the marks at flex-shrink 1000 still left the title
   // 0.05 px short of "001 - J05 W1", and the ellipsis then replaced "W1" with "...".
   it('never takes a sub-pixel from a short name, and lets a long one shrink only to its floor', () => {

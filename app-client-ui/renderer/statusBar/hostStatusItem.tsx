@@ -59,7 +59,7 @@ export interface HostReading {
 
 /**
  * The one derivation of what the Host's presence means on screen. The status bar item below and the
- * Debug window's host section both read it here rather than each switching on `presence`, because
+ * Debug tab's host section both read it here rather than each switching on `presence`, because
  * two switches on the same three-valued field are two answers waiting to disagree. The sessions
  * panel used to be a third reader; it says nothing about the Host now, and the bar is the one place
  * this is drawn.

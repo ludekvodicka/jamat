@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { RemoteControlLiveTerminal } from './remoteControlLiveTerminal'
 
 import type {
   TerminalAttachResult,
@@ -11,12 +12,12 @@ import type {
 import type { AgentWorkHint } from '../sessionManager/workState/agentWorkInspector.types'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
-  TerminalAttachOwner,
+  TerminalPort,
+  EditTransaction,
   TerminalInputResult,
-  TerminalResizeResult,
-} from '../sessionManager/terminals/terminalGateway'
+} from '../sessionManager/terminalPort'
 import { ErrorText } from '../shared/errorText'
-import type { PastedFileChunk, PastedFileStore } from '../pastedFiles/pastedFileStore'
+import type { PastedFileStore } from '../pastedFiles/pastedFileStore'
 import type {
   RemoteControlTerminalDeliverOptions,
   RemoteControlTerminalDeliverProofPort,
@@ -37,22 +38,12 @@ import { RemoteControlDeliverConst } from './remoteControlProtocol'
 
 export interface RemoteControlTerminalSessionPort {
   deliveryPending?(sessionId: string, pending: boolean): void
-  terminalAttach(
-    attachId: string,
-    spec: TerminalAttachSpec,
-    owner: TerminalAttachOwner,
-  ): TerminalAttachResult
-  terminalInput(attachId: string, data: string): TerminalInputResult
-  terminalResize(attachId: string, cols: number, rows: number): TerminalResizeResult
-  terminalSetGeometryActive(attachId: string, active: boolean): TerminalResizeResult
-  terminalDetach(attachId: string): void
-  terminalDetachAll(attachIds: readonly string[]): void
   terminalComposer(sessionId: string): Promise<TerminalComposerResult>
   terminalComposerContent(sessionId: string): Promise<TerminalComposerContentResult>
 }
 
-/** Synchronous by contract: nothing may reach the terminal between the store and the erase. */
-export type RemoteControlTerminalKeep = (text: string) => { ok: true } | { ok: false; detail: string }
+export type RemoteControlTerminalKeepResult = { ok: true } | { ok: false; detail: string }
+export type RemoteControlTerminalKeep = (text: string) => RemoteControlTerminalKeepResult | Promise<RemoteControlTerminalKeepResult>
 
 export type RemoteControlTerminalTakeRefusal =
   | 'unknown-session'
@@ -94,41 +85,7 @@ export interface RemoteControlTerminalDeps {
   files?: Pick<PastedFileStore, 'saveImage' | 'receive'>
 }
 
-export interface RemoteControlLiveTerminalAttachDto {
-  attachId: string
-  sessionId: string
-}
-
-export interface RemoteControlLiveTerminalInputDto {
-  attachId: string
-  accepted: true
-  characterCount: number
-}
-
-export interface RemoteControlLiveTerminalPasteImageDto {
-  attachId: string
-  /** The saved file on THIS computer, which the caller pastes into the prompt as text. */
-  path: string
-}
-
-export interface RemoteControlLiveTerminalPasteFileDto {
-  attachId: string
-  /** Bytes saved so far. */
-  received: number
-  /** The saved file on THIS computer once the last chunk arrived, null before. */
-  path: string | null
-}
-
-export interface RemoteControlLiveTerminalResizeDto {
-  attachId: string
-  accepted: true
-  applied: boolean
-}
-
-interface LiveTerminalAttachment {
-  internalAttachId: string
-  sessionId: string
-}
+export type { RemoteControlLiveTerminalAttachDto, RemoteControlLiveTerminalInputDto, RemoteControlLiveTerminalPasteImageDto, RemoteControlLiveTerminalPasteFileDto, RemoteControlLiveTerminalResizeDto } from './remoteControlLiveTerminal'
 
 interface UserTurns {
   count: number
@@ -137,6 +94,7 @@ interface UserTurns {
 
 /** Everything one delivery has learned so far; failure `data` is read off it. */
 interface DeliverState {
+  pendingWrite: Promise<RemoteControlStepResult<null>> | null
   done: boolean
   attached: boolean
   started: boolean
@@ -160,6 +118,9 @@ type DeliverFinish = (result: RemoteControlStepResult<RemoteControlTerminalDeliv
 
 /** What one import has done so far; whether a stop is a refusal or partial is read off it. */
 interface TakeState {
+  transaction: EditTransaction | null
+  keepingWork: Promise<RemoteControlTerminalKeepResult> | null
+  eraseWork: ReturnType<EditTransaction['write']> | null
   done: boolean
   started: boolean
   /** The keep was called: from here a reattach or a disconnect stops the erase. */
@@ -209,17 +170,22 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   private readonly screenCharacterLimit: number
   private readonly pause: (milliseconds: number) => Promise<void>
   private readonly now: () => number
-  private readonly liveByOwner = new Map<string, Map<string, LiveTerminalAttachment>>()
+  private readonly live: RemoteControlLiveTerminal
   /**
    * Two deliveries to one session could both take one merged message as their proof. An import holds
    * the same set, so nothing types into a prompt while it is being taken.
    */
   private readonly delivering = new Set<string>()
 
-  constructor(
-    private readonly sessions: RemoteControlTerminalSessionPort,
-    private readonly deps: RemoteControlTerminalDeps,
-  ) {
+  private readonly terminals: TerminalPort
+  private readonly sessions: RemoteControlTerminalSessionPort
+  private readonly deps: RemoteControlTerminalDeps
+
+  constructor(sessions: RemoteControlTerminalSessionPort, terminals: TerminalPort, deps: RemoteControlTerminalDeps) {
+    this.live = new RemoteControlLiveTerminal(terminals, deps)
+    this.sessions = sessions
+    this.terminals = terminals
+    this.deps = deps
     this.internalAttachId = deps.internalAttachId ?? randomUUID
     this.timeoutMilliseconds = deps.timeoutMilliseconds
       ?? RemoteControlTerminal.timeoutMillisecondsConst
@@ -296,12 +262,13 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   ): Promise<RemoteControlStepResult<RemoteControlTerminalSendDto>> {
     let enterTimer: ReturnType<typeof setTimeout> | null = null
     let textSent = false
+    let done = false
     return this.once(
       'send',
       sessionId,
       null,
       options.timeoutMs,
-      (attachId, frame, finish) => {
+      async (attachId, frame, finish) => {
         if (frame.type === 'terminal.attached') {
           if (!frame.writer) {
             finish(RemoteControlTerminal.error(
@@ -321,18 +288,19 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
             characterCount: text.length,
             enter: options.enter,
           }))
-          const written = this.writeInput(attachId, text)
+          textSent = true
+          const written = await this.writeInput(attachId, text)
           if (!written.ok) {
             finish(written)
             return
           }
-          textSent = true
+          if (done) return
           if (!options.enter) {
             complete()
             return
           }
-          enterTimer = setTimeout(() => {
-            const entered = this.writeInput(attachId, '\r')
+          enterTimer = setTimeout(async () => {
+            const entered = await this.writeInput(attachId, '\r')
             if (entered.ok) complete()
             else finish(entered)
           }, RemoteControlTerminal.enterDelayMillisecondsConst)
@@ -357,7 +325,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         else
           throw new Error(`Unknown terminal frame: ${JSON.stringify(frame)}`)
       },
-      () => { if (enterTimer !== null) clearTimeout(enterTimer) },
+      () => { done = true; if (enterTimer !== null) clearTimeout(enterTimer) },
     )
   }
 
@@ -398,6 +366,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     proof: RemoteControlTerminalDeliverProofPort,
   ): Promise<RemoteControlStepResult<RemoteControlTerminalDeliverDto>> {
     const state: DeliverState = {
+      pendingWrite: null,
       done: false,
       attached: false,
       started: false,
@@ -418,7 +387,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
           state.attached = true
           if (!frame.writer)
             finish(RemoteControlTerminal.deliverError('conflict', 'The terminal attach is read-only', state, 'read-only'))
-          else if (state.typed)
+          else if (state.typed || state.pendingWrite !== null)
             finish(RemoteControlTerminal.deliverError('unavailable', 'The terminal reattached during delivery', state, 'reattached'))
           else if (!state.started) {
             state.started = true
@@ -426,7 +395,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
           }
         } else if (frame.type === 'terminal.status') {
           if (frame.status === 'connecting') {
-            if (state.typed)
+            if (state.typed || state.pendingWrite !== null)
               finish(RemoteControlTerminal.deliverError('unavailable', 'The terminal disconnected during delivery', state, 'disconnected'))
           } else if (frame.status === 'read-only')
             finish(RemoteControlTerminal.deliverError('conflict', 'The terminal attach is read-only', state, 'read-only'))
@@ -446,7 +415,12 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       },
       () => { state.done = true },
     )
-    if (result.ok || result.error.data !== undefined) return result
+    await state.pendingWrite
+    if (result.ok) return result
+    if (result.error.data !== undefined)
+      return { ...result, error: { ...result.error, data: { ...result.error.data,
+        stage: result.error.data.stage === 'validate' ? 'validate' : RemoteControlTerminal.stageOf(state),
+        typed: state.typed, entered: state.entered } } }
     return RemoteControlTerminal.deliverError(
       result.error.code,
       result.error.detail,
@@ -497,20 +471,20 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     const payload = options.input === 'paste'
       ? `${RemoteControlTerminal.pasteStartConst}${text}${RemoteControlTerminal.pasteEndConst}`
       : text
-    const written = this.writeInput(attachId, payload)
+    const written = await this.writeDelivery(attachId, payload, state, 'text')
     if (!written.ok) {
       finish(RemoteControlTerminal.deliverError(written.error.code, written.error.detail, state, RemoteControlTerminal.reasonOf(written.error.code, state)))
       return
     }
-    state.typed = true
+    if (state.done) return
     const composeProof = await this.awaitComposed(sessionId, text, options, baseline, readyAt, state, finish)
     if (composeProof === null) return
-    const entered = this.writeInput(attachId, RemoteControlTerminal.submitKeysConst[baseline.submitKey])
+    const entered = await this.writeDelivery(attachId, RemoteControlTerminal.submitKeysConst[baseline.submitKey], state, 'first-enter')
     if (!entered.ok) {
       finish(RemoteControlTerminal.deliverError(entered.error.code, entered.error.detail, state, RemoteControlTerminal.reasonOf(entered.error.code, state)))
       return
     }
-    state.entered = 1
+    if (state.done) return
     const submittedProof = await this.awaitSubmitted(attachId, sessionId, text, options, proof, baseline, state, finish)
     if (submittedProof === null) return
     finish(RemoteControlTerminal.success({
@@ -629,12 +603,12 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         const proven = RemoteControlTerminal.proofOf(baseline, read.ok ? read.reading : null, text, transcriptProof)
         if (proven !== null) return proven
       } else if (state.entered === 1 && elapsed >= RemoteControlTerminal.secondEnterAtMillisecondsConst) {
-        const again = this.writeInput(attachId, RemoteControlTerminal.submitKeysConst[baseline.submitKey])
+        const again = await this.writeDelivery(attachId, RemoteControlTerminal.submitKeysConst[baseline.submitKey], state, 'second-enter')
         if (!again.ok) {
           finish(RemoteControlTerminal.deliverError(again.error.code, again.error.detail, state, RemoteControlTerminal.reasonOf(again.error.code, state)))
           return null
         }
-        state.entered = 2
+        if (state.done) return null
       }
       if (elapsed >= options.submitTimeoutMs) {
         finish(holds
@@ -812,7 +786,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
   }
 
   private async takeOnce(sessionId: string, keep: RemoteControlTerminalKeep): Promise<RemoteControlTerminalTakeResult> {
-    const state: TakeState = { done: false, started: false, keeping: false, kept: false, erased: false }
+    const state: TakeState = { done: false, started: false, keeping: false, kept: false, erased: false, transaction: null, keepingWork: null, eraseWork: null }
     const result = await this.once<TakeStep>(
       'take',
       sessionId,
@@ -850,8 +824,11 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         else
           throw new Error(`Unknown terminal frame: ${JSON.stringify(frame)}`)
       },
-      () => { state.done = true },
+      () => { state.done = true; state.transaction?.end() },
     )
+    // A store already in flight decides whether a stopped take kept the text.
+    await state.keepingWork?.catch(() => {})
+    await state.eraseWork?.catch(() => {})
     if (!result.ok)
       return RemoteControlTerminal.takeStopped(state, RemoteControlTerminal.takeReasonOf(result.error.code), result.error.detail)
     const step = result.value
@@ -869,16 +846,32 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
     state: TakeState,
     finish: TakeFinish,
   ): Promise<void> {
+    let transaction: EditTransaction | null = null
     try {
-      await this.takeSteps(attachId, sessionId, keep, state, finish)
+      const acquired = await this.terminals.transaction(attachId)
+      if ('refused' in acquired) {
+        if (acquired.refused === 'busy')
+          finish(RemoteControlTerminal.success({ kind: 'stop', reason: 'in-flight', detail: 'Another terminal edit is running' }))
+        else if (acquired.refused === 'not-writer')
+          finish(RemoteControlTerminal.success({ kind: 'stop', reason: 'read-only', detail: 'The terminal attach is read-only' }))
+        else throw new Error(`Unknown transaction refusal: ${JSON.stringify(acquired)}`)
+        return
+      }
+      transaction = acquired
+      state.transaction = transaction
+      if (state.done) return
+      await this.takeSteps(transaction, sessionId, keep, state, finish)
     } catch (error) {
       this.deps.onError(`Remote terminal take failed: ${ErrorText.of(error)}`)
       finish(RemoteControlTerminal.success({ kind: 'stop', reason: 'failed', detail: 'The terminal import operation failed' }))
+    } finally {
+      transaction?.end()
+      state.transaction = null
     }
   }
 
   private async takeSteps(
-    attachId: string,
+    transaction: EditTransaction,
     sessionId: string,
     keep: RemoteControlTerminalKeep,
     state: TakeState,
@@ -911,7 +904,11 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       answer({ kind: 'refused', reason: 'placeholder', detail: 'The prompt holds a collapsed paste or an image' })
     else if (content.kind === 'text') {
       state.keeping = true
-      const kept = keep(content.text)
+      state.keepingWork = Promise.resolve(keep(content.text)).then(result => {
+        if (result.ok) state.kept = true
+        return result
+      })
+      const kept = await state.keepingWork
       if (!kept.ok) {
         answer({ kind: 'refused', reason: 'keep-refused', detail: kept.detail })
         return
@@ -920,7 +917,14 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       // A stop that arrived while the keep ran has already ended the attach: the note holds the text
       // and the prompt stays as it was.
       if (state.done) return
-      const written = this.writeInput(attachId, RemoteControlTerminal.deleteConst.repeat(content.eraseBound))
+      state.eraseWork = transaction.write(RemoteControlTerminal.deleteConst.repeat(content.eraseBound)).then(input => {
+        if (!('refused' in input) && input.kind === 'sent') state.erased = true
+        return input
+      })
+      const input = await state.eraseWork
+      const written = 'refused' in input
+        ? RemoteControlTerminal.error<null>('unavailable', 'The terminal attach disconnected')
+        : RemoteControlTerminal.inputResult(input)
       if (!written.ok) {
         finish(RemoteControlTerminal.success({
           kind: 'stop',
@@ -929,7 +933,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         }))
         return
       }
-      state.erased = true
+      if (state.done) return
       answer(await this.awaitErased(sessionId, state))
     } else
       throw new Error(`Unknown composer content: ${JSON.stringify(content)}`)
@@ -987,183 +991,69 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       throw new Error(`Unknown composer content refusal: ${JSON.stringify(code)}`)
   }
 
-  private writeInput(attachId: string, data: string): RemoteControlStepResult<null> {
+  private async writeDelivery(attachId: string, data: string, state: DeliverState,
+    phase: 'text' | 'first-enter' | 'second-enter'): Promise<RemoteControlStepResult<null>> {
+    const pending = this.writeInput(attachId, data).then(result => {
+      if (result.ok) {
+        if (phase === 'text') state.typed = true
+        else if (phase === 'first-enter') state.entered = 1
+        else if (phase === 'second-enter') state.entered = 2
+        else throw new Error(`Unknown delivery write: ${phase satisfies never}`)
+      }
+      return result
+    })
+    state.pendingWrite = pending
+    try { return await pending }
+    finally { if (state.pendingWrite === pending) state.pendingWrite = null }
+  }
+
+  private async writeInput(attachId: string, data: string): Promise<RemoteControlStepResult<null>> {
     try {
-      const input = this.sessions.terminalInput(attachId, data)
-      if (input.kind === 'sent')
-        return RemoteControlTerminal.success(null)
-      else if (input.kind === 'not-writer')
-        return RemoteControlTerminal.error('conflict', 'The terminal attach is read-only')
-      else if (input.kind === 'unknown-attach')
-        return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
-      else
-        throw new Error(`Unknown terminal input result: ${JSON.stringify(input)}`)
+      const input = await this.terminals.input(attachId, data)
+      return RemoteControlTerminal.inputResult(input)
     } catch (error) {
       this.deps.onError(`Remote terminal send failed: ${ErrorText.of(error)}`)
       return RemoteControlTerminal.error('operation-failed', 'The terminal send operation failed')
     }
   }
 
-  attachLive(
-    ownerId: string,
-    attachId: string,
-    spec: TerminalAttachSpec,
-    onFrame: (frame: TerminalFrame) => void,
-  ): RemoteControlStepResult<RemoteControlLiveTerminalAttachDto> {
-    const owned = this.liveByOwner.get(ownerId)
-    if (owned?.has(attachId))
-      return RemoteControlTerminal.error(
-        'conflict',
-        `Terminal attach ${JSON.stringify(attachId)} already exists`,
-      )
-    const ownerAttachments = owned ?? new Map<string, LiveTerminalAttachment>()
-    if (!owned) this.liveByOwner.set(ownerId, ownerAttachments)
-    const live = {
-      internalAttachId: `control-live:${this.internalAttachId()}`,
-      sessionId: spec.sessionId,
-    }
-    ownerAttachments.set(attachId, live)
-    const attached = this.sessions.terminalAttach(live.internalAttachId, spec, {
-      source: 'remote',
-      onFrame: (frame) => this.liveFrame(ownerId, attachId, live, frame, onFrame),
-    })
-    if (!attached.ok) {
-      this.forgetLive(ownerId, attachId, live)
-      return RemoteControlTerminal.attachError(attached)
-    }
-    return RemoteControlTerminal.success({ attachId, sessionId: spec.sessionId })
+  private static inputResult(input: TerminalInputResult): RemoteControlStepResult<null> {
+    if (input.kind === 'sent') return RemoteControlTerminal.success(null)
+    else if (input.kind === 'not-writer') return RemoteControlTerminal.error('conflict', 'The terminal attach is read-only')
+    else if (input.kind === 'unknown-attach') return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
+    else throw new Error(`Unknown terminal input result: ${JSON.stringify(input)}`)
   }
 
-  inputLive(
-    ownerId: string,
-    attachId: string,
-    data: string,
-  ): RemoteControlStepResult<RemoteControlLiveTerminalInputDto> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    const input = this.sessions.terminalInput(live.internalAttachId, data)
-    if (input.kind === 'sent')
-      return RemoteControlTerminal.success({
-        attachId,
-        accepted: true,
-        characterCount: data.length,
-      })
-    else if (input.kind === 'not-writer')
-      return RemoteControlTerminal.error('conflict', 'The terminal attach is read-only')
-    else if (input.kind === 'unknown-attach') {
-      this.forgetLive(ownerId, attachId, live)
-      return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
-    } else
-      throw new Error(`Unknown terminal input result: ${JSON.stringify(input)}`)
+  attachLive(...args: Parameters<RemoteControlLiveTerminal['attachLive']>): ReturnType<RemoteControlLiveTerminal['attachLive']> {
+    return this.live.attachLive(...args)
   }
 
-  resizeLive(
-    ownerId: string,
-    attachId: string,
-    cols: number,
-    rows: number,
-  ): RemoteControlStepResult<RemoteControlLiveTerminalResizeDto> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    const resized = this.sessions.terminalResize(live.internalAttachId, cols, rows)
-    if (resized.kind === 'applied' || resized.kind === 'ignored')
-      return RemoteControlTerminal.success({
-        attachId,
-        accepted: true,
-        applied: resized.kind === 'applied',
-      })
-    else if (resized.kind === 'unknown-attach') {
-      this.forgetLive(ownerId, attachId, live)
-      return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
-    } else
-      throw new Error(`Unknown terminal resize result: ${JSON.stringify(resized)}`)
+  inputLive(...args: Parameters<RemoteControlLiveTerminal['inputLive']>): ReturnType<RemoteControlLiveTerminal['inputLive']> {
+    return this.live.inputLive(...args)
   }
 
-  setLiveActive(
-    ownerId: string,
-    attachId: string,
-    active: boolean,
-  ): RemoteControlStepResult<RemoteControlLiveTerminalResizeDto> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    const resized = this.sessions.terminalSetGeometryActive(live.internalAttachId, active)
-    if (resized.kind === 'applied' || resized.kind === 'ignored')
-      return RemoteControlTerminal.success({
-        attachId,
-        accepted: true,
-        applied: resized.kind === 'applied',
-      })
-    else if (resized.kind === 'unknown-attach') {
-      this.forgetLive(ownerId, attachId, live)
-      return RemoteControlTerminal.error('unavailable', 'The terminal attach disappeared')
-    } else
-      throw new Error(`Unknown terminal resize result: ${JSON.stringify(resized)}`)
+  resizeLive(...args: Parameters<RemoteControlLiveTerminal['resizeLive']>): ReturnType<RemoteControlLiveTerminal['resizeLive']> {
+    return this.live.resizeLive(...args)
   }
 
-  /**
-   * An image from the controller's clipboard, saved here under the attach's session. Only saved: the
-   * path goes back to the controller, which pastes it through `terminal.input` like any other text,
-   * so the one writer of a remote prompt stays the person's own keys.
-   */
-  async pasteImageLive(
-    ownerId: string,
-    attachId: string,
-    bytes: Uint8Array,
-  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteImageDto>> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    if (this.deps.files === undefined)
-      return RemoteControlTerminal.error('operation-failed', 'This computer keeps no pasted files')
-    const saved = await this.deps.files.saveImage(live.sessionId, bytes)
-    if (!saved.ok) return RemoteControlTerminal.error('operation-failed', saved.detail)
-    return RemoteControlTerminal.success({ attachId, path: saved.path })
+  setLiveActive(...args: Parameters<RemoteControlLiveTerminal['setLiveActive']>): ReturnType<RemoteControlLiveTerminal['setLiveActive']> {
+    return this.live.setLiveActive(...args)
   }
 
-  /**
-   * One chunk of a file the controller's clipboard named, saved here under the attach's session. As
-   * with an image, only saved: `path` is null until the last chunk, and the controller pastes it.
-   */
-  async pasteFileLive(
-    ownerId: string,
-    attachId: string,
-    uploadId: string,
-    chunk: PastedFileChunk,
-  ): Promise<RemoteControlStepResult<RemoteControlLiveTerminalPasteFileDto>> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    if (this.deps.files === undefined)
-      return RemoteControlTerminal.error('operation-failed', 'This computer keeps no pasted files')
-    const received = await this.deps.files.receive(JSON.stringify([ownerId, uploadId]), live.sessionId, chunk)
-    if (!received.ok) return RemoteControlTerminal.error('operation-failed', received.detail)
-    else if (received.kind === 'partial')
-      return RemoteControlTerminal.success({ attachId, received: received.received, path: null })
-    else if (received.kind === 'complete')
-      return RemoteControlTerminal.success({ attachId, received: chunk.size, path: received.path })
-    else
-      throw new Error(`Unknown pasted file result: ${JSON.stringify(received)}`)
+  pasteImageLive(...args: Parameters<RemoteControlLiveTerminal['pasteImageLive']>): ReturnType<RemoteControlLiveTerminal['pasteImageLive']> {
+    return this.live.pasteImageLive(...args)
   }
 
-  detachLive(ownerId: string, attachId: string): RemoteControlStepResult<{ attachId: string }> {
-    const live = this.liveByOwner.get(ownerId)?.get(attachId)
-    if (!live)
-      return RemoteControlTerminal.error('not-found', `No terminal attach ${JSON.stringify(attachId)}`)
-    this.forgetLive(ownerId, attachId, live)
-    this.sessions.terminalDetach(live.internalAttachId)
-    return RemoteControlTerminal.success({ attachId })
+  pasteFileLive(...args: Parameters<RemoteControlLiveTerminal['pasteFileLive']>): ReturnType<RemoteControlLiveTerminal['pasteFileLive']> {
+    return this.live.pasteFileLive(...args)
   }
 
-  detachOwner(ownerId: string): void {
-    const owned = this.liveByOwner.get(ownerId)
-    if (!owned) return
-    this.liveByOwner.delete(ownerId)
-    this.sessions.terminalDetachAll(
-      [...owned.values()].map((live) => live.internalAttachId),
-    )
+  detachLive(...args: Parameters<RemoteControlLiveTerminal['detachLive']>): ReturnType<RemoteControlLiveTerminal['detachLive']> {
+    return this.live.detachLive(...args)
+  }
+
+  detachOwner(...args: Parameters<RemoteControlLiveTerminal['detachOwner']>): ReturnType<RemoteControlLiveTerminal['detachOwner']> {
+    return this.live.detachOwner(...args)
   }
 
   private once<T>(
@@ -1175,7 +1065,7 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       attachId: string,
       frame: TerminalFrame,
       finish: (result: RemoteControlStepResult<T>) => void,
-    ) => void,
+    ) => void | Promise<void>,
     onFinish: () => void = () => {},
   ): Promise<RemoteControlStepResult<T>> {
     const attachId = `control-${kind}:${this.internalAttachId()}`
@@ -1183,7 +1073,6 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       let settled = false
       let attached = false
       let attachComplete = false
-      let detachOwed = false
       const timer = setTimeout(() => finish(RemoteControlTerminal.error(
         'timeout',
         `The terminal ${kind} operation timed out`,
@@ -1193,63 +1082,31 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
         settled = true
         clearTimeout(timer)
         onFinish()
-        if (attached)
-          this.sessions.terminalDetach(attachId)
-        else if (!attachComplete)
-          detachOwed = true
+        if (attached || !attachComplete)
+          this.terminals.detach(attachId)
         resolve(result)
       }
-      const answer = this.sessions.terminalAttach(attachId, { sessionId, size }, {
+      const failed = (error: unknown): void => {
+        this.deps.onError(`Remote terminal ${kind} failed: ${ErrorText.of(error)}`)
+        finish(RemoteControlTerminal.error('operation-failed', `The terminal ${kind} operation failed`))
+      }
+      void this.terminals.attach(attachId, { sessionId, size }, {
         source: 'remote',
-        onFrame: (frame) => {
+        onFrame: frame => {
           if (settled) return
-          try {
-            onFrame(attachId, frame, finish)
-          } catch (error) {
-            this.deps.onError(`Remote terminal ${kind} failed: ${ErrorText.of(error)}`)
-            finish(RemoteControlTerminal.error(
-              'operation-failed',
-              `The terminal ${kind} operation failed`,
-            ))
-          }
+          try { void Promise.resolve(onFrame(attachId, frame, finish)).catch(failed) }
+          catch (error) { failed(error) }
         },
+      }).then(answer => {
+        attachComplete = true
+        if (answer.ok) attached = true
+        else finish(RemoteControlTerminal.attachError(answer))
+      }, error => {
+        attachComplete = true
+        this.terminals.detach(attachId)
+        failed(error)
       })
-      attachComplete = true
-      if (answer.ok) {
-        attached = true
-        if (detachOwed) this.sessions.terminalDetach(attachId)
-      } else finish(RemoteControlTerminal.attachError(answer))
     })
-  }
-
-  private liveFrame(
-    ownerId: string,
-    attachId: string,
-    live: LiveTerminalAttachment,
-    frame: TerminalFrame,
-    onFrame: (frame: TerminalFrame) => void,
-  ): void {
-    if (this.liveByOwner.get(ownerId)?.get(attachId) !== live)
-      return
-    try {
-      onFrame(frame)
-    } catch (error) {
-      this.deps.onError(`Live remote terminal frame failed: ${ErrorText.of(error)}`)
-      this.forgetLive(ownerId, attachId, live)
-      this.sessions.terminalDetach(live.internalAttachId)
-      return
-    }
-    if (frame.type === 'terminal.exit'
-      || (frame.type === 'terminal.status' && frame.status === 'lost'))
-      this.forgetLive(ownerId, attachId, live)
-  }
-
-  private forgetLive(ownerId: string, attachId: string, live: LiveTerminalAttachment): void {
-    const owned = this.liveByOwner.get(ownerId)
-    if (owned?.get(attachId) !== live)
-      return
-    owned.delete(attachId)
-    if (owned.size === 0) this.liveByOwner.delete(ownerId)
   }
 
   private static attachError<T>(

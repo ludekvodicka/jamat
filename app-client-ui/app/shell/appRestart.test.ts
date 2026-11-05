@@ -72,6 +72,7 @@ describe('app-client-ui/app/shell/appRestart', () => {
     expect(spawned.options.shell).toBeUndefined()
     expect(spawned.options.detached).toBe(true)
     expect(spawned.options.windowsHide).toBe(true)
+    expect(spawned.options.env).toEqual({ ...process.env, JAMAT_V3_RESTART_PARENT_PID: String(process.pid) })
     expect(harness.child.unrefCalls).toBe(1)
     expect(existsSync(harness.logFile)).toBe(true)
     expect(harness.counters).toEqual({ relaunch: 0, quit: 1 })

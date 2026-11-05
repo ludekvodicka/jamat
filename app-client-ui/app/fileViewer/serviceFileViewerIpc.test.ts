@@ -1,3 +1,5 @@
+import { ServiceFileViewerShellIpc } from '../shell/serviceFileViewerShellIpc'
+import { bindService, callerSource } from '../shared/serviceIpcTestHarness'
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
@@ -9,12 +11,12 @@ import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import type { FileChangesManager } from '../../../lib-orchestrator/fileChangesManager/fileChangesManager'
 import type { FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type { ConfigStore } from '../../../lib-orchestrator/configStore/configStore'
-import { FileChangesAccess } from '../fileChanges/fileChangesAccess'
-import { ServiceFileChangesIpc } from '../fileChanges/serviceFileChangesIpc'
+import { FileChangesAccess } from '../../../app-orchestrator/app/fileChanges/fileChangesAccess'
+import { ServiceFileChangesIpc } from '../../../app-orchestrator/app/fileChanges/serviceFileChangesIpc'
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
-import { FileViewerAccess } from './fileViewerAccess'
-import { ServiceFileViewerIpc } from './serviceFileViewerIpc'
+import { FileViewerAccess } from '../../../app-orchestrator/app/fileViewer/fileViewerAccess'
+import { ServiceFileViewerIpc } from '../../../app-orchestrator/app/fileViewer/serviceFileViewerIpc'
 
 const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
@@ -50,16 +52,21 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   }
   /** This package's own root, which is a REAL directory and on a different drive from the temp one. */
   const packageRootConst = process.cwd()
+  /**
+   * Where the cross-volume fixtures go: the temp directory `scripts/checks/test-tmpdir.mjs`
+   * replaced, because the redirected one can sit on the repository drive.
+   */
+  const otherDriveTempConst = process.env.AX_TEST_ORIGINAL_TMPDIR || tmpdir()
   const crossRootConst = parse(packageRootConst).root.toLowerCase()
-    !== parse(tmpdir()).root.toLowerCase()
+    !== parse(otherDriveTempConst).root.toLowerCase()
   const roots: string[] = []
   let calls: { method: string; args: unknown[] }[]
   let sessionCwd: string
-  /** The register `AppHub` hands the service, standing in for `TerminalDetector.wasOpened`. */
+  /** The register `OrchestratorHub` hands the service, standing in for `TerminalDetector.wasOpened`. */
   let openedByDetection: Set<string>
 
-  async function root(): Promise<string> {
-    const path = await realpath(await mkdtemp(join(tmpdir(), 'jamat-file-viewer-ipc-')))
+  async function root(base = tmpdir()): Promise<string> {
+    const path = await realpath(await mkdtemp(join(base, 'jamat-file-viewer-ipc-')))
     roots.push(path)
     return path
   }
@@ -85,6 +92,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       openDetected: record('openDetected', Promise.resolve({ ok: true, value: document })),
       directoryAt: record('directoryAt', Promise.resolve({ ok: false, code: 'not-found', detail: 'x' })),
       text: record('text', Promise.resolve({ ok: true, kind: 'text', text: 'a', contentVersion: '1:1' })),
+      toggleTask: record('toggleTask', Promise.resolve({ ok: true, value: { contentVersion: '2:1' } })),
       chunk: record('chunk', Promise.resolve({ ok: false, code: 'missing', detail: 'x' })),
       rootDirectory: record('rootDirectory', Promise.resolve({ ok: false, code: 'not-found', detail: 'x' })),
       projectDirectory: record('projectDirectory', Promise.resolve({ ok: false, code: 'not-found', detail: 'x' })),
@@ -104,13 +112,13 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
         value: { sessionId, cwd: sessionCwd, agent: null, worktree: null },
       }),
     } as unknown as SessionManager
-    new ServiceFileViewerIpc(
+    bindService(new ServiceFileViewerIpc(
       viewer, new FileViewerAccess({ viewer, sessions,
       restoreExternal: async (ownerId, source, supportsDiff) => {
         calls.push({ method: 'restoreExternal', args: [ownerId, source, supportsDiff] })
         return { ok: false, code: 'not-found', detail: 'x' }
       },
-      // The shape `AppHub` wires: the register decides, and a detected path it does not hold is
+      // The shape `OrchestratorHub` wires: the register decides, and a detected path it does not hold is
       // refused rather than reopened.
       restoreDetected: async (ownerId, source, supportsDiff) => {
         calls.push({ method: 'restoreDetected', args: [ownerId, source, supportsDiff] })
@@ -123,7 +131,8 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
         calls.push({ method: 'restoreWorkingTree', args: [ownerId, source] })
         return { ok: false, code: 'not-found', detail: 'fixture' }
       },
-    }), (value) => value === sender ? 'window-1' : null).initialize()
+    }), (value) => callerSource(value) === sender ? 'window-1' : null)).initialize()
+    bindService(new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, value => value === sender ? 'window-1' : null)).initialize()
   })
 
   afterEach(async () => {
@@ -159,9 +168,9 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     const workingTree = vi.fn(async () => ({ ok: true, value: snapshot }))
     const manager = { workingTree, fileAccess: () => ({ ok: true, value: { sessionId: 'session-1', cwd: scopeRoot, path, nodeKind: 'file' } }) } as unknown as FileChangesManager
     const files = new FileChangesAccess(manager, viewer, sessions, {} as ConfigStore)
-    new ServiceFileChangesIpc(files, () => 'window-1').initialize()
-    new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false,
-      restoreWorkingTree: (owner, source) => files.restoreWorkingTree(owner, source) }), () => 'window-1').initialize()
+    bindService(new ServiceFileChangesIpc(files, () => 'window-1')).initialize()
+    bindService(new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false,
+      restoreWorkingTree: (owner, source) => files.restoreWorkingTree(owner, source) }), () => 'window-1')).initialize()
     await files.workingTree('window-1', 'session-1', 'svn', scopeRoot, true)
     const opened = await electronMock.handlers.get('fileChanges:open-file')!({ sender }, snapshot.snapshotId, 'changed') as {
       ok: true; value: { ok: true; value: import('../../../lib-orchestrator/fileViewer/fileViewerApi.types').FileViewerDocument }
@@ -194,7 +203,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       ? { ok: true as const, value: { path: log } }
       : { ok: false as const, code: 'not-found' as const, detail: `No proof for ${parentId}/${runId}` })
     const sessions = { scriptLogOf } as unknown as SessionManager
-    new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false, restoreWorkingTree: vi.fn() }), () => 'window-1').initialize()
+    bindService(new ServiceFileViewerIpc(viewer, new FileViewerAccess({ viewer, sessions, restoreExternal: vi.fn(), restoreDetected: vi.fn(), allowsDetected: () => false, restoreWorkingTree: vi.fn() }), () => 'window-1')).initialize()
 
     const restored = await invoke('fileViewer:restore', sender,
       { kind: 'scriptLog', sessionId: 'p', runId: 'r-saved', path: elsewhere }, true)
@@ -224,6 +233,13 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     ])
   })
 
+  it('forwards a pathless task toggle with the trusted sender owner', async () => {
+    const request = { documentId: 'document-1', line: 4, checked: true, contentVersion: '1:1' }
+    expect(await invoke('fileViewer:toggle-task', sender, request))
+      .toEqual({ ok: true, value: { ok: true, value: { contentVersion: '2:1' } } })
+    expect(calls).toEqual([{ method: 'toggleTask', args: ['window-1', request] }])
+  })
+
   it('restores filesystem files only against the current session filesystem root', async () => {
     const source = { kind: 'filesystem' as const, sessionId: 'session-1', path: 'C:/outside/a.ts' }
 
@@ -236,7 +252,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   })
 
   it('restores a detected file only while the register still holds it', async () => {
-    const elsewhere = await root()
+    const elsewhere = await root(otherDriveTempConst)
     const path = join(elsewhere, 'a.ts')
     await writeFile(path, 'export const answer = 42\n')
     sessionCwd = packageRootConst
@@ -295,7 +311,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it.skipIf(!crossRootConst)(
     'refuses a directory on another filesystem root, and takes it once a detection opened it',
     async () => {
-      sessionCwd = await root()
+      sessionCwd = await root(otherDriveTempConst)
       const target = await realpath(packageRootConst)
 
       expect(await invoke('fileViewer:directory-at', sender, 'session-1', target)).toEqual({
@@ -326,7 +342,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it.skipIf(!crossRootConst)(
     'refuses a junction inside the session root that crosses to another volume',
     async () => {
-      sessionCwd = await root()
+      sessionCwd = await root(otherDriveTempConst)
       const link = join(sessionCwd, 'crossdrive')
       await symlink(packageRootConst, link, process.platform === 'win32' ? 'junction' : 'dir')
 
@@ -365,9 +381,9 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
    * is discarded, which makes it the one a cleanup pass deletes.
    */
   it('rejects every capability operation from an unknown workspace', async () => {
-    const channels = Object.keys(ServiceFileViewerIpc.channelsConst) as
+    const channels = Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst }) as
       (keyof AppClientUiIpcInvokeMap)[]
-    expect(channels.length).toBe(18)
+    expect(channels.length).toBe(19)
 
     for (const channel of channels)
       expect(await invoke(channel, rejected, 'https://example.test/a', 'second', true), channel)
@@ -421,8 +437,8 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   })
 
   /*
-   * `crossRootConst` is `parse(cwd).root !== parse(tmpdir()).root`. On Linux and macOS both are `/`,
-   * so there is no second volume to cross and the guard cannot be exercised at all - correctly
+   * `crossRootConst` is `parse(cwd).root !== parse(otherDriveTempConst).root`. On Linux and macOS
+   * both are `/`, so there is no second volume to cross and the guard cannot be exercised at all - correctly
    * skipped. On Windows it is an accident of where the repository and the temp directory sit, and a
    * silent skip there is the two proofs quietly not running on the one platform they are about.
    */
@@ -430,8 +446,8 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     if (crossRootConst) return
     expect(
       process.platform,
-      'the cross-volume proofs were skipped: put the repository and the temp directory on '
-        + 'different drives, or they never run',
+      'the cross-volume proofs were skipped: put the repository and the user temp directory '
+        + '(AX_TEST_ORIGINAL_TMPDIR when the test redirect is on) on different drives, or they never run',
     ).not.toBe('win32')
   })
 

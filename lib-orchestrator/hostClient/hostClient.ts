@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto'
-
 import type {
   HostDescriptor,
   HostEvent,
@@ -15,50 +13,42 @@ import type {
   TerminalProjectionView,
 } from '../../app-host/app/wire/hostWire.js'
 import type { HostDebugStatus } from '../sessionManager/sessionManagerApi.types'
-import { ErrorText } from '../shared/errorText'
-import { ControllerLeaseKeeper } from './controllerLeaseKeeper'
+import type { HostConnectionSource } from './hostConnection'
 import type { HostCallResult, HostConnectionPresence, HostHelloReading } from './hostClient.types'
-import { HostDescriptorWatcher } from './hostDescriptorWatcher'
 import { HostEventsSocket } from './hostEventsSocket'
 import { HostHttpClient } from './hostHttpClient'
 
 export interface HostClientDeps {
-  descriptorFile: string
+  connection: HostConnectionSource
   onEvent: (event: HostEvent) => void
   onPresence: (presence: HostConnectionPresence) => void
   /** A full `runtime.list` is owed: a new Host process, or a replay window that fell behind. */
   onResync: () => void
   onError: (message: string) => void
-  /** Random per client process by default: two clients sharing one id would steal each other's lease. */
-  controllerId?: string
-  descriptorPollMilliseconds?: number
   /** The controller lease is held under a new id (`ControllerLeaseKeeperDeps.onGranted`). */
   onLeaseGranted?: () => void
 }
 
 /**
- * The whole of the Host wire seen from the rest of this library: a descriptor watch, one socket, one
- * lease, and the operations, all of them answering with values. Nothing here knows what a session is.
+ * Host calls and the events socket read their descriptor and authority from the injected source.
+ * Nothing here knows whether that source watches a file or receives another process's state.
  */
 export class HostClient {
   /** Mirrored through the type system: the annotation fails to compile if the Host drops the name. */
   private static readonly healthCapabilityConst:
     Extract<typeof HostWireConst.capabilities[number], 'host.health.v1'> = 'host.health.v1'
-  private readonly watcher: HostDescriptorWatcher
+  private readonly deps: HostClientDeps
+  private unsubscribe: (() => void) | null = null
+  private descriptorIdentity: string | null = null
+  private leaseIdentity: string | null = null
   private readonly http: HostHttpClient
   private readonly events: HostEventsSocket
-  private readonly lease: ControllerLeaseKeeper
   private presenceValue: HostConnectionPresence = 'unreachable'
   private started = false
 
-  constructor(private readonly deps: HostClientDeps) {
-    this.watcher = new HostDescriptorWatcher({
-      descriptorFile: deps.descriptorFile,
-      pollMilliseconds: deps.descriptorPollMilliseconds,
-      onChange: (descriptor) => this.onDescriptor(descriptor),
-      onError: deps.onError,
-    })
-    this.http = new HostHttpClient(() => this.watcher.current())
+  constructor(deps: HostClientDeps) {
+    this.deps = deps
+    this.http = new HostHttpClient(() => this.descriptor())
     this.events = new HostEventsSocket({
       onEvent: deps.onEvent,
       onResync: deps.onResync,
@@ -66,26 +56,23 @@ export class HostClient {
       onDisconnected: () => this.settlePresence(),
       onError: deps.onError,
     })
-    this.lease = new ControllerLeaseKeeper({
-      controllerId: deps.controllerId ?? `jamat-client-${randomUUID()}`,
-      call: (name, body) => this.http.call(name, body),
-      onError: deps.onError,
-      onGranted: () => deps.onLeaseGranted?.(),
-    })
   }
 
   start(): void {
     if (this.started) return
     this.started = true
-    this.watcher.start()
+    this.unsubscribe = this.deps.connection.onChanged(() => this.onConnection())
+    this.onConnection()
   }
 
-  /** Detach only: the socket closes, the lease is released if it can be, and no runtime dies. */
+  /** Detach only: the socket closes; the connection owner releases the lease. */
   async stop(): Promise<void> {
     this.started = false
-    this.watcher.stop()
+    this.unsubscribe?.()
+    this.unsubscribe = null
+    this.descriptorIdentity = null
+    this.leaseIdentity = null
     this.events.close()
-    await this.lease.stop()
     this.settlePresence()
   }
 
@@ -94,7 +81,7 @@ export class HostClient {
   }
 
   descriptor(): HostDescriptor | null {
-    return this.watcher.current()
+    return this.deps.connection.descriptor()
   }
 
   /** The ping. Not an operation and not on any cadence of this class: a caller asks, or nobody does. */
@@ -108,18 +95,16 @@ export class HostClient {
    * time, so a second controller identity would take this one away from every `runtime.*` call.
    */
   controllerLeaseId(): string | null {
-    return this.lease.leaseId()
+    return this.deps.connection.leaseId()
   }
 
   /**
    * The one way the parts this class owns are read from outside it. Each of them names its own block
    * of the debug shape, so nothing here restates a field or decides what a reader may see.
    */
-  debugView(): Pick<HostDebugStatus, 'watcher' | 'eventsSocket' | 'lease'> {
+  debugView(): Pick<HostDebugStatus, 'eventsSocket'> {
     return {
-      watcher: this.watcher.debugView(),
       eventsSocket: this.events.debugView(),
-      lease: this.lease.debugView(),
     }
   }
 
@@ -128,7 +113,7 @@ export class HostClient {
    * 404, and that is a fact about its build rather than a failure worth reporting.
    */
   async health(): Promise<HostCallResult<HostHealthResult> | null> {
-    const descriptor = this.watcher.current()
+    const descriptor = this.descriptor()
     if (descriptor === null)
       return { ok: false, code: 'host-unreachable', detail: 'host.health: no Host descriptor is published' }
     if (!descriptor.capabilities.includes(HostClient.healthCapabilityConst)) return null
@@ -156,7 +141,7 @@ export class HostClient {
     runtimeSessionId: string
     launch: RuntimeLaunchSpec
   }): Promise<HostCallResult<RuntimeResult>> {
-    if (request.launch.stopDescendants && this.watcher.current() !== null && !this.watcher.current()?.capabilities.includes('runtime.managed-descendants.v1'))
+    if (request.launch.stopDescendants && this.descriptor() !== null && !this.descriptor()?.capabilities.includes('runtime.managed-descendants.v1'))
       return { ok: false, code: 'op-rejected', status: 400, detail: 'This Host does not support managed descendants. Restart the Host before starting managed runs.' }
     return this.mutate<RuntimeResult>(
       'runtime.create',
@@ -169,7 +154,7 @@ export class HostClient {
     operationId: string
     launch: RuntimeLaunchSpec
   }): Promise<HostCallResult<RuntimeResult>> {
-    if (request.launch.stopDescendants && this.watcher.current() !== null && !this.watcher.current()?.capabilities.includes('runtime.managed-descendants.v1'))
+    if (request.launch.stopDescendants && this.descriptor() !== null && !this.descriptor()?.capabilities.includes('runtime.managed-descendants.v1'))
       return { ok: false, code: 'op-rejected', status: 400, detail: 'This Host does not support managed descendants. Restart the Host before starting managed runs.' }
     return this.mutate<RuntimeResult>(
       'runtime.replace',
@@ -178,7 +163,7 @@ export class HostClient {
   }
 
   async runtimeStop(target: RuntimeRef, confirmExternalStop = false): Promise<HostCallResult<RuntimeMutationAck>> {
-    const current = this.watcher.current()
+    const current = this.descriptor()
     if (confirmExternalStop && current !== null && current.hostInstanceId !== target.hostInstanceId)
       return { ok: true, value: { servedByHostInstanceId: current.hostInstanceId, target, diagnostic: 'already-removed' } }
     return this.mutate<RuntimeMutationAck>(
@@ -189,7 +174,7 @@ export class HostClient {
 
   /** A previous instance holds nothing any more, and the current Host refuses its targets. */
   async runtimeRemove(target: RuntimeRef): Promise<HostCallResult<RuntimeMutationAck>> {
-    const current = this.watcher.current()
+    const current = this.descriptor()
     if (current !== null && current.hostInstanceId !== target.hostInstanceId)
       return { ok: true, value: { servedByHostInstanceId: current.hostInstanceId, target, diagnostic: 'already-removed' } }
     return this.mutate<RuntimeMutationAck>(
@@ -200,7 +185,7 @@ export class HostClient {
 
   /** `warnings` names what the old Host could not stop; a Host older than that answer leaves it out. */
   async stopHost(expectedHostInstanceId: string): Promise<HostCallResult<{ stopping: true; live: number; warnings?: string[] }>> {
-    if (this.watcher.current()?.hostInstanceId !== expectedHostInstanceId)
+    if (this.descriptor()?.hostInstanceId !== expectedHostInstanceId)
       return { ok: false, code: 'host-unreachable', detail: 'The Host changed before the restart. Try again.' }
     return this.mutate('host.stop', (controllerLeaseId) => ({ controllerLeaseId, force: true }))
   }
@@ -210,37 +195,33 @@ export class HostClient {
     name: HostOpName,
     bodyOf: (controllerLeaseId: string) => Record<string, unknown>,
   ): Promise<HostCallResult<T>> {
-    if (this.watcher.current() === null)
+    if (this.descriptor() === null)
       return { ok: false, code: 'host-unreachable', detail: `${name}: no Host descriptor is published` }
-    const controllerLeaseId = this.lease.leaseId()
+    const controllerLeaseId = this.deps.connection.leaseId()
     if (controllerLeaseId === null)
       return { ok: false, code: 'no-lease', detail: `${name}: no live controller lease` }
     return this.http.call<T>(name, bodyOf(controllerLeaseId))
   }
 
-  private onDescriptor(descriptor: HostDescriptor | null): void {
-    // A read that was already inside `await readFile(...)` when `stop()` cleared the watcher's timer
-    // lands here afterwards. Clearing an interval cannot cancel a file operation already in flight,
-    // so without this the client opens a socket and takes a lease after it was stopped.
+  private onConnection(): void {
     if (!this.started) return
-    if (descriptor === null) {
-      this.events.close()
-      this.detach(this.lease.stop(), 'Releasing the Host controller lease')
-      this.settlePresence()
-      return
+    const descriptor = this.descriptor()
+    const identity = descriptor === null ? null : `${descriptor.hostInstanceId}:${descriptor.port}:${descriptor.token}`
+    if (identity !== this.descriptorIdentity) {
+      this.descriptorIdentity = identity
+      if (descriptor === null) this.events.close()
+      else this.events.connect(descriptor)
     }
-    this.events.connect(descriptor)
-    this.detach(this.lease.start(), 'Taking the Host controller lease')
+    const leaseId = this.deps.connection.leaseId()
+    if (leaseId !== this.leaseIdentity) {
+      this.leaseIdentity = leaseId
+      if (leaseId !== null) this.deps.onLeaseGranted?.()
+    }
     this.settlePresence()
   }
 
-  /** The descriptor watch calls this from a timer, so a rejection here has no caller to reach. */
-  private detach(work: Promise<void>, what: string): void {
-    void work.catch((error) => this.deps.onError(`${what} failed: ${ErrorText.of(error)}`))
-  }
-
   private settlePresence(): void {
-    const next: HostConnectionPresence = this.watcher.current() !== null && this.events.connected()
+    const next: HostConnectionPresence = this.descriptor() !== null && this.events.connected()
       ? 'running'
       : 'unreachable'
     if (next === this.presenceValue) return

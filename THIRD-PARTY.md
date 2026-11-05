@@ -24,7 +24,7 @@ package, and one that has neither fails the generator, so nothing reaches this l
 
 ## Licenses in use
 
-331 npm components across the three graphs.
+332 npm components across the three graphs.
 
 | License | Components |
 | --- | --- |
@@ -32,7 +32,7 @@ package, and one that has neither fails the generator, so nothing reaches this l
 | 0BSD | 1 |
 | Apache-2.0 | 1 |
 | BlueOak-1.0.0 | 1 |
-| BSD-3-Clause | 40 |
+| BSD-3-Clause | 41 |
 | ISC | 43 |
 | MIT | 240 |
 | MPL-2.0 | 2 |
@@ -346,6 +346,7 @@ the package declares none in its manifest and the id was read from its license f
 | `vega-functions` | 6.2.0 | BSD-3-Clause | app-client-ui |
 | `vega-geo` | 5.1.3 | BSD-3-Clause | app-client-ui |
 | `vega-hierarchy` | 5.1.3 | BSD-3-Clause | app-client-ui |
+| `vega-interpreter` | 2.3.2 | BSD-3-Clause | app-client-ui |
 | `vega-label` | 2.1.3 | BSD-3-Clause | app-client-ui |
 | `vega-lite` | 6.4.3 | BSD-3-Clause | app-client-ui |
 | `vega-loader` | 5.1.3 | BSD-3-Clause | app-client-ui |

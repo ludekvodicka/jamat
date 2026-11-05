@@ -4,7 +4,7 @@ import { SessionActionHistory } from '../records/sessionActionHistory'
 import type { SessionLiveState, SessionScriptRunInfo, SessionWorkflowAction, SessionWorkflowInfo, SessionWorkflowStepState } from '../sessionManagerApi.types'
 import { GitFinishWorkflow } from '../../worktrees/worktreeViews'
 import { SetupWorkflow } from './setupWorkflow'
-import { SvnActionWorkflow } from '../../worktrees/worktreeViews'
+import { SvnActionWorkflow, WorktreeWords } from '../../worktrees/worktreeViews'
 
 export class SessionWorkflows {
   static openRunIdsOf(record: SessionRecord, runs: (runId: string) => SessionRecord | null): ReadonlySet<string> {
@@ -67,8 +67,30 @@ export class SessionWorkflows {
       && !sections.some((section) => section.workflowId === current.workflowId)) sections.push(current)
     for (const run of requested)
       if (run.phase === 'inner') sections.push(SessionWorkflows.requestedOf(run))
-    return sections.filter((section) => section.open || !record.clearedWorkflowIds?.includes(section.workflowId))
-      .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0))
+    const choice = SessionWorkflows.choiceOf(record)
+    return [...sections.filter((section) => section.open || !record.clearedWorkflowIds?.includes(section.workflowId))
+      .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0)), ...choice === null ? [] : [choice]]
+  }
+
+  /**
+   * A running SVN worktree session with no Finish yet offers its first two presses here, last, so
+   * Finish… only opens Session actions and nothing starts before the person chooses. An ended
+   * session keeps the Finish dialog, which also offers Keep.
+   */
+  static choiceOf(record: SessionRecord): SessionWorkflowInfo | null {
+    record = FinishProjection.record(record)
+    if (record.worktree?.kind !== 'svn' || record.svnAction !== undefined || record.pendingSetup !== undefined) return null
+    if (record.life !== 'live' && record.life !== 'starting') return null
+    // A ready or worker sync moves the lifecycle to finishing or waiting with no execution; no Finish was pressed yet.
+    const state = record.worktreeLifecycle
+    if (state !== undefined && state.phase !== 'active'
+      && !((state.phase === 'finishing' || state.phase === 'waiting') && state.execution === undefined)) return null
+    return { kind: 'finish', workflowId: `choose:${record.sessionId}`, title: `Finish of ${record.title}`, badge: 'not started',
+      summary: 'Commit & merge updates the worktree, runs its checks and opens the commit review. Discard removes the worktree with its changes.',
+      open: false, rounds: [], actions: [
+        { id: 'prepare-worktree', label: 'Commit & merge', primary: true },
+        { id: 'discard', label: 'Discard', primary: false, confirm: WorktreeWords.discardConfirm([], undefined, []) },
+      ] }
   }
 
   static of(record: SessionRecord, runs: (runId: string) => SessionRecord | null, live: SessionLiveState = { kind: 'known', sessions: [] }): SessionWorkflowInfo | null {

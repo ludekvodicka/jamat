@@ -193,6 +193,11 @@ export interface WorkerHandoff {
 }
 
 
+/**
+ * Why a round marks a pending unit `done` without an svn command: `at-target`, one read of the round
+ * proved it at its numeric target. Such a unit journals nothing; the round journals one summary.
+ */
+export type WorktreeUpdateSkip = 'at-target'
 
 export interface WorktreeUpdateUnit {
   target: SvnUpdateTarget

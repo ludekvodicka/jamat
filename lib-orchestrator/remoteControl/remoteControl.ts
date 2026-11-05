@@ -165,16 +165,16 @@ export interface RemoteControlSessionsPort {
  * own state, keyed by terminal target, and keys projects and categories the same way. The library
  * knows only that a group can be named at create and has to land somewhere.
  *
- * Synchronous for the reason `tabs.commitStatus` is: the one implementation reads and writes a file
- * the client already holds open, and a promise would only be a promise.
+ * Reads use the current assignment cache. Writes may cross the shell boundary asynchronously;
+ * synchronous return values remain supported for existing embedders.
  */
 export interface RemoteControlSessionGroupsPort {
   /** Absent on older embedders; omission must not be presented as the default group list. */
   definitions?(): readonly import('../sessionManager/sessionGroups').SessionGroupDefinition[]
   read(sessions: readonly SessionInfo[]): ReadonlyMap<string, SessionGroup | null>
-  assign(sessionId: string, group: SessionGroup): RemoteControlStepResult<{ group: SessionGroup }>
+  assign(sessionId: string, group: SessionGroup): RemoteControlStepResult<{ group: SessionGroup }> | Promise<RemoteControlStepResult<{ group: SessionGroup }>>
   /** A fork keeps the section its parent was put in by hand. */
-  inherit(parentSessionId: string, sessionId: string): void
+  inherit(parentSessionId: string, sessionId: string): void | Promise<void>
 }
 
 /** The Host as the session manager reaches it: its state, a timed hello, and the explicit actions. */
@@ -257,6 +257,8 @@ export interface RemoteControlAgentsPort {
 export type { RemoteControlCallContext, RemoteControlRunContext } from './remoteControlRegistry'
 
 export interface RemoteControlDeps {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
+  onRegistered?(name: string): void
   accounts?: Pick<AgentAccounts, 'list' | 'exists'>
   system: RemoteControlSystemPort
   projects: RemoteControlProjectsPort
@@ -281,6 +283,7 @@ export class RemoteControl {
 
   constructor(private readonly deps: RemoteControlDeps) {
     this.registry = new RemoteControlRegistry({
+      perf: deps.perf, onRegistered: deps.onRegistered,
       onError: deps.onError,
       ...(deps.operationStore === undefined ? {} : { operationStore: deps.operationStore }),
       onWritten: (operation, context, body) => this.activity.publish('operation.completed', {
@@ -583,7 +586,7 @@ export class RemoteControl {
        * whole request here, unlike inside a create: there the session exists whatever the state file
        * says, and here the move is the entire request.
        */
-      const assigned = this.deps.groups.assign(session.sessionId, body.group)
+      const assigned = await this.deps.groups.assign(session.sessionId, body.group)
       if (!assigned.ok) return assigned
       return RemoteControl.success({ sessionId: session.sessionId, group: assigned.value.group })
     })
@@ -609,7 +612,7 @@ export class RemoteControl {
         body.name === undefined ? undefined : { name: body.name },
       )
       if (!forked.ok) return RemoteControl.sessionError(forked)
-      this.deps.groups.inherit(session.sessionId, forked.value.sessionId)
+      await this.deps.groups.inherit(session.sessionId, forked.value.sessionId)
       return RemoteControl.success(forked.value)
     })
     bySession('sessions.switchAccount', 'Resume the same conversation on the explicitly selected account.', async (session, body) =>
@@ -774,7 +777,7 @@ export class RemoteControl {
      * other order draws it under Sessions for a tick and moves it, which is the flicker `color` at
      * create exists to avoid one field over.
      */
-    if (group !== undefined) value.groupAssign = this.deps.groups.assign(created.value.sessionId, group)
+    if (group !== undefined) value.groupAssign = await this.deps.groups.assign(created.value.sessionId, group)
     if (openTab === null) return RemoteControl.success(value)
     value.tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle, openTab)
     return RemoteControl.success(value)

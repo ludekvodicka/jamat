@@ -5,13 +5,15 @@ import { dirname, join } from 'node:path'
 export class LocalPackageInputs {
   private static readonly pathsConst = [
     'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json', 'LICENSE',
-    // Includes the named fileDiffWorker and tokenUsageWorker main inputs; renderer includes usage.html.
+    // The orchestrator root includes all three worker entries.
     'app-client-ui/app', 'app-client-ui/preload', 'app-client-ui/renderer',
     'app-client-ui/shared', 'app-client-ui/buildResources', 'app-client-ui/start.ts',
     'app-client-ui/package.json', 'app-client-ui/pnpm-lock.yaml',
     'app-client-ui/pnpm-workspace.yaml', 'app-client-ui/electron.vite.config.ts',
     'app-client-ui/tsconfig.json', 'app-client-ui/tsconfig.node.json',
-    'app-client-ui/tsconfig.web.json', 'app-host', 'app-launcher', 'app-codex', 'lib-orchestrator',
+    'app-client-ui/tsconfig.web.json', 'app-client-ui/scripts/gatewayBuildPlugin.ts',
+    'app-client-ui/scripts/restartPredecessor.ts',
+    'app-host', 'app-launcher', 'app-codex', 'app-gateway', 'app-orchestrator', 'lib-orchestrator',
     'mdext-renderer/renderer', 'mdext-renderer/USAGE.md', 'mdext-renderer/reference.md',
     'mdext-renderer/svg-style.md', 'mdext-renderer/examples',
     'skills', 'app-client-cli', 'configs/remarkable-sidecar', 'scripts/release',

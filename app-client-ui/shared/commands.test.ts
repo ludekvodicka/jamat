@@ -98,7 +98,6 @@ describe('app-client-ui/shared/commands', () => {
       ['window.new', 'Ctrl+Shift+N'],
       ['window.settings', null],
       ['debug.open', 'Ctrl+Shift+D'],
-      ['debug.newProbe', null],
       ['app.reload', null],
       ['app.restart', null],
     ])

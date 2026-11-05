@@ -488,7 +488,7 @@ export class SvnCommitManager {
    * exceeded the Windows command line (spawn ENAMETOOLONG, applications/Jamat#77). A `--targets`
    * file is no way out for `add` and `delete` either: svn reads it in the ANSI code page, not UTF-8.
    */
-  private static batches(paths: readonly string[]): string[][] {
+  static batches(paths: readonly string[]): string[][] {
     const batches: string[][] = []
     let batch: string[] = []
     let size = 0

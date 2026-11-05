@@ -31,6 +31,7 @@ export class CliArguments {
    * command.
    */
   private static readonly commandSpecsConst = {
+    'perf report': { options: ['--since'], flags: [], mutation: false },
     'snapins pass brief': { options: ['--pass'], flags: [], mutation: false },
     'snapins pass event': { options: ['--pass', '--kind', '--agent', '--pp-version', '--trail', '--outcome', '--waiting', '--detail-file', '--note-file', '--report-file'], flags: [], mutation: false },
     'commit-svn-jamat': { options: ['--session-id', '--number', '--working-directory', '--path', '--paths-file', '--message', '--message-file', '--fallback', '--timeout-ms'], flags: ['--self', '--wait'], mutation: true },

@@ -15,6 +15,12 @@ export function accountWindows(rate: RateAccountState | undefined): readonly Rat
   }
 }
 
+/** A plain session or weekly window at its limit: what a session of that account shows as exhausted. */
+export function accountExhausted(rate: RateAccountState | undefined): boolean {
+  return accountWindows(rate).some(window => window.model === undefined
+    && (window.durationMinutes === 300 || window.durationMinutes === 10_080) && window.usedPercent >= 100)
+}
+
 export function chooseDefault(agentId: AccountAgentId, accounts: readonly AccountView[], rates: readonly RateAccountState[]): DefaultAccountChoice {
   const eligible = accounts.filter(account => account.agentId === agentId && account.state === 'active').map(account => {
     const windows = accountWindows(rates.find(rate => rate.key.agentId === agentId && rate.key.accountId === account.accountId))

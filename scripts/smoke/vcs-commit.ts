@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,9 +15,8 @@ import { SvnCommitManager } from '../../lib-orchestrator/svn/svnCommitManager.js
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
 
-const requireUi = createRequire(import.meta.url)
-const { VersioningCommitManager } = requireUi('../../app-client-ui/app/versioning/versioningCommitManager.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitManager.js')
-const { VersioningCommitMessageStore } = requireUi('../../app-client-ui/app/versioning/versioningCommitMessageStore.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitMessageStore.js')
+import { VersioningCommitManager } from '../../app-orchestrator/app/versioning/versioningCommitManager.js'
+import { VersioningCommitMessageStore } from '../../app-orchestrator/app/versioning/versioningCommitMessageStore.js'
 
 class SmokeVcsCommit extends SmokeHarness {
   private readonly git = new GitInvoker()

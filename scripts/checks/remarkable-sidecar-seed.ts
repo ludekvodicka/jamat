@@ -7,13 +7,10 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// app-client-ui is CommonJS under tsx, and Node 22 finds no named exports in its transpiled modules.
-const requireUi = createRequire(import.meta.url)
-const { RemarkableSidecarManifest } = requireUi('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.ts') as typeof import('../../app-client-ui/app/remarkable/sidecar/remarkableSidecarManifest.js')
+import { RemarkableSidecarManifest } from '../../app-orchestrator/app/remarkable/sidecar/remarkableSidecarManifest.js'
 
 class RemarkableSidecarSeedCheck {
   private static readonly repositoryRootConst =

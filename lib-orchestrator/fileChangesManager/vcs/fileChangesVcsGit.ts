@@ -40,13 +40,13 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
   private static readonly missingPathConst =
     /does not exist in|exists on disk, but not in|invalid object name|unknown revision or path/i
 
-  constructor(
-    private readonly runner: GitCommandRunner = new GitInvoker({
-      timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds,
-    }),
-    private readonly commandArgs: readonly string[] = [],
-  ) {
+  private readonly runner: GitCommandRunner
+  private readonly commandArgs: readonly string[]
+
+  constructor(runner?: GitCommandRunner, commandArgs: readonly string[] = [], perf?: import('../../perfMonitor/perfSpans').PerfSpans) {
     super()
+    this.runner = runner ?? new GitInvoker({ timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds, perf })
+    this.commandArgs = commandArgs
   }
 
   /**

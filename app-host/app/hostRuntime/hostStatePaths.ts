@@ -53,4 +53,8 @@ export class HostStatePaths {
   static log(configIdentity: string, channel: RuntimeChannel): string {
     return join(HostStatePaths.directory(configIdentity, channel), 'host.log.jsonl')
   }
+
+  static perf(configIdentity: string, channel: RuntimeChannel): string {
+    return join(HostStatePaths.directory(configIdentity, channel), 'perf')
+  }
 }

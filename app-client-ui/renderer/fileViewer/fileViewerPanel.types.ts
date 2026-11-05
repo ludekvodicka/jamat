@@ -28,6 +28,8 @@ export interface FileViewerPanelParams extends Record<string, unknown> {
    * to decide what an absent zoom means.
    */
   zoomPercent: number
+  /** Long lines wrap at the panel edge; a layout written before the toggle existed reads as false. */
+  wrapLines: boolean
 }
 
 export interface FileViewerChangedOpen {

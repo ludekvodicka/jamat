@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import type { NativeImage, WebContents } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -68,10 +69,10 @@ describe('app-client-ui/app/shell/serviceWindowsIpc', () => {
         return true
       },
     } as unknown as ClientStateStore
-    service = new ServiceWindowsIpc(windows, store, () => {
+    service = bindService(new ServiceWindowsIpc(windows, store, () => {
       order.push('menu')
       appearanceChanges += 1
-    })
+    }))
   })
 
   async function info(sender: WebContents): Promise<IpcResult<WindowInfo>> {

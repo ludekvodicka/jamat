@@ -1,7 +1,7 @@
-import type { SessionFilePorts } from '../../shared/sessionWorkspace'
+import { SessionWorkspaceTargets, type SessionFilePorts } from '../../shared/sessionWorkspace'
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { IDockviewPanelProps } from 'dockview'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 import type {
   FileViewerDocument,
@@ -18,6 +18,7 @@ import {
   FileViewerPathControl,
   FileViewerReloadControl,
   FileViewerViewControl,
+  FileViewerWrapControl,
   FileViewerZoomControl,
 } from './fileViewerControls'
 import type {
@@ -26,7 +27,7 @@ import type {
   FileViewerPanelParams,
 } from './fileViewerPanel.types'
 import { FileViewerContent } from './fileViewerContent'
-import { FileImageSurface } from './fileImageSurface'
+import type { TerminalInputRegistry } from '../shell/terminalInputRegistry'
 import { FileViewerSourceShape } from './fileViewerSourceShape'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
@@ -41,6 +42,7 @@ export type FileViewerPanelProps = IDockviewPanelProps & {
   ports: SessionFilePorts
   changesPorts: AppClientUiBridge['fileChanges'] | null
   fileTools: PanelFileToolsRegistry
+  inputs?: TerminalInputRegistry
 }
 
 export function FileViewerPanel(props: FileViewerPanelProps): React.JSX.Element {
@@ -62,6 +64,17 @@ function FileViewerPanelBody(
   props: FileViewerPanelProps & { restored: FileViewerPanelParams },
 ): React.JSX.Element {
   const params = props.restored
+  const target = SessionWorkspaceTargets.panel(params)
+  const insertPrompt = useSyncExternalStore(
+    useCallback((changed) => props.inputs?.subscribePrompts(changed) ?? (() => {}), [props.inputs]),
+    useCallback(() => {
+      switch (target.kind) {
+        case 'local': return props.inputs?.promptTarget(params.sessionId)
+        case 'remote': return undefined
+        default: throw new Error(`Unknown terminal target: ${target satisfies never}`)
+      }
+    }, [props.inputs, target.kind, params.sessionId]),
+  )
   const { current: currentParameters, update: updateParameters } = usePanelParameters(props)
   const sidebar = usePanelSidebar(props, 'workingTree')
   const toolsTab = PanelFileToolsRegistry.tab(sidebar.state.activeView)
@@ -115,6 +128,13 @@ function FileViewerPanelBody(
     updateParameters({ ...currentParameters(), zoomPercent: percent })
   }, [currentParameters, updateParameters])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
+  // Held and written the way the zoom above is, for the same reason.
+  const [wrapLines, setWrapLines] = useState(params.wrapLines)
+  useEffect(() => { setWrapLines(params.wrapLines) }, [params.wrapLines])
+  const changeWrap = useCallback((wrap: boolean): void => {
+    setWrapLines(wrap)
+    updateParameters({ ...currentParameters(), wrapLines: wrap })
+  }, [currentParameters, updateParameters])
   const search = useFileViewerSearch(body, () => {
     if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
   })
@@ -163,6 +183,7 @@ function FileViewerPanelBody(
         aria-label="File viewer"
         tabIndex={-1}
         data-file-search-open={search.open || undefined}
+        data-file-wrap={wrapLines || undefined}
         onKeyDown={search.onKeyDown}
         style={{
           '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent),
@@ -190,6 +211,7 @@ function FileViewerPanelBody(
                 />
               )}
               <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
+              <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
               <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
               <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
             </div>
@@ -206,17 +228,18 @@ function FileViewerPanelBody(
           {model.error && <p className="file-viewer-error">{model.error}</p>}
           {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}
           {model.document && (
-            <FileImageSurface key={model.document.documentId} name={model.document.name}>
               <FileViewerContent ports={ports.viewer}
+                insertPrompt={insertPrompt}
                 document={model.document}
                 mode={model.mode}
                 baselines={model.baselines}
                 text={model.text}
+                textReady={model.textReady}
                 diff={model.diff}
                 location={params.location}
                 onOpenSource={openSource}
+                onReload={model.reload}
               />
-            </FileImageSurface>
           )}
         </div>
       </section>
@@ -253,6 +276,7 @@ export class FileViewerPanelState {
       baselineHint: FileViewerSourceShape.hint(value.baselineHint),
       location: FileViewerSourceShape.location(value.location),
       zoomPercent: FileViewerZoom.read(value.zoomPercent),
+      wrapLines: value.wrapLines === true,
     }
   }
 }

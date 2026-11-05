@@ -107,6 +107,7 @@ export class WorktreeUiExtensions {
         const point = await ui!.evaluate<{ x: number; y: number }>(`(() => { const e = document.querySelector('[data-session="${id}"] .jamat-sessions__row'); e.scrollIntoView({block:'nearest'}); const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2} })()`)
         await ui!.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point })
         await click(`[data-session="${id}"] button`, 'Finish…')
+        await click('.session-actions button', 'Commit & merge')
       }
       const fixture = async (name: string, files: Record<string, string>) => {
         const directory = join(root, name), repository = join(directory, 'repository'), main = join(directory, 'main')

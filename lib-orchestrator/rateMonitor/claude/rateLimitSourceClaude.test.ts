@@ -141,7 +141,7 @@ describe('lib-orchestrator/rateMonitor/claude/rateLimitSourceClaude', () => {
   /**
    * The seam this subsystem exists behind: a real reader over a real file whose two tokens are
    * unmistakable, and a reading that must not carry either of them anywhere at all - not in a field,
-   * not in a reason, not in the raw body kept for the Debug window.
+   * not in a reason, not in the raw body kept for the Debug tab.
    */
   it('carries no token out of the credentials file, in any reading it can produce', async () => {
     const accessSentinel = 'SENTINEL-ACCESS-8f2a1c'

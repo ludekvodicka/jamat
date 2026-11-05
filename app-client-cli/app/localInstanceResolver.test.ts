@@ -6,6 +6,7 @@ import type {
   RemoteControlStepResult,
 } from '../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
+import type { RemoteControlRejectedRegistration } from '../../lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery'
 import type { ConfigIdentityDocument } from '../../lib-orchestrator/shared/configIdentity.types'
 import {
   LocalInstanceResolver,
@@ -49,6 +50,85 @@ describe('app-client-cli/app/localInstanceResolver', () => {
       ok: false,
       error: { code: 'unavailable' },
     })
+  })
+
+  // The session pair is a filter: it picks its own controller among several, and never another one.
+  it('selects the session pair\'s instance among two development instances, and names it when it is not registered', async () => {
+    const own = LocalInstanceResolverTest.descriptor('37045054-own', 'development', '408862fc-own')
+    const measuring = LocalInstanceResolverTest.descriptor('2a2a0f4b-measuring', 'development', '2a2a0f4b-private')
+    const pair = { configIdentity: '408862fc-own', channel: 'development' as const }
+    await expect(new LocalInstanceResolverTest([own, measuring]).resolve(pair)).resolves.toEqual({ ok: true, value: own })
+
+    const alone = new LocalInstanceResolverTest([measuring])
+    const answer = await alone.resolve(pair)
+    expect(answer).toMatchObject({ ok: false, error: { code: 'unavailable', data: { rejections: [
+      { instanceId: '2a2a0f4b-measuring', configIdentity: '2a2a0f4b-private', runtimeChannel: 'development', reason: 'filtered' },
+    ] } } })
+    expect(!answer.ok && answer.error.detail).toBe('No matching running AppClientUI instance was found for 408862fc (development); '
+      + '2a2a0f4b (2a2a0f4b, development): not the selected controller')
+    expect(alone.probed).toEqual([])
+  })
+
+  it('gives a pinned single candidate the whole discovery budget for its hello', async () => {
+    vi.useFakeTimers()
+    try {
+      const pinned = LocalInstanceResolverTest.descriptor('pinned', 'development', 'identity-p')
+      const other = LocalInstanceResolverTest.descriptor('other', 'development', 'identity-o')
+      const timeouts: number[] = []
+      // Answers after 3 s, unless the timeout the resolver hands it ends first, as the real client does.
+      const resolver = new LocalInstanceResolver({
+        candidates: () => [pinned, other].map((descriptor) => ({ descriptor, registration: null })),
+        probe: (descriptor, _signal, timeoutMilliseconds) => {
+          timeouts.push(timeoutMilliseconds)
+          return new Promise((resolve) => {
+            setTimeout(() => resolve({ ok: true, value: LocalInstanceResolverTest.hello(descriptor) }), 3_000)
+            setTimeout(() => resolve({ ok: false, error: { code: 'timeout', detail: 'The AppClientUI control request timed out' } }), timeoutMilliseconds)
+          })
+        },
+      })
+
+      const pinnedAnswer = resolver.resolve({ configIdentity: 'identity-p', channel: 'development' })
+      await vi.advanceTimersByTimeAsync(3_000)
+      await expect(pinnedAnswer).resolves.toEqual({ ok: true, value: pinned })
+      expect(timeouts).toEqual([5_000])
+
+      const discovered = resolver.resolve({ channel: 'development' })
+      await vi.advanceTimersByTimeAsync(3_000)
+      await expect(discovered).resolves.toMatchObject({ ok: false, error: { code: 'unavailable', data: { rejections: [
+        { instanceId: 'pinned', reason: 'hello-timeout', detail: '1.5' },
+        { instanceId: 'other', reason: 'hello-timeout', detail: '1.5' },
+      ] } } })
+      expect(timeouts.slice(1)).toEqual([1_500, 1_500])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lists every candidate and why it was rejected when none answers', async () => {
+    const slow = LocalInstanceResolverTest.descriptor('37045054-slow', 'development', '408862fc-a')
+    const stranger = LocalInstanceResolverTest.descriptor('99999999-stranger', 'development', '408862fc-a')
+    const closed = LocalInstanceResolverTest.descriptor('11111111-closed', 'development', '408862fc-a')
+    const test = new LocalInstanceResolverTest([slow, stranger, closed])
+    test.rejectedRegistrations.push(
+      { configIdentity: '408862fc-a', runtimeChannel: 'development', instanceId: '22222222-dead', reason: 'not-alive' },
+      { configIdentity: '408862fc-a', runtimeChannel: 'development', instanceId: '33333333-torn', reason: 'descriptor' },
+      { configIdentity: 'other-identity', runtimeChannel: 'production', instanceId: '44444444-elsewhere', reason: 'not-alive' },
+    )
+    test.answers.set('37045054-slow', { ok: false, error: { code: 'timeout', detail: 'The AppClientUI control request timed out' } })
+    test.answers.set('99999999-stranger', { ok: true, value: { ...LocalInstanceResolverTest.hello(stranger), instanceId: 'wrong' } })
+    test.answers.set('11111111-closed', { ok: false, error: { code: 'unavailable', detail: 'The AppClientUI control endpoint is unavailable' } })
+
+    const answer = await test.resolve({ channel: 'development' })
+
+    expect(answer).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(!answer.ok && answer.error.detail).toBe('No matching running AppClientUI instance was found for development; '
+      + '22222222 (408862fc, development): its process is gone; '
+      + '33333333 (408862fc, development): its control descriptor could not be read; '
+      + '37045054 (408862fc, development): did not answer system.hello within 1.5 s; '
+      + '99999999 (408862fc, development): answered system.hello with another identity; '
+      + '11111111 (408862fc, development): refused system.hello (The AppClientUI control endpoint is unavailable)')
+    expect(JSON.stringify(answer)).not.toContain(slow.token)
+    expect(JSON.stringify(answer)).not.toContain('34567')
   })
 
   it('drops endpoint failures, timeouts and every hello identity or capability mismatch', async () => {
@@ -227,6 +307,8 @@ class LocalInstanceResolverTest {
   readonly thrown = new Set<string>()
   readonly identityCalls: { configDir: string; channel: 'development' | 'production' | undefined }[] = []
   readonly strictCalls: { configIdentity: string; channel: 'development' | 'production' }[] = []
+  readonly timeouts: number[] = []
+  readonly rejectedRegistrations: RemoteControlRejectedRegistration[] = []
   candidateReads = 0
   strict: RemoteControlDescriptor | null = null
   identityDocument: ConfigIdentityDocument | null = null
@@ -235,8 +317,9 @@ class LocalInstanceResolverTest {
 
   constructor(descriptors: readonly RemoteControlDescriptor[]) {
     const deps: LocalInstanceResolverDeps = {
-      candidates: () => {
+      candidates: (rejected) => {
         this.candidateReads += 1
+        for (const registration of this.rejectedRegistrations) rejected(registration)
         return descriptors.map((descriptor) => ({ descriptor, registration: null }))
       },
       strictDescriptor: (configIdentity, channel) => {
@@ -250,8 +333,9 @@ class LocalInstanceResolverTest {
         if (this.identityError) throw this.identityError
         return this.identityDocument
       },
-      probe: async (descriptor) => {
+      probe: async (descriptor, _signal, timeoutMilliseconds) => {
         this.probed.push(descriptor.instanceId)
+        this.timeouts.push(timeoutMilliseconds)
         if (this.thrown.has(descriptor.instanceId)) throw new Error('probe failed')
         return this.answers.get(descriptor.instanceId)
           ?? { ok: true, value: LocalInstanceResolverTest.hello(descriptor) }

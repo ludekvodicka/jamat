@@ -26,12 +26,21 @@ export function projectPool(samples: readonly RateSample[], accounts: readonly R
     const last = own.at(-1)
     if (!last) return []
     const recent = own.filter(sample => sample.at >= now - burnHours * hour)
+    // Weekly use only grows until a reset, so a reading above the lowest one since the last reset is
+    // rounding or a lagging source (the status line and the poll alternate 88/89/88). Counting each
+    // fall from such a reading counted the same percent again and doubled the burn.
     let spent = 0
+    let lowest = recent.length > 0 ? remaining(recent[0])! : 0
     for (let index = 1; index < recent.length; index++) {
       const before = recent[index - 1], after = recent[index]
       const reset = Date.parse(before.windows.find(window => window.durationMinutes === 10080 && !window.model)?.resetsAt ?? '')
-      const resetGain = reset > before.at && reset <= after.at ? 100 - remaining(before)! : 0
-      spent += Math.max(0, remaining(before)! - remaining(after)! + resetGain)
+      if (reset > before.at && reset <= after.at) {
+        spent += 100 - remaining(after)!
+        lowest = remaining(after)!
+      } else if (remaining(after)! < lowest) {
+        spent += lowest - remaining(after)!
+        lowest = remaining(after)!
+      }
     }
     const elapsed = recent.length > 1 ? recent.at(-1)!.at - recent[0].at : 0
     const burn = elapsed > 0 ? spent / (elapsed / hour) : 0

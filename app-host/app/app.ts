@@ -78,6 +78,7 @@ export class AppHost {
     this.router.register('host.health', () => this.memory.reading())
     this.router.assertComplete()
     this.memory.start()
+    this.hub.startPerf()
     try {
       const port = await this.transport.start()
       this.descriptor.write(this.buildDescriptor(port))
@@ -87,6 +88,7 @@ export class AppHost {
       )
     } catch (error) {
       this.memory.stop()
+      await this.hub.stopPerf()
       this.lock.release()
       this.ownsLock = false
       throw error
@@ -136,7 +138,7 @@ export class AppHost {
     if (this.shuttingDown) return
     this.shuttingDown = true
     this.memory.stop()
-    this.hub.destroy()
+    await this.hub.destroy()
     await this.transport.stop()
     this.descriptor.remove()
     if (this.ownsLock) {

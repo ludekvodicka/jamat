@@ -53,6 +53,9 @@ export class SvnUpdateScenarios {
     assert(made.ok, JSON.stringify(made))
     const tree = made.value.worktreePath
     await writeFile(join(tree, 'floating/file.txt'), 'worker edit\n')
+    // A local property change may change a mapping, so no read proves `pinned` at its revision: its
+    // update still runs, and the failure below still lands on it.
+    await run(join(tree, 'pinned'), ['propset', 'jamat:smoke', 'hold', 'file.txt'])
     await writeFile(join(library.cwd, 'file.txt'), 'incoming edit\n')
     await commit(library.cwd, 'Advance floating library')
     const file = join(root, 'records.json'), options = { snapshotsDirectory: join(root, 'snapshots') }
@@ -103,7 +106,10 @@ export class SvnUpdateScenarios {
     assert(reviewRoots.ok)
     assert.equal(reviewRoots.value.find((item) => item.own === 'date-pinned')?.pinned, true)
     assert.equal(await readFile(join(tree, 'floating/file.txt'), 'utf8'), 'worker edit\nincoming edit\n')
+    assert(!calls.some((call) => call.cwd === join(tree, 'date-pinned') || call.cwd === join(tree, 'floating/nested')))
+    assert(records.get('update')!.worktreeLifecycle!.journal.some((entry) => entry.stepId.endsWith('-skipped') && entry.paths?.includes('date-pinned')))
     console.log('  ok  UPDATE cursor survives conflict, failure and reload; completed roots are not replayed and saved pins remain fixed')
+    console.log('  ok  UPDATE runs no svn update in a mount one read of the round proves at its target, and journals one summary row')
 
     loseResponse = true
     await assert.rejects(update.run('update', 'update', tree, 2), /Lost update response/)
@@ -226,7 +232,9 @@ export class SvnUpdateScenarios {
         facts: { worker: { liveness: 'stopped', resumeFailures: 0 } } } })
     const older = [...before.value.textConflicts, ...before.value.otherConflicts]
     assert.equal((await update.run('older', 'older', copy, head)).complete, false)
-    assert.equal((await run(join(copy, 'lib/ea'), ['info', '--show-item', 'revision', '.'])).trim(), '1')
+    // D5: the clean external takes its update before the conflicts are handed over; their files stay as they were.
+    assert.equal((await run(join(copy, 'lib/ea'), ['info', '--show-item', 'revision', '.'])).trim(), '2')
+    assert.equal(await readFile(join(copy, 'older.txt'), 'utf8'), marked)
     assert.equal((await update.run('older', 'older', copy, head, older)).complete, true)
     assert.equal(await readFile(join(copy, 'file.txt'), 'utf8'), 'published application\n')
     assert.equal(await readFile(join(copy, 'lib/ea/file.txt'), 'utf8'), 'published library\n')
@@ -235,5 +243,33 @@ export class SvnUpdateScenarios {
     assert(after.ok)
     assert.deepEqual([after.value.textConflicts, after.value.otherConflicts], [['older.txt'], ['prop.txt']])
     console.log('  ok  MW07 conflicts the main copy held before UPDATE stop no target: svn skips them, the root and its external reach the published revisions')
+
+    const holder = await seed('holder'), first = await seed('first'), second = await seed('second'), third = await seed('third')
+    await run(holder.cwd, ['propset', 'svn:externals', [`${first.url} a`, `${second.url} b`, `${third.url} c`].join('\n'), '.'])
+    await commit(holder.cwd, 'Three mounts')
+    const mountCopy = join(root, 'mounted-copy')
+    await run(root, ['checkout', holder.url, mountCopy])
+    await writeFile(join(mountCopy, 'a', 'file.txt'), 'local mount edit\n')
+    await writeFile(join(mountCopy, 'c', 'local.txt'), 'unversioned local file\n')
+    for (const [seeded, text] of [[first, 'incoming mount edit\n'], [second, 'incoming clean edit\n'], [third, 'incoming beside a local file\n']] as const) {
+      await writeFile(join(seeded.cwd, 'file.txt'), text)
+      await commit(seeded.cwd, 'Advance a mounted repository')
+    }
+    await records.put({ sessionId: 'mounts', kind: 'shell', title: 'Mount conflict', life: 'ended', binding: null, directory: { mode: 'adHoc', path: mountCopy }, createdAt: 1,
+      worktreeLifecycle: { version: 0, actionId: 'mounts', phase: 'finishing', step: 'syncing', outOfDate: 0, journal: [],
+        facts: { worker: { liveness: 'stopped', resumeFailures: 0 } } } })
+    const revisionOf = async (mount: string) => (await run(join(mountCopy, mount), ['info', '--show-item', 'revision', '.'])).trim()
+    assert.equal((await update.run('mounts', 'mounts', mountCopy, 2)).complete, false)
+    const paused = records.get('mounts')!.worktreeLifecycle!.update!
+    assert.equal(paused.units[paused.cursor].target.path, join(mountCopy, 'a'))
+    assert.deepEqual([await revisionOf('a'), await revisionOf('b'), await revisionOf('c')], ['2', '2', '1'])
+    const markers = await readFile(join(mountCopy, 'a', 'file.txt'), 'utf8')
+    assert.match(markers, /^<<<<<<< \.mine/m)
+    await writeFile(join(mountCopy, 'a', 'file.txt'), 'local mount edit\nincoming mount edit\n')
+    await run(join(mountCopy, 'a'), ['resolve', '--accept', 'working', 'file.txt'])
+    assert.equal((await update.run('mounts', 'mounts', mountCopy, 2)).complete, true)
+    assert.deepEqual([await revisionOf('b'), await revisionOf('c')], ['2', '2'])
+    assert.equal(await readFile(join(mountCopy, 'c', 'local.txt'), 'utf8'), 'unversioned local file\n')
+    console.log('  ok  D5 a conflict in one mount pauses after the clean later mount took its update; the mount with local files waits for the settlement')
   }
 }

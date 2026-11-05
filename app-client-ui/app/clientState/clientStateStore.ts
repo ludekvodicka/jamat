@@ -27,7 +27,7 @@ export interface WindowBounds {
   maximized: boolean
 }
 
-export type WindowBoundsKey = 'main' | 'debug' | 'usage' | { extraWindowId: string }
+export type WindowBoundsKey = 'main' | { extraWindowId: string }
 
 interface WindowAppearanceState {
   name?: string
@@ -43,8 +43,6 @@ export interface ExtraWindowState extends WindowAppearanceState {
 interface ClientStateFields {
   layout?: string
   windowBounds?: WindowBounds
-  debugWindowBounds?: WindowBounds
-  usageWindowBounds?: WindowBounds
   sidebars?: SidebarsStateValue
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
@@ -77,11 +75,22 @@ export class ClientStateStore {
   private readFailed = false
   private refusalReported = false
 
-  constructor(
-    private readonly stateFile: string,
-    private readonly snapshotsDirectory: string,
-    private readonly report: (message: string) => void,
-  ) {}
+  private readonly stateFile: string
+  private readonly snapshotsDirectory: string
+  private readonly report: (message: string) => void
+  private readonly groupListeners: Set<(assignments: readonly SessionGroupAssignment[]) => void>
+
+  constructor(stateFile: string, snapshotsDirectory: string, report: (message: string) => void) {
+    this.stateFile = stateFile
+    this.snapshotsDirectory = snapshotsDirectory
+    this.report = report
+    this.groupListeners = new Set()
+  }
+
+  onSessionGroupsChanged(listener: (assignments: readonly SessionGroupAssignment[]) => void): () => void {
+    this.groupListeners.add(listener)
+    return () => { this.groupListeners.delete(listener) }
+  }
 
   loadLayout(windowId: string): LoadLayoutResult {
     const document = this.documentOnDisk()
@@ -177,10 +186,19 @@ export class ClientStateStore {
   saveSessionGroups(groups: readonly SessionGroupAssignment[]): boolean {
     if (!SessionsGroupsState.isValid(groups))
       throw new Error('Refusing to store invalid session groups')
-    return this.write(
+    const written = this.write(
       { ...this.documentOnDisk(), sessionGroups: structuredClone(groups) },
       { snapshotLayout: false },
     )
+    if (written) for (const listener of this.groupListeners) listener(this.loadSessionGroups())
+    return written
+  }
+
+  pruneSessionGroups(groupIds: readonly SessionGroup[]): boolean {
+    const current = this.loadSessionGroups()
+    if (this.readFailed) return this.refuseReadFailure()
+    const kept = current.filter(assignment => assignment.group !== 'none' && groupIds.includes(assignment.group))
+    return kept.length === current.length || this.saveSessionGroups(kept)
   }
 
   /**
@@ -268,10 +286,6 @@ export class ClientStateStore {
     const document = this.documentOnDisk()
     if (key === 'main')
       return document.windowBounds ?? null
-    else if (key === 'debug')
-      return document.debugWindowBounds ?? null
-    else if (key === 'usage')
-      return document.usageWindowBounds ?? null
     else if (key !== null && typeof key === 'object' && typeof key.extraWindowId === 'string')
       return document.extraWindows?.[key.extraWindowId]?.bounds ?? null
     else
@@ -285,10 +299,6 @@ export class ClientStateStore {
     const document = this.documentOnDisk()
     if (key === 'main')
       return this.write({ ...document, windowBounds: normalized }, { snapshotLayout: false })
-    else if (key === 'debug')
-      return this.write({ ...document, debugWindowBounds: normalized }, { snapshotLayout: false })
-    else if (key === 'usage')
-      return this.write({ ...document, usageWindowBounds: normalized }, { snapshotLayout: false })
     else if (key !== null && typeof key === 'object' && typeof key.extraWindowId === 'string')
       return this.updateExtraWindow(
         key.extraWindowId,
@@ -471,8 +481,6 @@ export class ClientStateStore {
     const document = raw as {
       layout?: unknown
       windowBounds?: unknown
-      debugWindowBounds?: unknown
-      usageWindowBounds?: unknown
       sidebars?: unknown
       sessionsView?: unknown
       sessionFilters?: unknown
@@ -485,12 +493,6 @@ export class ClientStateStore {
     if (document.layout !== undefined && typeof document.layout !== 'string')
       throw new Error('layout must be a string')
     const bounds = ClientStateStore.coerceBounds(document.windowBounds, 'main window bounds', report)
-    const debugBounds = ClientStateStore.coerceBounds(
-      document.debugWindowBounds,
-      'Debug window bounds',
-      report,
-    )
-    const usageBounds = ClientStateStore.coerceBounds(document.usageWindowBounds, 'Usage window bounds', report)
     const newSessionAgent = ClientStateStore
       .coerceNewSessionAgent(document.newSessionAgent, report)
     return {
@@ -510,8 +512,6 @@ export class ClientStateStore {
         splitPins: SplitPinsState.coerce(document.splitPins, report),
       }),
       ...(bounds === undefined ? {} : { windowBounds: bounds }),
-      ...(debugBounds === undefined ? {} : { debugWindowBounds: debugBounds }),
-      ...(usageBounds === undefined ? {} : { usageWindowBounds: usageBounds }),
       ...(document.sidebars === undefined
         ? {}
         : { sidebars: SidebarsState.coerce(document.sidebars) }),

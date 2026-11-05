@@ -6,6 +6,18 @@ import { RemoteControlConst } from './remoteControlProtocol'
 import { type RemoteControlCallContext, RemoteControlRegistry, type RemoteControlRunContext } from './remoteControlRegistry'
 
 describe('lib-orchestrator/remoteControl/remoteControlRegistry', () => {
+  it('registers each operation name before its monitored handler runs', async () => {
+    const registered: string[] = []
+    const measured: string[] = []
+    const found = new RemoteControlRegistry({ onError: () => {}, onRegistered: name => registered.push(name), perf: {
+      span: (_name, work) => work(),
+      operation: async (name, work) => { expect(registered).toEqual(['notes.read']); measured.push(name); return work() },
+    } })
+    found.register('notes.read', { kind: 'read', description: 'Read.', input: z.strictObject({}),
+      run: async () => ({ ok: true, value: 42 }) })
+    expect(await found.execute(request('notes.read', {}), context())).toMatchObject({ ok: true, value: 42 })
+    expect(measured).toEqual(['op:notes.read'])
+  })
   function registry(now = (): number => 1_000): {
     registry: RemoteControlRegistry
     errors: string[]

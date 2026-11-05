@@ -1,5 +1,5 @@
 import { SmokeHarness, SmokeRun } from './smokeHarness.js'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, parse } from 'node:path'
 
@@ -27,6 +27,28 @@ class SmokeFileViewer extends SmokeHarness {
   private async execute(): Promise<void> {
     this.seed()
     const viewer = new FileViewer()
+
+    const checklistPath = join(this.workspace, 'checklist.md')
+    const checklist = '\uFEFF---\r\njamat: interactive\r\n---\r\n# Ověření\r\n- [ ] První\r\n'
+    writeFileSync(checklistPath, checklist)
+    const openedChecklist = await viewer.openWorkspace(this.ownerId, this.sessionId, this.workspace, checklistPath)
+    if (!openedChecklist.ok) throw new Error(openedChecklist.detail)
+    const request = { documentId: openedChecklist.value.documentId, line: 5, checked: true,
+      contentVersion: openedChecklist.value.contentVersion! }
+    const toggled = await viewer.toggleTask(this.ownerId, request)
+    this.check('a checklist toggle preserves BOM and CRLF and changes one byte',
+      toggled.ok && readFileSync(checklistPath).equals(Buffer.from(checklist.replace('[ ]', '[x]'))))
+    writeFileSync(checklistPath, checklist + 'External edit\r\n')
+    const stale = await viewer.toggleTask(this.ownerId, request)
+    this.check('a stale checklist toggle writes nothing', !stale.ok && stale.code === 'document-changed'
+      && readFileSync(checklistPath, 'utf8') === checklist + 'External edit\r\n')
+    writeFileSync(checklistPath, '- [ ] No opt-in\n')
+    const plain = await viewer.openWorkspace(this.ownerId, this.sessionId, this.workspace, checklistPath)
+    if (!plain.ok) throw new Error(plain.detail)
+    const plainRefusal = await viewer.toggleTask(this.ownerId, { ...request, documentId: plain.value.documentId,
+      line: 1, contentVersion: plain.value.contentVersion! })
+    this.check('a document without the interactive opt-in stays read-only', !plainRefusal.ok && plainRefusal.code === 'not-interactive'
+      && readFileSync(checklistPath, 'utf8') === '- [ ] No opt-in\n')
 
     const markdown = await viewer.openWorkspace(
       this.ownerId,

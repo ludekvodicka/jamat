@@ -1,3 +1,4 @@
+import type { TerminalInputControl } from '../../sessionManager/worktreeSessionRuntime'
 import { ConflictJournals } from '../conflicts/conflictJournals'
 import { WorktreeLeaseHeld } from '../worktreeLease'
 import { randomUUID } from 'node:crypto'
@@ -21,16 +22,17 @@ export type WorktreeSyncTrigger = 'ready' | 'finish' | 'worker'
 
 export class SyncStep {
   private readonly deps: {
+    perf?: import('../../perfMonitor/perfSpans').PerfSpans
     records: SessionRecordsStore
-    svn: Pick<SvnWorktreeManager, 'headRevisionOf' | 'revisionOf' | 'conflictSet' | 'scheduleMissing' | 'updateTargets' | 'unmoved'>
-    runner: Pick<SvnStepRunner, 'run'>
+    svn: Pick<SvnWorktreeManager, 'headRevisionOf' | 'revisionOf' | 'conflictSet' | 'scheduleMissing' | 'updateTargets' | 'unmoved' | 'mountStates'>
+    runner: Pick<SvnStepRunner, 'run' | 'note'>
     commands: Pick<WorktreeSvnCommands, 'lease' | 'accept' | 'verify'>
     conflicts: Pick<SvnConflictFlow, 'remember' | 'remembered' | 'fix'> & Partial<Pick<SvnConflictFlow, 'resolve'>>
     handoffs?: Pick<import('../../sessionManager/worktreeSessionRuntime').WorkerHandoffs, 'conflicts'>
     ready: Pick<WorkerReady, 'current'>
     /** Why the worker does not count as idle, as a person reads it; null when it does. */
     busyReason: (sessionId: string) => string | null
-    holdInput: (sessionId: string) => () => void
+    terminals: TerminalInputControl
     changed: () => void
   }
   private readonly running = new Map<string, Promise<SessionsOpResult<WorktreeSyncResult>>>()
@@ -64,7 +66,8 @@ export class SyncStep {
       return Promise.resolve({ ok: false, code: 'merge-pending', detail: 'Sync waits for the current Finish step' })
     const pending = this.running.get(sessionId)
     if (pending !== undefined) return pending
-    const work = this.execute(sessionId, trigger, confirmed).catch(async (error: unknown) => {
+    const execute = () => this.execute(sessionId, trigger, confirmed)
+    const work = (this.deps.perf ? this.deps.perf.operation('finish.sync', execute) : execute()).catch(async (error: unknown) => {
       const detail = ErrorText.of(error)
       if (error instanceof WorktreeLeaseHeld) return { ok: false as const, code: 'svn-failed' as const, detail }
       await this.deps.records.update(sessionId, (record) => record.worktreeLifecycle === undefined
@@ -88,18 +91,21 @@ export class SyncStep {
       return { ok: false, code: 'merge-pending', detail: 'The current SVN action must finish before sync' }
     const root = record.worktree.worktreePath
     return this.deps.commands.lease.within(root, 'update', async () => {
-      const releaseInput = this.deps.holdInput(sessionId)
+      const inhibit = await this.deps.terminals.inhibit(sessionId)
       try {
         const locked = this.deps.records.get(sessionId)
         if (locked?.worktree?.worktreePath !== root || locked.pendingSetup !== undefined
           || locked.svnAction !== undefined && locked.svnAction.stage !== 'changes' && locked.svnAction.needs === undefined)
           return { ok: false, code: 'merge-pending', detail: 'The worktree changed before sync acquired its lease' }
+        const ready = trigger === 'ready' ? await this.deps.ready.current(sessionId) : false
+        const pending = await this.deps.terminals.pendingInput(sessionId)
+        const busyReason = pending > 0 ? 'input typed for the worker has not reached it yet' : this.deps.busyReason(sessionId)
         if (trigger === 'ready') {
-          if (!await this.deps.ready.current(sessionId) || this.deps.busyReason(sessionId) !== null)
+          if (!ready || busyReason !== null)
             return { ok: false, code: 'session-working', detail: 'Automatic sync waits for current ready and fresh idle evidence' }
         }
         else if (trigger === 'finish') {
-          const busy = locked.life === 'live' && !confirmed ? this.deps.busyReason(sessionId) : null
+          const busy = locked.life === 'live' && !confirmed ? busyReason : null
           if (busy !== null) return { ok: false, code: 'session-working', detail: WorktreeWords.syncBusyOf(busy) }
         }
         else if (trigger !== 'worker') throw new Error(`Unknown sync trigger: ${JSON.stringify(trigger satisfies never)}`)
@@ -196,7 +202,7 @@ export class SyncStep {
           await this.settled(sessionId, result.value, Math.max(0, update.revision - base.value))
           return result
         }
-      } finally { releaseInput() }
+      } finally { inhibit.release() }
     })
   }
 

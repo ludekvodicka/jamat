@@ -1,4 +1,4 @@
-import { createRequire } from 'node:module'
+import { SmokeTerminalOwner } from './smokeTerminalOwner'
 /**
  * End-to-end proof of the local control boundary. It starts a real AppHost and PTY, composes the
  * same semantic control and loopback server used by AppClientUI, then invokes the shipped skill
@@ -43,16 +43,12 @@ import {
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore.js'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths.js'
 
-const requireUi = createRequire(import.meta.url)
-const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
-const { RemoteControlInstanceStore } = requireUi('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js')
-type RemoteControlInstanceStore = import('../../app-client-ui/app/remoteControl/remoteControlInstanceStore.js').RemoteControlInstanceStore
-const { RemoteControlServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlServer.js')
-type RemoteControlServer = import('../../app-client-ui/app/remoteControl/remoteControlServer.js').RemoteControlServer
-const { RemoteSessionGroups } = requireUi('../../app-client-ui/app/sessionGroups/remoteSessionGroups.ts') as typeof import('../../app-client-ui/app/sessionGroups/remoteSessionGroups.js')
-const { SessionTranscriptAccess } = requireUi('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.ts') as typeof import('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js')
-type SessionTranscriptAccess = import('../../app-client-ui/app/sessionTranscript/sessionTranscriptAccess.js').SessionTranscriptAccess
-const { SessionsGroupsState } = requireUi('../../app-client-ui/shared/sessionsGroupsState.ts') as typeof import('../../app-client-ui/shared/sessionsGroupsState.js')
+import { ClientStatePaths } from '../../lib-orchestrator/shared/clientStatePaths.js'
+import { RemoteControlInstanceStore } from '../../app-orchestrator/app/remoteControl/remoteControlInstanceStore.js'
+import { RemoteControlServer } from '../../app-orchestrator/app/remoteControl/remoteControlServer.js'
+import { RemoteSessionGroups } from '../../app-orchestrator/app/sessionGroups/remoteSessionGroups.js'
+import { SessionTranscriptAccess } from '../../app-orchestrator/app/sessionTranscript/sessionTranscriptAccess.js'
+import { SessionsGroupsState } from '../../lib-orchestrator/clientApi/sessionsGroupsState.js'
 
 class SmokeRemoteControl extends SmokeHarness {
   protected override get waitMilliseconds(): number {
@@ -83,6 +79,7 @@ class SmokeRemoteControl extends SmokeHarness {
   private readonly errors: string[] = []
   private readonly groupAssigns: { key: string; group: SessionGroup }[] = []
   private readonly tabs: RemoteControlTabDto[] = []
+  private readonly terminalOwner: SmokeTerminalOwner
   private readonly manager: SessionManager
   private readonly transcriptAccess: SessionTranscriptAccess
   private readonly terminal: RemoteControlTerminal
@@ -155,7 +152,12 @@ class SmokeRemoteControl extends SmokeHarness {
         })
       },
     }
+    this.terminalOwner = new SmokeTerminalOwner({ configIdentity: this.configIdentity, channel: SmokeRemoteControl.channelConst,
+      controllerId: SmokeRemoteControl.controllerIdConst, onError: message => this.errors.push(message),
+      activity: { userInput: marks => this.manager.terminalActivity.userInput(marks),
+        pendingInputHint: counts => this.manager.terminalActivity.pendingInputHint(counts) } })
     this.manager = new SessionManager({
+      ...this.terminalOwner.sessionDeps,
       applicationRoot: SmokeRemoteControl.repoRootConst,
       resourcesRoot: null,
       configDir: this.configDir,
@@ -164,14 +166,13 @@ class SmokeRemoteControl extends SmokeHarness {
       autoStartHost: false,
       onChanged: () => this.server.publishEvent('sessions.changed'),
       onError: (message) => { this.errors.push(message) },
-      controllerId: SmokeRemoteControl.controllerIdConst,
       transcripts,
     })
     this.transcriptAccess = new SessionTranscriptAccess(
       this.manager,
       new SessionTranscriptReader({ transcripts }),
     )
-    this.terminal = new RemoteControlTerminal(this.manager, {
+    this.terminal = new RemoteControlTerminal(this.manager, this.manager.terminals, {
       onError: (message) => { this.errors.push(message) },
     })
     const control = this.control(identity)
@@ -212,6 +213,7 @@ class SmokeRemoteControl extends SmokeHarness {
       () => existsSync(this.hostDescriptorFile),
       `the Host never published ${this.hostDescriptorFile}`,
     )
+    this.terminalOwner.start()
     await this.manager.start()
     await this.waitUntil(
       () => this.manager.snapshot().host.presence === 'running',
@@ -298,7 +300,8 @@ class SmokeRemoteControl extends SmokeHarness {
       binding: null,
       life: 'ended',
       createdAt: 1_000,
-      endedAt: 2_000,
+      // Ended recently: a session ended a week ago moves to the archive, which `sessions.list` does not read.
+      endedAt: Date.now(),
       exitCode: 0,
       exitReason: 'process-exit',
     } as const satisfies SessionRecord
@@ -941,12 +944,13 @@ class SmokeRemoteControl extends SmokeHarness {
     return new RemoteSessionGroups(
       () => SessionsGroupsState.defaultsConst,
       {
-        loadSessionGroups: () => [...new Map(this.groupAssigns.map((entry) => [entry.key, entry])).values()],
-        assignSessionGroup: (key, group) => {
-          this.groupAssigns.push({ key, group })
-          return true
+        assignments: () => [...new Map(this.groupAssigns.map((entry) => [entry.key, entry])).values()],
+        onChanged: () => () => {},
+        assign: async change => {
+          if (change.kind !== 'assign') throw new Error('Unexpected assignment')
+          this.groupAssigns.push({ key: change.key, group: change.group })
+          return { ok: true, assignments: [...new Map(this.groupAssigns.map(entry => [entry.key, entry])).values()] }
         },
-        inheritSessionGroup: () => false,
       },
       () => {},
     )
@@ -1111,6 +1115,7 @@ class SmokeRemoteControl extends SmokeHarness {
     this.conflictServer = null
     await this.server.stop()
     await this.manager.stop()
+    await this.terminalOwner.stop()
     const child = this.host
     this.host = null
     if (child === null || child.exitCode !== null) return

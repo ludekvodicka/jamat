@@ -15,8 +15,8 @@ it('bundles one physical dependency instance with browser conditions and renders
   try {
     const entry = join(root, 'probe.ts')
     await writeFile(entry, [
-      `import { poolGraphSpec } from ${JSON.stringify(normalizePath(join(packageRoot, 'renderer/usageWindow/poolGraphSpec.ts')))}`,
-      `import { TokensSectionModel } from ${JSON.stringify(normalizePath(join(packageRoot, 'renderer/usageWindow/tokensSectionModel.ts')))}`,
+      `import { poolGraphSpec } from ${JSON.stringify(normalizePath(join(packageRoot, 'renderer/usage/poolGraphSpec.ts')))}`,
+      `import { TokensSectionModel } from ${JSON.stringify(normalizePath(join(packageRoot, 'renderer/usage/tokensSectionModel.ts')))}`,
       "import React from 'react'",
       "import { jsx } from 'react/jsx-runtime'",
       'export async function render() {',

@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { createIdResolver, type DepOptimizationConfig, type Plugin } from 'vite'
+import { gatewayBuildPlugin } from './scripts/gatewayBuildPlugin'
 
 type DependencyOptimizerPlugin = NonNullable<
   NonNullable<DepOptimizationConfig['esbuildOptions']>['plugins']
@@ -46,8 +47,9 @@ export class PnpmPreserveSymlinksResolver {
           if (!args.importer || !PnpmPreserveSymlinksResolver.isBare(args.path)
             || !PnpmPreserveSymlinksResolver.isDependency(args.importer))
             return null
-          const realImporter = PnpmPreserveSymlinksResolver.realImporter(args.importer)
-          if (realImporter === null) return null
+          // An importer already at its real path is resolved here too: stepping aside let Vite answer
+          // with the link path of the dependency.
+          const realImporter = PnpmPreserveSymlinksResolver.realImporter(args.importer) ?? args.importer
           // esbuild does the resolving, only from the real location. `createRequire().resolve()`
           // did it here once and applied NODE conditions, so a package whose `exports` splits on
           // `node` handed the browser its node build, and the node build of vega-canvas opens with
@@ -59,7 +61,13 @@ export class PnpmPreserveSymlinksResolver {
             resolveDir: dirname(realImporter),
             pluginData: { pnpmResolved: true },
           })
-          return resolved.errors.length > 0 ? null : resolved
+          if (resolved.errors.length > 0) return null
+          // esbuild keys a module by the path it returns. pnpm gives every package its own link to a
+          // shared dependency, so returning the link path bundled vega-dataflow once per linking
+          // package; each copy had its own transform registry, and vega's parser no longer found the
+          // `formula` transform that vega registered in its copy.
+          const real = resolved.external || resolved.namespace !== 'file' ? null : PnpmPreserveSymlinksResolver.realPath(resolved.path)
+          return real === null ? resolved : { ...resolved, path: real }
         })
       },
     }
@@ -75,6 +83,10 @@ export class PnpmPreserveSymlinksResolver {
 
   private static isDependency(importer: string): boolean {
     return /[/\\]node_modules[/\\]/.test(importer)
+  }
+
+  private static realPath(path: string): string | null {
+    try { return realpathSync(path) } catch { return null }
   }
 
   private static realImporter(importer: string): string | null {
@@ -95,13 +107,12 @@ export default defineConfig({
   main: {
     cacheDir: resolve(__dirname, 'out/.vite-main'),
     resolve: { preserveSymlinks: true },
-    plugins: [externalizeDepsPlugin()],
+    plugins: [gatewayBuildPlugin(resolve(__dirname, '..')), externalizeDepsPlugin()],
     build: {
+      watch: {},
       rollupOptions: {
         input: {
           start: resolve(__dirname, 'start.ts'),
-          tokenUsageWorker: resolve(__dirname, 'app/tokenUsage/tokenUsageWorkerEntry.ts'),
-          fileDiffWorker: resolve(__dirname, 'app/fileChanges/diff/fileDiffWorkerEntry.ts'),
         },
       },
     },
@@ -145,12 +156,9 @@ export default defineConfig({
     },
     plugins: [PnpmPreserveSymlinksResolver.plugin(), react()],
     build: {
-      // All shell documents share one renderer build.
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'renderer/index.html'),
-          debug: resolve(__dirname, 'renderer/debug.html'),
-          usage: resolve(__dirname, 'renderer/usage.html'),
         },
       },
     },

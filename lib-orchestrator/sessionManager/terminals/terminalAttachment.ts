@@ -8,6 +8,7 @@ import type {
 import type { TerminalAttachSocketDeps } from '../../hostClient/terminalAttachSocket'
 import type { TerminalFrame } from '../sessionManagerApi.types'
 import { TerminalInputChunks } from './terminalInputChunks'
+import { TerminalSnapshotReceiver } from './terminalSnapshotReceiver'
 
 /** All an attachment needs of a socket: one attach, spoken and closed. */
 export interface TerminalSocket {
@@ -18,16 +19,7 @@ export interface TerminalSocket {
 
 export type TerminalSocketFactory = (deps: TerminalAttachSocketDeps) => TerminalSocket
 
-/** Where the ref came from matters to the caller: an ended session and an unknown one differ. */
-export type TerminalRefResolution =
-  /**
-   * `alive` is false for a runtime the Host still HAS and no longer runs. Such a session is worth
-   * attaching to: the Host keeps its output, and the last screen a process printed before it died is
-   * the whole answer to why it died. It is attached to as an observer, because there is nothing left
-   * to type at.
-   */
-  | { ok: true; ref: RuntimeRef; alive: boolean }
-  | { ok: false; code: 'not-live' | 'unknown-session' }
+import type { TerminalRefResolution, TerminalSnapshotFlow } from './terminalPort'
 
 export interface TerminalAttachmentDeps {
   sessionId: string
@@ -43,6 +35,7 @@ export interface TerminalAttachmentDeps {
    */
   onEnded: () => void
   socketFactory: TerminalSocketFactory
+  snapshotFlow?: TerminalSnapshotFlow
 }
 
 /**
@@ -91,11 +84,20 @@ export class TerminalAttachment {
    */
   private attached = false
   private timer: ReturnType<typeof setTimeout> | null = null
+  private mismatchSince: number | null = null
   private attempt = 0
   private conflictRetryUsed = false
   private disposed = false
 
-  constructor(private readonly deps: TerminalAttachmentDeps) {}
+  private readonly deps: TerminalAttachmentDeps
+  private generation = 0
+  private snapshot: TerminalSnapshotReceiver | null = null
+
+  constructor(deps: TerminalAttachmentDeps) {
+    this.deps = deps
+  }
+
+  inputGeneration(): number { return this.generation }
 
   start(): void {
     this.open()
@@ -154,6 +156,7 @@ export class TerminalAttachment {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.generation++
     this.clearTimer()
     this.dropSocket()
     this.deps.onEnded()
@@ -161,11 +164,21 @@ export class TerminalAttachment {
 
   private open(): void {
     if (this.disposed) return
+    this.generation++
+    this.writer = false
+    this.attached = false
     this.clearTimer()
+    this.dropSocket()
+    if (this.mismatchSince !== null && Date.now() - this.mismatchSince >= 5_000) {
+      this.emitStatus('lost', 'the runtime belongs to a different Host instance')
+      this.dispose()
+      return
+    }
     const descriptor = this.deps.descriptorOf()
     if (descriptor === null) {
       this.emitStatus('connecting', 'no Host descriptor is published')
-      this.scheduleReopen()
+      if (this.mismatchSince === null) this.scheduleReopen()
+      else this.scheduleMismatch()
       return
     }
     // Resolved on every attempt rather than once: a reopened session runs under a new generation, and
@@ -181,12 +194,29 @@ export class TerminalAttachment {
       this.dispose()
       return
     }
+    if (resolution.ref.hostInstanceId !== descriptor.hostInstanceId) {
+      this.dropSocket()
+      this.mismatchSince ??= Date.now()
+      this.emitStatus('connecting', 'waiting for the runtime Host descriptor')
+      this.scheduleMismatch()
+      return
+    }
+    this.mismatchSince = null
     this.dropSocket()
+    const generation = this.generation
     const socket = this.deps.socketFactory({
-      onFrame: (frame) => this.onFrame(frame),
-      onClosed: (detail) => this.onClosed(detail),
+      onFrame: (frame) => { if (this.generation === generation) this.onFrame(frame) },
+      onClosed: (detail) => { if (this.generation === generation) this.onClosed(detail) },
     })
     this.socket = socket
+    if (this.deps.snapshotFlow && descriptor.capabilities?.includes('terminal.snapshot-stream.v1'))
+      this.snapshot = new TerminalSnapshotReceiver(this.deps.snapshotFlow, frame => socket.send(frame),
+        projection => { this.cursor = { outputEpoch: projection.outputEpoch, outputSeq: projection.outputSeq } },
+        error => {
+          if (this.generation !== generation) return
+          this.emitStatus('lost', `Snapshot consumption failed: ${String(error)}`)
+          this.dispose()
+        })
     socket.connect(descriptor)
     socket.send(this.attachFrame(resolution.ref, resolution.alive))
   }
@@ -202,6 +232,7 @@ export class TerminalAttachment {
     return {
       type: 'terminal.attach',
       target: ref,
+      ...(this.snapshot ? { snapshotStreamId: this.snapshot.id } : {}),
       // Always asked for while it runs. Without a lease the Host serves the attach read-only and
       // says so, which is a better answer than never asking and never finding out.
       role: alive ? 'interactive' : 'observer',
@@ -228,8 +259,20 @@ export class TerminalAttachment {
       if (frame.writer && this.wantedSize !== null)
         this.setGeometry(this.wantedSize)
       this.deps.onFrame(frame)
+      this.snapshot?.start()
       if (!frame.writer)
         this.emitStatus('read-only', 'another controller holds the Host, or this client has no lease')
+    }
+    else if (frame.type === 'terminal.snapshot-start' || frame.type === 'terminal.snapshot-chunk' || frame.type === 'terminal.snapshot-end') {
+      if (!this.snapshot) throw new Error('Unnegotiated streamed snapshot')
+      if (frame.type === 'terminal.snapshot-start') this.cursor = null
+      this.snapshot.receive(frame)
+    }
+    else if (frame.type === 'terminal.snapshot-complete') {
+      if (!this.snapshot || this.snapshot.id !== frame.streamId) return
+      if (!this.snapshot?.acceptsCompletion(frame.streamId)) throw new Error('Snapshot completed before consumption or for an obsolete stream')
+      this.deps.onFrame(frame)
+      this.snapshot = null
     }
     else if (frame.type === 'terminal.snapshot') {
       this.cursor = {
@@ -313,10 +356,18 @@ export class TerminalAttachment {
 
   private onClosed(detail: string): void {
     if (this.disposed) return
+    this.generation++
+    this.snapshot?.close()
+    this.snapshot = null
     this.socket = null
     this.writer = false
     this.emitStatus('connecting', detail)
     this.scheduleReopen()
+  }
+
+  private scheduleMismatch(): void {
+    this.timer = setTimeout(() => this.open(), 100)
+    this.timer.unref()
   }
 
   private scheduleReopen(): void {
@@ -351,6 +402,8 @@ export class TerminalAttachment {
    * to fall over.
    */
   private dropSocket(): void {
+    this.snapshot?.close()
+    this.snapshot = null
     const socket = this.socket
     this.socket = null
     if (socket === null) return

@@ -21,6 +21,10 @@ export class HostDescriptorPaths {
     )
   }
 
+  static perfDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(HostDescriptorPaths.scopeRoot(), configIdentity, channel, 'perf')
+  }
+
   // The override names the scope ROOT, never one channel's directory: consuming it verbatim
   // collapses both channels onto one descriptor, and a client then reads the other channel's Host.
   // Public because `scripts/dev/capture-workstate.ts` walks every identity and channel under it: it

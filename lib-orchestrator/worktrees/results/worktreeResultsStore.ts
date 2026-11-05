@@ -7,7 +7,7 @@ import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
 import { JsonShape } from '../../shared/jsonShape'
 import { PathCompare } from '../../shared/pathCompare'
-import type { SessionRecordWorktreeCaller } from '../../sessionManager/worktreeSessionRecords'
+import type { SessionRecordSvnAction, SessionRecordWorktreeCaller } from '../../sessionManager/worktreeSessionRecords'
 import type { NotifySource } from '../../sessionManager/worktreeSessionRuntime'
 import type { ScriptLogStore } from '../../sessionManager/worktreeSessionScripts'
 import type {
@@ -424,6 +424,24 @@ export class WorktreeResultsStore {
     else throw new Error(`Unknown worktree removal: ${JSON.stringify(removal satisfies never)}`)
   }
 
+  /**
+   * Whether the automatic main-copy UPDATE of this result still runs or waits to run, read from the
+   * live action of its session (`FinishProjection.action`): the Finish of this result at any stage after
+   * its commit wrote the result (verify, removal, the landed offer of its UPDATE), or an UPDATE of its main copy. A result whose UPDATE recorded `main` or
+   * `mainUnproven`, a removed session and an abandoned Finish answer false.
+   */
+  static mainUpdatingOf(record: WorktreeResultRecord, action: SessionRecordSvnAction | undefined): boolean {
+    if (record.main !== undefined || record.mainUnproven !== undefined || action === undefined
+      || (record.result !== 'committed' && record.result !== 'partial')) return false
+    const kind = action.kind
+    switch (kind) {
+      case 'finish': return action.actionId === record.actionId
+      case 'update-main': return PathCompare.comparable(action.root) === PathCompare.comparable(record.mainCopy)
+      case 'discard': return false
+      default: throw new Error(`Unknown SVN action kind: ${JSON.stringify(kind satisfies never)}`)
+    }
+  }
+
   static dtoOf(record: WorktreeResultRecord): WorktreeResultDto {
     return {
       main: record.main,
@@ -447,6 +465,7 @@ export class WorktreeResultsStore {
       logs: record.logs,
       notify: record.notify === null ? null : { sessionId: record.notify.sessionId, state: record.notify.state, at: record.notify.at },
       holdsLanded: null,
+      mainUpdating: false,
       at: record.at,
       acknowledgedAt: record.acknowledgedAt,
     }

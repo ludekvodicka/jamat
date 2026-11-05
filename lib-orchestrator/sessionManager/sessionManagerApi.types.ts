@@ -30,6 +30,9 @@ import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
  */
 export type SessionAgentId = 'claude' | 'codex'
 
+/** The processor priority of agent sessions and script runs, and of everything they start. */
+export type SessionProcessPriorityLevel = 'below-normal' | 'normal'
+
 /** Who started a session, as its creator states it. Display only: nothing waits, wakes or stops by it. */
 export type SessionParentKind = 'worktree' | 'ticket' | 'worker'
 
@@ -840,6 +843,8 @@ export interface WorktreeResultDto {
    * `false` as of the last svn write to the main copy's working copies, `null` while svn cannot tell.
    */
   holdsLanded: boolean | null
+  /** True while the automatic main-copy UPDATE of this Finish runs or waits to run; derived, never stored. */
+  mainUpdating: boolean
   at: number
   acknowledgedAt: number | null
 }
@@ -1314,6 +1319,10 @@ export type TerminalFrame =
       HostWsServerMsg,
       | { type: 'terminal.attached' }
       | { type: 'terminal.snapshot' }
+      | { type: 'terminal.snapshot-start' }
+      | { type: 'terminal.snapshot-chunk' }
+      | { type: 'terminal.snapshot-end' }
+      | { type: 'terminal.snapshot-complete' }
       | { type: 'terminal.data' }
       | { type: 'terminal.delta' }
       | { type: 'terminal.resize' }

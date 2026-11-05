@@ -53,6 +53,7 @@ export interface RateMonitorAccountCache {
 export class RateMonitorCacheStore {
   private static readonly schemaVersionConst = 2
   private readonly file: string
+  private writing: Promise<void> = Promise.resolve()
 
   constructor(file: string) { this.file = file }
 
@@ -66,15 +67,18 @@ export class RateMonitorCacheStore {
     try {
       const parsed: unknown = JSON.parse(raw)
       const content = RateMonitorCacheStore.coerce(parsed)
-      if (content !== null && JsonShape.record(parsed)?.schemaVersion === 1) this.save(content)
+      if (content !== null && JsonShape.record(parsed)?.schemaVersion === 1) await this.save(content)
       return content
     } catch {
       return null
     }
   }
 
-  /** Atomic, the way every store in this library writes: a half-written cache reads as damage. */
-  save(content: RateMonitorCacheContent): void {
+  /**
+   * Atomic, the way every store in this library writes: a half-written cache reads as damage. Off the
+   * event loop, and chained so two saves land in the order they were made.
+   */
+  save(content: RateMonitorCacheContent): Promise<void> {
     const accounts: RateMonitorAccountCache[] = [...(content.accounts ?? [])]
     for (const agentId of ['claude', 'codex'] as const) {
       const entry = content.providers[agentId]
@@ -83,8 +87,17 @@ export class RateMonitorCacheStore {
         accounts.push({ key: { agentId, accountId: 'main' }, entry, attemptAt })
     }
     const document = { schemaVersion: RateMonitorCacheStore.schemaVersionConst, accounts }
-    AtomicJsonFile.ensureDirectory(dirname(this.file))
-    AtomicJsonFile.write(this.file, document)
+    const written = this.writing.then(async () => {
+      await AtomicJsonFile.ensureDirectoryAsync(dirname(this.file))
+      await AtomicJsonFile.writeAsync(this.file, document)
+    })
+    this.writing = written.catch(() => undefined)
+    return written
+  }
+
+  /** Settles once every save made so far has landed or failed. */
+  flush(): Promise<void> {
+    return this.writing
   }
 
   private static coerce(parsed: unknown): RateMonitorCacheContent | null {

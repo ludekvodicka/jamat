@@ -64,6 +64,19 @@ export class ScriptRunPlanning {
   }
 
   /**
+   * A replayable gated run still starting without a binding, with its pending pair, that its parent's
+   * gate names now: its launch is on its way, or the reconciler replays it. A collapse or a lost mark
+   * planned from records read before that pointer landed must leave it alone.
+   */
+  static launchDue(run: SessionRecord, parent: SessionRecord | null): boolean {
+    const link = run.scriptOf
+    if (link === undefined || parent === null || run.life !== 'starting' || run.binding !== null
+      || run.pendingOperationId === undefined || run.pendingOperationKind === undefined) return false
+    const definition = SessionScriptDefinitions.of(link)
+    return definition.gate !== null && definition.replayable && definition.pointerOf(parent) === run.sessionId
+  }
+
+  /**
    * A gated run still starting that its gate never named, with no answer from the Host and no
    * runtime there: its record was written and the pointer write after it did not land. Nothing was
    * ever launched for it, so it goes without a history entry that would show an attempt that never

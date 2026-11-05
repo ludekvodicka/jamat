@@ -1,7 +1,7 @@
+import type { RemoteListenerRuntime } from '../../../../../../lib-orchestrator/remoteControl/remotePeerListener.types'
 import { describe, expect, it } from 'vitest'
 
 import type {
-  RemoteListenerRuntime,
   RemoteSettingsProfileDto,
   RemoteSettingsRefusalCode,
   RemoteSettingsSnapshotDto,

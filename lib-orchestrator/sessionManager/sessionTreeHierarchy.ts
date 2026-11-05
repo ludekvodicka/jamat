@@ -51,8 +51,7 @@ export class SessionTreeHierarchy {
           links.set(entry.info.sessionId, { parent, via: 'script' })
       } else {
         const parent = SessionTreeHierarchy.ownParentOf(entry, byId, nesting)
-        // One session hop prevents cycles; a script may still sit below that session child.
-        if (parent !== undefined && SessionTreeHierarchy.ownParentOf(parent, byId, nesting) === undefined)
+        if (parent !== undefined && !SessionTreeHierarchy.reaches(parent, entry, byId, nesting))
           links.set(entry.info.sessionId, { parent, via: 'session' })
       }
     }
@@ -73,9 +72,12 @@ export class SessionTreeHierarchy {
     return children
   }
 
+  /** The top of the entry's family; `linksOf` never links a cycle, so the walk ends. */
   static sectionOf<T extends SessionTreeEntry>(entry: T, links: ReadonlyMap<string, SessionTreeParent<T>>): T {
-    const first = links.get(entry.info.sessionId)?.parent
-    return first === undefined ? entry : links.get(first.info.sessionId)?.parent ?? first
+    let top = entry
+    for (let up = links.get(top.info.sessionId); up !== undefined; up = links.get(top.info.sessionId))
+      top = up.parent
+    return top
   }
 
   static categories<T extends SessionTreeEntry>(
@@ -169,6 +171,24 @@ export class SessionTreeHierarchy {
       return undefined
     const parent = byId.get(link.sessionId)
     return parent === undefined || parent === entry || parent.info.script !== undefined ? undefined : parent
+  }
+
+  /**
+   * Whether `target` is among `from` and its ancestors. A child is linked only when it is not, so a
+   * parent record pointing back down the chain leaves its sessions as roots instead of a loop.
+   */
+  private static reaches<T extends SessionTreeEntry>(
+    from: T,
+    target: T,
+    byId: ReadonlyMap<string, T>,
+    nesting: SessionTreeNesting,
+  ): boolean {
+    const seen = new Set<T>()
+    for (let at: T | undefined = from; at !== undefined && !seen.has(at); at = SessionTreeHierarchy.ownParentOf(at, byId, nesting)) {
+      if (at === target) return true
+      seen.add(at)
+    }
+    return false
   }
 
   private static nests(kind: SessionParentKind, nesting: SessionTreeNesting): boolean {

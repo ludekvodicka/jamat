@@ -63,6 +63,7 @@ export interface RateExternalReading {
 }
 
 export interface RateMonitorDeps {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
   configIdentity: string
   channel: RuntimeChannel
   /** One call per move of the content the snapshot shows; coalescing them is the renderer's job. */
@@ -114,6 +115,15 @@ export class RateMonitor {
    * setting a cadence, and the cadence and the manual refresh are untouched by it.
    */
   private static readonly nudgeFloorMillisecondsConst = 5_000
+  /**
+   * A Claude status line rewrites its file on every refresh with a new `at` and, most of the time,
+   * the same windows. Such a reading moves nothing a surface draws, so it is taken only once the held
+   * one is this old: well inside the 15 minutes after which `estimateOf` would start guessing over
+   * numbers the status line is still confirming.
+   */
+  private static readonly feedRefreshMillisecondsConst = 300_000
+  /** The poll and the status line state one reset up to a minute apart; a new window starts days later. */
+  private static readonly sameResetMillisecondsConst = 3_600_000
 
   private readonly deps: RateMonitorDeps
   private readonly hooks: RateSourceHooks
@@ -219,14 +229,18 @@ export class RateMonitor {
   /** Idempotent. Stops the timer and the sources, which is what ends a live provider child process. */
   stop(): Promise<void> {
     this.stopped = true
-    if (!this.started) return this.history.flush()
+    if (!this.started) return this.flush()
     this.started = false
     this.visible = false
     this.clearTimer()
     if (this.feedTimer !== null) clearInterval(this.feedTimer)
     this.feedTimer = null
     for (const source of this.sources.values()) source.stop()
-    return this.history.flush()
+    return this.flush()
+  }
+
+  private async flush(): Promise<void> {
+    await Promise.all([this.history.flush(), this.cache.flush()])
   }
 
   setWindowVisible(visible: boolean): void {
@@ -368,7 +382,8 @@ export class RateMonitor {
     const running = this.inFlight.get(agentId)
     if (running) return running
     if (this.flooredOut(agentId)) return Promise.resolve()
-    const work = this.runRead(agentId).finally(() => {
+    const read = () => this.runRead(agentId)
+    const work = (this.deps.perf ? this.deps.perf.operation('rate.pass', read) : read()).finally(() => {
       this.inFlight.delete(agentId)
       // Exactly once: the flag is cleared before the repeat, so a push arriving during THAT read
       // sets it again and a stream of them cannot chain reads without end.
@@ -416,6 +431,11 @@ export class RateMonitor {
    * built out of a file this process may only read, and a spread would carry whatever else it holds.
    */
   private apply(agentId: string, reading: RateSourceReading): void {
+    if (this.deps.perf) this.deps.perf.span('rate.pass', () => this.applyReading(agentId, reading))
+    else this.applyReading(agentId, reading)
+  }
+
+  private applyReading(agentId: string, reading: RateSourceReading): void {
     this.oauthExpiresAt[agentId] = reading.oauthExpiresAt
     if (reading.kind === 'ok') {
       const fetchedAt = this.now()
@@ -462,23 +482,21 @@ export class RateMonitor {
    * floor those restarts exist to be held by would begin again at each one.
    */
   private save(): void {
-    try {
-      this.cache.save({
-        providers: { claude: this.lastGood.get('claude'), codex: this.lastGood.get('codex') },
-        attempts: {
-          claude: this.attemptAt.claude ?? undefined,
-          codex: this.attemptAt.codex ?? undefined,
-        },
-        accounts: [...this.sources].filter(([, source]) => (source.accountId ?? 'main') !== 'main')
-          .map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId! },
-            entry: this.lastGood.get(key), attemptAt: this.attemptAt[key] ?? undefined })),
-      })
-    } catch (error) {
+    void this.cache.save({
+      providers: { claude: this.lastGood.get('claude'), codex: this.lastGood.get('codex') },
+      attempts: {
+        claude: this.attemptAt.claude ?? undefined,
+        codex: this.attemptAt.codex ?? undefined,
+      },
+      accounts: [...this.sources].filter(([, source]) => (source.accountId ?? 'main') !== 'main')
+        .map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId! },
+          entry: this.lastGood.get(key), attemptAt: this.attemptAt[key] ?? undefined })),
+    }).catch((error: unknown) => {
       this.deps.onError(
         `The rate monitor cache at ${this.cacheFile} could not be written `
         + `(${ErrorText.of(error)}); the next start draws nothing until a read answers`,
       )
-    }
+    })
   }
 
   private hydrate(cached: RateMonitorCacheContent): void {
@@ -581,7 +599,8 @@ export class RateMonitor {
       for (const reading of readings) {
         const key = this.keyOf(reading.key.agentId, reading.key.accountId)
         if (!this.sources.has(key) || reading.at > this.now()
-          || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity)) continue
+          || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity) || this.repeats(key, reading)
+          || this.behind(key, reading)) continue
         this.lastGood.set(key, { fetchedAt: reading.at, windows: reading.windows, extras: this.extras[key] })
         this.successAt[key] = reading.at
         this.lastReason[key] = null
@@ -592,6 +611,33 @@ export class RateMonitor {
         this.changed()
       }
     } finally { this.feedReading = false }
+  }
+
+  /** The same windows from the same feed, with only `at` moved and the held answer still recent. */
+  private repeats(key: string, reading: RateExternalReading): boolean {
+    const held = this.lastGood.get(key)
+    if (held === undefined || this.providers[key]?.kind !== 'ok' || this.readingSources.get(key) !== reading.source
+      || reading.at - held.fetchedAt >= RateMonitor.feedRefreshMillisecondsConst) return false
+    return held.windows.length === reading.windows.length && held.windows.every((window, index) => {
+      const next = reading.windows[index]
+      return window.durationMinutes === next.durationMinutes && window.usedPercent === next.usedPercent
+        && window.resetsAt === next.resetsAt && window.model === next.model
+    })
+  }
+
+  /**
+   * An idle Claude session redraws its status line with the windows of its last answer and a new
+   * `at`, so one relay file can carry 17 % while the account is at 21 %. Use only grows until the
+   * window resets, so a lower percent for the same reset is such a stale answer. The poll is not
+   * filtered here and still corrects a held value that was too high.
+   */
+  private behind(key: string, reading: RateExternalReading): boolean {
+    const held = this.lastGood.get(key)
+    if (held === undefined) return false
+    return reading.windows.some(next => held.windows.some(window => window.durationMinutes === next.durationMinutes
+      && window.model === next.model && window.resetsAt !== null && next.resetsAt !== null
+      && Math.abs(Date.parse(window.resetsAt) - Date.parse(next.resetsAt)) < RateMonitor.sameResetMillisecondsConst
+      && next.usedPercent < window.usedPercent))
   }
 
   accountsChanged(): void {

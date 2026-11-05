@@ -24,14 +24,14 @@ preserved commit for commit. None of that changes how you contribute.
 
 ## The shape of the tree
 
-Five packages, each with its own `pnpm-lock.yaml` and its own `node_modules`. The split is by
+Independent packages, each with its own `pnpm-lock.yaml` and its own `node_modules`. The split is by
 process, not by layer: a directory exists because something owns state that outlives its caller.
 
 | Package | What it is |
 | --- | --- |
 | `app-host` | The process that owns the terminals. It survives every client closing. Create, inspect, attach, input, resize, stop and remove over a token-guarded loopback HTTP and WebSocket API. It is agent-agnostic: it spawns exactly the command, environment and size it is handed, and knows nothing about Claude or Codex. Nothing it imports comes from outside the package. |
 | `lib-orchestrator` | The library both clients link, and the whole seam between a client and the Host. It owns projects, provider session history, durable session records, launching and reconciliation, work state, file changes and diffs, file viewing, the rate, model and transcript readers, worktrees and merges, project setup, Host control, and the transport-independent remote-control contract. It owns no process. |
-| `app-client-ui` | The Electron client: the workspace window, extra windows, the native menu, status bar, sessions tree, launcher, settings, dockview tabs and live terminal panels, plus a Debug window. It reaches the Host only through `lib-orchestrator`, and it hosts the authenticated loopback control endpoint. |
+| `app-client-ui` | The Electron client: the workspace window, extra windows, the native menu, status bar, sessions tree, launcher, settings, dockview tabs and live terminal panels, plus Debug and Usage tabs. It reaches the Host only through `lib-orchestrator`, and it hosts the authenticated loopback control endpoint. |
 | `app-client-cli` | A short-lived JSON client for that control endpoint, and for the paired computers behind it. It owns no durable state. |
 | `mdext-renderer` | The renderer for the enriched Markdown the file viewer draws. Sources only; the client compiles it. |
 
@@ -58,7 +58,7 @@ Inside a package the same two rules hold everywhere:
 platform the project is developed and released on; macOS and Linux builds exist and are less
 travelled.
 
-All five installs are required. `pnpm typecheck` compiles every package, and the smoke suite spawns
+All package installs are required. `pnpm typecheck` compiles every package, and the smoke suite spawns
 a real Host, which needs `node-pty` from the Host's own `node_modules`.
 
 ```bash
@@ -68,6 +68,7 @@ pnpm install
 pnpm -C app-host install
 pnpm -C lib-orchestrator install
 pnpm -C app-client-ui install
+pnpm -C app-orchestrator install
 pnpm -C app-client-cli install
 ```
 
@@ -91,7 +92,7 @@ opened inside one of those exports it.
 ## What has to be green
 
 ```bash
-pnpm typecheck   # five TypeScript programs, plus the check that the two skill adapters are identical
+pnpm typecheck   # every TypeScript program, plus the check that the two skill adapters are identical
 pnpm test        # the unit suites of every package: a fake terminal, a fake Host, jsdom for the web side
 ```
 

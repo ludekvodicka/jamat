@@ -13,6 +13,7 @@ import type { SvnRoot, SvnWorktreeLocation } from './svn.types'
 import { SvnWorktreeManager } from './svnWorktreeManager'
 import { CommandInvoker } from '../shared/commandInvoker'
 import { SvnInvoker } from './svnInvoker'
+import { PathCompare } from '../shared/pathCompare'
 
 /** Paths whose next purge fails, the way a file another process holds makes it fail. */
 const purgeFailures = vi.hoisted(() => new Map<string, Error>())
@@ -386,7 +387,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
   })
 
   // Mirabia 114: commits elsewhere in the repository moved HEAD, and two update rounds brought nothing.
-  it('proves an update unneeded only for a uniform worktree whose own history and mounts did not move', async () => {
+  it('proves an update unneeded only for a uniform worktree whose own history and mounts did not move', { timeout: 60_000 }, async () => {
     const svn = new SvnInvoker()
     const run = async (cwd: string, args: string[]): Promise<void> => {
       expect(await svn.run(cwd, args), args.join(' ')).toMatchObject({ code: 0 })
@@ -425,6 +426,64 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
     await writeFile(join(wc, 'a.txt'), 'mine\n')
     await run(wc, ['commit', '-m', 'own'])
     expect(await manager.unmoved(wc)).toEqual({ ok: true, value: false })
+  })
+
+  it('reads an assembly through the executor it was given and answers its failure as an svn failure', async () => {
+    const assembly = { format: 1 as const, content: 'c', metadata: 'm', nodes: [], incoming: [] }
+    const reads: unknown[][] = []
+    let fail = false
+    const progress = (): void => {}
+    const manager = new SvnWorktreeManager({ run: () => { throw new Error('no svn runs in the caller') } }, undefined, {
+      read: async (...args) => { reads.push(args); if (fail) throw new Error('The svn assembly worker failed: exited with code 1'); return assembly },
+    })
+
+    expect(await manager.assembly('Q:/w', true, progress)).toEqual({ ok: true, value: assembly })
+    expect(reads).toEqual([['Q:/w', true, progress]])
+    fail = true
+    expect(await manager.assembly('Q:/w')).toEqual({ ok: false, code: 'svn-failed', detail: 'The svn assembly worker failed: exited with code 1' })
+  })
+
+  it('reads every mount, nested ones included, from one status and one batch of info and propget', async () => {
+    const svn = new SvnInvoker()
+    const calls: string[][] = []
+    const counting: CommandRunner = { run: (cwd, args, options) => { calls.push(args); return svn.run(cwd, args, options) } }
+    const run = async (cwd: string, args: string[]): Promise<void> => {
+      expect(await svn.run(cwd, args), args.join(' ')).toMatchObject({ code: 0 })
+    }
+    const repo = join(temporary, 'repo'), side = join(temporary, 'side'), wc = join(temporary, 'wc')
+    expect(await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repo], cwd: temporary, env: process.env })).toMatchObject({ code: 0 })
+    const root = pathToFileURL(repo).href
+    await run(temporary, ['mkdir', '-m', 'layout', `${root}/app`, `${root}/lib`, `${root}/inner`])
+    await run(temporary, ['checkout', root, side])
+    await writeFile(join(side, 'lib', 'l.txt'), 'lib\n')
+    await writeFile(join(side, 'inner', 'i.txt'), 'inner\n')
+    await run(side, ['add', 'lib/l.txt', 'inner/i.txt'])
+    await run(side, ['commit', '-m', 'files'])
+    await run(side, ['update'])
+    await run(side, ['propset', 'svn:externals', '^/inner nested', 'lib'])
+    await run(side, ['propset', 'svn:externals', '^/lib mount', 'app'])
+    await run(side, ['commit', '-m', 'mounts'])
+    await run(temporary, ['checkout', `${root}/app`, wc])
+    const manager = new SvnWorktreeManager(counting)
+    const read = async () => {
+      const states = await manager.mountStates(wc)
+      if (!states.ok) throw new Error(states.detail)
+      return { mount: states.value.get(PathCompare.comparable(join(wc, 'mount'))), nested: states.value.get(PathCompare.comparable(join(wc, 'mount', 'nested'))), size: states.value.size }
+    }
+    const clean = { missing: false, switched: false, skipped: false, localChanges: false, propertyChanges: false }
+    expect(await read()).toEqual({ size: 2,
+      mount: { ...clean, path: join(wc, 'mount'), url: `${root}/lib`, repository: root, base: 3, carrier: true },
+      nested: { ...clean, path: join(wc, 'mount', 'nested'), url: `${root}/inner`, repository: root, base: 3, carrier: false } })
+    expect(calls.map((args) => args[0])).toEqual(['status', 'info', 'propget'])
+    // A local edit below the nested mount counts for both mounts that hold it.
+    await writeFile(join(wc, 'mount', 'nested', 'i.txt'), 'edit\n')
+    expect(await read()).toMatchObject({ mount: { localChanges: true, base: 3 }, nested: { localChanges: true, base: 3 } })
+    await writeFile(join(side, 'lib', 'l.txt'), 'lib 2\n')
+    await run(side, ['commit', '-m', 'lib moved'])
+    await run(join(wc, 'mount'), ['update', 'l.txt'])
+    expect(await read()).toMatchObject({ mount: { base: 'mixed' }, nested: { base: 3 } })
+    await rm(join(wc, 'mount', 'l.txt'))
+    expect(await read()).toMatchObject({ mount: { missing: true } })
   })
 
   it('restores an actual SVN setup directory deletion and its separately proven descendants', async () => {
@@ -1389,6 +1448,20 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
         await exited
       }
       expect(await scripted(noSvn).manager.renameAside(location)).toEqual({ ok: true, value: 'renamed' })
+    })
+
+    // Mirabia 117: EPERM right after the worker stopped; its process tree let the folder go a moment later.
+    it.skipIf(process.platform !== 'win32')('renames once a holder that exits inside the retry window releases the folder', async () => {
+      const location = await worktree()
+      const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'],
+        { cwd: location.worktreePath, stdio: ['ignore', 'pipe', 'ignore'] })
+      await new Promise<void>((resolve, reject) => { child.stdout.once('data', () => resolve()); child.once('error', reject) })
+      const exited = new Promise((resolve) => child.once('exit', resolve))
+      const renamed = scripted(noSvn).manager.renameAside(location)
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 700))
+      child.kill()
+      await exited
+      expect(await renamed).toEqual({ ok: true, value: 'renamed' })
     })
 
     it('purges through the remover its composer hands in', async () => {

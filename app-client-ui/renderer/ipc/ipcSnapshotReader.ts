@@ -21,7 +21,7 @@ export interface IpcSnapshotPorts<T> {
  * the last change rather than before it. And a read that keeps failing backs off and then STOPS:
  * V1's incident of 2026-06-11 is what an unbounded retry against a gone main process looks like.
  *
- * Generic since 2026-08-10, when the Debug window became the second reader of a snapshot. The rules
+ * Generic since 2026-08-10, when the Debug tab became the second reader of a snapshot. The rules
  * are the reason it is one class: a copy of a hundred lines of them is a copy that drifts.
  */
 export class IpcSnapshotReader<T> {

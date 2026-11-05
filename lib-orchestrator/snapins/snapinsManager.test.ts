@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -22,6 +22,112 @@ describe('SnapinsManager scheduling views', () => {
     expect(view.value.sections.find((section) => section.kind === 'items')).toMatchObject({ groups: [
       { title: 'Project', items: [{ key: 'one' }] }, { title: 'Project', items: [{ key: 'two' }] },
     ] })
+  })
+
+  it('lists a held item without a project, refuses Solve and queued launch, then resolves its configured target', async () => {
+    const item = await rig.item('waiting', 'wt')
+    const directory = item.projectDirectory
+    item.projectDirectory = ''
+    item.group = 'Configuration'
+    item.hold = 'Choose a project in Settings'
+    item.selectable = false
+    rig.items.get('test')!.push({ ...item, key: 'cwd-hold', group: 'Existing project', projectDirectory: process.cwd() })
+    await rig.list()
+    const view = await rig.manager.view('test')
+    if (!view.ok) throw new Error(view.detail)
+    expect(view.value.state).toBe('idle')
+    expect(view.value.sections.find(section => section.kind === 'items')).toMatchObject({ groups: [
+      { title: 'Configuration', items: [{ key: item.key, state: 'held', hold: item.hold, selectable: false }] },
+      { title: 'Existing project', items: [{ key: 'cwd-hold', state: 'held', selectable: false }] },
+    ] })
+    expect(rig.report).not.toHaveBeenCalled()
+    await rig.press('solveAll')
+    await rig.press('solveSelected', [item.key])
+    expect(rig.store().current.queue).toEqual([])
+    expect(rig.store().current.attempts).toEqual([])
+    expect(rig.definitions[0]!.launchSpec).not.toHaveBeenCalled()
+    expect(rig.sessions.createSession).not.toHaveBeenCalled()
+
+    await rig.store().update(doc => ({ ...doc, queue: [{ itemKey: item.key, addedAt: rig.now }] }))
+    await rig.tick()
+    expect(rig.store().current.queue).toEqual([{ itemKey: item.key, addedAt: rig.now }])
+    expect(rig.store().current.attempts).toEqual([])
+    expect(rig.definitions[0]!.launchSpec).not.toHaveBeenCalled()
+    expect(rig.sessions.createSession).not.toHaveBeenCalled()
+
+    const alias = join(rig.root, 'configured-alias')
+    await symlink(directory, alias, 'junction')
+    item.projectDirectory = alias
+    delete item.hold
+    item.selectable = true
+    rig.now += 10_000
+    await rig.list()
+    expect(rig.sessions.createSession).toHaveBeenCalledOnce()
+    expect(rig.definitions[0]!.launchSpec).toHaveBeenCalledOnce()
+    expect(vi.mocked(rig.definitions[0]!.launchSpec).mock.calls[0]![2].projectDirectory).toBe(await realpath(directory))
+    expect(rig.store().current.queue).toEqual([])
+    expect(rig.store().current.attempts).toMatchObject([{ itemKey: item.key, projectDirectory: await realpath(directory) }])
+    expect(rig.report).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { hold: undefined, selectable: true },
+    { hold: 'Choose a project', selectable: true },
+    { hold: undefined, selectable: false },
+  ])('refuses an empty project unless both held and nonselectable: %o', async flags => {
+    const item = await rig.item('invalid', 'wt')
+    Object.assign(item, flags, { projectDirectory: '' })
+    await rig.list()
+    const view = await rig.manager.view('test')
+    if (!view.ok) throw new Error(view.detail)
+    expect(view.value.state).toBe('unavailable')
+    expect(view.value.sections.find(section => section.kind === 'items')).toMatchObject({ groups: [] })
+    expect(rig.report).toHaveBeenCalledOnce()
+    expect(rig.report).toHaveBeenCalledWith(expect.stringContaining('realpath'))
+    await rig.press('solveAll')
+    expect(rig.store().current.queue).toEqual([])
+    expect(rig.sessions.createSession).not.toHaveBeenCalled()
+  })
+
+  it.each(['solveAll', 'solveSelected'])('keeps completed keys ineligible through %s and admits a new key', async action => {
+    const first = await rig.item(`main:records.commit:${'a'.repeat(64)}`, 'wt', 'test', rig.root)
+    await rig.list()
+    await rig.press('solveSelected', [first.key])
+    expect(rig.sessions.createSession).toHaveBeenCalledOnce()
+    const session = rig.snapshot.sessions[0]!
+    session.life = 'ended'
+    session.worktreeView = { version: 1, phase: 'landed', outOfDate: 0, conflicts: 0, summary: '' }
+    vi.mocked(rig.definitions[0]!.evidence).mockResolvedValueOnce({ published: true, detail: 'landed' })
+    await rig.tick()
+    expect(rig.store().current.attempts[0]?.phase).toBe('completed')
+
+    rig.now += 30_000
+    await rig.list()
+    const view = await rig.manager.view('test')
+    if (!view.ok) throw new Error(view.detail)
+    expect(view.value.sections.find(section => section.kind === 'items')).toMatchObject({ groups: [
+      { items: [{ key: first.key, state: 'done', selectable: false }] },
+    ] })
+    expect(await rig.press('restart', [first.key])).toMatchObject({ ok: false, code: 'invalid-items' })
+    await rig.press(action, [first.key])
+    expect(rig.sessions.createSession).toHaveBeenCalledOnce()
+    expect(rig.store().current.queue).toEqual([])
+
+    await rig.store().update(doc => ({ ...doc, queue: [{ itemKey: first.key, addedAt: rig.now }] }))
+    await rig.tick()
+    expect(rig.sessions.createSession).toHaveBeenCalledOnce()
+    expect(rig.store().current.queue).toEqual([])
+
+    const fresh = await rig.item(`main:records.commit:${'b'.repeat(64)}`, 'wt', 'test', rig.root)
+    rig.now += 30_000
+    await rig.list()
+    const freshView = await rig.manager.view('test')
+    if (!freshView.ok) throw new Error(freshView.detail)
+    const rows = freshView.value.sections.flatMap(section => section.kind === 'items' ? section.groups.flatMap(group => group.items) : [])
+    expect(rows.find(row => row.key === fresh.key)).toMatchObject({ state: 'ready', selectable: true })
+    await rig.press(action, [fresh.key])
+    expect(rig.sessions.createSession).toHaveBeenCalledTimes(2)
+    expect(rig.store().current.attempts.map(attempt => attempt.itemKey)).toEqual([first.key, fresh.key])
   })
 
   it('opens the newest worker and returns distinct missing/broker refusals', async () => {
@@ -312,6 +418,7 @@ describe('SnapinsManager', () => {
     vi.mocked(definition.list).mockResolvedValueOnce({ ok: false, detail: 'source unavailable' })
     await manager.press('test', 'shared.refresh')
     await vi.waitFor(() => expect(manager.list().kinds[0].state).toBe('unavailable'))
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(2))
     expect(await manager.view('test')).toMatchObject({ ok: true, value: { sections: [
       { kind: 'notice', text: 'source unavailable' }, { kind: 'items', groups: [{ items: [{ key: 'one' }] }] }, { kind: 'log' },
     ] } })

@@ -1,21 +1,8 @@
-import type { SessionAgentId, SessionColorName } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
+export type { SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
+import type { SessionAgentId } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { JsonShape } from './jsonShape'
 import { SessionPalette } from './sessionPalette'
-
-export type SessionFilterStatus = keyof typeof SessionsFilterState.stateLabelsConst
-
-export interface SessionsFilterValue {
-  colors: readonly (SessionColorName | null)[]
-  states: readonly SessionFilterStatus[]
-  agents: readonly (SessionAgentId | null)[]
-}
-
-export interface SavedSessionsFilter {
-  id: string
-  name: string
-  filters: SessionsFilterValue
-  filterText: string
-}
 
 export class SessionsFilterState {
   static readonly allConst: SessionsFilterValue = { colors: [], states: [], agents: [] }
@@ -50,7 +37,7 @@ export class SessionsFilterState {
      * and so it is saved, restored and combined exactly like them.
      */
     closedRecently: `Last ${SessionsFilterState.closedWithinHoursConst}h closed`,
-  } as const
+  } as const satisfies Record<SessionFilterStatus, string>
   static readonly agentChoicesConst = ['claude', 'codex', null] as const satisfies readonly (SessionAgentId | null)[]
 
   static isAll(value: SessionsFilterValue, text: string): boolean {

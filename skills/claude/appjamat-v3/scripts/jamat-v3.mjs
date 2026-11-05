@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -7,6 +8,12 @@ class AppJamatV3SkillCli {
   static run() {
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
     const bundled = resolve(repoRoot, 'cli/jamat-v3.cjs')
+    // The subprocess drops caller Node flags; keep that behavior when flags were supplied.
+    if (existsSync(bundled) && process.execArgv.length === 0) {
+      process.argv[1] = bundled
+      createRequire(import.meta.url)(bundled)
+      return
+    }
     const runner = resolve(repoRoot, 'app-client-cli/node_modules/tsx/dist/cli.mjs')
     const entry = resolve(repoRoot, 'app-client-cli/start.ts')
     // tsx otherwise reads the caller's tsconfig.json, whose paths can send 'ws' to a foreign CommonJS entry.
@@ -25,4 +32,5 @@ class AppJamatV3SkillCli {
   }
 }
 
-process.exitCode = AppJamatV3SkillCli.run()
+const exitCode = AppJamatV3SkillCli.run()
+if (exitCode !== undefined) process.exitCode = exitCode

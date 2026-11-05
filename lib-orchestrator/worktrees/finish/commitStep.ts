@@ -1,4 +1,6 @@
+import type { TerminalInputControl } from '../../sessionManager/worktreeSessionRuntime'
 import { FinishProjection } from './finishProjection'
+import { PreparationStep } from './preparationStep'
 import { createHash } from 'node:crypto'
 import { relative, resolve } from 'node:path'
 import { PathCompare } from '../../shared/pathCompare'
@@ -15,6 +17,7 @@ export type CommitPublication = { kind: 'waiting' | 'review' | 'syncing' | 'repo
   | { kind: 'completed'; result: SvnStepResult }
 
 export interface CommitStepDeps {
+  perf?: import('../../perfMonitor/perfSpans').PerfSpans
   records: SessionRecordsStore
   runner: Pick<SvnStepRunner, 'run'>
   svn: Pick<SvnWorktreeManager, 'prepareCommit' | 'logSince'>
@@ -37,7 +40,7 @@ export class CommitStep {
     commands: Pick<import('../worktreeSvnCommands').WorktreeSvnCommands, 'lease' | 'verify'>
     svn: Pick<SvnWorktreeManager, 'commitHashes' | 'unprepareCommit' | 'assembly'>
     busyReason: (sessionId: string) => string | null
-    holdInput: (sessionId: string) => () => void
+    terminals: TerminalInputControl
   }): Promise<CommitPublication> {
     return control.commands.lease.within(action.root, 'commit', async () => {
       const record = this.deps.records.get(sessionId)
@@ -70,14 +73,16 @@ export class CommitStep {
         && !state.verified?.some((receipt) => receipt.revision === entry.revision && PathCompare.comparable(receipt.root) === PathCompare.comparable(root.path)))) return { kind: 'review' }
       // Only the person's confirmation of this very approval publishes under a busy worker; a flag
       // carried from an earlier press does not.
-      const busy = control.busyReason(sessionId)
-      if (busy !== null && state.busyConfirmedFor !== state.approvedAt) {
-        await this.publicationState(sessionId, (state) => ({ ...state, phase: 'finishing', step: 'awaiting-idle',
-          awaitingIdleAt: state.awaitingIdleAt ?? this.deps.now(), awaitingIdleReason: busy }), state.version)
-        return { kind: 'waiting' }
-      }
-      const release = control.holdInput(sessionId)
+      const inhibit = await control.terminals.inhibit(sessionId)
       try {
+        const pending = await control.terminals.pendingInput(sessionId)
+        const busy = pending > 0 ? 'input typed for the worker has not reached it yet' : control.busyReason(sessionId)
+        if (busy !== null && state.busyConfirmedFor !== state.approvedAt) {
+          await this.publicationState(sessionId, (state) => ({ ...state, phase: 'finishing', step: 'awaiting-idle',
+            awaitingIdleAt: state.awaitingIdleAt ?? this.deps.now(), awaitingIdleReason: busy }), state.version)
+          return { kind: 'waiting' }
+        }
+
         await control.commands.verify(action.root)
         const hashes = await control.svn.commitHashes(action.root, state.review.selection, 'node')
         if (!hashes.ok) throw new Error(hashes.detail)
@@ -98,9 +103,12 @@ export class CommitStep {
         const result = await this.run(sessionId, { ...action, rounds: { ...action.rounds, outOfDate: state.outOfDate } }, async () => {
           const assembly = await control.svn.assembly(action.root, true)
           if (!assembly.ok) throw new Error(assembly.detail)
-          if (assembly.value.content !== state.preparation!.content || assembly.value.metadata !== state.preparation!.metadata || assembly.value.incoming.length > 0) {
+          // Incoming changes that do not matter under D6 reach the main copy through its UPDATE.
+          const incomingMatters = assembly.value.incoming.length > 0 && PreparationStep.incomingMatters(assembly.value.incoming, Object.keys(approved.hashes),
+            (state.execution?.checks.length ?? 0) > 0, PreparationStep.membersOf(action.root))
+          if (assembly.value.content !== state.preparation!.content || assembly.value.metadata !== state.preparation!.metadata || incomingMatters) {
             preparedHashes = approved.hashes
-            incoming = assembly.value.incoming
+            incoming = incomingMatters ? assembly.value.incoming : []
             return 'The tested assembly or repository changed; prepare and verify again before publication'
           }
           const hashes = await control.svn.commitHashes(action.root, approved.selection, 'node')
@@ -132,7 +140,7 @@ export class CommitStep {
         }
         if (result.ok) await this.publicationState(sessionId, (state) => ({ ...state, phase: 'finishing', step: 'verifying', wait: undefined }))
         return { kind: 'completed', result }
-      } finally { release() }
+      } finally { inhibit.release() }
     })
   }
 
@@ -145,6 +153,11 @@ export class CommitStep {
   }
 
   async run(sessionId: string, action: SessionRecordSvnAction, checkPrepared?: () => Promise<void | string>): Promise<SvnStepResult> {
+    const work = () => this.execute(sessionId, action, checkPrepared)
+    return this.deps.perf ? this.deps.perf.operation('finish.commit', work) : work()
+  }
+
+  private async execute(sessionId: string, action: SessionRecordSvnAction, checkPrepared?: () => Promise<void | string>): Promise<SvnStepResult> {
     const root = action.roots?.[action.rootCursor]
     const commit = action.commit
     if (root?.bounds === undefined || commit === undefined) throw new Error('Commit needs the approved selection and repository bound')

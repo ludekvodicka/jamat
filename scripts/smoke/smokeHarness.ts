@@ -1,3 +1,5 @@
+import '../checks/test-tmpdir.mjs'
+
 /**
  * What every smoke does around the thing it is actually testing: count a check, wait for a
  * condition, sleep, and end.

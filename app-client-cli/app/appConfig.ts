@@ -44,6 +44,12 @@ export class AppConfig {
       )
     if (configIdentity === '')
       throw new AppClientCliError('invalid-request', '--config-identity cannot be empty')
+    // Inside a Jamat session its own controller pair selects strictly, as a filter of discovery; any
+    // explicit selector replaces the pair whole, and nothing falls back from either.
+    const session = channel === null && configIdentity === null && explicitDir === null
+      ? SelfSession.controllerOf(env) : null
+    if (session !== null)
+      return new AppConfig(null, session.channel, null, session.configIdentity)
     if (explicitDir === null)
       return new AppConfig(null, channel, null, configIdentity)
     if (!explicitDir.trim())

@@ -28,6 +28,27 @@ describe('app-client-ui/renderer/shell/terminalInputRegistry', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it('keeps prompt lookup separate and notifies registration changes without retiring a newer target', () => {
+    const registry = new TerminalInputRegistry()
+    const changed = vi.fn()
+    const stop = registry.subscribePrompts(changed)
+    registry.register('s-a', targetOf().target)
+    expect(registry.promptTarget('s-a')).toBeUndefined()
+    const old = vi.fn(() => ({ ok: true as const }))
+    const current = vi.fn(() => ({ ok: false as const, reason: 'agent-waiting' as const }))
+    const retireOld = registry.registerPrompt('s-a', old)
+    const retireCurrent = registry.registerPrompt('s-a', current)
+    retireOld()
+    expect(registry.promptTarget('s-a')?.('question', 'insert')).toEqual({ ok: false, reason: 'agent-waiting' })
+    expect(current).toHaveBeenCalledWith('question', 'insert')
+    expect(old).not.toHaveBeenCalled()
+    expect(changed).toHaveBeenCalledTimes(2)
+    retireCurrent()
+    expect(registry.promptTarget('s-a')).toBeUndefined()
+    expect(changed).toHaveBeenCalledTimes(3)
+    stop()
+  })
+
   it('inserts the exact text once without scheduling or adding Enter', () => {
     const registry = new TerminalInputRegistry()
     const panel = targetOf()

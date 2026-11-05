@@ -5,9 +5,9 @@ import {
   type WebContents,
 } from 'electron'
 
-import type { RemoteInboundApprovalRequest } from '../remoteControl/remoteInboundApprovalManager'
-import type { RemoteControlPairingConfirmRequest } from '../remoteControl/remoteControlPairingManager'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import type { ShellInboundConfirmRequest as RemoteInboundApprovalRequest } from '../../../lib-orchestrator/shared/shellPort.types'
+import type { ShellPairingConfirmRequest as RemoteControlPairingConfirmRequest } from '../../../lib-orchestrator/shared/shellPort.types'
+import { ElectronServiceIpcBase } from './electronServiceIpcBase'
 
 /**
  * The native dialogs: every one the renderer asks for, and every question the shell asks about
@@ -15,20 +15,23 @@ import { ServiceIpcBase } from '../shared/serviceIpcBase'
  * answer is a no. Anything else asking on its own would be a second answer to what "cancelled" means
  * and a second set of dialog options. Updates ask nothing natively; the status bar draws them.
  */
-export class ServiceDialogIpc extends ServiceIpcBase<typeof ServiceDialogIpc.channelsConst> {
+export class ServiceDialogIpc extends ElectronServiceIpcBase<typeof ServiceDialogIpc.channelsConst> {
   static readonly channelsConst = {
     'dialog:pick-directory': true,
     'dialog:confirm': true,
   } as const
 
   /** Read at call time so the picker follows the renderer that asked for it. */
-  constructor(private readonly parent: (sender: WebContents) => BrowserWindow | null) {
+  private readonly parent: (sender: WebContents) => BrowserWindow | null
+
+  constructor(parent: (sender: WebContents) => BrowserWindow | null) {
     super()
+    this.parent = parent
   }
 
   initialize(): void {
     this.register('dialog:pick-directory', async (event, title) => {
-      const parent = this.parent(event.sender)
+      const parent = this.parent(this.sender(event))
       // Parented on purpose: an unparented picker on Windows is a window of its own that can end up
       // behind the shell, where it looks like a renderer that stopped answering.
       if (!parent)
@@ -43,7 +46,7 @@ export class ServiceDialogIpc extends ServiceIpcBase<typeof ServiceDialogIpc.cha
     // has gone: a question nobody can see is worse than one in the wrong place, and the answer to a
     // dialog that never opens would be silence.
     this.register('dialog:confirm', async (event, message, detail) => {
-      const parent = this.parent(event.sender)
+      const parent = this.parent(this.sender(event))
       const options: MessageBoxOptions = {
         type: 'question',
         message,

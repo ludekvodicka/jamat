@@ -20,7 +20,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 class MakeFileViewerTestbed {
-  private static readonly repositoryRootConst = fileURLToPath(new URL('../../', import.meta.url))
+  private static readonly repositoryRootConst = fileURLToPath(new URL('../..', import.meta.url))
   private static readonly templateRootConst
     = join(MakeFileViewerTestbed.repositoryRootConst, 'configs', 'testbed', 'tree')
   /**

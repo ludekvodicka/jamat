@@ -1,3 +1,4 @@
+import type { RemoteControlListenerSettings, RemoteListenerRuntime } from '../../../../../../lib-orchestrator/remoteControl/remotePeerListener.types'
 import type {
   RemoteOutboundConnectionStatus,
 } from '../../../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
@@ -6,10 +7,8 @@ import type {
 } from '../../../../../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import {
   RemoteControlSettings,
-  type RemoteControlListenerSettings,
 } from '../../../../../shared/remoteControlSettings'
 import type {
-  RemoteListenerRuntime,
   RemoteSettingsRefusalCode,
   RemoteSettingsSnapshotDto,
 } from '../../../../../shared/remoteSettingsSnapshot'

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync, writeSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, parse, relative, resolve } from 'node:path'
 
@@ -12,6 +13,7 @@ import {
 import { FileContentNotAFileError, FileContentReader } from './content/fileContentReader'
 import { FileFormatRegistry } from './content/fileFormatRegistry'
 import { FileViewerLimits } from './fileViewerLimits'
+import { MarkdownTaskLines } from './markdownTaskLines'
 import { FileDirectoryReader } from './directory/fileDirectoryReader'
 import type {
   FileViewerChunkResult,
@@ -25,6 +27,8 @@ import type {
   FileViewerResource,
   FileViewerResourceResult,
   FileViewerTextResult,
+  FileViewerToggleTaskRequest,
+  FileViewerToggleTaskResult,
   FileViewerVersionResult,
 } from './fileViewerApi.types'
 
@@ -304,6 +308,67 @@ export class FileViewer {
     else throw new Error(`Unknown file text read: ${JSON.stringify(read)}`)
   }
 
+  async toggleTask(ownerId: string, request: FileViewerToggleTaskRequest): Promise<FileViewerToggleTaskResult> {
+    const found = this.grants.document(request.documentId, ownerId)
+    if (!found.ok || found.value.document.kind.kind !== 'markdown'
+      || found.value.document.source.kind === 'scriptLog')
+      return { ok: false, code: 'invalid-document', detail: 'The document is not an editable Markdown grant' }
+    if (!Number.isSafeInteger(request.line) || request.line < 1 || typeof request.checked !== 'boolean')
+      return { ok: false, code: 'not-a-task', detail: 'A task needs a positive line and a checked state' }
+    const { document, rootPath } = found.value
+    try {
+      const resolved = realpathSync(document.path)
+      if (!PathCompare.isInside(rootPath, resolved)
+        || PathCompare.comparable(resolved) !== PathCompare.comparable(document.path))
+        return { ok: false, code: 'invalid-document', detail: 'The document moved outside its grant' }
+      // No await between validation and the one-byte write: two local views cannot both accept
+      // the same version. Descriptor and path stats also detect replacement while reading.
+      const handle = openSync(document.path, 'r+')
+      try {
+        const info = fstatSync(handle)
+        const version = FileContentReader.versionOf(info.size, info.mtimeMs, info)
+        if (!info.isFile() || version !== request.contentVersion || version !== document.contentVersion)
+          return { ok: false, code: 'document-changed', detail: 'The document changed; refresh it' }
+        if (info.size > FileViewerLimits.textBytes(document.kind))
+          return { ok: false, code: 'invalid-document', detail: 'The document exceeds the full-text limit' }
+        const bytes = Buffer.alloc(info.size)
+        let read = 0
+        while (read < bytes.length) {
+          const count = readSync(handle, bytes, read, bytes.length - read, read)
+          if (count === 0)
+            return { ok: false, code: 'document-changed', detail: 'The document changed while reading' }
+          read += count
+        }
+        const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+        if (!MarkdownTaskLines.interactive(source))
+          return { ok: false, code: 'not-interactive', detail: 'This document has not enabled interactive tasks' }
+        const item = MarkdownTaskLines.parse(source).find((task) => task.line === request.line)
+        if (!item || item.checked === request.checked)
+          return { ok: false, code: 'not-a-task', detail: 'The line is not a task in the opposite state' }
+        const lines = source.split(/(\r\n|\n|\r)/)
+        const offset = Buffer.byteLength(lines.slice(0, (item.line - 1) * 2).join('')
+          + lines[(item.line - 1) * 2]!.slice(0, item.markerColumn), 'utf8')
+        const afterRead = fstatSync(handle)
+        const current = statSync(document.path)
+        if (FileContentReader.versionOf(afterRead.size, afterRead.mtimeMs, afterRead) !== version
+          || FileContentReader.versionOf(current.size, current.mtimeMs, current) !== version)
+          return { ok: false, code: 'document-changed', detail: 'The document changed while reading' }
+        if (writeSync(handle, Buffer.from(request.checked ? 'x' : ' '), 0, 1, offset) !== 1)
+          return { ok: false, code: 'io-error', detail: 'The task marker could not be written' }
+        const after = fstatSync(handle)
+        const contentVersion = FileContentReader.versionOf(after.size, after.mtimeMs, after)
+        this.grants.refreshVersion(request.documentId, ownerId, contentVersion)
+        return { ok: true, value: { contentVersion, line: item.line, checked: request.checked } }
+      }
+      finally { closeSync(handle) }
+    }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      return { ok: false, code: code === 'ENOENT' || code === 'ENOTDIR' ? 'not-found' : 'io-error',
+        detail: ErrorText.of(error) }
+    }
+  }
+
   /**
    * Whether the granted document still matches its file, without reading a byte of it.
    *
@@ -328,6 +393,10 @@ export class FileViewer {
     else if (read.kind === 'version') {
       if (!await FileViewerGrantBoundary.insideGrant(found.value.rootPath, document.path))
         return { ok: false, code: 'outside-root', detail: 'The document moved outside its grant' }
+      const current = this.grants.document(documentId, ownerId)
+      // A toggle can refresh this grant while the poll is reading its old version.
+      if (current.ok && current.value.document.contentVersion !== document.contentVersion)
+        return this.version(ownerId, documentId)
       return read.contentVersion === document.contentVersion
         ? { ok: true, kind: 'unchanged' }
         : { ok: true, kind: 'changed', contentVersion: read.contentVersion }
@@ -640,14 +709,20 @@ export class FileViewer {
   }
 
   async readResourceBytes(resourceId: string, expectedVersion: string, offset: number, length: number, signal: AbortSignal, ownerId?: string): Promise<FileViewerChunkResult> {
+    signal.throwIfAborted()
     const resource = this.grants.resource(resourceId)
     const metadata = await this.resourceMetadata(resourceId, ownerId)
+    signal.throwIfAborted()
     if (!resource || metadata.kind === 'missing') return { ok: false, code: 'document-expired', detail: 'Resource grant expired' }
     if (metadata.kind === 'changed' || resource.contentVersion !== expectedVersion) return { ok: false, code: 'document-changed', detail: 'Resource changed' }
     const read = await this.content.range(resource.path, expectedVersion, offset, length, signal)
+    signal.throwIfAborted()
     if (this.grants.resource(resourceId) === null || !this.grants.document(resource.documentId, resource.ownerId).ok)
       return { ok: false, code: 'document-expired', detail: 'Resource was released during its read' }
     if (!await FileViewerGrantBoundary.insideGrant(resource.rootPath, resource.path)) return { ok: false, code: 'outside-root', detail: 'Resource moved outside its grant' }
+    signal.throwIfAborted()
+    if (this.grants.resource(resourceId) === null || !this.grants.document(resource.documentId, resource.ownerId).ok)
+      return { ok: false, code: 'document-expired', detail: 'Resource was released during its read' }
     if (read.kind === 'chunk') return { ok: true, value: read.value }
     else if (read.kind === 'changed') return { ok: false, code: 'document-changed', detail: 'Resource changed' }
     else if (read.kind === 'missing') return { ok: false, code: 'missing', detail: 'Resource disappeared' }
@@ -661,6 +736,10 @@ export class FileViewer {
 
   revokeOwner(ownerId: string): void {
     this.grants.revokeOwner(ownerId)
+  }
+
+  releaseGrant(ownerId: string, grantId: string): void {
+    this.grants.revokeGrant(ownerId, grantId)
   }
 
   static panelKeyOf(sessionId: string, path: string): string {

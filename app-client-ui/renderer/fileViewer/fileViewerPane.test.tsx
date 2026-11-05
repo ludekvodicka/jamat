@@ -143,6 +143,23 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it('asks about an opted-in item and explains a waiting-agent refusal in its owning session', async () => {
+    const document = FileViewerPaneHarness.document()
+    const controller = FileViewerPaneHarness.install([document], '---\njamat: interactive\n---\n# Check\n- [ ] Open page')
+    Object.assign(controller.fileViewer, { toggleTask: vi.fn() })
+    const insertPrompt = vi.fn().mockReturnValueOnce({ ok: true }).mockReturnValueOnce({ ok: false, reason: 'agent-waiting' })
+    render(<FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
+      item={FileViewerPaneHarness.item(document)} changes={FileViewerPaneHarness.changes()}
+      workingTree={FileViewerPaneHarness.workingTree()} backPath={null} reloadRequest={0}
+      onBack={vi.fn()} onClose={vi.fn()} onOpenItem={vi.fn(() => null)} onRefused={vi.fn()} insertPrompt={insertPrompt} />)
+    const ask = await screen.findByRole('button', { name: 'Ask about this item: Open page' })
+    fireEvent.click(ask)
+    expect(insertPrompt).toHaveBeenCalledExactlyOnceWith('Mám dotaz k C:/work/a.md:5, kapitola „Check“, bod „Open page“: ', 'insert')
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(ask)
+    expect(screen.getByRole('alert')).toHaveTextContent('session session-1: the agent is waiting for a choice or permission')
+  })
+
   it('shows diff controls only for a diff-capable document and restores its working source hint', async () => {
     const document = FileViewerPaneHarness.document({
       kind: { kind: 'text' },
@@ -195,6 +212,33 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
 
     await screen.findByRole('button', { name: 'Raw' })
     expect(screen.queryByLabelText('Diff against')).toBeNull()
+  })
+
+  it('keeps line wrapping in its split item and draws the item it is handed', async () => {
+    const document = FileViewerPaneHarness.document({ kind: { kind: 'text' }, modes: ['raw'] })
+    FileViewerPaneHarness.install([document])
+    const onOpenItem = vi.fn(() => null)
+    const item = FileViewerPaneHarness.item(document)
+    const pane = (wrapped: typeof item) => (
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
+        reloadRequest={0} backPath={null} onBack={vi.fn()} onClose={vi.fn()}
+        item={wrapped}
+        changes={FileViewerPaneHarness.changes()}
+        workingTree={FileViewerPaneHarness.workingTree()}
+        onOpenItem={onOpenItem}
+        onRefused={vi.fn()}
+      />
+    )
+    const view = render(pane(item))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Wrap' }))
+    expect(onOpenItem).toHaveBeenCalledWith({ ...item, wrapLines: true })
+    expect(screen.getByLabelText('Split file')).not.toHaveAttribute('data-file-wrap')
+
+    view.rerender(pane({ ...item, wrapLines: true }))
+    expect(screen.getByLabelText('Split file')).toHaveAttribute('data-file-wrap', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Wrap' }))
+    expect(onOpenItem).toHaveBeenLastCalledWith({ ...item, wrapLines: undefined })
   })
 
   it('reads the file from disk again for each new reload request, and not on mount', async () => {

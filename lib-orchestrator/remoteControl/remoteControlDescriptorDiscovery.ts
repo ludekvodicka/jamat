@@ -23,6 +23,14 @@ export interface RemoteControlDiscoveredInstance {
 
 export interface RemoteControlCandidate extends RemoteControlSystemIdentity {}
 
+/** A registered instance whose descriptor discovery could not use; a selection that finds nothing names it. */
+export interface RemoteControlRejectedRegistration {
+  configIdentity: string
+  runtimeChannel: RuntimeChannel
+  instanceId: string
+  reason: 'descriptor' | 'not-alive'
+}
+
 export class RemoteControlCandidate {
   static safeOf(identity: RemoteControlSystemIdentity): RemoteControlCandidate {
     return {
@@ -101,6 +109,7 @@ export class RemoteControlDescriptorDiscovery {
   static registeredAndDefaultRootCandidates(
     registryDirectory = RemoteControlInstanceRegistry.directory(),
     defaultMachineRoot = OrchestratorPaths.defaultMachineRoot(),
+    rejected: (registration: RemoteControlRejectedRegistration) => void = () => {},
   ): readonly RemoteControlDiscoveredInstance[] {
     const candidates: RemoteControlDiscoveredInstance[] = []
     for (const registration of RemoteControlInstanceRegistry.read(registryDirectory)) {
@@ -109,9 +118,15 @@ export class RemoteControlDescriptorDiscovery {
         registration.runtimeChannel,
         registration.descriptorFile,
       )
-      if (!answer.ok || !RemoteControlDescriptorDiscovery.matches(answer.value, registration))
-        continue
-      candidates.push({ descriptor: answer.value, registration })
+      if (answer.ok && RemoteControlDescriptorDiscovery.matches(answer.value, registration))
+        candidates.push({ descriptor: answer.value, registration })
+      else
+        rejected({
+          configIdentity: registration.configIdentity,
+          runtimeChannel: registration.runtimeChannel,
+          instanceId: registration.instanceId,
+          reason: RemoteControlDescriptorDiscovery.alive(registration.pid) ? 'descriptor' : 'not-alive',
+        })
     }
     candidates.push(...RemoteControlDescriptorDiscovery.defaultRootCandidates(defaultMachineRoot))
     const unique = new Map<string, RemoteControlDiscoveredInstance>()

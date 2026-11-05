@@ -103,16 +103,19 @@ export abstract class JsonDocumentStore<TDocument> {
    * inside this async method until 2026-09-21: every caller already awaited, and what the await
    * bought was nothing at all, because the write blocked the loop it was awaited on. The records
    * store writes from the session poll, and that loop is the one relaying every keystroke.
+   *
+   * `compact` writes the JSON without indentation, for a large file only this process reads.
    */
   protected async writeDocument(
     document: unknown,
     before?: () => Promise<boolean>,
+    compact = false,
   ): Promise<boolean> {
     if (!this.mayWrite()) return false
     try {
       await AtomicJsonFile.ensureDirectoryAsync(dirname(this.file))
       if (before && !await before()) return false
-      await AtomicJsonFile.writeAsync(this.file, document)
+      await AtomicJsonFile.writeAsync(this.file, document, { compact })
     } catch (error) {
       this.report(this.writeFailureMessage(ErrorText.of(error)))
       return false

@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SvnAssemblyReader } from '../../lib-orchestrator/svn/svnAssembly.js'
+import { PreparationStep } from '../../lib-orchestrator/worktrees/worktreeFinish.js'
 
 export class SvnPreparationScenarios {
   static async run(parent: string): Promise<void> {
@@ -71,6 +72,26 @@ export class SvnPreparationScenarios {
     assert(incoming.incoming.includes('new.txt'))
     assert.equal(incoming.metadata, original.metadata, 'Incoming additions do not invent local nodes or change the prepared metadata')
     assert(!incoming.incoming.some((path) => path.startsWith('pinned/')))
+    await mkdir(join(app.cwd, '.aidocs', 'research'), { recursive: true })
+    await writeFile(join(app.cwd, '.aidocs', 'research', 'note.md'), 'another session\n')
+    await run(app.cwd, ['add', '--parents', '.aidocs/research/note.md'])
+    await commit(app.cwd, 'A foreign research note during preparation')
+    const foreign = await reader.read(tree, true)
+    assert(foreign.incoming.includes('.aidocs/research/note.md'))
+    const documents = foreign.incoming.filter((path) => path.startsWith('.aidocs/'))
+    assert.equal(PreparationStep.incomingMatters(documents, ['file.txt'], false, 'whole'), false, 'A foreign note keeps the review of an owner without checks')
+    assert.equal(PreparationStep.incomingMatters(documents, ['file.txt'], true, 'whole'), false, 'Documentation keeps the review of an owner with checks')
+    assert.equal(PreparationStep.incomingMatters(foreign.incoming, ['file.txt'], true, 'whole'), true, 'A source file stales the checks of an owner with checks')
+    await writeFile(join(app.cwd, 'file.txt'), 'published elsewhere\n')
+    await commit(app.cwd, 'Change a path the worktree publishes')
+    const published = await reader.read(tree, true)
+    assert.equal(PreparationStep.incomingMatters(published.incoming, ['file.txt'], false, 'whole'), true, 'An incoming change of a published path always stales the review')
+    await writeFile(join(tree, 'file.txt'), 'worktree edit\n')
+    const refused = await svn.run(tree, ['commit', '--file', join(root, 'message.txt'), '--username', 'fixture', '--', 'file.txt'])
+    assert.notEqual(refused.code, 0)
+    assert.match(refused.stderr, /E155011|E160028|out of date/i, 'svn refuses the commit of a published path that became out of date')
+    await run(tree, ['revert', 'file.txt'])
+    console.log('Incoming policy: a foreign research note keeps the review, a published path that moved is refused by svn at commit (D6)')
     await run(tree, ['update'])
     assert.notEqual((await reader.read(tree)).content, original.content)
     await run(join(tree, 'pinned'), ['update', '--ignore-externals'])

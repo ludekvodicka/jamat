@@ -1,17 +1,12 @@
-/** One pinned inner split item. The main process keeps it opaque: `PanelSplitParams` owns the item
- *  shape and reads every field again when the panel restores it. */
-export type SplitPinRecord = { readonly key: string } & Readonly<Record<string, unknown>>
-
-export type SplitPinsBySession = Readonly<Record<string, readonly SplitPinRecord[]>>
+import type { SplitPinRecord, SplitPinsBySession } from '../../lib-orchestrator/clientApi/splitPinsState.types'
+export type { SplitPinRecord, SplitPinsBySession } from '../../lib-orchestrator/clientApi/splitPinsState.types'
 
 /**
  * The pinned split items of every session, kept apart from the layout so that they outlive a closed
  * tab, a Reset Layout and a restart. The main process checks only the envelope it can check without
- * renderer code: a session id, a bounded list of objects with unique keys, and a bounded size.
+ * renderer code: a session id, a list of objects with unique keys, bounded by its size.
  */
 export class SplitPinsState {
-  /** Eight files and eight commit dialogs, the two per-kind limits of the split together. */
-  static readonly itemsMaxConst = 16
   /** A session that is never opened again keeps its entry, so the oldest written one goes first. */
   static readonly sessionsMaxConst = 200
   private static readonly sessionIdMaxConst = 256
@@ -23,7 +18,7 @@ export class SplitPinsState {
   }
 
   static isValidItems(value: unknown): value is readonly SplitPinRecord[] {
-    if (!Array.isArray(value) || value.length > SplitPinsState.itemsMaxConst) return false
+    if (!Array.isArray(value)) return false
     const keys = new Set<string>()
     for (const item of value) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return false

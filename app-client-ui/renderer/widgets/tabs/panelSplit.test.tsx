@@ -14,7 +14,7 @@ import {
 } from './panelSplit'
 
 describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
-  it('keeps legacy files and eight files alongside four permanent commit scopes', () => {
+  it('keeps legacy files and eight files alongside four permanent commit scopes, and takes a ninth file', () => {
     const files = Array.from({ length: 8 }, (_, i) => ({ key: `f${i}`, title: `f${i}`, source: sourceFixture(`f${i}`) }))
     const commits = Array.from({ length: 4 }, (_, i) => ({ kind: 'commit', key: `c${i}`, title: `c${i}`, vcs: 'svn', scopeRoot: `Q:/scope${i}`, draftId: 'must-not-persist' }))
     const state = PanelSplitParams.of({ split: { items: [...files, ...commits, { kind: 'unknown', key: 'bad' }], active: 'c0', preview: 'c0', history: commits } })
@@ -23,13 +23,20 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     expect(state.items[8]).not.toHaveProperty('draftId')
     expect(state.preview).toBeNull()
     expect(state.history).toEqual([])
-    const refusal = PanelSplitParams.opened(state, itemFixture('ninth'))
-    expect(refusal).toEqual({ ok: false, refusal: 'The split already holds 8 files. Close one before opening another.' })
+    const ninth = PanelSplitParams.opened(state, itemFixture('ninth'))
+    if (!ninth.ok) throw new Error(ninth.refusal)
+    expect(ninth.state.items.filter((item) => item.kind === 'file')).toHaveLength(9)
     const opened = PanelSplitParams.opened(state, { kind: 'commit', key: 'c4', title: 'Fifth', vcs: 'git', scopeRoot: 'Q:/fifth' })
     if (!opened.ok) throw new Error(opened.refusal)
     expect(opened.state.items).toHaveLength(13)
     expect(opened.state.preview).toBeNull()
     expect(opened.state.history).toEqual([])
+  })
+
+  it('keeps line wrapping of a file item and drops any value but true', () => {
+    const file = { kind: 'file', key: 'f', title: 'F', source: { kind: 'workspace', sessionId: 's1', path: 'a.ts' } }
+    expect(PanelSplitParams.of({ split: { items: [{ ...file, wrapLines: true }] } }).items[0]).toMatchObject({ wrapLines: true })
+    expect(PanelSplitParams.of({ split: { items: [{ ...file, wrapLines: 'yes' }] } }).items[0]).not.toHaveProperty('wrapLines')
   })
 
   it('preserves a shared review identity in saved split params', () => {
@@ -45,14 +52,14 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(PanelSplitParams.of({ split: { items: [commit(invalid)] } }).items).toEqual([])
   })
 
-  it('never replaces a commit with a preview and refuses the ninth commit', () => {
+  it('never replaces a commit with a preview and takes a ninth commit', () => {
     let state = PanelSplitParams.default()
     for (let i = 0; i < 8; i++) {
       const result = PanelSplitParams.opened(state, { kind: 'commit', key: `c${i}`, title: `c${i}`, vcs: 'svn', scopeRoot: `Q:/scope${i}` })
       if (!result.ok) throw new Error(result.refusal)
       state = result.state
     }
-    expect(PanelSplitParams.opened(state, { kind: 'commit', key: 'ninth', title: 'Ninth', vcs: 'svn', scopeRoot: 'Q:/ninth' }).ok).toBe(false)
+    expect(PanelSplitParams.opened(state, { kind: 'commit', key: 'ninth', title: 'Ninth', vcs: 'svn', scopeRoot: 'Q:/ninth' }).ok).toBe(true)
     const first = PanelSplitParams.opened(state, itemFixture('first'))
     if (!first.ok) throw new Error(first.refusal)
     const second = PanelSplitParams.opened(first.state, itemFixture('second'))
@@ -85,7 +92,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       return result.state
     }
 
-    it('activates the held item when the same task opens again, and refuses the ninth task out loud', () => {
+    it('activates the held item when the same task opens again, and takes a ninth task', () => {
       let state = PanelSplitParams.default()
       for (let i = 0; i < 8; i++) state = opened(state, taskFixture(`a${i}`))
       state = opened(state, itemFixture('doc.md'))
@@ -93,8 +100,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
 
       expect(again.items).toHaveLength(9)
       expect(again.active).toBe('task:s1:subagent:a2')
-      expect(PanelSplitParams.opened(again, taskFixture('ninth'))).toEqual({ ok: false,
-        refusal: 'The split already holds 8 task views. Close one before opening another.' })
+      expect(opened(again, taskFixture('ninth')).items).toHaveLength(10)
     })
 
     it('never puts a task in Back history, never as the preview, and never pins it', () => {
@@ -314,11 +320,11 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       }).preview).toBe(null)
     })
 
-    it('never carries more items than the cap, whoever wrote the layout', () => {
+    it('restores every stored item and only one workflow, whoever wrote the layout', () => {
       const items = Array.from({ length: 12 }, (_, index) => itemFixture(`f${index}.md`))
-      expect(PanelSplitParams.of({ split: { items } }).items).toHaveLength(
-        PanelSplitParams.itemsMaxConst,
-      )
+      expect(PanelSplitParams.of({ split: { items } }).items).toHaveLength(12)
+      const workflows = [PanelSplitParams.workflowItemOf('s1'), PanelSplitParams.workflowItemOf('s2')]
+      expect(PanelSplitParams.of({ split: { items: workflows } }).items).toEqual([workflows[0]])
     })
 
     it('keeps a pinned document and retargets it instead of adding a second tab', () => {
@@ -359,35 +365,49 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(state.items).toEqual([{ ...itemFixture('a.md'), baselineHint: undefined }])
     })
 
-    it('refuses the ninth file out loud and changes nothing', () => {
+    it('takes any number of kept files', () => {
       let state = PanelSplitParams.default()
-      for (let index = 0; index < PanelSplitParams.itemsMaxConst; index += 1) {
+      for (let index = 0; index < 20; index += 1) {
         const step = PanelSplitParams.opened(state, itemFixture(`f${index}.md`))
-        if (!step.ok) throw new Error('expected the file to fit')
+        if (!step.ok) throw new Error(step.refusal)
         state = PanelSplitParams.keptOpen(step.state, `key:f${index}.md`)
       }
-      const refused = PanelSplitParams.opened(state, itemFixture('one-too-many.md'))
-      expect(refused.ok).toBe(false)
-      if (refused.ok) return
-      expect(refused.refusal).toContain('8')
-      expect(state.items).toHaveLength(PanelSplitParams.itemsMaxConst)
+      expect(state.items).toHaveLength(20)
     })
 
-    it('replaces the preview even when the split is at its cap', () => {
-      let state = PanelSplitParams.default()
-      for (let index = 0; index < PanelSplitParams.itemsMaxConst - 1; index += 1) {
-        const step = PanelSplitParams.opened(state, itemFixture(`pinned-${index}.md`))
-        if (!step.ok) throw new Error('expected the pinned file to fit')
-        state = PanelSplitParams.keptOpen(step.state, `key:pinned-${index}.md`)
+    it('replaces a preview behind the item in front on a background open, and keeps the item in front', () => {
+      let state: PanelSplitState = { ...PanelSplitParams.default(), items: [itemFixture('read.md')], active: 'key:read.md' }
+      for (const path of ['one.md', 'two.md', 'three.md']) {
+        const step = PanelSplitParams.openedBehind(state, itemFixture(path))
+        if (!step.ok) throw new Error(step.refusal)
+        state = step.state
       }
-      const preview = PanelSplitParams.opened(state, itemFixture('preview.md'))
-      if (!preview.ok) throw new Error('expected the preview to fit')
-      const replacement = PanelSplitParams.opened(preview.state, itemFixture('replacement.md'))
-      if (!replacement.ok) throw new Error('expected the preview replacement to fit')
+      expect(state.items.map((item) => item.key)).toEqual(['key:read.md', 'key:three.md'])
+      expect(state.active).toBe('key:read.md')
+      expect(state.preview).toBe('key:three.md')
+    })
 
-      expect(replacement.state.items).toHaveLength(PanelSplitParams.itemsMaxConst)
-      expect(replacement.state.items.some((item) => item.key === 'key:preview.md')).toBe(false)
-      expect(replacement.state.preview).toBe('key:replacement.md')
+    it('keeps the preview the person reads on a background open, and the next one replaces the new preview', () => {
+      const first = PanelSplitParams.opened(PanelSplitParams.default(), itemFixture('read.md'))
+      if (!first.ok) throw new Error(first.refusal)
+      const second = PanelSplitParams.openedBehind(first.state, itemFixture('one.md'))
+      if (!second.ok) throw new Error(second.refusal)
+      expect(second.state.items.map((item) => item.key)).toEqual(['key:read.md', 'key:one.md'])
+      expect(second.state.active).toBe('key:read.md')
+      expect(second.state.preview).toBe('key:one.md')
+      const third = PanelSplitParams.openedBehind(second.state, itemFixture('two.md'))
+      if (!third.ok) throw new Error(third.refusal)
+      expect(third.state.items.map((item) => item.key)).toEqual(['key:read.md', 'key:two.md'])
+      expect(third.state.active).toBe('key:read.md')
+    })
+
+    it('leaves the preview alone when a background open adds a commit dialog', () => {
+      const first = PanelSplitParams.opened(PanelSplitParams.default(), itemFixture('read.md'))
+      if (!first.ok) throw new Error(first.refusal)
+      const commit = PanelSplitParams.openedBehind(first.state, { kind: 'commit', key: 'c', title: 'C', vcs: 'svn', scopeRoot: 'Q:/c' })
+      if (!commit.ok) throw new Error(commit.refusal)
+      expect(commit.state.preview).toBe('key:read.md')
+      expect(commit.state.active).toBe('key:read.md')
     })
 
     it('without an earlier active tab, hands the active tab to its next sibling on close, and to the previous one at the end', () => {
@@ -527,9 +547,8 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(merged.preview).toBeNull()
       expect(PanelSplitParams.withPinned(merged, stored)).toBe(merged)
 
-      const files = Array.from({ length: PanelSplitParams.itemsMaxConst }, (_, index) => itemFixture('f' + index))
-      const full = stateOf(...files)
-      expect(PanelSplitParams.withPinned(full, stored)).toBe(full)
+      const files = Array.from({ length: 12 }, (_, index) => itemFixture('f' + index))
+      expect(PanelSplitParams.withPinned(stateOf(...files), stored).items).toHaveLength(14)
     })
   })
 
@@ -627,16 +646,16 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(PanelSplitParams.backTargetOf(sibling)).toBe(null)
     })
 
-    it('keeps the history when a return cannot fit among eight kept files', () => {
+    it('returns to a replaced preview beside eight kept files', () => {
       let state = open(PanelSplitParams.default(), 'previous.md')
       for (let index = 0; index < 8; index += 1)
         state = PanelSplitParams.keptOpen(open(state, `f${index}.md`), `key:f${index}.md`)
       for (let index = 0; index < 7; index += 1)
         state = back(state)
-      const before = JSON.stringify(state)
-      expect(PanelSplitParams.navigatedBack(state)).toMatchObject({ ok: false })
-      expect(JSON.stringify(state)).toBe(before)
       expect(PanelSplitParams.backTargetOf(state)?.title).toBe('previous.md')
+      state = back(state)
+      expect(state.items).toHaveLength(9)
+      expect(state.active).toBe('key:previous.md')
     })
   })
 
@@ -706,13 +725,25 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     })
 
     it('hands the refusal back to the caller instead of writing anything', () => {
-      const items = Array.from({ length: 8 }, (_, index) => itemFixture(`f${index}.md`))
-      const { props, updates } = propsFixture({ split: { items } })
+      const { props, updates } = propsFixture({ split: { items: [PanelSplitParams.workflowItemOf('s1')] } })
       const { result } = renderHook(() => usePanelSplit(props))
       let refusal: string | null = null
-      act(() => { refusal = result.current.open(itemFixture('one-too-many.md')) })
-      expect(refusal).toContain('8')
+      act(() => { refusal = result.current.open(PanelSplitParams.workflowItemOf('s2')) })
+      expect(refusal).toContain('another session')
       expect(updates).toHaveLength(0)
+    })
+
+    it('replaces a preview behind the item in front when it opens without activating', () => {
+      const { props } = propsFixture({ split: { items: [] } })
+      const { result } = renderHook(() => usePanelSplit(props))
+      act(() => {
+        result.current.open(itemFixture('read.md'))
+        result.current.open(itemFixture('one.md'), false)
+        result.current.open(itemFixture('two.md'), false)
+      })
+      expect(result.current.state.items.map((item) => item.key)).toEqual(['key:read.md', 'key:two.md'])
+      expect(result.current.state.active).toBe('key:read.md')
+      expect(result.current.state.preview).toBe('key:two.md')
     })
 
     it('adopts parameters written from outside, and its own write does not put the old back', () => {

@@ -191,15 +191,15 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(PanelSplitParams.of(c.params)).toMatchObject({ active: 'draft-1', items: [shared, file] })
     expect(c.activated).toEqual([c.panelId])
   })
-  it('adds a permanent commit to the terminal split and returns the independent cap refusal', async () => {
+  it('adds a permanent commit to the terminal split with no count limit', async () => {
     const controller = new WorkspacePanelsTestController()
     const command: Extract<TabControlCommand, { kind: 'open-commit' }> = { kind: 'open-commit', requestId: 'commit', panelId: controller.panelId,
       vcs: 'svn', scopeRoot: 'Q:/app', title: 'Commit SVN', messageApplied: true }
     for (let i = 0; i < 8; i++) expect(await WorkspacePanels.tabControlResult(controller.asController(), { ...command, scopeRoot: `Q:/app/${i}` }))
       .toEqual({ kind: 'commit-opened', panelId: controller.panelId })
-    const before = structuredClone(controller.params)
-    expect(await WorkspacePanels.tabControlResult(controller.asController(), command)).toMatchObject({ kind: 'failed', detail: expect.stringContaining('8 commit dialogs') })
-    expect(controller.params).toEqual(before)
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command))
+      .toEqual({ kind: 'commit-opened', panelId: controller.panelId })
+    expect(PanelSplitParams.of(controller.params).items).toHaveLength(9)
     expect(PanelSplitParams.of(controller.params).preview).toBeNull()
     controller.key = 'fileViewer'
     expect(await WorkspacePanels.tabControlResult(controller.asController(), command)).toMatchObject({ kind: 'failed', detail: expect.stringContaining('Not a terminal panel') })
@@ -237,7 +237,7 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(controller.writes).toBe(0)
   })
 
-  it('opens a task view in the terminal split, brings the tab forward, and passes on the ninth refusal', async () => {
+  it('opens a task view in the terminal split, brings the tab forward, and takes a ninth one', async () => {
     const controller = new WorkspacePanelsTestController()
     const command = (subagentId: string): Extract<TabControlCommand, { kind: 'open-task' }> => ({
       kind: 'open-task', requestId: `task-${subagentId}`, panelId: controller.panelId,
@@ -252,10 +252,9 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(controller.activated).toEqual([controller.panelId])
 
     for (let i = 1; i < 8; i++) await WorkspacePanels.tabControlResult(controller.asController(), command(`a${i}`))
-    const writes = controller.writes
-    expect(await WorkspacePanels.tabControlResult(controller.asController(), command('ninth'))).toEqual({
-      kind: 'failed', detail: 'The split already holds 8 task views. Close one before opening another.' })
-    expect(controller.writes).toBe(writes)
+    expect(await WorkspacePanels.tabControlResult(controller.asController(), command('ninth')))
+      .toEqual({ kind: 'task-opened', panelId: controller.panelId })
+    expect(PanelSplitParams.of(controller.params).items).toHaveLength(9)
   })
 
   it('writes a proven source into the existing terminal panel split', async () => {
@@ -296,9 +295,9 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect(controller.writes).toBe(0)
   })
 
-  it('returns the split cap refusal without changing the panel parameters', async () => {
+  it('adds a ninth file beside eight kept ones', async () => {
     const controller = new WorkspacePanelsTestController()
-    const items = Array.from({ length: PanelSplitParams.itemsMaxConst }, (_, index) => ({
+    const items = Array.from({ length: 8 }, (_, index) => ({
       kind: 'file' as const,
       key: `document-${index}`,
       title: `file-${index}.md`,
@@ -315,16 +314,13 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
       preview: null,
       items,
     })
-    const before = structuredClone(controller.params)
 
     expect(await WorkspacePanels.tabControlResult(
       controller.asController(),
       WorkspacePanelsTest.command(),
-    )).toEqual({
-      kind: 'failed',
-      detail: 'The split already holds 8 files. Close one before opening another.',
-    })
-    expect(controller.params).toEqual(before)
+    )).toEqual({ kind: 'file-opened', panelId: controller.panelId })
+    expect(PanelSplitParams.of(controller.params)).toMatchObject({ active: 'document-report', preview: 'document-report' })
+    expect(PanelSplitParams.of(controller.params).items).toHaveLength(9)
   })
 
   it('closes active split files before it closes the terminal panel', async () => {

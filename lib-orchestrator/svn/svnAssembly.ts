@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, type Stats } from 'node:fs'
+import type { Stats } from 'node:fs'
 import { lstat, readdir, readlink } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
@@ -9,6 +9,7 @@ import type { CommandRunner } from '../shared/commandInvoker.types'
 import { SvnExternalDefinitions } from './svnExternalDefinitions'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 import { SvnNodeContent } from './svnNodeContent'
+import type { SvnAssemblyExecutor } from './svnAssemblyExecutor'
 
 export interface SvnAssemblyNode {
   path: string
@@ -70,7 +71,7 @@ class Slots {
 }
 
 /** Local bytes and SVN metadata are separate: a proven own commit changes only the latter. */
-export class SvnAssemblyReader {
+export class SvnAssemblyReader implements SvnAssemblyExecutor {
   private readonly svn: CommandRunner
   private static readonly parser = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: false, htmlEntities: true,
     isArray: (name) => ['entry', 'target', 'property', 'changelist'].includes(name) })
@@ -243,7 +244,7 @@ export class SvnAssemblyReader {
       if (leftover !== null && !leftover.isDirectory()) {
         await this.safePath(scope, path)
         if (!leftover.isFile()) throw new Error(`Scheduled deletion still has a linked or special node: ${name}`)
-        content = await SvnAssemblyReader.fileHash(path)
+        content = await SvnNodeContent.hash(path)
         const base = await SvnNodeContent.exported(scope.svn, cwd, `${relative(cwd, path).replace(/\\/g, '/')}@`, 'BASE', true)
         if (content !== base) throw new Error(`Scheduled deletion ${name} contains new working bytes. Preserve this file and replace the deletion with an add/replace, or move the local file outside the tested application before preparing again.`)
       }
@@ -259,16 +260,10 @@ export class SvnAssemblyReader {
     const properties = input.properties.get(key)
     const translated = properties?.some(([name]) => name === 'svn:keywords' || name === 'svn:eol-style')
     const content = node.isDirectory() ? 'directory' : translated
-      ? await SvnNodeContent.exported(scope.svn, cwd, `${relative(cwd, path).replace(/\\/g, '/')}@`) : await SvnAssemblyReader.fileHash(path)
+      ? await SvnNodeContent.exported(scope.svn, cwd, `${relative(cwd, path).replace(/\\/g, '/')}@`) : await SvnNodeContent.hash(path)
     const nodes: SvnAssemblyNode[] = [{ path: name, content: SvnAssemblyReader.hash([content, properties ?? []]), metadata }]
     if (status['@_item'] === 'unversioned' && node.isDirectory()) await this.untracked(root, path, nodes)
     return found(nodes)
-  }
-
-  private static async fileHash(path: string): Promise<string> {
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(path)) hash.update(chunk)
-    return hash.digest('hex')
   }
 
   /**
@@ -296,7 +291,7 @@ export class SvnAssemblyReader {
       const path = resolve(directory, name), disk = await lstat(path)
       if (disk.isSymbolicLink()) throw new Error(`Linked untracked source: ${path}`)
       nodes.push({ path: SvnWorktreeEvidence.relativeTo(root, path), metadata: 'unversioned',
-        content: SvnAssemblyReader.hash([disk.isDirectory() ? 'directory' : await SvnAssemblyReader.fileHash(path), []]) })
+        content: SvnAssemblyReader.hash([disk.isDirectory() ? 'directory' : await SvnNodeContent.hash(path), []]) })
       if (disk.isDirectory()) await this.untracked(root, path, nodes)
     }
   }

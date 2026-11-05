@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AppClientUiIpcInvokeMap, IpcResult } from '../../shared/appClientUiIpc'
@@ -25,7 +26,7 @@ describe('app-client-ui/app/shell/serviceClipboardIpc', () => {
   beforeEach(() => {
     electronMock.handlers.clear()
     electronMock.written.length = 0
-    service = new ServiceClipboardIpc()
+    service = bindService(new ServiceClipboardIpc())
   })
 
   async function write(text: string): Promise<IpcResult<void>> {

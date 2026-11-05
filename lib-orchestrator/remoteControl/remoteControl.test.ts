@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { AccountView } from '../agentAccounts/agentAccountsApi.types'
 
@@ -155,7 +155,7 @@ function world(options?: {
   accounts?: readonly AccountView[]
   sessions?: SessionInfo[]
   tabOpen?: RemoteControlStepResult<RemoteControlTabCommandDto>
-  groupAssign?: RemoteControlStepResult<{ group: SessionGroup }>
+  groupAssign?: RemoteControlStepResult<{ group: SessionGroup }> | Promise<RemoteControlStepResult<{ group: SessionGroup }>>
   setColor?: SessionsOpResult
   setNote?: SessionsOpResult<SessionDetailsSaved>
   remove?: SessionsOpResult
@@ -1299,7 +1299,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       actionId: 'action-1', action: 'finish', result: 'committed', sessionId: 'gone-1', title: '014 - fix', tag: 'run-7',
       worktreePath: 'Q:/Apps/One/.worktrees/014-fix', mainCopy: 'Q:/Apps/One', directoryId: '1:2:3', removal: 'removed',
       revisions: [{ repository: 'https://svn.test/repos/app', revision: 51, label: 'receipt' }], lines: [], logs: [],
-      notify: null, holdsLanded: null, at: 5, acknowledgedAt: null,
+      notify: null, holdsLanded: null, mainUpdating: false, at: 5, acknowledgedAt: null,
     }
     const found = world({ results: [committed, { ...committed, actionId: 'action-2', tag: null }] })
 
@@ -1710,6 +1710,21 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
    * the write leaves a session the caller has to be TOLD about, so the step fails inside a create
    * that succeeded rather than taking the create down with it.
    */
+  it('awaits asynchronous shell assignment before opening the created tab or answering', async () => {
+    let complete!: (value: RemoteControlStepResult<{ group: SessionGroup }>) => void
+    const found = world({ groupAssign: new Promise(resolve => { complete = resolve }) })
+    let settled = false
+    const created = found.control.execute(request('sessions.create', {
+      spec: { kind: 'shell', directory: { mode: 'default' } }, openTab: true, group: 'automation',
+    }, 'delayed-group'), context()).then(answer => { settled = true; return answer })
+    await vi.waitFor(() => expect(found.groupAssigns).toHaveLength(1))
+    expect(settled).toBe(false)
+    expect(found.tabCalls.filter(call => call.method === 'open')).toHaveLength(0)
+    complete({ ok: true, value: { group: 'automation' } })
+    expect(await created).toMatchObject({ ok: true, value: { groupAssign: { ok: true, value: { group: 'automation' } } } })
+    expect(found.tabCalls.filter(call => call.method === 'open')).toHaveLength(1)
+  })
+
   it('reports a refused group assignment without failing the create', async () => {
     const found = world({
       groupAssign: { ok: false, error: { code: 'unavailable', detail: 'state is latched' } },

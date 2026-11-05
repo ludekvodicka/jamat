@@ -8,7 +8,7 @@ import { AppControl } from '../ipc/appControl'
  *
  * Statics rather than an instance, the shape `TerminalTheme` uses: there is one document per window
  * and one `documentElement` in it, so a second store would be a second answer to what size the text
- * is. It is started once per document (`main.tsx`, `debugWindow/debugMain.tsx`) and read from
+ * is. It is started once per document (`main.tsx`) and read from
  * wherever the value is needed, without threading it through the React tree it is not part of.
  *
  * Three things reach the document, and none of them is a colour or a size: `--ui-font-scale`, which

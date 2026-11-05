@@ -76,7 +76,7 @@ describe('CommitStep', () => {
     let held = false
     const control: Parameters<CommitStep['publish']>[2] = { commands: { lease: new WorktreeLease('test', () => []), verify: async () => { expect(held).toBe(true) } },
       svn: { assembly: async () => ({ ok: true, value: testAssembly() }), commitHashes: async () => ({ ok: true, value: { 'a.txt': hash } }), unprepareCommit: async () => ({ ok: true, value: undefined }) },
-      busyReason: () => idle ? null : 'the worker is working', holdInput: () => { held = true; return () => { held = false } } }
+      busyReason: () => idle ? null : 'the worker is working', terminals: { inhibit: async () => { held = true; return { release: () => { held = false } } }, pendingInput: async () => 0 } }
     return { ...h, action: FinishProjection.action(h.store.get('parent')!)!, control, idle: () => { idle = true }, edit: () => { hash = 'edited' }, held: () => held }
   }
 
@@ -93,6 +93,24 @@ describe('CommitStep', () => {
     expect(h.store.get('parent')?.worktreeLifecycle?.step).toBe('verifying')
     expect(h.store.get('parent')?.worktreeLifecycle?.awaitingIdleReason).toBeUndefined()
     expect(h.held()).toBe(false)
+  })
+
+  it('awaits authoritative pending input under the inhibit before publication', async () => {
+    const h = await approved()
+    h.idle()
+    let answer!: (count: number) => void
+    h.control.terminals.pendingInput = () => {
+      expect(h.held()).toBe(true)
+      return new Promise<number>(resolve => { answer = resolve })
+    }
+    const publication = h.step.publish('parent', h.action, h.control)
+    await vi.waitFor(() => expect(answer).toBeDefined())
+    expect(h.commits()).toBe(0)
+    answer(1)
+    expect(await publication).toEqual({ kind: 'waiting' })
+    expect(h.store.get('parent')?.worktreeLifecycle?.awaitingIdleReason).toBe('input typed for the worker has not reached it yet')
+    expect(h.held()).toBe(false)
+    expect(h.commits()).toBe(0)
   })
 
   it('publishes under a busy worker only with the person confirmation of this approval (UA1-J13-1)', async () => {

@@ -4,6 +4,8 @@ import { finishTestRecords, emptyUpdateTargets } from './finish/finishTestRecord
 import { WorktreeUpdate } from './worktreeUpdate'
 import { WorktreeStateValidation } from './worktreeStateValidation'
 import type { SvnUpdateSnapshot, SvnUpdateTarget } from '../svn/svnUpdateTargets'
+import type { SvnConflictFact, SvnMountState } from '../svn/svn.types'
+import { PathCompare } from '../shared/pathCompare'
 
 async function harness() {
   const h = await finishTestRecords()
@@ -12,12 +14,18 @@ async function harness() {
     url: `https://svn.test/${name || 'app'}`, repository: 'https://svn.test', kind: 'dir', pinned: false })
   const library = target('library', 8), next = target('next', 12)
   let conflict = false, reject: string | undefined, changed = false
+  // Where svn marks the conflict, and which command reports it in its output (every one by default).
+  let fact: { path: string; kind: 'text' | 'property' | 'tree'; in?: string; properties?: string[] } = { path: 'library/a', kind: 'text' }
   const commands: Array<{ cwd: string; args: string[] }> = []
+  const notes: Array<{ title: string; text: string; stepId: string }> = []
   const snapshots = new Map<string, SvnUpdateSnapshot>([[root, { properties: {}, localMappingChanges: false, children: [library, next], missing: [], mismatched: [] }]])
+  // What the round's read of the mounts finds; empty proves nothing, so every mount updates.
+  const mounts = new Map<string, SvnMountState>()
   const deps: ConstructorParameters<typeof WorktreeUpdate>[0] = {
     records: h.records, changed: () => {},
-    svn: { conflictSet: vi.fn(async () => ({ ok: true as const, value: { revision: 2, rows: [], facts: conflict ? [{ path: 'library/a', kind: 'text' as const,
-      takesArgument: true, tree: null, sidecars: [], properties: [], content: { binary: false, unreadable: false, equal: 'differs' as const } }] : [] } })) },
+    svn: { conflictSet: vi.fn(async () => ({ ok: true as const, value: { revision: 2, rows: [], facts: conflict ? [{ path: fact.path, kind: fact.kind,
+      takesArgument: true, tree: null, sidecars: [], properties: (fact.properties ?? []).map((name) => ({ name, older: null, mine: null, theirs: null })), content: { binary: false, unreadable: false, equal: 'differs' as const } } as SvnConflictFact] : [] } })),
+      mountStates: vi.fn(async () => ({ ok: true as const, value: new Map([...mounts].map(([path, state]) => [PathCompare.comparable(path), structuredClone(state)])) })) },
     targets: { owner: async (_root, revision) => target('', revision),
       verify: vi.fn(async () => {}), snapshot: vi.fn(async (item: SvnUpdateTarget, discover = true) => {
         const snapshot = structuredClone(snapshots.get(item.path) ?? await emptyUpdateTargets.snapshot(item))
@@ -29,12 +37,20 @@ async function harness() {
       commands.push({ cwd, args })
       if (kind === 'update' && cwd === reject) throw new Error('network interrupted')
       // svn 1.14 exits 0 with postponed conflicts and names them in its summary.
-      const output = conflict ? "Updating '.':\nC    library/a\nUpdated to revision 2.\nSummary of conflicts:\n  Text conflicts: 1\n" : "Updating '.':\nAt revision 2.\n"
+      const output = conflict && (fact.in === undefined || fact.in === cwd) ? "Updating '.':\nC    library/a\nUpdated to revision 2.\nSummary of conflicts:\n  Text conflicts: 1\n" : "Updating '.':\nAt revision 2.\n"
       return { ok: true as const, output, exitCode: 0, runId: `run-${commands.length}` }
+    }), note: vi.fn(async (_id, _kind, _cwd, intent, title, text) => {
+      notes.push({ title, text, stepId: intent.stepId })
+      return `note-${notes.length}`
     }) },
   }
-  return { ...h, root, target, library, next, commands, deps, update: new WorktreeUpdate(deps), snapshots,
-    conflict: (value: boolean) => { conflict = value }, reject: (value?: string) => { reject = value }, changed: () => { changed = true } }
+  /** A mount the round's read sees exactly at `item`'s target, changed by `patch`. */
+  const at = (item: SvnUpdateTarget, patch: Partial<SvnMountState> = {}): void => {
+    mounts.set(item.path, { path: item.path, url: item.url, repository: item.repository, base: item.revision, missing: false, switched: false,
+      skipped: false, localChanges: false, propertyChanges: false, carrier: false, ...patch })
+  }
+  return { ...h, root, target, library, next, commands, notes, mounts, at, deps, update: new WorktreeUpdate(deps), snapshots,
+    conflict: (value: boolean) => { conflict = value }, conflictAt: (value: typeof fact) => { conflict = true; fact = value }, reject: (value?: string) => { reject = value }, changed: () => { changed = true } }
 }
 
 describe('WorktreeUpdate', () => {
@@ -230,10 +246,194 @@ describe('WorktreeUpdate', () => {
     expect(WorktreeUpdate.conflictFree(output)).toBe(clean)
   })
 
+  it('runs no svn command in 30 mounts one read proves at their target and journals one summary', async () => {
+    const h = await harness()
+    const mounts = Array.from({ length: 30 }, (_, index) => h.target(`shared/m${String(index).padStart(2, '0')}`, index < 9 ? 248 : 301))
+    h.snapshots.get(h.root)!.children = mounts
+    for (const mount of mounts) h.at(mount)
+    expect(await h.update.run('worker', 'finish', h.root, 963)).toMatchObject({ complete: true, revision: 963, runId: 'note-1' })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root])
+    expect(h.deps.svn.mountStates).toHaveBeenCalledTimes(1)
+    expect(h.deps.targets.verify).not.toHaveBeenCalledWith(expect.objectContaining({ path: mounts[0].path }), expect.anything())
+    expect(h.notes).toHaveLength(1)
+    expect(h.notes[0].title).toBe('30 externals already at r248, r301')
+    expect(h.notes[0].text).toContain('shared/m00 r248\n')
+    const state = h.records.get('worker')!.worktreeLifecycle!.update!
+    expect(state).toMatchObject({ completed: true, cursor: 31 })
+    expect(state.units.every((unit) => unit.phase === 'done')).toBe(true)
+  })
+
+  it('updates only the mount behind its target and proves the rest from the same read', async () => {
+    const h = await harness()
+    h.at(h.library, { base: 7 })
+    h.at(h.next)
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path])
+    expect(h.deps.targets.verify).toHaveBeenCalledWith(expect.objectContaining({ path: h.library.path }), true, [])
+    expect(h.notes.map((note) => note.title)).toEqual(['1 external already at r12'])
+  })
+
+  it.each<[string, Partial<SvnMountState> | 'absent' | 'mapping']>([
+    ['a mixed BASE', { base: 'mixed' }],
+    ['a switched node', { switched: true }],
+    ['a missing node', { missing: true }],
+    ['a skipped or conflicted node', { skipped: true }],
+    ['another URL', { url: 'https://svn.test/elsewhere' }],
+    ['its own external definitions', { carrier: true }],
+    ['no entry in the read (not on disk)', 'absent'],
+    ['a changed mapping saved before the update', 'mapping'],
+  ])('takes the update path for a mount at its revision with %s', async (_name, patch) => {
+    const h = await harness()
+    h.at(h.next)
+    if (patch === 'mapping') {
+      h.reject(h.library.path)
+      await expect(h.update.run('worker', 'finish', h.root, 2)).rejects.toThrow('network interrupted')
+      await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, update: { ...record.worktreeLifecycle!.update!,
+        units: record.worktreeLifecycle!.update!.units.map((unit, index) => index === 1 ? { ...unit, mappingChanged: true } : unit) } } }))
+      h.reject()
+      h.at(h.library)
+    }
+    else if (patch !== 'absent') h.at(h.library, patch)
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands.filter((row) => row.cwd === h.library.path).length).toBeGreaterThan(0)
+    expect(h.commands.some((row) => row.cwd === h.next.path)).toBe(false)
+  })
+
+  it('never replaces a phase saved after an update with a proof of the read', async () => {
+    const h = await harness()
+    h.deps.targets.verify = vi.fn(async (target: SvnUpdateTarget, revision = true) => {
+      if (revision && target.path === h.library.path) throw new Error('verification interrupted')
+    })
+    await expect(h.update.run('worker', 'finish', h.root, 2)).rejects.toThrow('verification interrupted')
+    expect(h.records.get('worker')!.worktreeLifecycle!.update!.units[1]).toMatchObject({ phase: 'updated' })
+    h.deps.targets.verify = vi.fn(async () => {})
+    h.at(h.library); h.at(h.next)
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: true })
+    expect(h.deps.svn.conflictSet).toHaveBeenCalled()
+    expect(h.deps.targets.verify).toHaveBeenCalledWith(expect.objectContaining({ path: h.library.path }), true, [])
+    expect(h.notes.map((note) => note.title)).toEqual(['1 external already at r12'])
+  })
+
+  it('reads the mounts again after a native reconcile touched them', async () => {
+    const h = await harness()
+    h.snapshots.set(h.library.path, { properties: {}, localMappingChanges: false, children: [], missing: [join(h.library.path, 'nested')], mismatched: [] })
+    const run = h.deps.runner.run
+    h.deps.runner.run = async (...args) => {
+      const result = await run(...args)
+      if (!args[3].includes('--ignore-externals')) h.snapshots.get(h.library.path)!.missing = []
+      return result
+    }
+    h.at(h.library, { base: 7 }); h.at(h.next)
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path, h.library.path])
+    expect(h.deps.svn.mountStates).toHaveBeenCalledTimes(2)
+  })
+
   it('requires verification before advancing the saved cursor', async () => {
     const h = await harness()
     h.deps.targets.verify = async (_target, revision = true) => { if (revision) throw new Error('Skipped obstructed target') }
     await expect(h.update.run('worker', 'finish', h.root, 2)).rejects.toThrow('Skipped obstructed target')
     expect(h.records.get('worker')?.worktreeLifecycle?.update).toMatchObject({ cursor: 0, completed: false, units: [{ phase: 'updated' }] })
+  })
+
+  it('updates a clean mount behind its target before it hands over the conflicts of the root, and never touches the root again', async () => {
+    const h = await harness()
+    h.at(h.library, { base: 7 }); h.at(h.next)
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: false, runId: 'run-1' })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path])
+    expect(h.commands[1].args).toEqual(['update', '-r', '8', '--ignore-externals', '--accept', 'postpone', '--', '.'])
+    const paused = h.records.get('worker')!.worktreeLifecycle!.update!
+    expect(paused).toMatchObject({ cursor: 0, units: [{ phase: 'updated' }, { phase: 'updated', parent: 0 }, { phase: 'pending', parent: 0 }] })
+    h.conflict(false)
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: true })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path])
+    expect(h.deps.targets.verify).toHaveBeenCalledWith(expect.objectContaining({ path: h.library.path, revision: 8 }), true, [])
+  })
+
+  it('leaves a mount with local changes behind its target until the conflicts are settled', async () => {
+    const h = await harness()
+    h.at(h.library, { base: 7, localChanges: true }); h.at(h.next)
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: false })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root])
+    h.conflict(false)
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path])
+  })
+
+  it('still hands over the conflicts of the root when the early discovery of its externals fails', async () => {
+    const h = await harness()
+    const snapshot = h.deps.targets.snapshot
+    h.deps.targets.snapshot = vi.fn(async (item: SvnUpdateTarget, discover = true, ...rest: [boolean?]) => {
+      if (discover && item.path === h.root) throw new Error('svn info -r HEAD failed')
+      return snapshot(item, discover, ...rest)
+    })
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: false, runId: 'run-1' })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root])
+    expect(h.records.get('worker')!.worktreeLifecycle!.update).toMatchObject({ cursor: 0, units: [{ phase: 'updated' }] })
+  })
+
+  it('journals the mounts it proved at their target when a later mount fails', async () => {
+    const h = await harness()
+    h.at(h.library)
+    h.reject(h.next.path)
+    await expect(h.update.run('worker', 'finish', h.root, 2)).rejects.toThrow('network interrupted')
+    expect(h.notes.map((note) => note.title)).toEqual(['1 external already at r8'])
+  })
+
+  it.each(['tree', 'property'] as const)('finds no external of a root whose %s conflict may hide its definitions', async (kind) => {
+    const h = await harness()
+    h.at(h.library, { base: 7 })
+    h.conflictAt({ path: kind === 'tree' ? 'gone' : '.', kind, in: h.root, properties: kind === 'property' ? ['svn:externals'] : [] })
+    await h.update.run('worker', 'finish', h.root, 2)
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root])
+    expect(h.records.get('worker')!.worktreeLifecycle!.update!.units).toHaveLength(1)
+  })
+
+  it('keeps the numeric target of an external found before the conflicts settled, while its repository moves on', async () => {
+    const h = await harness()
+    h.at(h.library, { localChanges: true, base: 7 })
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    await h.update.run('worker', 'finish', h.root, 2)
+    h.snapshots.get(h.root)!.children = [{ ...h.library, revision: 9 }, h.next]
+    h.conflict(false)
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: true })
+    expect(h.commands.at(1)).toMatchObject({ cwd: h.library.path, args: expect.arrayContaining(['8']) })
+  })
+
+  it('refuses a resume whose root changed the definitions of an external it found before the conflicts settled', async () => {
+    const h = await harness()
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    await h.update.run('worker', 'finish', h.root, 2)
+    h.conflict(false); h.changed()
+    await expect(h.update.run('worker', 'finish', h.root, 2)).rejects.toThrow('External definitions changed')
+    expect(h.records.get('worker')!.worktreeLifecycle!.update!.cursor).toBe(0)
+  })
+
+  it('stops updating clean mounts at a failure and still hands the conflicts over', async () => {
+    const h = await harness()
+    h.at(h.library, { base: 7 }); h.at(h.next, { base: 11 })
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    const run = h.deps.runner.run
+    h.deps.runner.run = async (...args) => args[2] === h.library.path
+      ? (h.commands.push({ cwd: args[2], args: args[3] }), { ok: false, failure: 'network', output: 'svn: E170013', exitCode: 1, runId: 'failed' })
+      : run(...args)
+    expect(await h.update.run('worker', 'finish', h.root, 2)).toMatchObject({ complete: false })
+    expect(h.commands.map((row) => row.cwd)).toEqual([h.root, h.library.path])
+    expect(h.records.get('worker')!.worktreeLifecycle!.update!.units.map((unit) => unit.phase)).toEqual(['updated', 'pending', 'pending'])
+  })
+
+  it('recovers a lost reply of a clean mount the conflict pause updated', async () => {
+    const h = await harness()
+    h.at(h.library, { base: 7 })
+    h.conflictAt({ path: 'app.ts', kind: 'text', in: h.root })
+    await h.update.run('worker', 'finish', h.root, 2)
+    const state = h.records.get('worker')!.worktreeLifecycle!.update!
+    const entry = { stepId: `finish-update-${state.generation}-1`, kind: 'update' as const, attempt: 1, targetRevision: 8, cwd: h.library.path, startedAt: 1, runId: 'lost' }
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, journal: [entry] } }))
+    expect(await h.update.recover('worker', entry, false)).toBe(true)
+    expect(h.commands.at(-1)).toMatchObject({ cwd: h.library.path, args: ['cleanup', '--', '.'] })
   })
 })

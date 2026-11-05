@@ -1,7 +1,8 @@
 # mdext-renderer — the format the app's markdown viewer renders
 
-`MdExtRenderer` is a deterministic, **render-only** Markdown viewer. You (the LLM) produce only the
-*format* (plain-text Markdown); the widget renders it. Everything here is **valid Markdown** — open
+`MdExtRenderer` renders Markdown with optional host-provided checklist controls. You (the LLM)
+author plain-text Markdown; Jamat supplies file writes and prompt insertion. Everything here is
+**valid Markdown**: open
 the same file in GitHub or a plain editor and it degrades gracefully to source / fenced blocks. The
 `.mdext` extension is just a signal "uses the extensions"; a `.md` file is rendered identically.
 
@@ -155,6 +156,54 @@ Long content here.
 
 An **unrecognized** directive name renders its content as a plain block (no styling, no error) — so
 authoring an unknown block never breaks the view.
+
+## Interactive documents
+
+For a checklist the person should complete in Jamat, put the exact line `jamat: interactive` in
+leading YAML frontmatter. Use normal task lists with one observable check per `- [ ]` item:
+
+```markdown
+---
+title: Settings - test guide
+jamat: interactive
+---
+
+# Settings - test guide
+
+## Save a setting
+
+Open Settings, change the display name, then click Save.
+
+- [ ] The saved display name appears in the header.
+- [ ] Reopening Settings shows the saved display name.
+```
+
+- **Write checks in ordinary lists**, outside tables and code blocks. Put setup instructions before
+  the list and use descriptive `#` headings so questions and results identify the relevant section.
+  Use `:::warning` for warnings; `> [!WARNING]` is not a supported callout.
+- **A tick means the person confirmed the check.** An unchecked item means unconfirmed, either
+  failed or not tried. Do not infer a failure from `[ ]`. Clicking a checkbox saves its marker in
+  the local file; no Save action is needed.
+- **Keep the person's `[x]` markers when editing.** Read the latest file before editing and preserve
+  completed checks. Store project test guides, including their ticks, in versioned
+  `.aidocs/test-guides/YYYY-MM-DD-<topic>.md`.
+- **Controls require local Rendered mode.** Documents without the opt-in, remote documents, Raw and
+  Diff modes, script logs and size-limited views do not offer writable checkboxes. A changed file
+  reloads instead of accepting a toggle against an older version.
+- **The `?` button prepares a question** with the absolute file path, source line, nearest heading
+  and item text. Selecting text and choosing **Ask** in its context menu also works in local
+  rendered Markdown without the opt-in.
+- **`Checklist N/M` counts confirmed items.** Above an opted-in document with tasks, **Send results**
+  sends the confirmed count and unconfirmed items grouped by heading to the agent. Its arrow menu
+  holds **Insert to terminal**, which prepares the same text without Enter so the person can add
+  failure details first. Both wait for a pending checkbox save; long summaries point to the file for
+  remaining items.
+- **Ask inserts without Enter** into the owning session's Claude or Codex prompt, activates that
+  terminal and gives it the keyboard, so the person types the question straight after the prefix.
+  A missing local terminal makes these actions unavailable; a session that is not live, has no agent
+  or is waiting for a choice or permission refuses them with a reason.
+
+See [the interactive checklist example](./examples/interactive-checklist.md).
 
 ## How to author for it
 

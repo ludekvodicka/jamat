@@ -17,6 +17,8 @@ import { type TerminalMenuContext, useTerminalAttachment } from './useTerminalAt
  * for. That it renders is xterm's own business.
  */
 const xtermMock = vi.hoisted(() => ({
+  holdWrites: false,
+  writeCallbacks: [] as (() => void)[],
   instances: [] as {
     cols: number
     rows: number
@@ -192,7 +194,11 @@ vi.mock('@xterm/xterm', () => {
       }
 
       reset(): void { this.calls.push({ method: 'reset', args: [] }) }
-      write(data: string): void { this.calls.push({ method: 'write', args: [data] }) }
+      write(data: string, callback?: () => void): void {
+        this.calls.push({ method: 'write', args: [data] })
+        if (callback && xtermMock.holdWrites) xtermMock.writeCallbacks.push(callback)
+        else callback?.()
+      }
       focus(): void { this.calls.push({ method: 'focus', args: [] }) }
 
       dispose(): void {
@@ -213,6 +219,7 @@ vi.mock('@xterm/xterm', () => {
 vi.mock('@xterm/addon-fit', () => ({
   FitAddon: class {
     fit(): void { xtermMock.fits += 1 }
+    proposeDimensions(): { cols: number; rows: number } { return { cols: 80, rows: 24 } }
   },
 }))
 
@@ -228,7 +235,7 @@ class TerminalBridgeStub {
   clipboard = ''
   /** Set to make every paste refused with this sentence. */
   pasteRefusal: string | null = null
-  private listener: ((attachId: string, frame: TerminalFrame) => void) | null = null
+  private listener: ((attachId: string, frame: TerminalFrame) => void | Promise<void>) | null = null
   private remoteListener: ((
     remoteEndpointId: string,
     attachId: string,
@@ -351,7 +358,7 @@ class TerminalBridgeStub {
           })
         },
       },
-      onTerminalFrame: (callback: (attachId: string, frame: TerminalFrame) => void) => {
+      onTerminalFrame: (callback: (attachId: string, frame: TerminalFrame) => void | Promise<void>) => {
         this.listener = callback
         return () => { this.listener = null }
       },
@@ -372,6 +379,11 @@ class TerminalBridgeStub {
   serve(frame: TerminalFrame, attachId = this.attachIds().at(-1)): void {
     if (attachId === undefined) throw new Error('nothing has attached yet')
     this.listener?.(attachId, frame)
+  }
+
+  consume(frame: TerminalFrame, attachId = this.attachIds().at(-1)): void | Promise<void> {
+    if (attachId === undefined) throw new Error('nothing has attached yet')
+    return this.listener?.(attachId, frame)
   }
 
   serveRemote(
@@ -443,7 +455,7 @@ function Harness(props: {
   const target: TerminalTarget = props.remoteEndpointId === undefined
     ? { kind: 'local', sessionId: props.sessionId }
     : { kind: 'remote', remoteEndpointId: props.remoteEndpointId, sessionId: props.sessionId }
-  const { state, focus, sendCommand, setActive } = useTerminalAttachment(
+  const { state, focus, sendCommand, setActive, setVisible } = useTerminalAttachment(
     target,
     holder,
     props.attachEpoch ?? 0,
@@ -462,6 +474,8 @@ function Harness(props: {
       <button type="button" data-testid="focus" onClick={focus}>focus</button>
       <button type="button" data-testid="active" onClick={() => setActive(true)}>active</button>
       <button type="button" data-testid="inactive" onClick={() => setActive(false)}>inactive</button>
+      <button type="button" data-testid="hide" onClick={() => setVisible(false)}>hide</button>
+      <button type="button" data-testid="show" onClick={() => setVisible(true)}>show</button>
       <button
         type="button"
         data-testid="send"
@@ -579,6 +593,8 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
   }
 
   beforeEach(() => {
+    xtermMock.holdWrites = false
+    xtermMock.writeCallbacks.length = 0
     xtermMock.instances.length = 0
     xtermMock.fits = 0
     xtermMock.forwarded.length = 0
@@ -618,6 +634,91 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
     expect(typeof attachId).toBe('string')
     expect(spec).toEqual({ sessionId: 'session-1', size: { cols: 80, rows: 24 } })
     expect(xtermMock.fits).toBe(1)
+  })
+
+  it('holds visible frame consumption until xterm completes and settles pending writes on disposal', async () => {
+    const view = render(<Harness sessionId="session-1" />)
+    xtermMock.holdWrites = true
+    let consumed = false
+    const first = Promise.resolve(bridge.consume(snapshotFrame('snapshot'))).then(() => { consumed = true })
+    await Promise.resolve()
+    expect(consumed).toBe(false)
+    expect(xtermMock.writeCallbacks).toHaveLength(1)
+    xtermMock.writeCallbacks.shift()!()
+    await first
+    expect(consumed).toBe(true)
+    consumed = false
+    const pending = Promise.resolve(bridge.consume({ type: 'terminal.data', delta: 'pending' } as TerminalFrame))
+      .then(() => { consumed = true })
+    await Promise.resolve()
+    expect(consumed).toBe(false)
+    view.unmount()
+    await pending
+    expect(consumed).toBe(true)
+    xtermMock.writeCallbacks.shift()!()
+  })
+
+  it('parses hidden initial snapshots and waits for visible writes after ordinary held output flushes', async () => {
+    const view = render(<Harness sessionId="session-1" />)
+    xtermMock.holdWrites = true
+    act(() => { view.getByTestId('hide').click() })
+    const initial = bridge.consume(snapshotFrame('hidden'))
+    expect(xtermMock.writeCallbacks).toHaveLength(1)
+    xtermMock.writeCallbacks.shift()!()
+    await initial
+    await Promise.resolve()
+    bridge.consume({ type: 'terminal.data', delta: 'held' } as TerminalFrame)
+    act(() => { view.getByTestId('show').click() })
+    expect(xtermMock.writeCallbacks).toHaveLength(1)
+    let consumed = false
+    const pending = Promise.resolve(bridge.consume({ type: 'terminal.data', delta: 'visible' } as TerminalFrame))
+      .then(() => { consumed = true })
+    xtermMock.writeCallbacks.shift()!()
+    for (let index = 0; index < 8; index++) await Promise.resolve()
+    expect(consumed).toBe(false)
+    xtermMock.writeCallbacks.shift()!()
+    await pending
+    expect(consumed).toBe(true)
+  })
+
+  it.each(['stream', 'write'] as const)('retains Host geometry when a deferred %s fit finishes after the panel hides', async kind => {
+    vi.useFakeTimers()
+    try {
+      const view = render(<Harness sessionId="session-1" />)
+      const screen = 'complete-history-' + 'x'.repeat(900_000)
+      if (kind === 'stream')
+        await bridge.consume({ type: 'terminal.snapshot-start', streamId: 'stream', index: 0, reset: true,
+          projection: { runtimeSessionId: 'session-1', generation: 1, outputEpoch: 1, outputSeq: 12,
+            cols: 100, rows: 30, alive: true, lastOutputAt: null } })
+      else if (kind !== 'write') throw new Error('Unknown fit case')
+      xtermMock.holdWrites = true
+      const pending = bridge.consume(kind === 'stream'
+        ? { type: 'terminal.snapshot-chunk', streamId: 'stream', index: 1, data: screen }
+        : snapshotFrame(screen))
+      const fits = xtermMock.fits
+      xtermMock.resizeObservers[0]?.([], {} as ResizeObserver)
+      await vi.advanceTimersByTimeAsync(50)
+      expect(xtermMock.fits).toBe(fits)
+      sizeHolders(0, 0)
+      act(() => { view.getByTestId('hide').click() })
+      xtermMock.writeCallbacks.shift()!()
+      await pending
+      if (kind === 'stream') {
+        await bridge.consume({ type: 'terminal.snapshot-end', streamId: 'stream', index: 2 })
+        await bridge.consume({ type: 'terminal.snapshot-complete', streamId: 'stream' })
+      }
+      await Promise.resolve()
+      expect(xtermMock.fits).toBe(fits)
+      expect([terminal().cols, terminal().rows]).toEqual([100, 30])
+      expect(terminal().calls.filter(call => call.method === 'write')).toEqual([{ method: 'write', args: [screen] }])
+      act(() => { view.getByTestId('show').click() })
+      for (let index = 0; index < 12; index++) await Promise.resolve()
+      expect(xtermMock.fits).toBe(fits)
+      sizeHolders(800, 400)
+      xtermMock.resizeObservers[0]?.([], {} as ResizeObserver)
+      await vi.advanceTimersByTimeAsync(50)
+      expect(xtermMock.fits).toBe(fits + 1)
+    } finally { vi.useRealTimers() }
   })
 
   it('routes a remote screen through its endpoint for attach, frames, input, size and activity', async () => {

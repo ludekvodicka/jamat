@@ -1,3 +1,4 @@
+export type { WorkspacePanelPresence, WorkspacePanelSnapshot, TabTransferPayload, TabMoveTarget, ClaimPanelResult, ReconcilePanelsResult, TabTransferLease } from '../../lib-orchestrator/clientApi/tabTransfer.types'
 /**
  * The panel keys, in the one file both processes read. They are SERIALIZED into saved layouts, so
  * changing the value of a member is a migration, while renaming the member itself is a compile
@@ -15,45 +16,13 @@ export class PanelKeysConst {
   static readonly directoryViewer = 'directoryViewer'
   static readonly probe = 'probe'
   static readonly snapin = 'snapin'
+  static readonly usage = 'usage'
+  static readonly debug = 'debug'
 }
 
 /** `prototype` is excluded because a class carries one and it is not a panel. */
 export type PanelKey =
   typeof PanelKeysConst[Exclude<keyof typeof PanelKeysConst, 'prototype'>]
-
-export interface WorkspacePanelPresence {
-  panelId: string
-  key: string
-  title: string
-  params: Record<string, unknown>
-  sessionId: string | null
-}
-
-export interface WorkspacePanelSnapshot extends WorkspacePanelPresence {
-  windowId: string
-  active: boolean
-}
-
-export interface TabTransferPayload extends WorkspacePanelPresence {}
-
-export type TabMoveTarget =
-  | { kind: 'newWindow' }
-  | { kind: 'window'; windowId: string }
-
-export type ClaimPanelResult =
-  | { kind: 'granted' }
-  | { kind: 'owned'; windowId: string; panelId: string }
-  | { kind: 'refused'; detail: string }
-
-export interface ReconcilePanelsResult {
-  acceptedPanelIds: readonly string[]
-  rejectedPanelIds: readonly string[]
-}
-
-export interface TabTransferLease {
-  token: string
-  panel: TabTransferPayload
-}
 
 export interface TabTransferData {
   readonly types: readonly string[]

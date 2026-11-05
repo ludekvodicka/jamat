@@ -22,6 +22,11 @@ export interface SvnStepRunnerDeps {
 }
 
 export class SvnStepRunner {
+  /**
+   * The journal keeps the tail of a step's output, never all of it: the whole output is in the log
+   * at `logPath`, and the journal rides in every records write. Only `diagnosis` reads it.
+   */
+  static readonly journalOutputBytesConst = 4096
   private readonly deps: SvnStepRunnerDeps
 
   constructor(deps: SvnStepRunnerDeps) {
@@ -84,7 +89,7 @@ export class SvnStepRunner {
           const state = record.worktreeLifecycle
           if (state === undefined || !state.journal.some((entry) => entry.runId === runId && entry.endedAt === undefined)) return null
           return { ...record, worktreeLifecycle: { ...state, version: state.version + 1, journal: state.journal.map((entry) => entry.runId === runId
-            ? { ...entry, endedAt: this.deps.now(), outcome: 'other' as const, output: refusal } : entry) } }
+            ? { ...entry, endedAt: this.deps.now(), outcome: 'other' as const, output: SvnStepRunner.journalOutputOf(refusal!) } : entry) } }
         })
       throw error
     })
@@ -93,7 +98,8 @@ export class SvnStepRunner {
       const state = record.worktreeLifecycle
       if (state === undefined || !state.journal.some((entry) => entry.runId === runId)) return null
       const journal = state.journal.map((entry) => entry.runId === runId
-        ? { ...entry, endedAt: this.deps.now(), outcome: result.ok ? 'ok' as const : result.failure, output: result.output, logPath: log.ok ? log.value.path : log.detail } : entry)
+        ? { ...entry, endedAt: this.deps.now(), outcome: result.ok ? 'ok' as const : result.failure, output: SvnStepRunner.journalOutputOf(result.output),
+          logPath: log.ok ? log.value.path : log.detail } : entry)
       const repeated = SvnStepRunner.repeated(journal.slice(state.retryFrom ?? 0))
       return { ...record, worktreeLifecycle: { ...state, version: state.version + 1, journal,
         ...(repeated === undefined ? {} : { stoppedFailure: SvnStepRunner.diagnosis(repeated) }) } }
@@ -103,6 +109,24 @@ export class SvnStepRunner {
     const latest = this.deps.records.get(sessionId)?.worktreeLifecycle
     const repeated = SvnStepRunner.repeated(latest?.journal.slice(latest.retryFrom ?? 0) ?? [])
     return !result.ok && repeated !== undefined ? { ...result, output: SvnStepRunner.diagnosis(repeated) } : result
+  }
+
+  /**
+   * A journal row for a step that needed no svn command, with its own title and log under Scripts.
+   * It is written ended, so no recovery ever owns it.
+   */
+  async note(sessionId: string, kind: SvnStepKind, cwd: string, intent: SvnStepIntent, title: string, text: string): Promise<string> {
+    const runId = this.deps.newId()
+    await this.deps.scripts.runLocal(sessionId, runId, title, async (output) => {
+      output(text)
+      return { ok: true, exitCode: 0 }
+    }, this.deps.changed, { phase: 'after', scriptId: 'svn', durable: true, recordStart: (record, startedAt) => {
+      const state = record.worktreeLifecycle ?? WorktreeLifecycleMigration.fromOld(record)
+      if (state === null) throw new Error('An SVN step requires a worktree record')
+      return { ...record, worktreeLifecycle: { ...state, version: state.version + 1, journal: [...state.journal,
+        { ...intent, kind, cwd, args: [], startedAt, endedAt: startedAt, outcome: 'ok', output: SvnStepRunner.journalOutputOf(text), runId }] } }
+    } })
+    return runId
   }
 
   private leaseRoot(sessionId: string): string | undefined {
@@ -120,6 +144,22 @@ export class SvnStepRunner {
     const prior = last === undefined ? undefined : journal.slice(0, -1).reverse().find((entry) => SvnStepRunner.sameTarget(entry, last))
     return last !== undefined && prior !== undefined && last.outcome !== undefined && last.outcome !== 'ok'
       && last.outcome !== 'out-of-date' && last.outcome === prior.outcome && SvnStepRunner.sameTarget(prior, last) ? last : undefined
+  }
+
+  /** The last `journalOutputBytesConst` bytes of `text`, cut on a UTF-8 character boundary. */
+  static journalOutputOf(text: string): string {
+    const bytes = Buffer.from(text, 'utf8')
+    if (bytes.length <= SvnStepRunner.journalOutputBytesConst) return text
+    let start = bytes.length - SvnStepRunner.journalOutputBytesConst
+    while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1
+    return bytes.subarray(start).toString('utf8')
+  }
+
+  /** A diagnosis keeps its first line, which names the failure and the log, and the tail of the rest. */
+  static stoppedFailureOf(text: string): string {
+    const lineEnd = text.indexOf('\n')
+    return lineEnd < 0 ? SvnStepRunner.journalOutputOf(text)
+      : `${text.slice(0, lineEnd)}\n${SvnStepRunner.journalOutputOf(text.slice(lineEnd + 1))}`
   }
 
   private static diagnosis(entry: SvnStepJournalEntry): string {

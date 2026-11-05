@@ -1,5 +1,6 @@
 export * from './finish/finalizeSteps'
 export { CommitStep } from './finish/commitStep'
+export { PreparationStep } from './finish/preparationStep'
 export * from './finish/finishDriver'
 export * from './finish/finishProjection'
 export * from './finish/verifyStep'

@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import type { AccountView } from '../../agentAccounts/agentAccountsApi.types'
@@ -63,4 +63,31 @@ it('resets a replaced or truncated rollout cursor', async () => {
   await reader.read()
   writeFileSync(file, event(now + 500, 1))
   expect(await reader.read()).toMatchObject([{ key: { accountId: 'main' }, windows: [{ usedPercent: 1 }, { usedPercent: 20 }] }])
+})
+
+it('reads only recent directories and open files between walks, and an old growing file on the next walk', async () => {
+  const { home } = world(null)
+  let clock = Date.now()
+  const today = new Date(clock)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const todayDirectory = join(home, 'sessions', String(today.getFullYear()), pad(today.getMonth() + 1), pad(today.getDate()))
+  const oldDirectory = join(home, 'sessions', '2025', '01', '01')
+  mkdirSync(todayDirectory, { recursive: true })
+  mkdirSync(oldDirectory, { recursive: true })
+  const old = join(oldDirectory, 'rollout-old.jsonl')
+  const settled = new Date(clock - 2 * 3_600_000)
+  writeFileSync(old, JSON.stringify({ type: 'session_meta', payload: {} }) + '\n')
+  utimesSync(old, settled, settled)
+  const reader = new RolloutRateReader(home, async () => [], () => clock)
+  await reader.read()
+
+  appendFileSync(old, event(now, 11))
+  utimesSync(old, settled, new Date(settled.getTime() + 1_000))
+  const fresh = join(todayDirectory, 'rollout-fresh.jsonl')
+  writeFileSync(fresh, event(now + 1, 22))
+  clock += 5_000
+  expect((await reader.read()).map(reading => reading.windows[0].usedPercent)).toEqual([22])
+
+  clock += 600_000
+  expect((await reader.read()).map(reading => reading.windows[0].usedPercent)).toEqual([11])
 })

@@ -559,9 +559,10 @@ export class SessionsTreeModel {
     for (const entry of entries) {
       const link = links.get(entry.info.sessionId)
       if (link === undefined || link.via !== 'session' || !SessionNodeState.isLive(entry.info.life)) continue
-      const parentId = link.parent.info.sessionId
-      const parent = families.get(parentId) ?? SessionsTreeModel.stateGroupOf(link.parent)
-      families.set(parentId, SessionsTreeModel.moreUrgent(parent, SessionsTreeModel.stateGroupOf(entry)))
+      // The family is filed by its top row, so a live member at any depth counts there.
+      const top = SessionTreeHierarchy.sectionOf(entry, links)
+      const family = families.get(top.info.sessionId) ?? SessionsTreeModel.stateGroupOf(top)
+      families.set(top.info.sessionId, SessionsTreeModel.moreUrgent(family, SessionsTreeModel.stateGroupOf(entry)))
     }
     return families
   }
@@ -606,8 +607,7 @@ export class SessionsTreeModel {
   ): readonly TreeNode[] {
     return SessionTreeHierarchy.sorted(entries).map((entry) => SessionsTreeModel.sessionNode(
       entry,
-      // Ends after two levels: `parentOf` never puts a session child under a nested row, and never a
-      // run under a run.
+      // Ends because `linksOf` links no cycle and never puts a run under a run.
       SessionsTreeModel.sessionNodes(context.children.get(entry.info.sessionId) ?? [], context),
       context,
     ))

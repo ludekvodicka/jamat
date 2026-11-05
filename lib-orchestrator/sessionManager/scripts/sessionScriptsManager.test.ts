@@ -8,6 +8,7 @@ import type { RuntimeRef, RuntimeSessionInfo } from '../../../app-host/app/wire/
 import type { HostCallFailure } from '../../hostClient/hostClient.types'
 import type { SessionRecord, SessionRecordScriptRun } from '../records/sessionRecord.types'
 import { SessionRecordsStore } from '../records/sessionRecordsStore'
+import { SessionRecordsArchive } from '../records/sessionRecordsArchive'
 import { ScriptLogStore } from './scriptLogStore'
 import { ScriptLogText } from './scriptLogText'
 import { type ScriptCollapsed, type ScriptsHostPort, SessionScriptsManager } from './sessionScriptsManager'
@@ -152,7 +153,8 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     if (!live.ok) throw new Error(live.detail)
     expect(live.value.lines.join('\n')).toContain('pre-commit hook refused')
     expect(Buffer.byteLength(live.value.lines.join('\n'))).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
-    expect(changed.mock.calls.length).toBeGreaterThan(1)
+    // The output is not in the snapshot: only the start recomposes while the command runs.
+    expect(changed.mock.calls.length).toBe(1)
     release()
     await running
     const store = await SessionRecordsStore.load(context.recordsFile, { snapshotsDirectory: context.snapshotsDirectory, report: () => {} })
@@ -163,6 +165,34 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
         lines: expect.arrayContaining(['pre-commit hook refused']) } })
     expect(store.get('pp-u11-parent')?.scriptRuns?.[0]?.log).toMatchObject({ state: 'saved', truncated: true })
     expect(context.calls).toEqual([])
+  })
+
+  it('keeps the local output tail bounded and cuts it on a character boundary', async () => {
+    const context = await harness()
+    await context.store.put(record('p'))
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let emitted = false
+    const running = context.manager.runLocal('p', 'run', 'Update', async (output) => {
+      output('ž'.repeat(ScriptLogText.maxBytesConst / 2))
+      output('a')
+      for (let index = 0; index < 50; index += 1) output('ž'.repeat(1_000))
+      output('end')
+      emitted = true
+      await gate
+      return { ok: true }
+    }, () => {})
+    await vi.waitFor(() => expect(emitted).toBe(true))
+    const live = await context.manager.outputOf('p', 'run')
+    if (!live.ok) throw new Error(live.detail)
+    const text = live.value.lines.join('\n')
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(ScriptLogText.maxBytesConst)
+    expect(Buffer.byteLength(text)).toBeGreaterThan(ScriptLogText.maxBytesConst - 4)
+    expect(text).not.toContain(String.fromCharCode(0xfffd))
+    expect(text.endsWith('end')).toBe(true)
+    release()
+    await running
+    expect(context.store.get('p')?.scriptRuns?.[0]?.log).toMatchObject({ state: 'saved', truncated: true })
   })
 
   it('removes late local output when the parent was removed while the command ran', async () => {
@@ -973,7 +1003,16 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     expect(empty.store.latched).toBe(false)
     await empty.manager.sweep()
 
-    for (const context of [missing, damaged, unreadable])
+    // An archive that could not be read leaves the logs its records name, which no records file lists.
+    const archiveDamaged = await harness()
+    await archiveDamaged.store.put(record('p'))
+    await oldLogs(archiveDamaged)
+    writeFileSync(SessionRecordsArchive.fileOf(archiveDamaged.recordsFile), '{ not json', 'utf8')
+    const unreadArchive = await reloaded(archiveDamaged)
+    expect(unreadArchive.store.latched).toBe(false)
+    await unreadArchive.manager.sweep()
+
+    for (const context of [missing, damaged, unreadable, archiveDamaged])
       expect(existsSync(join(context.logsDirectory, 'gone'))).toBe(true)
   })
 
@@ -1114,6 +1153,19 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       expect(runs.map((run) => [run.runId, run.commands])).toEqual([['r', []], ['s', ['pnpm install']]])
       const read = await context.manager.scriptsOf('p')
       expect(read.ok && read.value.runs[0]?.commands).toEqual(['curl -H "Authorization: secret" x'])
+    })
+
+    it('leaves a run whose history expired out of the rows, as the full scan did', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('kept', { createdAt: 1_000 }))
+      await context.store.put(install('expired', { createdAt: 2_000,
+        scriptOf: { sessionId: 'p', phase: 'before', scriptId: 'setup', name: 'setup', historyExpired: true } }))
+      await context.store.put(install('other', { scriptOf: { sessionId: 'q', phase: 'before', scriptId: 'setup', name: 'setup' } }))
+
+      const runs = context.manager.infoOf(context.store.get('p') ?? fail()).scripts?.runs ?? []
+
+      expect(runs.map((run) => run.runId)).toEqual(['kept'])
     })
   })
 

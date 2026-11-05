@@ -114,6 +114,27 @@ export function FileViewerZoomControl(props: {
 }
 
 /**
+ * Long lines wrapped at the panel edge instead of scrolled to. Off by default, because source
+ * read for its indentation and columns is laid out by its author and wrapping breaks that.
+ */
+export function FileViewerWrapControl(props: {
+  wrap: boolean
+  onChange(wrap: boolean): void
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className="file-viewer-wrap"
+      aria-pressed={props.wrap}
+      title={props.wrap ? 'Long lines wrap; press to scroll them instead' : 'Wrap long lines'}
+      onClick={() => props.onChange(!props.wrap)}
+    >
+      Wrap
+    </button>
+  )
+}
+
+/**
  * The manual half of freshness. The viewer reloads a changed file on its own, so this is what
  * answers "is what I am looking at really what is on disk" without waiting for the next tick - and
  * the only way back for a file that came back after being deleted.

@@ -55,7 +55,7 @@ export class LocalClientPackage {
     let published = false
     try {
       inputs.writeTo(snapshot)
-      for (const directory of ['', 'app-client-ui', 'app-host', 'lib-orchestrator'])
+      for (const directory of ['', 'app-client-ui', 'app-host', 'app-orchestrator', 'lib-orchestrator'])
         symlinkSync(join(this.repositoryRoot, directory, 'node_modules'),
           join(snapshot, directory, 'node_modules'), 'junction')
       // The existing builders resolve all generated paths from these copied scripts and packages.
@@ -95,6 +95,8 @@ export class LocalClientPackage {
     await this.runNode(tsx, ['scripts/setup/prepare-remarkable-sidecar.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-launcher.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-codex.ts'], snapshot)
+    await this.runNode(tsx, ['scripts/release/prepare-gateway.ts'], snapshot)
+    await this.runNode(tsx, ['scripts/release/prepare-orchestrator.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-host-bundle.ts'], snapshot)
     await this.runNode(tsx, ['scripts/release/prepare-skills.ts'], snapshot)
     const ui = join(snapshot, 'app-client-ui')
@@ -182,6 +184,8 @@ export class LocalClientPackage {
     return [manifest.executablePath, join(directory, 'resources', 'app.asar'),
       join(directory, 'resources', 'host', 'start.cjs'),
       join(directory, 'resources', 'codex', 'start.cjs'),
+      join(directory, 'resources', 'gateway', 'start.cjs'),
+      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => join(directory, 'resources', 'orchestrator', name + '.cjs')),
       join(directory, 'resources', 'cli', 'jamat-v3.cjs'),
       ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => join(directory, 'resources', 'skills', agent, skill, 'SKILL.md'))),

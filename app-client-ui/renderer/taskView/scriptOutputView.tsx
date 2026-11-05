@@ -1,8 +1,8 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 
 import type { SessionScriptOutput, SessionScriptRunState } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { ErrorText } from '../../shared/errorText'
-import { SubagentTranscriptText } from './subagentTranscriptView'
+import { useFollowEnd } from './useFollowEnd'
 
 export function ScriptOutputView(props: {
   output: SessionScriptOutput
@@ -13,15 +13,10 @@ export function ScriptOutputView(props: {
   onClose?(): void
 }): React.JSX.Element {
   const { output } = props
-  const body = useRef<HTMLDivElement | null>(null)
-  const stick = useRef(true)
+  const [body, setBody] = useState<HTMLDivElement | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
   const [opening, setOpening] = useState(false)
-
-  useLayoutEffect(() => {
-    const element = body.current
-    if (element !== null && stick.current) element.scrollTop = element.scrollHeight
-  }, [output])
+  useFollowEnd(body)
 
   const openTerminal = async (): Promise<void> => {
     if (opening || output.terminal === null || !props.openTerminal) return
@@ -53,11 +48,7 @@ export function ScriptOutputView(props: {
         {output.failureReason !== undefined && <p className={output.state === 'stopped' ? 'task-view__note' : 'task-view__note task-view__failed'}>{output.failureReason}</p>}
         {output.logReason !== undefined && <p className="task-view__note">{output.logReason}</p>}
       </header>
-      <div className="task-view__entries" ref={body} onScroll={(event) => {
-        const element = event.currentTarget
-        stick.current = element.scrollHeight - element.scrollTop - element.clientHeight
-          <= SubagentTranscriptText.bottomSlackPixelsConst
-      }}>
+      <div className="task-view__entries" ref={setBody}>
         {output.lines.length === 0
           ? <p className="task-view__note">{output.state === 'running' ? 'No output yet.' : 'No output.'}</p>
           : <div className="task-view__text" data-testid="script-output-text">{output.lines.join('\n')}</div>}

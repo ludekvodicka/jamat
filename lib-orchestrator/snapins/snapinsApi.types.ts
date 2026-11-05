@@ -82,6 +82,6 @@ export interface SnapinProjectsPort {
 }
 export interface SnapinPresentationPort {
   ensureGroups(): Promise<boolean>
-  assign(sessionId: string, group: string): 'ok' | 'missing-session' | 'missing-group' | 'failed'
+  assign(sessionId: string, group: string): 'ok' | 'missing-session' | 'missing-group' | 'failed' | Promise<'ok' | 'missing-session' | 'missing-group' | 'failed'>
   setNote(sessionId: string, note: string): Promise<'ok' | 'missing-session' | 'failed'>
 }

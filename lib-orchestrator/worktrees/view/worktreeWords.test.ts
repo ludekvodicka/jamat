@@ -94,6 +94,18 @@ describe('WorktreeWords', () => {
     const merging = { ...waiting, phase: 'finishing' as const, wait: undefined, execution: { ...waiting.execution, merger: { runId: 'm1', setAt: 1, startedAt: 2 } } }
     expect(WorktreeWords.actions(merging).map((row) => row.id)).toEqual(['finish-again', 'open-merger', 'stop-agent', 'back-to-work', 'open-in-vscode', 'keep', 'discard'])
   })
+  it('gives the open conflicts to the worker only while its handoff for them stands, with no wait and no merger', () => {
+    const handed = { ...state, phase: 'finishing' as const, step: 'worker-resolving' as const,
+      handoff: { id: 'h1', key: 'conflicts:finish:5', text: 'conflicts', at: 6, attempts: 0, state: 'pending' as const } }
+    expect(WorktreeWords.conflictOwnerOf(handed, 'finish')).toBe('worker')
+    expect(WorktreeWords.conflictOwnerOf({ ...handed, wait: { kind: 'conflict-person', reason: '1 conflict needs you', at: 7 } }, 'finish')).toBe('person')
+    expect(WorktreeWords.conflictOwnerOf({ ...handed, execution: { root: 'Q:/wt', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1,
+      merger: { runId: 'm1', setAt: 1, startedAt: 2 } } }, 'finish')).toBe('person')
+    expect(WorktreeWords.conflictOwnerOf({ ...handed, handoff: { ...handed.handoff, key: 'conflicts:earlier:5' } }, 'finish')).toBe('person')
+    expect(WorktreeWords.conflictOwnerOf({ ...handed, step: 'syncing' }, 'finish')).toBe('person')
+    expect(WorktreeWords.conflictOwnerOf(handed, 'update-main')).toBe('person')
+    expect(WorktreeWords.conflictOwnerOf(undefined, 'finish')).toBe('person')
+  })
   it('waits for a busy worker with Sync now and Back to work, not as an SVN failure', () => {
     const busy = { ...state, step: 'syncing' as const, phase: 'waiting' as const, wait: { kind: 'worker-busy' as const, reason: 'busy', at: 1 } }
     expect(WorktreeWords.presentation(busy)).toMatchObject({ title: 'The worker is not idle', tone: 'wait' })

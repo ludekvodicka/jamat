@@ -1,16 +1,5 @@
-export type SidebarSide = 'left' | 'right'
-
-export interface SidebarSideState {
-  visible: boolean
-  width: number
-  /** A view key from the registry. Serialized, so renaming a key is a state migration. */
-  activeView: string | null
-}
-
-export interface SidebarsStateValue {
-  left: SidebarSideState
-  right: SidebarSideState
-}
+import type { SidebarSide, SidebarSideState, SidebarsStateValue } from '../../lib-orchestrator/clientApi/sidebarsState.types'
+export type { SidebarSide, SidebarSideState, SidebarsStateValue } from '../../lib-orchestrator/clientApi/sidebarsState.types'
 
 /**
  * The rules of the sidebars, with no React and no DOM: what the default is, what an unknown

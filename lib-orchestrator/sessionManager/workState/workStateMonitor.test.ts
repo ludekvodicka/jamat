@@ -382,7 +382,7 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.calls.inspect).toHaveLength(1)
   })
 
-  // The evidence is kept, not just the answer: it is what the Debug window draws, and what makes a
+  // The evidence is kept, not just the answer: it is what the Debug tab draws, and what makes a
   // wrong verdict visible without a probe. It lives exactly as long as the activity does.
   it('keeps the reason for its answer, and drops it with the runtime', async () => {
     const context = harness()

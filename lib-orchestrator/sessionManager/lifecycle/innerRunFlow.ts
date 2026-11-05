@@ -87,7 +87,7 @@ export class InnerRunFlow {
   }
 
   private liveRuns(parentId: string): number {
-    return this.records.list().filter((record) => InnerRunFlow.requestedOf(record, parentId)
+    return this.records.runsOf(parentId).filter((record) => InnerRunFlow.requestedOf(record, parentId)
       && (record.life === 'live' || record.life === 'starting')).length
   }
 

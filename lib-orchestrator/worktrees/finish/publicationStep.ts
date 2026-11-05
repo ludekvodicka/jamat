@@ -15,7 +15,7 @@ import { FinishState } from './finishState'
 import type { PreparationStep } from './preparationStep'
 
 export class PublicationStep {
-  private readonly deps: Pick<FinishDriverDeps, 'busyReason' | 'changed' | 'commands' | 'holdInput' | 'landedDue' | 'liveness' | 'logs' | 'now' | 'records' | 'report' | 'steps' | 'svn'>
+  private readonly deps: Pick<FinishDriverDeps, 'busyReason' | 'changed' | 'commands' | 'terminals' | 'landedDue' | 'liveness' | 'logs' | 'now' | 'records' | 'report' | 'steps' | 'svn'>
   private readonly state: Pick<FinishState, 'action' | 'wait' | 'retainAttempt' | 'write'>
   private readonly completion: Pick<FinishCompletion, 'recordResult'>
   private readonly commit: Pick<CommitStep, 'publish' | 'receipt'>

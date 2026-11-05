@@ -23,7 +23,7 @@ import { WorktreesSettingsTab } from './tabs/worktrees/worktreesSettingsTab'
  * The set is known at compile time, so there is no registration at run time: a registry would add an
  * ordering problem between whoever registers and whoever draws, and buy nothing a literal cannot do.
  *
- * The tree is two levels, the same shape as the Debug window's, because that is what one subsystem
+ * The tree is two levels, the same shape as the Debug tab's, because that is what one subsystem
  * with several screens is. A third level is a change to this file and to the walk below, not to the
  * frame.
  */

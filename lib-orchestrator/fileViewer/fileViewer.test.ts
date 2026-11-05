@@ -1,11 +1,12 @@
-import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, parse, relative, sep } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { FileViewerGrantStore } from './access/fileViewerGrantStore'
 import { FileViewer } from './fileViewer'
+import { FileContentReader } from './content/fileContentReader'
 import { FileViewerLimits } from './fileViewerLimits'
 import type { FileViewerDocumentSource } from './fileViewerApi.types'
 
@@ -19,7 +20,95 @@ describe('fileViewer/fileViewer', () => {
   }
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  })
+
+  it('does not reload a successful toggle when an earlier freshness poll finishes late', async () => {
+    const { viewer, document, request } = await taskDocument()
+    let finish!: (value: Awaited<ReturnType<FileContentReader['version']>>) => void
+    const read = vi.spyOn(FileContentReader.prototype, 'version')
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const poll = viewer.version('owner', document.documentId)
+    const toggle = await viewer.toggleTask('owner', request)
+    expect(toggle.ok).toBe(true)
+    if (!toggle.ok) throw new Error(toggle.detail)
+    finish({ kind: 'version', contentVersion: toggle.value.contentVersion })
+    expect(await poll).toEqual({ ok: true, kind: 'unchanged' })
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  async function taskDocument(source = '\uFEFF---\r\njamat: interactive\r\n---\r\n# Žluťoučký\r\n- [ ] Ověřit\r\n') {
+    const cwd = await root(), path = join(cwd, 'tasks.md'), viewer = new FileViewer()
+    await writeFile(path, source)
+    const opened = await viewer.openWorkspace('owner', 'session', cwd, path)
+    if (!opened.ok) throw new Error(opened.detail)
+    return { cwd, path, viewer, document: opened.value,
+      request: { documentId: opened.value.documentId, line: 5, checked: true, contentVersion: opened.value.contentVersion! } }
+  }
+
+  it('toggles exactly one byte with BOM and CRLF, preserving identity and refreshing only its grant', async () => {
+    const { cwd, path, viewer, document, request } = await taskDocument()
+    const other = await viewer.openWorkspace('owner', 'session', cwd, path)
+    if (!other.ok) throw new Error(other.detail)
+    const before = await readFile(path), metadata = await stat(path)
+    const result = await viewer.toggleTask('owner', request)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(result.detail)
+    const after = await readFile(path), actual = await stat(path)
+    expect(after.length).toBe(before.length)
+    expect([...after].filter((byte, index) => byte !== before[index])).toEqual([120])
+    expect(after.toString()).toBe(before.toString().replace('[ ]', '[x]'))
+    expect([actual.ino, actual.mode]).toEqual([metadata.ino, metadata.mode])
+    expect(await viewer.text('owner', document.documentId)).toMatchObject({ ok: true,
+      kind: 'text', contentVersion: result.value.contentVersion, text: after.toString().replace(/^\uFEFF/, '') })
+    expect(await viewer.version('owner', document.documentId)).toEqual({ ok: true, kind: 'unchanged' })
+    expect(await viewer.text('owner', other.value.documentId)).toMatchObject({ ok: false, code: 'document-changed' })
+  })
+
+  it('refuses a version from before an external edit without writing', async () => {
+    const { path, viewer, request } = await taskDocument()
+    const edited = '---\njamat: interactive\n---\n# Changed\n- [ ] Other\n'
+    await writeFile(path, edited)
+    expect(await viewer.toggleTask('owner', request)).toMatchObject({ ok: false, code: 'document-changed' })
+    expect(await readFile(path, 'utf8')).toBe(edited)
+  })
+
+  it('refuses other owners, invalid lines and an already requested state', async () => {
+    const { path, viewer, request } = await taskDocument()
+    const before = await readFile(path)
+    expect(await viewer.toggleTask('foreign', request)).toMatchObject({ ok: false, code: 'invalid-document' })
+    for (const override of [{ line: 4 }, { line: 1.5 }, { line: 0 }, { checked: false }])
+      expect(await viewer.toggleTask('owner', { ...request, ...override })).toMatchObject({ ok: false, code: 'not-a-task' })
+    expect(await readFile(path)).toEqual(before)
+  })
+
+  it('rechecks the opt-in on disk and refuses a deleted file', async () => {
+    const { path, viewer, request } = await taskDocument('# Plain\n\n\n\n- [ ] Task\n')
+    const before = await readFile(path)
+    expect(await viewer.toggleTask('owner', request)).toMatchObject({ ok: false, code: 'not-interactive' })
+    expect(await readFile(path)).toEqual(before)
+    await rm(path)
+    expect(await viewer.toggleTask('owner', request)).toMatchObject({ ok: false, code: 'not-found' })
+  })
+
+  it('serializes concurrent viewers so only one accepts the old version', async () => {
+    const { cwd, path, viewer, request } = await taskDocument()
+    const other = await viewer.openWorkspace('other-owner', 'session', cwd, path)
+    if (!other.ok) throw new Error(other.detail)
+    const results = await Promise.all([viewer.toggleTask('owner', request),
+      viewer.toggleTask('other-owner', { ...request, documentId: other.value.documentId })])
+    expect(results[0]?.ok).toBe(true)
+    expect(results[1]).toMatchObject({ ok: false, code: 'document-changed' })
+  })
+
+  it('refuses a task in code and a document above the full-text limit', async () => {
+    const { path, viewer, request } = await taskDocument('---\njamat: interactive\n---\n```\n- [ ] code\n```')
+    const before = await readFile(path)
+    expect(await viewer.toggleTask('owner', request)).toMatchObject({ ok: false, code: 'not-a-task' })
+    expect(await readFile(path)).toEqual(before)
+    const large = await taskDocument('---\njamat: interactive\n---\n# Header\n- [ ] Task\n' + 'a'.repeat(FileViewerLimits.fullTextBytes))
+    expect(await large.viewer.toggleTask('owner', large.request)).toMatchObject({ ok: false, code: 'invalid-document' })
   })
 
   it('opens and reads a workspace text document through its token', async () => {

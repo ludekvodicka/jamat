@@ -10,14 +10,18 @@ import type {
   TerminalComposerResult,
   TerminalFrame,
 } from '../sessionManager/sessionManagerApi.types'
+import type { HostDescriptor, HostWsClientMsg } from '../../app-host/app/wire/hostWire.js'
+import type { TerminalAttachSocketDeps } from '../hostClient/terminalAttachSocket'
+import { TerminalGateway } from '../sessionManager/terminals/terminalGateway'
 import { AgentComposerReader } from '../sessionManager/workState/agentComposerReader'
 import { WorkFixtures } from '../sessionManager/workState/fixtures/workFixtures'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
+  TerminalPort,
   TerminalAttachOwner,
   TerminalInputResult,
   TerminalResizeResult,
-} from '../sessionManager/terminals/terminalGateway'
+} from '../sessionManager/terminalPort'
 import {
   RemoteControlTerminal,
   type RemoteControlTerminalKeep,
@@ -29,7 +33,10 @@ interface FakeAttachment {
   owner: TerminalAttachOwner
 }
 
-class FakeTerminalSessions implements RemoteControlTerminalSessionPort {
+class FakeTerminalSessions implements RemoteControlTerminalSessionPort, TerminalPort {
+  async inhibit() { return { release: () => {} } }
+  async pendingInput() { return 0 }
+  async authorize() { return { refused: true as const } }
   readonly pending = new Map<string, boolean>()
   deliveryPending(sessionId: string, pending: boolean): void { this.pending.set(sessionId, pending) }
   readonly attachments = new Map<string, FakeAttachment>()
@@ -49,37 +56,41 @@ class FakeTerminalSessions implements RemoteControlTerminalSessionPort {
     () => ({ ok: false, code: 'not-agent' })
   contentReads = 0
 
-  terminalAttach(
+  async attach(
     attachId: string,
     spec: TerminalAttachSpec,
     owner: TerminalAttachOwner,
-  ): TerminalAttachResult {
+  ): Promise<TerminalAttachResult> {
     if (this.attachAnswer.ok)
       this.attachments.set(attachId, { spec, owner })
     return this.attachAnswer
   }
 
-  terminalInput(attachId: string, data: string): TerminalInputResult {
+  async transaction(attachId: string): ReturnType<TerminalPort['transaction']> {
+    return { write: async (data: string) => this.input(attachId, data), end: () => {} }
+  }
+
+  async input(attachId: string, data: string): Promise<TerminalInputResult> {
     this.inputs.push({ attachId, data })
     return this.inputAnswer
   }
 
-  terminalResize(attachId: string, cols: number, rows: number): TerminalResizeResult {
+  async resize(attachId: string, cols: number, rows: number): Promise<TerminalResizeResult> {
     this.resizes.push({ attachId, cols, rows })
     return this.resizeAnswer
   }
 
-  terminalSetGeometryActive(attachId: string, active: boolean): TerminalResizeResult {
+  async setGeometryActive(attachId: string, active: boolean): Promise<TerminalResizeResult> {
     this.active.push({ attachId, active })
     return this.resizeAnswer
   }
 
-  terminalDetach(attachId: string): void {
+  detach(attachId: string): void {
     this.detached.push(attachId)
     this.attachments.delete(attachId)
   }
 
-  terminalDetachAll(attachIds: readonly string[]): void {
+  detachAll(attachIds: readonly string[]): void {
     this.detachedAll.push([...attachIds])
     for (const attachId of attachIds) this.attachments.delete(attachId)
   }
@@ -115,7 +126,7 @@ class RemoteTerminalHarness {
   private nextId = 0
 
   constructor(timeoutMilliseconds = 100, screenCharacterLimit = 5) {
-    this.terminal = new RemoteControlTerminal(this.sessions, {
+    this.terminal = new RemoteControlTerminal(this.sessions, this.sessions, {
       internalAttachId: () => `internal-${++this.nextId}`,
       onError: (message) => this.errors.push(message),
       timeoutMilliseconds,
@@ -125,7 +136,7 @@ class RemoteTerminalHarness {
 }
 
 class TerminalFrames {
-  static attached(writer: boolean): TerminalFrame {
+  static attached(writer: boolean): Extract<TerminalFrame, { type: 'terminal.attached' }> {
     return {
       type: 'terminal.attached',
       writer,
@@ -200,6 +211,52 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
       },
     })
     expect(harness.sessions.detached).toEqual([attachId])
+  })
+
+  it('detaches a late acknowledged one-shot attach after timeout without processing its frames', async () => {
+    vi.useFakeTimers()
+    const harness = new RemoteTerminalHarness(100)
+    const attach = harness.sessions.attach.bind(harness.sessions)
+    let acknowledge!: () => void
+    vi.spyOn(harness.sessions, 'attach').mockImplementation(async (...args) => {
+      const answer = await attach(...args)
+      await new Promise<void>(resolve => { acknowledge = resolve })
+      return answer
+    })
+    const peeking = harness.terminal.peek('session-1', {})
+    const attachId = harness.sessions.onlyAttachId()
+    const oldOwner = harness.sessions.attachments.get(attachId)!.owner
+    await vi.advanceTimersByTimeAsync(100)
+    expect(harness.sessions.attachments.size).toBe(0)
+    expect(await peeking).toMatchObject({ ok: false, error: { code: 'timeout' } })
+    oldOwner.onFrame(TerminalFrames.snapshot('late'))
+    acknowledge()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.sessions.detached).toEqual([attachId])
+    expect(harness.sessions.attachments.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cleans a late live acknowledgement without touching a reused external attach id', async () => {
+    const harness = new RemoteTerminalHarness()
+    const attach = harness.sessions.attach.bind(harness.sessions)
+    let acknowledge!: () => void
+    const spy = vi.spyOn(harness.sessions, 'attach').mockImplementationOnce(async (...args) => {
+      const answer = await attach(...args)
+      await new Promise<void>(resolve => { acknowledge = resolve })
+      return answer
+    })
+    const first = harness.terminal.attachLive('owner', 'reused', { sessionId: 'old', size: null }, () => {})
+    await vi.waitFor(() => expect(acknowledge).toBeDefined())
+    harness.terminal.detachOwner('owner')
+    expect(await harness.terminal.attachLive('owner', 'reused', { sessionId: 'new', size: null }, () => {})).toMatchObject({ ok: true })
+    acknowledge()
+    expect(await first).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+    expect(harness.sessions.attachments.has('control-live:internal-2')).toBe(true)
+    expect(await harness.terminal.inputLive('owner', 'reused', 'new input')).toMatchObject({ ok: true })
+    expect(harness.sessions.inputs).toEqual([{ attachId: 'control-live:internal-2', data: 'new input' }])
+    harness.terminal.detachOwner('owner')
+    spy.mockRestore()
   })
 
   it('keeps the writer attached and separates Enter from the paste burst before accepting', async () => {
@@ -304,7 +361,7 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     const sent = harness.terminal.send('session-1', 'message', { enter: true })
     const attachId = harness.sessions.onlyAttachId()
     harness.sessions.emit(attachId, TerminalFrames.attached(true))
-    vi.spyOn(harness.sessions, 'terminalInput').mockImplementation(() => { throw new Error('socket failed') })
+    vi.spyOn(harness.sessions, 'input').mockImplementation(() => { throw new Error('socket failed') })
     await vi.advanceTimersByTimeAsync(100)
     await expect(sent).resolves.toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     expect(harness.errors).toEqual(['Remote terminal send failed: socket failed'])
@@ -356,22 +413,22 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     })
   })
 
-  it('namespaces live attaches per owner, routes their frames and detaches one owner only', () => {
+  it('namespaces live attaches per owner, routes their frames and detaches one owner only', async () => {
     const harness = new RemoteTerminalHarness()
     const firstFrames: TerminalFrame[] = []
     const secondFrames: TerminalFrame[] = []
-    expect(harness.terminal.attachLive(
+    expect((await harness.terminal.attachLive(
       'socket-a',
       'terminal-1',
       { sessionId: 'session-1', size: null },
       (frame) => firstFrames.push(frame),
-    )).toMatchObject({ ok: true })
-    expect(harness.terminal.attachLive(
+    ))).toMatchObject({ ok: true })
+    expect((await harness.terminal.attachLive(
       'socket-b',
       'terminal-1',
       { sessionId: 'session-1', size: null },
       (frame) => secondFrames.push(frame),
-    )).toMatchObject({ ok: true })
+    ))).toMatchObject({ ok: true })
     const internalIds = [...harness.sessions.attachments.keys()]
     expect(internalIds).toEqual(['control-live:internal-1', 'control-live:internal-2'])
 
@@ -385,9 +442,9 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     expect(harness.sessions.attachments.has('control-live:internal-2')).toBe(true)
   })
 
-  it('reports live read-only input and ignored resize explicitly', () => {
+  it('reports live read-only input and ignored resize explicitly', async () => {
     const harness = new RemoteTerminalHarness()
-    harness.terminal.attachLive(
+    await harness.terminal.attachLive(
       'socket-a',
       'terminal-1',
       { sessionId: 'session-1', size: null },
@@ -396,11 +453,11 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal', () => {
     harness.sessions.inputAnswer = { kind: 'not-writer' }
     harness.sessions.resizeAnswer = { kind: 'ignored' }
 
-    expect(harness.terminal.inputLive('socket-a', 'terminal-1', 'x')).toEqual({
+    expect((await harness.terminal.inputLive('socket-a', 'terminal-1', 'x'))).toEqual({
       ok: false,
       error: { code: 'conflict', detail: 'The terminal attach is read-only' },
     })
-    expect(harness.terminal.resizeLive('socket-a', 'terminal-1', 120, 40)).toEqual({
+    expect((await harness.terminal.resizeLive('socket-a', 'terminal-1', 120, 40))).toEqual({
       ok: true,
       value: { attachId: 'terminal-1', accepted: true, applied: false },
     })
@@ -415,7 +472,7 @@ class DeliverHarness {
   clock = 0
 
   constructor() {
-    this.terminal = new RemoteControlTerminal(this.sessions, {
+    this.terminal = new RemoteControlTerminal(this.sessions, this.sessions, {
       internalAttachId: () => 'deliver-1',
       onError: (message) => this.errors.push(message),
       pause: async (milliseconds) => { this.clock += milliseconds },
@@ -503,6 +560,149 @@ class DeliverReadings {
 }
 
 describe('lib-orchestrator/remoteControl/remoteControlTerminal deliver', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it.each((['text', 'enter'] as const).flatMap(phase =>
+    (['connecting', 'reattached', 'read-only', 'timeout'] as const).flatMap(stop =>
+      (['sent', 'not-writer'] as const).map(ack => ({ phase, stop, ack }))))
+  )('settles delayed $phase acknowledgement $ack after $stop without follow-up input or reads', async ({ phase, stop, ack }) => {
+    vi.useFakeTimers()
+    const harness = new DeliverHarness()
+    harness.sessions.composer = DeliverReadings.echoing('payload')
+    harness.transcript = DeliverReadings.submitted('payload')
+    const input = harness.sessions.input.bind(harness.sessions)
+    let acknowledge!: () => void
+    vi.spyOn(harness.sessions, 'input').mockImplementation(async (attachId, data) => {
+      const hold = phase === 'text' ? data !== '\r' : data === '\r'
+      if (!hold) return input(attachId, data)
+      if (ack === 'sent') await input(attachId, data)
+      await new Promise<void>(resolve => { acknowledge = resolve })
+      return { kind: ack }
+    })
+    const delivering = harness.deliver('payload', { input: 'typed' })
+    const attachId = harness.sessions.onlyAttachId()
+    const owner = harness.sessions.attachments.get(attachId)!.owner
+    let completed = false
+    void delivering.then(() => { completed = true })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(acknowledge).toBeDefined()
+    const reads = harness.sessions.composerReads
+    const written = [...harness.written()]
+    if (stop === 'timeout') await vi.runOnlyPendingTimersAsync()
+    else if (stop === 'reattached') owner.onFrame(TerminalFrames.attached(true))
+    else if (stop === 'connecting' || stop === 'read-only')
+      owner.onFrame({ type: 'terminal.status', status: stop, detail: 'during acknowledgement' })
+    else throw new Error(`Unknown stop: ${stop satisfies never}`)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(completed).toBe(false)
+    expect(harness.sessions.pending.get('session-1')).toBe(true)
+    acknowledge()
+    const typed = phase === 'enter' || ack === 'sent'
+    const entered = phase === 'enter' && ack === 'sent' ? 1 : 0
+    const code = stop === 'timeout' ? 'timeout' : stop === 'read-only' ? 'conflict' : 'unavailable'
+    const reason = stop === 'timeout' ? typed ? 'unproven' : 'not-ready'
+      : stop === 'connecting' ? 'disconnected' : stop === 'reattached' ? 'reattached' : 'read-only'
+    expect(await delivering).toMatchObject({ ok: false, error: { code, data: { typed, entered, reason } } })
+    expect(harness.sessions.pending.get('session-1')).toBe(false)
+    expect(harness.written()).toEqual(written)
+    expect(harness.sessions.composerReads).toBe(reads)
+    expect(harness.sessions.attachments.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('maps a rejected input acknowledgement without claiming emitted text or sending Enter', async () => {
+    const harness = new DeliverHarness()
+    harness.sessions.composer = DeliverReadings.echoing('payload')
+    vi.spyOn(harness.sessions, 'input').mockRejectedValue(new Error('input transport failed'))
+    expect(await harness.deliver('payload', { input: 'typed' })).toMatchObject({ ok: false,
+      error: { code: 'operation-failed', data: { typed: false, entered: 0, reason: 'failed' } } })
+    expect(harness.sessions.composerReads).toBe(1)
+    expect(harness.written()).toEqual([])
+    expect(harness.errors).toEqual(['Remote terminal send failed: input transport failed'])
+  })
+
+  it.each(['send', 'send-enter', 'deliver'] as const)('cancels a real gateway queued %s on timeout without late input or pending work', async operation => {
+    vi.useFakeTimers()
+    const sessions = new FakeTerminalSessions()
+    const written: string[] = []
+    const errors: string[] = []
+    const gateway = new TerminalGateway({
+      descriptorOf: () => ({ hostInstanceId: 'host' }) as HostDescriptor,
+      leaseIdOf: () => 'lease', onError: message => errors.push(message),
+      activity: { userInput: () => {}, pendingInputHint: () => {} },
+      socketFactory: deps => ({ connect: () => {}, close: () => {}, send: frame => {
+        if (frame.type === 'terminal.attach') deps.onFrame(TerminalFrames.attached(true))
+        else if (frame.type === 'terminal.input') written.push(frame.data)
+      } }),
+    })
+    await gateway.publishRefs([{ sessionId: 'session-1', resolution: { ok: true, alive: true,
+      ref: { hostInstanceId: 'host', runtimeSessionId: 'runtime-1', generation: 1 } } }])
+    sessions.composer = () => DeliverReadings.echoing('queued text')(written)
+    const terminal = new RemoteControlTerminal(sessions, gateway, { onError: message => errors.push(message) })
+    const held = await gateway.inhibit('session-1')
+    let pending: Promise<unknown>
+    if (operation === 'send' || operation === 'send-enter')
+      pending = terminal.send('session-1', 'queued text', { enter: operation === 'send-enter', timeoutMs: 100 })
+    else if (operation === 'deliver')
+      pending = terminal.deliver('session-1', 'queued text', { input: 'typed', readyTimeoutMs: 100, submitTimeoutMs: 100 },
+        { transcript: async () => DeliverReadings.transcript(0) })
+    else throw new Error(`Unknown operation: ${operation satisfies never}`)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(await gateway.pendingInput('session-1')).toBe(1)
+      expect(gateway.attachmentCount()).toBe(1)
+      expect(written).toEqual([])
+      if (operation === 'deliver') expect(sessions.pending.get('session-1')).toBe(true)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(await pending).toMatchObject({ ok: false, error: { code: 'timeout' } })
+      if (operation === 'deliver') {
+        expect(await pending).toMatchObject({ error: { data: { typed: false, entered: 0 } } })
+        expect(sessions.pending.get('session-1')).toBe(false)
+        expect(sessions.composerReads).toBe(1)
+      }
+      expect(await gateway.pendingInput('session-1')).toBe(0)
+      expect(gateway.attachmentCount()).toBe(0)
+      held.release()
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(written).toEqual([])
+      expect(errors).toEqual(['Queued input for session-1 was refused because its terminal attachment changed'])
+    } finally {
+      held.release()
+      gateway.closeAll()
+    }
+  })
+
+  it('marks plain-text automation delivery through the real gateway with its captured input time', async () => {
+    const sessions = new FakeTerminalSessions()
+    const marks: { sessionId: string; at: number }[] = []
+    const written: string[] = []
+    const gateway = new TerminalGateway({ descriptorOf: () => ({ hostInstanceId: 'host' }) as HostDescriptor,
+      leaseIdOf: () => 'lease', onError: message => { throw new Error(message) },
+      activity: { userInput: batch => marks.push(...batch), pendingInputHint: () => {} },
+      socketFactory: deps => ({ connect: () => {}, close: () => {}, send: frame => {
+        if (frame.type === 'terminal.attach') deps.onFrame(TerminalFrames.attached(true))
+        else if (frame.type === 'terminal.input') written.push(frame.data)
+      } }),
+    })
+    await gateway.publishRefs([{ sessionId: 'session-1', resolution: { ok: true, alive: true,
+      ref: { hostInstanceId: 'host', runtimeSessionId: 'runtime-1', generation: 1 } } }])
+    let clock = 0
+    const terminal = new RemoteControlTerminal(sessions, gateway, { onError: message => { throw new Error(message) },
+      now: () => clock, pause: async milliseconds => { clock += milliseconds } })
+    sessions.composer = () => DeliverReadings.echoing('automation text')(written)
+    const before = Date.now()
+    try {
+      const result = await terminal.deliver('session-1', 'automation text', { input: 'typed', readyTimeoutMs: 5_000, submitTimeoutMs: 5_000 },
+        { transcript: async () => DeliverReadings.submitted('automation text')(written) })
+      expect(result).toMatchObject({ ok: true, value: { delivered: true } })
+      expect(written).toEqual(['automation text', '\r'])
+      expect(marks).toHaveLength(1)
+      expect(marks[0]?.sessionId).toBe('session-1')
+      expect(marks[0]?.at).toBeGreaterThanOrEqual(before)
+      expect(marks[0]?.at).toBeLessThanOrEqual(Date.now())
+    } finally { gateway.closeAll() }
+  })
+
   const pasted = (text: string): string => `\x1b[200~${text}\x1b[201~`
 
   it('pastes into an idle composer, presses Enter once and proves it by the transcript', async () => {
@@ -945,7 +1145,7 @@ class TakeHarness {
   clock = 0
 
   constructor(timeoutMilliseconds?: number) {
-    this.terminal = new RemoteControlTerminal(this.sessions, {
+    this.terminal = new RemoteControlTerminal(this.sessions, this.sessions, {
       internalAttachId: () => 'take-1',
       onError: (message) => this.errors.push(message),
       pause: async (milliseconds) => { this.clock += milliseconds },
@@ -986,6 +1186,35 @@ class TakeReadings {
 }
 
 describe('lib-orchestrator/remoteControl/remoteControlTerminal take', () => {
+  it.each((['disconnect', 'timeout'] as const).flatMap(stop =>
+    (['sent', 'not-writer'] as const).map(ack => ({ stop, ack }))))
+  ('reports the settled erase acknowledgement $ack after $stop without another composer read', async ({ stop, ack }) => {
+    vi.useFakeTimers()
+    const harness = new TakeHarness(100)
+    harness.sessions.content = () => TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 })
+    let acknowledge!: () => void
+    vi.spyOn(harness.sessions, 'transaction').mockResolvedValue({
+      write: async () => { await new Promise<void>(resolve => { acknowledge = resolve }); return { kind: ack } },
+      end: () => {},
+    })
+    const taking = harness.take()
+    const owner = harness.sessions.attachments.get(TakeHarness.attachIdConst)!.owner
+    await vi.advanceTimersByTimeAsync(0)
+    expect(acknowledge).toBeDefined()
+    let completed = false
+    void taking.then(() => { completed = true })
+    if (stop === 'disconnect') owner.onFrame({ type: 'terminal.status', status: 'connecting', detail: 'disconnected' })
+    else if (stop === 'timeout') await vi.advanceTimersByTimeAsync(100)
+    else throw new Error(`Unknown stop: ${stop satisfies never}`)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(completed).toBe(false)
+    acknowledge()
+    expect(await taking).toMatchObject({ kind: 'partial', reason: ack === 'sent' ? 'text-remains' : 'not-erased' })
+    expect(harness.sessions.contentReads).toBe(1)
+    expect(harness.sessions.attachments.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   afterEach(() => vi.useRealTimers())
 
   it('stores the prompt before the first DEL and writes nothing when the store refuses', async () => {
@@ -1118,6 +1347,144 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal take', () => {
     expect(delivering.sessions.pending.get('session-1')).toBe(false)
     expect(keep).not.toHaveBeenCalled()
     expect(delivering.sessions.contentReads).toBe(0)
+  })
+
+  it('keeps a queued one-shot send attached until the real take transaction emits it', async () => {
+    vi.useFakeTimers()
+    const sessions = new FakeTerminalSessions()
+    const written: string[] = []
+    const errors: string[] = []
+    const gateway = new TerminalGateway({
+      descriptorOf: () => ({ hostInstanceId: 'host' }) as HostDescriptor,
+      leaseIdOf: () => 'lease', onError: message => errors.push(message),
+      activity: { userInput: () => {}, pendingInputHint: () => {} },
+      socketFactory: deps => ({ connect: () => {}, close: () => {}, send: frame => {
+        if (frame.type === 'terminal.attach') deps.onFrame(TerminalFrames.attached(true))
+        else if (frame.type === 'terminal.input') written.push(frame.data)
+      } }),
+    })
+    await gateway.publishRefs([{ sessionId: 'session-1', resolution: { ok: true, alive: true,
+      ref: { hostInstanceId: 'host', runtimeSessionId: 'runtime-1', generation: 1 } } }])
+    sessions.content = () => TakeReadings.erasing('draft', 14)(written)
+    const terminal = new RemoteControlTerminal(sessions, gateway, { onError: message => errors.push(message), pause: async () => {} })
+    let kept!: () => void
+    const keeping = new Promise<void>(resolve => { kept = resolve })
+    const taking = terminal.take('session-1', async () => { await keeping; return { ok: true } })
+    await vi.advanceTimersByTimeAsync(0)
+    let settled = false
+    const sending = terminal.send('session-1', 'queued text', { enter: false }).then(result => { settled = true; return result })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(sessions.contentReads).toBe(1)
+      expect(await gateway.pendingInput('session-1')).toBe(1)
+      expect(written).toEqual([])
+      expect(settled).toBe(false)
+      expect(gateway.attachmentCount()).toBe(2)
+      kept()
+      expect(await taking).toEqual({ kind: 'taken' })
+      expect(await sending).toEqual({ ok: true, value: { sessionId: 'session-1', accepted: true, characterCount: 11, enter: false } })
+      expect(written).toEqual(['\x7f'.repeat(14), 'queued text'])
+      expect(await gateway.pendingInput('session-1')).toBe(0)
+      expect(gateway.attachmentCount()).toBe(0)
+      expect(errors).toEqual([])
+    } finally {
+      kept()
+      await taking
+      await sending
+      gateway.closeAll()
+    }
+  })
+
+  it('takes through a real gateway only after inhibit release and excludes other input until end', async () => {
+    const harness = new TakeHarness()
+    const sent: HostWsClientMsg[] = []
+    let socket!: TerminalAttachSocketDeps
+    const gateway = new TerminalGateway({
+      descriptorOf: () => ({ hostInstanceId: 'host' }) as HostDescriptor,
+      leaseIdOf: () => 'lease',
+      activity: { userInput: () => {}, pendingInputHint: () => {} },
+      onError: message => { throw new Error(message) },
+      socketFactory: deps => { socket = deps; return { connect: () => {}, send: frame => { sent.push(frame) }, close: () => {} } },
+    })
+    await gateway.publishRefs([{ sessionId: 'session-1', resolution: { ok: true, alive: true, ref: { hostInstanceId: 'host', runtimeSessionId: 'runtime-1', generation: 1 } } }])
+    harness.sessions.attach = gateway.attach.bind(gateway)
+    harness.sessions.detach = gateway.detach.bind(gateway)
+    harness.sessions.transaction = gateway.transaction.bind(gateway)
+    harness.sessions.content = () => sent.some(frame => frame.type === 'terminal.input' && frame.data.includes('\x7f'))
+      ? TakeReadings.reading({ kind: 'empty' }) : TakeReadings.reading({ kind: 'text', text: 'draft', eraseBound: 14 })
+    const held = await gateway.inhibit('session-1')
+    let queued!: Promise<TerminalInputResult>
+    const taking = harness.terminal.take('session-1', async () => {
+      queued = gateway.input(TakeHarness.attachIdConst, 'later input')
+      expect(sent.filter(frame => frame.type === 'terminal.input')).toEqual([])
+      return { ok: true }
+    })
+    socket.onFrame({ type: 'terminal.attached', writer: true, session: {
+      runtimeSessionId: 'runtime-1', generation: 1, alive: true, cols: 80, rows: 24,
+      outputSeq: 0, outputEpoch: 1, startedAt: 0, lastOutputAt: null,
+    } })
+    await Promise.resolve()
+    expect(harness.sessions.contentReads).toBe(0)
+    held.release()
+    expect(await taking).toEqual({ kind: 'taken' })
+    expect(await queued).toEqual({ kind: 'sent' })
+    expect(sent.filter(frame => frame.type === 'terminal.input')).toEqual([
+      { type: 'terminal.input', data: '\x7f'.repeat(14) }, { type: 'terminal.input', data: 'later input' },
+    ])
+    gateway.closeAll()
+  })
+
+  it('releases a transaction acquired after timeout without reading, keeping or writing', async () => {
+    vi.useFakeTimers()
+    const harness = new TakeHarness(1_000)
+    let grant!: (value: Awaited<ReturnType<FakeTerminalSessions['transaction']>>) => void
+    vi.spyOn(harness.sessions, 'transaction').mockImplementation(() => new Promise(resolve => { grant = resolve }))
+    const end = vi.fn(), write = vi.fn(async () => ({ kind: 'sent' as const })), keep = vi.fn(() => ({ ok: true as const }))
+    const taking = harness.take(keep)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await taking).toMatchObject({ kind: 'refused', reason: 'unavailable' })
+    grant({ write, end })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(end).toHaveBeenCalledTimes(1)
+    expect(write).not.toHaveBeenCalled()
+    expect(keep).not.toHaveBeenCalled()
+    expect(harness.sessions.contentReads).toBe(0)
+  })
+
+  it('waits for an asynchronous keep to settle after disconnect and reports its saved text', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+    let kept!: (value: { ok: true }) => void
+    const taking = harness.take(() => new Promise(resolve => { kept = resolve }))
+    await vi.waitFor(() => expect(kept).toBeDefined())
+    harness.sessions.emit(TakeHarness.attachIdConst, { type: 'terminal.status', status: 'connecting', detail: null })
+    kept({ ok: true })
+    expect(await taking).toMatchObject({ kind: 'partial', reason: 'not-erased' })
+    expect(harness.written()).toEqual([])
+  })
+
+  it('reports a disconnected transaction write as partial after the keep', async () => {
+    const harness = new TakeHarness()
+    harness.sessions.content = TakeReadings.erasing('draft', 14)
+    const end = vi.fn()
+    vi.spyOn(harness.sessions, 'transaction').mockResolvedValue({
+      write: async () => ({ refused: 'disconnected' }), end,
+    })
+    expect(await harness.take()).toEqual({ kind: 'partial', reason: 'not-erased', detail: 'The terminal attach disconnected' })
+    expect(harness.written()).toEqual([])
+    expect(end).toHaveBeenCalled()
+  })
+
+  it.each([
+    ['busy', 'in-flight'], ['not-writer', 'read-only'],
+  ] as const)('refuses a %s edit transaction before reading or keeping', async (refused, reason) => {
+    const harness = new TakeHarness()
+    const keep = vi.fn(() => ({ ok: true as const }))
+    vi.spyOn(harness.sessions, 'transaction').mockResolvedValue({ refused })
+    expect(await harness.take(keep)).toMatchObject({ kind: 'refused', reason })
+    expect(keep).not.toHaveBeenCalled()
+    expect(harness.sessions.contentReads).toBe(0)
+    expect(harness.written()).toEqual([])
   })
 
   it('answers partial not-erased when the DEL write fails after the keep', async () => {

@@ -16,15 +16,26 @@ describe('shared session hierarchy', () => {
     expect(tree[2].projects[0].label).toBe('loose');
   });
 
-  it('honors nesting settings and limits session ancestry without losing a grandchild', () => {
+  it('nests sessions several levels deep and files each under the top of its family', () => {
     const parent = entry('parent');
     const child = entry('child', { parent: { sessionId: 'parent', kind: 'worktree', sameProject: true } });
     const grandchild = entry('grandchild', { parent: { sessionId: 'child', kind: 'worker', sameProject: true } });
-    const links = Hierarchy.linksOf([parent, child, grandchild]);
-    expect([...links.keys()]).toEqual(['child']);
+    const great = entry('great', { parent: { sessionId: 'grandchild', kind: 'worker', sameProject: true } });
+    const links = Hierarchy.linksOf([parent, child, grandchild, great]);
+    expect([...links.keys()]).toEqual(['child', 'grandchild', 'great']);
     expect(Hierarchy.sectionOf(child, links)).toBe(parent);
-    expect(Hierarchy.childrenByParent([child], links).size).toBe(0);
+    expect(Hierarchy.sectionOf(great, links)).toBe(parent);
+    expect(Hierarchy.childrenByParent([child, grandchild], links).get('child')).toEqual([grandchild]);
     expect(Hierarchy.linksOf([parent, child], { subagents: true, worktrees: false, tickets: true }).size).toBe(0);
+  });
+
+  it('leaves the sessions of a parent cycle as roots and still nests a child hanging off it', () => {
+    const a = entry('a', { parent: { sessionId: 'b', kind: 'worker', sameProject: true } });
+    const b = entry('b', { parent: { sessionId: 'a', kind: 'worker', sameProject: true } });
+    const c = entry('c', { parent: { sessionId: 'a', kind: 'worker', sameProject: true } });
+    const links = Hierarchy.linksOf([a, b, c]);
+    expect([...links.keys()]).toEqual(['c']);
+    expect(Hierarchy.sectionOf(c, links)).toBe(a);
   });
 
   it('sorts titles with an id tie-break and preserves absolute path semantics across platforms', () => {

@@ -30,6 +30,16 @@ Use a selector only when the user or a copied session reference supplies it:
 `--config-dir` and `--config-identity` are mutually exclusive. Explicit selection is strict and
 never falls back to another controller.
 
+The order is: explicit selectors (`--config-dir`, `--config-identity`, `--channel`, or the
+`JAMAT_V3_CONFIG_DIR` / `JAMAT_V3_RUNTIME_CHANNEL` variables) first; any one of them replaces the
+session pair. Else, inside a Jamat session, the session's own controller from
+`JAMAT_V3_SESSION_CONTROLLER` and `JAMAT_V3_SESSION_CHANNEL`, strictly: a call needs no flag to
+reach its own controller while another instance runs, and it never falls back to that other
+instance. Else discovery. A failed selection lists each candidate and why in `detail` and
+`data.rejections`, for example `37045054 (408862fc, development): did not answer system.hello within
+5 s`; the reasons are `filtered`, `descriptor`, `not-alive`, `mismatch`, `refused` and
+`hello-timeout`.
+
 `--computer` does not select the local controller. It selects a paired remote target behind the
 already selected local AppClientUI and is valid only on commands that support remote control. Use an
 exact `remote endpoint id` from a copied remote reference. A human `computer:` label is display data,
@@ -435,8 +445,12 @@ overlay; a failed update keeps its retry step.
 `discarded`, `kept`, `failed`), `sessionId`, `title`, `tag`, `worktreePath`, `mainCopy`, `removal`
 (`removed`, `pending`: removed once nothing holds it, `kept`), `revisions` (each `repository`,
 `revision`, `label`: `receipt`, `base-proof` or `inferred`), `lines`, `logs` (copies of the run logs),
-`notify` and `holdsLanded` (whether the main copy holds the committed revisions; `true` stays once
-proven). Results stay 30 days; `sessions acknowledge-worktree-result --action-id ID` after you acted
+`notify`, `holdsLanded` (whether the main copy holds the committed revisions; `true` stays once
+proven) and `mainUpdating` (`true` from the commit while the Finish verifies and removes its worktree, and
+while the automatic main-copy UPDATE of that Finish runs or waits to run, also when it waits for the person; `false` once the UPDATE saved its receipt `main` or
+`mainUnproven`, and after the session was removed; an older Jamat answers no `mainUpdating`). A committed
+result with `holdsLanded: false` and `mainUpdating: true` means Jamat is still updating the main
+copy: read it again later instead of updating it yourself. Results stay 30 days; `sessions acknowledge-worktree-result --action-id ID` after you acted
 on one lets it go a day later.
 
 **Propose the commit message; never commit.** In a worker session, `commit propose --self
@@ -526,7 +540,7 @@ computer only (no `--computer`), and each answers `{ "sessionId" }`:
 
 There is no Finish CLI command that approves a selection: the person approves it in Changes. Follow an action
 with `sessions worktree` and its ending with `sessions worktree-results`. When an action waits on
-conflicts, `sessions worktree` answers `action.summary` ("3 conflicts need you") and at most 50
+conflicts, `sessions worktree` answers `action.summary` ("3 conflicts need you"; while the worker resolves the conflicts Jamat handed it, "3 conflicts: the worker resolves them") and at most 50
 entries in `action.conflicts`; `sessions conflicts (<session selector> | --self)` answers the whole
 list `{ sessionId, actionId, stage, summary, entries, more }`, each entry with `path`, `kind`,
 `state` (`rule`, `agent`, `person`, `settled`), `description` and its `options` (`id`, `label`,
@@ -537,9 +551,10 @@ path of a Finish that waits on its conflicts with an option its entry lists (`me
 `take-incoming`, `keep-mine`, `keep-both`, `union`). A file with a text and a property conflict has
 one entry of each kind; while both are open, `--kind text` or `--kind property` names the one to
 settle, and the other stays open until its own option settles it. Jamat saves what the option replaces first,
-runs it step by step and answers `{ sessionId, path, state, left }`. The Finish goes on only when the
-person presses Check again, or Try again once every path is settled; the wait's reason names the
-button shown. An option that loses incoming work (`loses: "incoming"`) is the person's
+runs it step by step and answers `{ sessionId, path, state, left }`. Conflicts Jamat handed the worker
+need no press: after the worker settles the last of them, the sync goes on by itself once the worker
+is idle, and Session actions names what it waits for. Check again and Try again exist only when a wait
+for the person shows them, and that wait's reason names the button shown. An option that loses incoming work (`loses: "incoming"`) is the person's
 alone, in the window: the CLI has no confirm flag and answers `conflict` (exit 4) with
 `data.sourceCode: "person-only"`. A path or option the set does not hold answers `operation-failed`
 (`invalid-spec`); an action that runs answers `conflict` (`merge-pending`); a failed svn step answers
@@ -959,3 +974,14 @@ Timestamps come from the CLI. Duplicate flags are refused. Stored events return
 `{"ok":true,"value":{"stored":1,"delivered":false}}`; delivered says only whether the wake reached Jamat.
 Exit codes: 0 stored/read, 2 usage or event validation, 3 missing/refused pass, 5 write failure.
 A worker never marks the task completed: Jamat requires source evidence.
+
+## Offline performance report
+
+`jamat-cli perf report --since 2h` reads local records without contacting Jamat, even when the client
+is blocked or stopped. `--since` accepts positive durations in minutes (`m`), hours (`h`) or days
+(`d`), default `2h`. Select `--config-dir <dir>`, or `--config-identity <uuid> --channel development|production`;
+inside a Jamat terminal its controller identity is the default. No remote selector is accepted.
+The JSON value contains `activeHours`, `top` ranked by exclusive blocking milliseconds per active
+hour, `operations` with asynchronous wall totals, `stalls`, `external`, `runaway`, `excludedWindows`, `profiles` and `corruptLines`. Active hours
+count only minutes with a sample; an unsampled process has a null rate. Resume windows exclude the
+following 60 seconds. Profiles are IDs in the instance's fixed `perf/profiles/` directory.

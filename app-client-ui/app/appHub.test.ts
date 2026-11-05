@@ -1,3 +1,11 @@
+import { OrchestratorHub } from '../../app-orchestrator/app/appHub'
+import { OrchestratorRequestMethodsConst, OrchestratorNoticeMethodsConst } from '../../lib-orchestrator/clientApi/orchestratorProcess'
+import type { OrchestratorNativeApi } from '../../lib-orchestrator/clientApi/orchestratorProcess.types'
+import { OrchestratorApiClient } from './processes/orchestratorApiClient'
+import { PerfNames } from '../../lib-orchestrator/perfMonitor/perfNames'
+import { ServiceTabRequestsIpc } from '../../app-orchestrator/app/tabs/serviceTabRequestsIpc'
+import { ServiceFileViewerIpc } from '../../app-orchestrator/app/fileViewer/serviceFileViewerIpc'
+import { ServiceFileViewerShellIpc } from './shell/serviceFileViewerShellIpc'
 import {
   existsSync,
   mkdtempSync,
@@ -6,12 +14,14 @@ import {
   realpathSync,
   rmSync,
   writeFileSync,
+  utimesSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { MenuItemConstructorOptions } from 'electron'
+import type { IpcServiceTransport } from './shared/ipcServiceTransport'
+import type { WebContents, MenuItemConstructorOptions } from 'electron'
 import { readFile } from 'node:fs/promises'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -21,16 +31,28 @@ import type {
   TerminalDetector,
   TerminalDetectorDeps,
 } from '../../lib-orchestrator/terminalDetector/terminalDetector'
-import { AppClientUiBridgeEventsConst } from '../shared/appClientUiIpc'
+import { AppClientUiBridgeEventsConst, AppClientUiChannelOwnersConst, GatewayChannelsConst } from '../shared/appClientUiIpc'
 import type { CommandId } from '../shared/commands'
 import { AutoUpdateConst } from '../shared/electron/autoUpdate/common/autoUpdateApi'
 import type { AppContext } from './appContext'
-import { AppHub } from './appHub'
-import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
+import { MainHub } from './appHub'
+import { ServiceChannels } from './shared/serviceChannels'
+import type { ConfigSectionsCache } from './shared/configSectionsCache'
+import type { OrchestratorApi } from './shared/orchestratorApi.types'
+import type { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
+import type { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteControl'
+import { RemoteControlConst } from '../../lib-orchestrator/remoteControl/remoteControlProtocol'
+import { UiSettings } from '../shared/uiSettings'
+import { ClipboardAccess } from './shared/clipboardAccess'
+import { WindowPeers } from '../../app-gateway/app/peers/windowPeers'
+import { ViewerBuffer } from '../../app-gateway/app/terminals/viewerBuffer'
+import type { RemoteOutboundPort } from '../../lib-orchestrator/remoteControl/remoteOutbound.types'
+import type { ProcessCallContext } from '../../lib-orchestrator/shared/processCalls'
+import { ServiceRemarkableIpc } from '../../app-orchestrator/app/remarkable/serviceRemarkableIpc'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceTabsIpc } from './tabs/serviceTabsIpc'
-import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
-import type { VersioningCommitManagerDeps } from './versioning/versioningCommitManager'
+import { SessionReviewPortAdapter } from '../../app-orchestrator/app/versioning/sessionReviewPortAdapter'
+import type { VersioningCommitManagerDeps } from '../../app-orchestrator/app/versioning/versioningCommitManager'
 
 /** Hoisted with the mock factories: `vi.mock` runs before any top-level statement of this file. */
 const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
@@ -49,6 +71,7 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
     title = ''
     icon: unknown = null
     readonly webContents = {
+      mainFrame: {},
       on: () => {},
       once: () => {},
       setWindowOpenHandler: () => {},
@@ -131,11 +154,17 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
   }
 
   const captured = {
+    orchestrator: null as unknown,
+    processInvoke: null as null | ((target: string, method: string, args: unknown[], context: ProcessCallContext) => Promise<unknown>),
+    processEvent: null as null | ((target: string, name: string, payload: unknown) => void),
+    hostErrors: [] as string[],
     sessionDeps: null as null | {
       onChanged: () => void
       onError: (message: string) => void
       onScriptCollapsed?: (event: { runId: string; parentId: string; handoff: 'parent-tab' | 'close'; handoffTo: string }) => void
       onMainCopyUpdated?: (update: { sessionId: string; title: string; mainCopy: string; revision: number; by: 'person' | 'agent'; log: string | null }) => void
+      svnAssembly?: unknown
+      processPriorityOf?: () => string
     },
     reviewPort: null as unknown,
     receipts: [] as unknown[],
@@ -180,7 +209,10 @@ const { FakeWindow, captured, updaterMock } = vi.hoisted(() => {
 })
 
 vi.mock('electron', () => ({
+  MessageChannelMain: class { port1 = {}; port2 = {} },
+  powerMonitor: { on: vi.fn(), removeListener: vi.fn() },
   app: {
+    getAppMetrics: () => [],
     getAppPath: () => captured.appPath,
     getPath: () => 'C:/tmp/app/state',
     getVersion: () => '0.0.0',
@@ -255,7 +287,7 @@ vi.mock('electron-updater', () => {
   return { default: module }
 })
 
-vi.mock('./remarkable/sidecar/remarkableSidecarInstaller', () => ({
+vi.mock('../../app-orchestrator/app/remarkable/sidecar/remarkableSidecarInstaller', () => ({
   RemarkableSidecarInstaller: class {
     constructor(options: { sourceDirectory: string; toolsDirectory: string }) {
       captured.remarkableInstallerOptions = options
@@ -288,7 +320,7 @@ vi.mock('./remarkable/sidecar/remarkableSidecarInstaller', () => ({
   },
 }))
 
-vi.mock('./remarkable/sidecar/remarkableCli', () => ({
+vi.mock('../../app-orchestrator/app/remarkable/sidecar/remarkableCli', () => ({
   RemarkableCli: class {
     private call(method: string): Promise<unknown> {
       captured.remarkableActions.push(`cli:${method}`)
@@ -312,6 +344,7 @@ vi.mock('./remarkable/sidecar/remarkableCli', () => ({
 vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOriginal) => ({
   SessionNotifier: (await importOriginal<typeof import('../../lib-orchestrator/sessionManager/sessionManager')>()).SessionNotifier,
   SessionManager: class {
+    noteHostError(message: string): void { captured.hostErrors.push(message); captured.sessionDeps?.onError(message) }
     ratesChanged(): void { captured.rateSessionChanges += 1 }
     constructor(deps: {
       onChanged: () => void
@@ -330,6 +363,7 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
     }
 
     /** One session to fork: the control API names a session by the snapshot before it acts on it. */
+    processTree() { return { roots: [], sampledAt: 0 } }
     snapshot(): unknown {
       return {
         revision: 1, reconciled: true, categories: [], orphans: [],
@@ -372,6 +406,7 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
     }
 
     async start(): Promise<void> {}
+    recordsSettled(): boolean { return true }
     async stop(): Promise<void> {
       captured.disposeOrder.push('sessions')
     }
@@ -453,7 +488,7 @@ vi.mock('../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
   },
 }))
 
-vi.mock('./remoteControl/remoteControlServer', () => ({
+vi.mock('../../app-orchestrator/app/remoteControl/remoteControlServer', () => ({
   RemoteControlServer: class {
     start(): Promise<Record<string, never>> {
       captured.remoteStarts += 1
@@ -474,7 +509,7 @@ vi.mock('./remoteControl/remoteControlServer', () => ({
   },
 }))
 
-vi.mock('./skills/skillLinkInstaller', () => ({
+vi.mock('../../app-orchestrator/app/skills/skillLinkInstaller', () => ({
   SkillLinkInstaller: class {
     skipReason(): null { return null }
     install(): readonly [] {
@@ -484,7 +519,7 @@ vi.mock('./skills/skillLinkInstaller', () => ({
   },
 }))
 
-vi.mock('./tokenUsage/tokenUsageWorker', () => ({ TokenUsageWorker: class {
+vi.mock('../../app-orchestrator/app/tokenUsage/tokenUsageWorker', () => ({ TokenUsageWorker: class {
   start(): void {}
   beginStop(): void {}
   async stop(): Promise<void> {}
@@ -492,31 +527,94 @@ vi.mock('./tokenUsage/tokenUsageWorker', () => ({ TokenUsageWorker: class {
   snapshot() { return { buckets: [], labels: {}, accountLabels: {}, progress: { running: false, completed: 0, total: 0, error: null, scannedAt: null } } }
 } }))
 
+vi.mock('../../app-orchestrator/app/remoteControl/gatewayPeerClient', () => ({ GatewayPeerClient: class {
+  async initialize(): Promise<void> {}
+  runtime() { return { status: 'disabled' as const } }
+  snapshot() { return [] }
+  async apply() { return { ok: true as const } }
+  async updateTrust(): Promise<void> {}
+  async closeEndpoint(): Promise<void> {}
+  publishEvent(): void {}
+  beginStop(): void {}
+  async stop(): Promise<void> {}
+  event(): void {}
+} }))
+
+vi.mock('./processes/childProcessSupervisor', () => ({ ChildProcessSupervisor: class {
+  async start(kind: string): Promise<void> { if (kind === 'orchestrator') await (captured.orchestrator as OrchestratorHub).initialize() }
+  orchestrationPort(): void {}
+  beginQuit(): void {}
+  async stopAll(): Promise<void> { await (captured.orchestrator as OrchestratorHub).dispose() }
+} }))
+
+vi.mock('../../lib-orchestrator/shared/processCalls', () => ({ ProcessCalls: class {
+  constructor(deps: { event: (target: string, name: string, payload: unknown) => void; invoke: NonNullable<typeof captured.processInvoke> }) { captured.processEvent = deps.event; captured.processInvoke = deps.invoke }
+  async call(target: string, method: string): Promise<unknown> {
+    if (target === 'outbound' && method === 'initialize') return
+    if (target === 'outbound' && method === 'network-state') return { listener: { status: 'disabled' }, connections: { revision: 0, outbound: [], inbound: [] } }
+    throw new Error(`Unexpected fixture call: ${target}/${method}`)
+  }
+  emit(target: string, name: string): boolean {
+    if (target === 'outbound' && ['profiles', 'retry', 'changed', 'stop'].includes(name)) return true
+    throw new Error(`Unexpected fixture event: ${target}/${name}`)
+  }
+  close(): void {}
+} }))
+
+vi.mock('./processes/orchestratorApiClient', () => ({ OrchestratorApiClient: class {
+  readonly api = {} as OrchestratorNativeApi
+  readonly deps: ConstructorParameters<typeof OrchestratorApiClient>[0]
+  constructor(deps: ConstructorParameters<typeof OrchestratorApiClient>[0]) { this.deps = deps }
+  initialized(): void {}
+  beginQuit(): void { (captured.orchestrator as OrchestratorHub).beginQuit() }
+  shellChanged(): void {}
+  close(): void {}
+} }))
+
 describe('app-client-ui/app/appHub', () => {
+  const orchestrators = new WeakMap<MainHub, object>()
+  function orchestratorOf(hub: MainHub): object {
+    const owner = orchestrators.get(hub)
+    if (!owner) throw new Error('No orchestration owner was composed')
+    return owner
+  }
   let stateRoot: string
 
-  function hubUnderTest(): AppHub {
+  function hubUnderTest(): MainHub {
     const context = {
       appName: 'Jamat V3',
       smoke: true,
       appVersion: '0.0.0',
       fileDiffWorkerPath: 'fileDiffWorker.js',
+      svnAssemblyWorkerPath: 'svnAssemblyWorker.js',
       tokenUsageWorkerPath: 'tokenUsageWorker.js',
-      usageRendererPath: 'usage.html',
-      usageRendererDevUrl: undefined,
       preloadPath: 'preload.js',
       rendererPath: 'index.html',
       rendererDevUrl: undefined,
-      debugRendererPath: 'debug.html',
-      debugRendererDevUrl: undefined,
       appInfo: {},
       config: {
-        configDir: 'C:/tmp/config',
+        configDir: join(stateRoot, 'config'),
         runtimeChannel: 'development',
         identity: { configIdentity: 'app-hub-test' },
       },
     } as unknown as AppContext
-    return new AppHub(context)
+    const hub = new MainHub(context, vi.fn())
+    const native = hub as unknown as { shell: ConstructorParameters<typeof OrchestratorHub>[1]; serviceTransport: IpcServiceTransport;
+      gatewayCalls: ConstructorParameters<typeof OrchestratorHub>[3]; perf: ConstructorParameters<typeof OrchestratorHub>[4]; orchestratorClient: OrchestratorApiClient }
+    const client = native.orchestratorClient as unknown as { deps: ConstructorParameters<typeof OrchestratorApiClient>[0] }
+    const owner = new OrchestratorHub({ config: context.config, appVersion: context.appVersion, smoke: true, privateStateRoot: true,
+      applicationRoot: '.', resourcesPath: '.', isPackaged: false, fileDiffWorkerPath: 'fileDiffWorker.cjs',
+      tokenUsageWorkerPath: 'tokenUsageWorker.cjs', svnAssemblyWorkerPath: 'svnAssemblyWorker.cjs',
+      build: { version: 'test', inputHash: 'test', builtAt: 'test' } }, native.shell, native.serviceTransport, native.gatewayCalls,
+      native.perf, new PerfNames(Object.keys(MainHub.ipcChannelsConst)), event => client.deps.event(event))
+    captured.orchestrator = owner
+    captured.processEvent = (target, name, payload) => owner.transport.event(target, name, payload)
+    const api: Record<string, unknown> = { processTree: () => owner.api.processTree(), snapinDefinitions: () => owner.api.snapinDefinitions() }
+    for (const name of OrchestratorRequestMethodsConst) api[name] = async (...args: unknown[]) => (owner.api[name] as (...values: unknown[]) => unknown)(...args)
+    for (const name of OrchestratorNoticeMethodsConst) api[name] = (...args: unknown[]) => (owner.api[name] as (...values: unknown[]) => unknown)(...args)
+    Object.assign(hub, { orchestrator: api as unknown as OrchestratorNativeApi })
+    orchestrators.set(hub, owner)
+    return hub
   }
 
   /** The menu is the only way in to the commands, and the mocked Menu is where its template lands. */
@@ -557,7 +655,7 @@ describe('app-client-ui/app/appHub', () => {
   }
 
   function replaceWorkspaceRegistry(
-    hub: AppHub,
+    hub: MainHub,
     main: RoutedWindow,
     holder: RoutedWindow,
     focused: () => RoutedWindow | null,
@@ -571,12 +669,17 @@ describe('app-client-ui/app/appHub', () => {
       },
     }
     Object.assign(hub, { workspaceWindows: registry })
+    const transport = (hub as unknown as { serviceTransport: IpcServiceTransport }).serviceTransport
+    for (const [windowId, window] of [['main', main], ['holder', holder]] as const)
+      transport.watch({ on: () => undefined, isDestroyed: () => false,
+        send: (channel: string, ...args: unknown[]) => window.publish(channel, ...args),
+      } as unknown as WebContents, { windowId, role: windowId === 'main' ? 'main' : 'workspace' })
   }
 
-  function windows(): { main: OpenWindow; debug: OpenWindow } {
-    const [main, debug] = FakeWindow.created
-    if (!main || !debug) throw new Error('both windows have to be open for this')
-    return { main, debug }
+  function mainWindow(): OpenWindow {
+    const [main] = FakeWindow.created
+    if (!main) throw new Error('the main window has to be open for this')
+    return main
   }
 
   beforeEach(() => {
@@ -584,6 +687,8 @@ describe('app-client-ui/app/appHub', () => {
     process.env.JAMAT_V3_LOCAL_STATE_DIR = stateRoot
     FakeWindow.created = []
     captured.sessionDeps = null
+    captured.processEvent = null
+    captured.hostErrors = []
     captured.reviewPort = null
     captured.receipts = []
     captured.rateDeps = null
@@ -622,7 +727,7 @@ describe('app-client-ui/app/appHub', () => {
   it('answers the update channels at boot without building the updater in a development run', async () => {
     const hub = hubUnderTest()
 
-    hub.initialize()
+    await hub.initialize()
     const status = await captured.ipcHandlers.get(AutoUpdateConst.channelStatus)?.()
     ;(hub as unknown as { runMainCommand(id: string): void }).runMainCommand('app.checkForUpdates')
 
@@ -630,22 +735,29 @@ describe('app-client-ui/app/appHub', () => {
     expect(updaterMock.reads).toBe(0)
   })
 
-  it('installs the AppJamatV3 skill links during initialization', () => {
+  it('routes gateway diagnostics to Host recording and the existing app error broadcast once', async () => {
+    const hub = hubUnderTest()
+    await hub.initialize()
+    captured.processEvent?.('diagnostics', 'host-error', 'Host fixture failure')
+    captured.processEvent?.('diagnostics', 'terminal-error', 'Terminal fixture failure')
+    expect(captured.hostErrors).toEqual(['Host fixture failure'])
+    expect(FakeWindow.created[0].sent.filter(message => message[0] === 'app:error')).toEqual([
+      ['app:error', 'Host fixture failure'], ['app:error', 'Terminal fixture failure'],
+    ])
+  })
+
+  it('installs the AppJamatV3 skill links during initialization', async () => {
     const hub = hubUnderTest()
 
-    hub.initialize()
+    await hub.initialize()
 
     expect(captured.skillInstalls).toBe(1)
   })
 
-  /*
-   * The reason the window exists: watching what the client is doing while the workspace is behind
-   * something else. Throttling on the workspace alone would have slowed the poll to fifteen seconds
-   * exactly while somebody was reading it.
-   */
-  it('keeps the cadence while either window can be seen', () => {
+  // Debug and Usage are workspace tabs, so a visible workspace window is the whole question.
+  it('keeps the cadence while a workspace window can be seen', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const main = FakeWindow.created[0]
     const visibility = hub as unknown as { visibleWorkspaceWindowIds: Set<string> }
 
@@ -656,24 +768,15 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.visible.at(-1)).toBe(false)
     expect(visibility.visibleWorkspaceWindowIds).toEqual(new Set())
 
-    clickMenuItem('Debug Window')
-    const { debug } = windows()
-    debug.emitWindow('show')
+    main.visible = true
+    main.emitWindow('show')
     expect(captured.visible.at(-1)).toBe(true)
-    expect(visibility.visibleWorkspaceWindowIds.has('debug')).toBe(false)
-
-    debug.visible = false
-    debug.emitWindow('hide')
-    expect(captured.visible.at(-1)).toBe(false)
+    expect(visibility.visibleWorkspaceWindowIds).toEqual(new Set(['main']))
   })
 
-  /*
-   * The rate monitor follows the same expression as the sessions rather than the workspace alone:
-   * the Debug window draws the rate section, so somebody looking only at it is still looking.
-   */
-  it('gives the rate monitor the visibility of any window at all', () => {
+  it('gives the rate monitor the visibility of the workspace windows', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const main = FakeWindow.created[0]
 
     expect(captured.rateVisible.at(-1)).toBe(true)
@@ -682,16 +785,14 @@ describe('app-client-ui/app/appHub', () => {
     main.emitWindow('hide')
     expect([captured.visible.at(-1), captured.rateVisible.at(-1)]).toEqual([false, false])
 
-    clickMenuItem('Debug Window')
-    windows().debug.emitWindow('show')
+    main.visible = true
+    main.emitWindow('show')
     expect([captured.visible.at(-1), captured.rateVisible.at(-1)]).toEqual([true, true])
   })
 
-  it('tells both windows that the rate limits moved and that reading them failed', () => {
+  it('tells every workspace window that the rate limits moved and that reading them failed', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    const { debug } = windows()
+    await hub.initialize()
     const main = routedWindow()
     const holder = routedWindow()
     replaceWorkspaceRegistry(hub, main, holder, () => holder)
@@ -701,37 +802,172 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.rateSessionChanges).toBe(before + 1)
     captured.rateDeps?.onError('the usage endpoint answered 429')
 
-    for (const window of [main, holder, debug])
+    for (const window of [main, holder])
       expect(window.sent).toContainEqual(['rate:changed'])
-    expect(debug.sent).toContainEqual(['app:error', 'the usage endpoint answered 429'])
+    expect(main.sent).toContainEqual(['app:error', 'the usage endpoint answered 429'])
   })
 
   // reMarkable may own an active child or a noninterruptible atomic copy, so it is aborted and
   // awaited before the other child owners. The diff worker is next because it may be terminating.
   it('awaits reMarkable before the other child owners and removes control discovery immediately', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    Object.assign(hub, {
-      remarkable: {
+    await hub.initialize()
+    Object.assign(orchestratorOf(hub), {remarkable: {
         beginStop: () => undefined,
         stop: () => {
           captured.disposeOrder.push('remarkable')
           return Promise.resolve()
         },
       },
-      fileDiffWorker: {
+fileDiffWorker: {
         beginStop: () => undefined,
         stop: () => {
           captured.disposeOrder.push('diff')
           return Promise.resolve()
         },
       },
-    })
+svnAssemblyWorker: {
+        stop: () => {
+          captured.disposeOrder.push('assembly')
+          return Promise.resolve()
+        },
+      }})
 
     await hub.dispose()
 
-    expect(captured.disposeOrder).toEqual(['remarkable', 'diff', 'rate', 'control', 'sessions'])
+    expect(captured.disposeOrder).toEqual(['remarkable', 'diff', 'rate', 'control', 'sessions', 'assembly'])
     expect(captured.remoteBeginStops).toBe(1)
+  })
+
+  it.each(['initializeInbound', 'initializeOutbound'] as const)('does not register late domain services after quit during %s', async stage => {
+    const hub = hubUnderTest(), orchestration = orchestratorOf(hub) as OrchestratorHub
+    let release!: () => void
+    const held = vi.spyOn(orchestration.api, stage).mockImplementation(() => new Promise<void>(resolve => { release = resolve }))
+    const configure = vi.spyOn(orchestration.api, 'configureServices')
+    const services = vi.spyOn(orchestration.api, 'initializeFileViewerIpc')
+    try {
+      const initializing = orchestration.initialize()
+      await vi.waitFor(() => expect(held).toHaveBeenCalledOnce())
+      orchestration.beginQuit()
+      release()
+      await initializing
+      expect(configure).not.toHaveBeenCalled()
+      expect(services).not.toHaveBeenCalled()
+      await orchestration.dispose()
+    } finally { held.mockRestore(); configure.mockRestore(); services.mockRestore() }
+  })
+
+  it.each(['sessions', 'early-worker'] as const)('bounds unresolved %s disposal before the independent gateway stop', async stalled => {
+    vi.useFakeTimers()
+    const hub = hubUnderTest(), reports = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const calls: string[] = []
+    const hanging = () => { calls.push('hung'); return new Promise<void>(() => {}) }
+    if (stalled === 'sessions') Object.assign(orchestratorOf(hub), {sessions: { stop: hanging }})
+    else if (stalled === 'early-worker') Object.assign(orchestratorOf(hub), {remarkable: { beginStop() {}, stop: hanging }})
+    else throw new Error('Unknown stalled owner')
+    Object.assign(orchestratorOf(hub), {svnAssemblyWorker: { stop: async () => { calls.push('assembly') } },
+tokenUsage: { beginStop() {}, stop: async () => { calls.push('token') } }})
+    Object.assign(hub, {perf: { stop: async () => { calls.push('perf') } },
+children: { stopAll: async () => { await (orchestratorOf(hub) as OrchestratorHub).dispose(); calls.push('gateway'); await new Promise<void>(resolve => setTimeout(resolve, 3_000)) } }})
+    try {
+      let settled = false
+      const work = hub.dispose().then(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(13_999)
+      expect(calls).not.toContain('gateway')
+      await vi.advanceTimersByTimeAsync(1)
+      expect(calls).toContain('assembly')
+      expect(calls).toContain('token')
+      expect(calls).toContain('perf')
+      expect(calls.at(-1)).toBe('gateway')
+      expect(settled).toBe(false)
+      expect(reports.mock.calls.flat().join(' ')).toContain('Session records settlement is unconfirmed')
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await work
+      expect(calls).toContain('perf')
+      expect(settled).toBe(true)
+    } finally { vi.useRealTimers(); reports.mockRestore() }
+  })
+
+  it('keeps both authorized clipboard hops pending through healthy sequential file chunks beyond 30 seconds', async () => {
+    const { ProcessCalls } = await vi.importActual<typeof import('../../lib-orchestrator/shared/processCalls')>('../../lib-orchestrator/shared/processCalls')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] })
+    const hub = hubUnderTest(), invoke = captured.processInvoke!
+    const source = join(stateRoot, 'clipboard-file.bin')
+    writeFileSync(source, Buffer.alloc(1_100_000, 7))
+    const clipboard = vi.spyOn(ClipboardAccess, 'readText').mockReturnValue(source)
+    const lifetime = new AbortController(), chunks: { offset: number; bytes: number }[] = [], pending: string[] = []
+    const arrivals = Array.from({ length: 3 }, () => {
+      let ready!: () => void
+      const promise = new Promise<void>(resolve => { ready = resolve })
+      return { promise, ready }
+    })
+    const delays = new Set<() => void>()
+    let work: Promise<unknown> | undefined, settled: Promise<void> | undefined, nativeSettled: Promise<void> | undefined
+    const outbound = {
+      attachTerminal: async (_endpoint: string, id: string) => ({ ok: true, value: { attachId: id, sessionId: 'session' } }),
+      detachTerminal: async () => ({ ok: true, value: {} }),
+      terminalPasteFile: async (_endpoint: string, _id: string, chunk: { offset: number; data: string; size: number }) => {
+        const bytes = Buffer.from(chunk.data, 'base64').length
+        chunks.push({ offset: chunk.offset, bytes })
+        await new Promise<void>(resolve => {
+          const finish = (): void => { clearTimeout(timer); delays.delete(finish); resolve() }
+          const timer = setTimeout(finish, 11_000)
+          delays.add(finish)
+          arrivals[chunks.length - 1]!.ready()
+        })
+        return { ok: true, value: { path: chunk.offset + bytes === chunk.size ? 'D:/remote/clipboard-file.bin' : null } }
+      },
+    } as unknown as RemoteOutboundPort
+    const output = new ViewerBuffer({ bytesOf: () => 1, send() {}, truncate() {}, resume() {} })
+    const owner = new WindowPeers('window', true, { outbound: () => outbound,
+      snapshot: () => ({ revision: 0, outbound: [], inbound: [] }), releaseMedia() {},
+      clipboard: (endpoint, id, signal) => gateway.call('outbound-work', 'clipboard', ['window', 'epoch', endpoint, id], { signal }),
+    }, output, { span: (_name, run) => run() }, message => { throw new Error(message) }, () => { throw new Error('Unexpected window failure') })
+    const unused = async () => { throw new Error('Unexpected reverse call') }
+    const report = (message: string) => { throw new Error(message) }
+    const gateway = new ProcessCalls({ send: message => main.receive(message), invoke: unused, event() {}, report })
+    const main = new ProcessCalls({ send: message => { if (message.type === 'pending') pending.push('main'); gateway.receive(message) },
+      invoke: (...args) => {
+        const operation = invoke(...args)
+        nativeSettled = operation.then(() => {}, () => {})
+        return operation
+      }, event() {}, report })
+    const renderer = new ProcessCalls({ send: message => windowCalls.receive(message), invoke: unused, event() {}, report })
+    const windowCalls = new ProcessCalls({ send: message => { if (message.type === 'pending') pending.push('window'); renderer.receive(message) },
+      invoke: (_target, method, args, context) => owner.invoke({ method, args } as never, context), event() {}, report })
+    Object.assign(hub, { gatewayCalls: { call: (target: string, method: string, args: unknown[]) => {
+      expect([target, method]).toEqual(['windows', 'remote-paste-file'])
+      expect(args.slice(0, 2)).toEqual(['window', 'epoch'])
+      return owner.pasteFile(args[2] as string, args[3] as string, args[4] as never)
+    } } })
+    Object.assign(hub, {windowPorts: { sender: () => ({}), signal: () => lifetime.signal },
+workspaceWindows: { acceptsRenderer: () => true }})
+    const heartbeat = setInterval(() => { renderer.alive(); gateway.alive() }, 1_000)
+    try {
+      await renderer.call('remote', 'remote:terminal-attach', ['endpoint', 'attach', { sessionId: 'session', size: null }])
+      work = renderer.call('remote', 'remote:terminal-clipboard-paste', ['endpoint', 'attach'])
+      settled = work.then(() => {}, () => {})
+      for (let index = 0; index < 3; index++) {
+        await Promise.race([arrivals[index]!.promise,
+          work.then(() => { throw new Error(`Clipboard transfer ended before chunk ${index + 1}`) })])
+        expect(chunks).toHaveLength(index + 1)
+        await vi.advanceTimersByTimeAsync(11_000)
+      }
+      expect(await work).toEqual({ ok: true, value: { kind: 'text', text: 'D:/remote/clipboard-file.bin' } })
+      expect(performance.now()).toBeGreaterThan(30_000)
+      expect(pending).toEqual(['window', 'main'])
+      expect(chunks.map(chunk => chunk.offset)).toEqual([0, 524_288, 1_048_576])
+    } finally {
+      clearInterval(heartbeat)
+      owner.close(); output.close()
+      for (const calls of [renderer, windowCalls, gateway, main]) calls.close()
+      for (const finish of delays) finish()
+      await settled
+      await nativeSettled
+      clipboard.mockRestore(); vi.useRealTimers()
+    }
   })
 
   it('gives the sessions the commit dialog once its broker exists', () => {
@@ -741,7 +977,7 @@ describe('app-client-ui/app/appHub', () => {
   })
 
   it('hands every receipt of the commit dialog to the sessions', () => {
-    const hub = hubUnderTest() as unknown as { commits: { deps: VersioningCommitManagerDeps } }
+    const hub = orchestratorOf(hubUnderTest()) as unknown as { commits: { deps: VersioningCommitManagerDeps } }
     const receipt = { sessionId: 'parent-1', scopes: [{ scopeRoot: 'C:/work/app', revision: 12 }], paths: ['C:/work/app/main.ts'] }
 
     hub.commits.deps.committed?.(receipt)
@@ -749,20 +985,32 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.receipts).toEqual([receipt])
   })
 
+  it('gives the sessions the process priority of the agents settings, below normal by default', () => {
+    hubUnderTest()
+
+    expect(captured.sessionDeps?.processPriorityOf?.()).toBe('below-normal')
+  })
+
+  it('gives the sessions one svn assembly worker', () => {
+    const hub = hubUnderTest()
+
+    expect(captured.sessionDeps?.svnAssembly).toBe((orchestratorOf(hub) as unknown as { svnAssemblyWorker: unknown }).svnAssemblyWorker)
+  })
+
   it('owns one lazy diff worker and gives it to the file changes manager', () => {
     const hub = hubUnderTest()
-    const worker = (hub as unknown as { fileDiffWorker: unknown }).fileDiffWorker
+    const worker = (orchestratorOf(hub) as unknown as { fileDiffWorker: unknown }).fileDiffWorker
 
     expect(captured.fileChangesExecutor).toBe(worker)
   })
 
-  it('boots without a sidecar seed, CLI call, install call or secure-storage prompt', () => {
+  it('boots without a sidecar seed, CLI call, install call or secure-storage prompt', async () => {
     const hub = hubUnderTest()
     const sourceDirectory = captured.remarkableInstallerOptions?.sourceDirectory
     if (sourceDirectory === undefined) throw new Error('The hub did not construct the installer')
     expect(existsSync(sourceDirectory)).toBe(false)
 
-    hub.initialize()
+    await hub.initialize()
 
     expect(captured.remarkableActions).toEqual([])
     expect(captured.safeStorageCalls).toEqual([])
@@ -774,7 +1022,7 @@ describe('app-client-ui/app/appHub', () => {
    * having. Read off the source because an event is published from wherever it happens - the shell,
    * the tab brokers, the rate monitor - and no runtime seam collects them.
    */
-  it('publishes every event channel from somewhere in the main process', () => {
+  it('publishes every event channel from its main or window-port owner', () => {
     const mainProcessDir = join(dirname(fileURLToPath(import.meta.url)))
     const sources: string[] = []
     const walk = (directory: string): void => {
@@ -786,9 +1034,20 @@ describe('app-client-ui/app/appHub', () => {
       }
     }
     walk(mainProcessDir)
+    walk(join(mainProcessDir, '../../app-orchestrator/app'))
+    const mainSources = [...sources]
+    sources.length = 0
+    walk(join(mainProcessDir, '../preload'))
+    const portSources = [...sources]
 
     const unpublished = Object.values(AppClientUiBridgeEventsConst)
-      .filter((channel) => !sources.some((source) => source.includes(`'${channel}'`)))
+      .filter(channel => {
+        const owner = AppClientUiChannelOwnersConst[channel] ?? 'main'
+        if (owner === 'main') return !mainSources.some(source => source.includes(`'${channel}'`))
+        else if (owner === 'gateway') return !portSources.some(source => source.includes(`'${channel}'`))
+        else if (owner === 'orchestrator') return !mainSources.some(source => source.includes("'" + channel + "'"))
+        else throw new Error(`Unknown channel owner: ${owner}`)
+      })
 
     expect(unpublished).toEqual([])
   })
@@ -798,12 +1057,12 @@ describe('app-client-ui/app/appHub', () => {
    * memo behind its index, and resolving a Codex rollout means walking a directory - which this
    * pair does on every poll, for every session on screen.
    */
-  it('gives both transcript readers the project manager’s memo-carrying view', () => {
+  it('gives both transcript readers the project manager’s memo-carrying view', async () => {
     // Every hub this file builds writes here, so only THIS hub's pair is read.
     captured.transcriptViews.length = 0
     const hub = hubUnderTest()
-    hub.initialize()
-    const projects = (hub as unknown as { projects: { transcripts: unknown } }).projects
+    await hub.initialize()
+    const projects = (orchestratorOf(hub) as unknown as { projects: { transcripts: unknown } }).projects
 
     expect(captured.transcriptViews.map(([reader]) => reader)).toEqual(['model', 'transcript'])
     for (const [reader, view] of captured.transcriptViews)
@@ -816,7 +1075,7 @@ describe('app-client-ui/app/appHub', () => {
    */
   it('gives the Notes import the terminal compaction delivers through', () => {
     const hub = hubUnderTest()
-    const services = hub as unknown as {
+    const services = orchestratorOf(hub) as unknown as {
       contextCompactionIpc: { terminal: unknown }
       directoryNotes: { terminal: unknown }
     }
@@ -827,25 +1086,32 @@ describe('app-client-ui/app/appHub', () => {
 
   it('wakes coordinators through the terminal the control API delivers through, and stops with the hub', async () => {
     const hub = hubUnderTest()
-    const services = hub as unknown as {
+    const services = orchestratorOf(hub) as unknown as {
       directoryNotes: { terminal: unknown }
       sessionNotifier: { port: { terminal: unknown }; started: boolean; sources: readonly unknown[] }
     }
 
     expect(services.sessionNotifier.port.terminal).toBe(services.directoryNotes.terminal)
     expect(services.sessionNotifier.sources).toHaveLength(5)
-    hub.initialize()
+    await hub.initialize()
     expect(services.sessionNotifier.started).toBe(true)
     await hub.dispose()
     expect(services.sessionNotifier.started).toBe(false)
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(AppHub.ipcChannelsConst)).toHaveLength(176)
+    expect(Object.keys(MainHub.ipcChannelsConst)).toHaveLength(179)
+    expect(Object.keys(GatewayChannelsConst)).toHaveLength(41)
+    expect(Object.keys(MainHub.ipcChannelsConst).filter(channel => !(channel in GatewayChannelsConst))).toHaveLength(138)
     expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(28)
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageChanged', 'usage:changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onSnapinsChanged')
-    expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(19)
+    expect(Object.keys({ ...ServiceTabsIpc.channelsConst, ...ServiceTabRequestsIpc.channelsConst })).toHaveLength(19)
+    expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
+    expect(Object.keys(ServiceTabRequestsIpc.channelsConst)).toHaveLength(6)
+    expect(Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst })).toHaveLength(19)
+    expect(Object.keys(ServiceFileViewerIpc.channelsConst)).toHaveLength(16)
+    expect(Object.keys(ServiceFileViewerShellIpc.channelsConst)).toHaveLength(3)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
 
@@ -855,7 +1121,7 @@ describe('app-client-ui/app/appHub', () => {
    * handled one. A service constructed and never initialized passes both and leaves its channels
    * empty for the renderer's first call.
    */
-  it('leaves no channel of the contract without a handler once it has booted', () => {
+  it('leaves no channel of the contract without a handler once it has booted', async () => {
     const hub = hubUnderTest()
     // Read at the first window rather than after the boot: a renderer calls as soon as it loads.
     const workspace = (hub as unknown as {
@@ -868,9 +1134,10 @@ describe('app-client-ui/app/appHub', () => {
       restore()
     }
 
-    hub.initialize()
+    await hub.initialize()
 
-    expect(handledAtRestore).toEqual(expect.arrayContaining(Object.keys(AppHub.ipcChannelsConst)))
+    expect([...handledAtRestore, ...Object.keys(GatewayChannelsConst)])
+      .toEqual(expect.arrayContaining(Object.keys(MainHub.ipcChannelsConst)))
 
     // The updater's channels return raw values rather than IpcResult, so they are not in the contract.
     const updateChannels = [
@@ -879,8 +1146,9 @@ describe('app-client-ui/app/appHub', () => {
       AutoUpdateConst.channelInstall,
       AutoUpdateConst.channelOpenReleasePage,
     ]
-    expect([...captured.ipcHandlers.keys()].sort())
-      .toEqual([...Object.keys(AppHub.ipcChannelsConst), ...updateChannels].sort())
+    expect([...captured.ipcHandlers.keys(), ...Object.keys(GatewayChannelsConst)].sort())
+      .toEqual([...Object.keys(MainHub.ipcChannelsConst), ...updateChannels].sort())
+    for (const channel of Object.keys(GatewayChannelsConst)) expect(captured.ipcHandlers.has(channel)).toBe(false)
   })
 
   /*
@@ -890,7 +1158,7 @@ describe('app-client-ui/app/appHub', () => {
    */
   it('hands the detector every changed path, and lists them once for a burst of clicks', async () => {
     const hub = hubUnderTest()
-    const detector = (hub as unknown as {
+    const detector = (orchestratorOf(hub) as unknown as {
       terminalDetector: { deps: TerminalDetectorDeps }
     }).terminalDetector.deps
     const context: FileChangesContext = { sessionId: 's-1', cwd: 'C:/work', agent: null }
@@ -914,7 +1182,7 @@ describe('app-client-ui/app/appHub', () => {
    */
   it('restores a detected file only once the detector has recorded the open', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const file = join(stateRoot, 'report.md')
     writeFileSync(file, '# Report\n')
     // `realpathSync` is the JS resolver and keeps an 8.3 short name; the native one, like the
@@ -926,7 +1194,7 @@ describe('app-client-ui/app/appHub', () => {
     const sender = FakeWindow.created[0].webContents
     const source = { kind: 'detected', sessionId: 's-1', path: file }
 
-    expect(await restore({ sender }, source, false)).toEqual({
+    expect(await restore({ sender, senderFrame: sender.mainFrame }, source, false)).toEqual({
       ok: true,
       value: {
         ok: false,
@@ -935,9 +1203,9 @@ describe('app-client-ui/app/appHub', () => {
       },
     })
 
-    ;(hub as unknown as { terminalDetector: TerminalDetector }).terminalDetector
+    ;(orchestratorOf(hub) as unknown as { terminalDetector: TerminalDetector }).terminalDetector
       .markOpened(real, 'file')
-    const allowed = await restore({ sender }, source, false) as {
+    const allowed = await restore({ sender, senderFrame: sender.mainFrame }, source, false) as {
       ok: true
       value: { ok: true; value: { source: unknown } }
     }
@@ -957,9 +1225,9 @@ describe('app-client-ui/app/appHub', () => {
     expect(internals.smokeLayoutContains('main', 'probe:1')).toBe(false)
   })
 
-  it('publishes active sessions from visible workspace windows to main', () => {
+  it('publishes active sessions from visible workspace windows to main', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const internals = hub as unknown as {
       panelIndex: {
         claimOpen(windowId: string, panel: {
@@ -994,19 +1262,17 @@ describe('app-client-ui/app/appHub', () => {
   it('marks a prepared source gone before releasing its panel ownership', () => {
     const hub = hubUnderTest()
     const order: string[] = []
-    Object.assign(hub, {
-      transferBroker: {
+    Object.assign(orchestratorOf(hub), {sessions: { setWindowVisible: () => undefined, snapshot: () => ({ sessions: [] }) }})
+    Object.assign(hub, {transferBroker: {
         rendererGone: (windowId: string) => order.push(`broker:${windowId}`),
       },
-      panelIndex: {
+panelIndex: {
         releaseWindow: (windowId: string) => order.push(`index:${windowId}`),
         visibleTerminalTargetKeys: () => [],
         openTerminalTargetKeys: () => [],
         snapshot: () => [],
       },
-      workspaceWindows: { publishTo: () => undefined, broadcast: () => undefined },
-      sessions: { setWindowVisible: () => undefined, snapshot: () => ({ sessions: [] }) },
-    })
+workspaceWindows: { publishTo: () => undefined, broadcast: () => undefined, focusedWorkspace: () => null, lastFocusedWorkspace: () => null, acceptsWindow: () => false }})
     const lifecycle = hub as unknown as { workspaceRendererGone(windowId: string): void }
 
     lifecycle.workspaceRendererGone('holder')
@@ -1038,31 +1304,26 @@ describe('app-client-ui/app/appHub', () => {
   it('cancels every transfer before workspace shutdown begins', () => {
     const hub = hubUnderTest()
     const order: string[] = []
-    Object.assign(hub, {
-      remarkable: { beginStop: () => order.push('remarkable') },
-      fileDiffWorker: { beginStop: () => order.push('diff') },
-      transferBroker: { cancelAll: () => order.push('broker') },
-      workspaceWindows: { beginQuit: () => order.push('windows') },
-    })
+    Object.assign(orchestratorOf(hub), {remarkable: { beginStop: () => order.push('remarkable') },
+fileDiffWorker: { beginStop: () => order.push('diff') }})
+    Object.assign(hub, {transferBroker: { cancelAll: () => order.push('broker') },
+workspaceWindows: { beginQuit: () => order.push('windows') }})
 
     hub.beginQuit()
 
     expect(order).toEqual(['remarkable', 'diff', 'broker', 'windows'])
   })
 
-  it('tells both windows that the snapshot moved and that something failed', () => {
+  it('tells the workspace that the snapshot moved and that something failed', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    const { main, debug } = windows()
+    await hub.initialize()
+    const main = mainWindow()
 
     captured.sessionDeps?.onChanged()
     captured.sessionDeps?.onError('the state file is unreadable')
 
-    for (const window of [main, debug]) {
-      expect(window.sent).toContainEqual(['sessions:changed'])
-      expect(window.sent).toContainEqual(['app:error', 'the state file is unreadable'])
-    }
+    expect(main.sent).toContainEqual(['sessions:changed'])
+    expect(main.sent).toContainEqual(['app:error', 'the state file is unreadable'])
     expect(captured.remoteEvents).toContain('sessions.changed')
   })
 
@@ -1082,10 +1343,27 @@ describe('app-client-ui/app/appHub', () => {
     ])
   })
 
+  it('opens a runaway notice as a person-requested terminal tab while leaving workflow notices unchanged', async () => {
+    const hub = hubUnderTest()
+    const ports = hub as unknown as {
+      machineLoad: { deps: { notify: (row: import('../../lib-orchestrator/perfMonitor/runawayTracker').RunawayProcess) => void } }
+      tabControlBroker: { open: (id: string, title: string, by: string) => Promise<unknown> }
+    }
+    const broker = (orchestratorOf(hub) as { tabControlBroker: typeof ports.tabControlBroker }).tabControlBroker
+    const open = vi.spyOn(broker, 'open').mockResolvedValue({ ok: true })
+    ports.machineLoad.deps.notify({ pid: 99, startedAt: 1, image: 'node.exe', cores: 0.9,
+      sessionId: 's1', session: '093', sessionKind: 'agent', idle: true, minutes: 10 })
+    expect(captured.notices).toHaveLength(1)
+    expect(open).not.toHaveBeenCalled()
+    captured.notices[0]!.click()
+    await Promise.resolve()
+    expect(open).toHaveBeenCalledExactlyOnceWith('s1', 'Session 093', 'person')
+  })
+
   it('shows a Windows notification when a local Finish starts to wait, once, and its click opens the workflow tab', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    const openWorkflow = vi.spyOn((hub as unknown as { tabControlBroker: { openWorkflow: (sessionId: string, title: string) => Promise<unknown> } })
+    await hub.initialize()
+    const openWorkflow = vi.spyOn((orchestratorOf(hub) as unknown as { tabControlBroker: { openWorkflow: (sessionId: string, title: string) => Promise<unknown> } })
       .tabControlBroker, 'openWorkflow').mockResolvedValue({ ok: true, value: { windowId: 'w', panelId: 'p' } })
     captured.snapshotSessions = []
     captured.sessionDeps?.onChanged()
@@ -1105,7 +1383,7 @@ describe('app-client-ui/app/appHub', () => {
 
   it('tells an UPDATE of a landed row once with its revision, and its click opens the kept update log', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     captured.notices = []
     captured.openedPaths = []
     captured.sessionDeps?.onMainCopyUpdated?.({ sessionId: 's1', title: '001 - J01 W1', mainCopy: 'Q:/Work/App', revision: 1481, by: 'person',
@@ -1118,11 +1396,9 @@ describe('app-client-ui/app/appHub', () => {
     expect(captured.openedPaths).toEqual(['C:/state/worktree-results/a1/run.log'])
   })
 
-  it('broadcasts session changes to every workspace window and Debug', () => {
+  it('broadcasts session changes to every workspace window', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    const { debug } = windows()
+    await hub.initialize()
     const main = routedWindow()
     const holder = routedWindow()
     replaceWorkspaceRegistry(hub, main, holder, () => holder)
@@ -1131,26 +1407,11 @@ describe('app-client-ui/app/appHub', () => {
 
     expect(main.sent).toContainEqual(['sessions:changed'])
     expect(holder.sent).toContainEqual(['sessions:changed'])
-    expect(debug.sent).toContainEqual(['sessions:changed'])
   })
 
-  // A renderer command belongs to the workspace: the Debug window builds no command registry, and
-  // an event it cannot answer would be an event it has to be taught to ignore.
-  it('sends Remarkable to the workspace window and never to Debug', () => {
+  it('routes Remarkable to the focused holder with main fallback', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    const { main, debug } = windows()
-
-    clickMenuItem('Remarkable')
-
-    expect(main.sent).toContainEqual(['menu:command', 'tools.remarkable'])
-    expect(debug.sent).toEqual([])
-  })
-
-  it('routes Remarkable to the focused holder with main fallback', () => {
-    const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const main = routedWindow()
     const holder = routedWindow()
     let focused: RoutedWindow | null = holder
@@ -1175,9 +1436,9 @@ describe('app-client-ui/app/appHub', () => {
    * catalog id down to what it accepts. Reached directly because the menu cannot draw the item that
    * would reach it - which is the whole point: the guard is for the day the catalog says it can.
    */
-  it('refuses to publish a command the native menu cannot supply a value for', () => {
+  it('refuses to publish a command the native menu cannot supply a value for', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const main = routedWindow()
     replaceWorkspaceRegistry(hub, main, routedWindow(), () => null)
     const publish = (hub as unknown as { publishRendererCommand(id: CommandId): void })
@@ -1187,41 +1448,23 @@ describe('app-client-ui/app/appHub', () => {
     expect(main.sent).toEqual([])
   })
 
-  it('opens one Debug window however many times the command is run', () => {
+  // Debug and Usage open as tabs of the workspace in front, so they open no window of their own.
+  it('sends Debug and Usage to the workspace as tab commands', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    clickMenuItem('Debug Window')
-    expect(FakeWindow.created).toHaveLength(2)
+    await hub.initialize()
+    const main = routedWindow()
+    replaceWorkspaceRegistry(hub, main, routedWindow(), () => null)
+
+    clickMenuItem('Debug')
+    clickMenuItem('Usage')
+
+    expect(main.sent).toEqual([['menu:command', 'debug.open'], ['menu:command', 'tools.usage']])
+    expect(FakeWindow.created).toHaveLength(1)
   })
 
-  /*
-   * Reload means the window in front, which is what Electron's own role would do. Without it, a
-   * Debug window whose renderer had stopped answering could only be closed and opened again, because
-   * the command reloaded the workspace whatever was on screen.
-   */
-  it('reloads the window in front, and the workspace when neither is', () => {
+  it('reloads a focused holder and falls back to main when no workspace has focus', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
-    clickMenuItem('Debug Window')
-    const { main, debug } = windows()
-
-    clickMenuItem('Reload')
-    expect([main.reloads, debug.reloads]).toEqual([1, 0])
-
-    debug.focus_ = true
-    clickMenuItem('Reload')
-    expect([main.reloads, debug.reloads]).toEqual([1, 1])
-
-    debug.focus_ = false
-    main.focus_ = true
-    clickMenuItem('Reload')
-    expect([main.reloads, debug.reloads]).toEqual([2, 1])
-  })
-
-  it('reloads a focused holder and falls back to main when no workspace has focus', () => {
-    const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const main = routedWindow()
     const holder = routedWindow()
     let focused: RoutedWindow | null = holder
@@ -1234,9 +1477,9 @@ describe('app-client-ui/app/appHub', () => {
     expect([main.reloads, holder.reloads]).toEqual([1, 1])
   })
 
-  it('opens a bare holder immediately from the Window menu', () => {
+  it('opens a bare holder immediately from the Window menu', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
 
     clickMenuItem('New Window')
 
@@ -1265,7 +1508,7 @@ describe('app-client-ui/app/appHub', () => {
    */
   it('gives a fork the group its parent was put in and tells the windows', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const sender = FakeWindow.created[0].webContents
     const assign = captured.ipcHandlers.get('state:assign-session-group')
     const control = captured.ipcHandlers.get('control:call')
@@ -1273,9 +1516,9 @@ describe('app-client-ui/app/appHub', () => {
     if (!assign || !control || !load)
       throw new Error('The hub registered no session group or control handler')
 
-    await assign({ sender }, 'session:parent-1', 'priority')
+    await assign({ sender, senderFrame: sender.mainFrame }, 'session:parent-1', 'priority')
     FakeWindow.created[0].sent.length = 0
-    expect(await control({ sender }, 'sessions.fork', {
+    expect(await control({ sender, senderFrame: sender.mainFrame }, 'sessions.fork', {
       session: { kind: 'sessionId', sessionId: 'parent-1' },
       name: 'refactor',
     })).toMatchObject({
@@ -1283,7 +1526,7 @@ describe('app-client-ui/app/appHub', () => {
       value: { ok: true, operation: 'sessions.fork', value: { sessionId: 'fork-1', tabTitle: 'Work - 014-015' } },
     })
 
-    expect(await load({ sender })).toEqual({
+    expect(await load({ sender, senderFrame: sender.mainFrame })).toEqual({
       ok: true,
       value: [
         { key: 'session:parent-1', group: 'priority' },
@@ -1296,37 +1539,37 @@ describe('app-client-ui/app/appHub', () => {
   /** A parent with no assignment of its own hands nothing over, and nobody is woken for it. */
   it('writes nothing and says nothing when the forked session was never assigned', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const sender = FakeWindow.created[0].webContents
     const control = captured.ipcHandlers.get('control:call')
     const load = captured.ipcHandlers.get('state:load-session-groups')
     if (!control || !load) throw new Error('The hub registered no session group or control handler')
 
     FakeWindow.created[0].sent.length = 0
-    await control({ sender }, 'sessions.fork', { session: { kind: 'sessionId', sessionId: 'parent-1' } })
+    await control({ sender, senderFrame: sender.mainFrame }, 'sessions.fork', { session: { kind: 'sessionId', sessionId: 'parent-1' } })
 
-    expect(await load({ sender })).toEqual({ ok: true, value: [] })
+    expect(await load({ sender, senderFrame: sender.mainFrame })).toEqual({ ok: true, value: [] })
     expect(FakeWindow.created[0].sent).not.toContainEqual(['state:session-groups-changed'])
   })
 
   it('rebuilds the Window menu for name changes but not color-only saves', async () => {
     const hub = hubUnderTest()
-    hub.initialize()
+    await hub.initialize()
     const save = captured.ipcHandlers.get('window:save-appearance')
     if (!save)
       throw new Error('The hub registered no window appearance handler')
     const sender = FakeWindow.created[0].webContents
 
-    await save({ sender }, { name: 'Primary', color: null })
+    await save({ sender, senderFrame: sender.mainFrame }, { name: 'Primary', color: null })
     expect(captured.menuBuilds).toBe(2)
 
-    await save({ sender }, { name: 'Primary', color: '#123456' })
+    await save({ sender, senderFrame: sender.mainFrame }, { name: 'Primary', color: '#123456' })
     expect(captured.menuBuilds).toBe(2)
 
-    await save({ sender }, { name: 'Review', color: '#123456' })
+    await save({ sender, senderFrame: sender.mainFrame }, { name: 'Review', color: '#123456' })
     expect(captured.menuBuilds).toBe(3)
 
-    await save({ sender }, { name: null, color: '#123456' })
+    await save({ sender, senderFrame: sender.mainFrame }, { name: null, color: '#123456' })
     expect(captured.menuBuilds).toBe(4)
   })
 
@@ -1342,7 +1585,7 @@ describe('app-client-ui/app/appHub', () => {
    * gate two tests above: what has to stay true is a wiring decision, and the wiring is the text.
    */
   it('gives every transcript consumer the project manager\'s own view', async () => {
-    const source = await readFile(new URL('./appHub.ts', import.meta.url), 'utf8')
+    const source = await readFile(new URL('../../app-orchestrator/app/appHub.ts', import.meta.url), 'utf8')
 
     // The two polled readers, the file-changes manager, the session manager's reference block and
     // the sub-agent listing, and no sixth way in.
@@ -1353,13 +1596,112 @@ describe('app-client-ui/app/appHub', () => {
   // Two lists used to name the nineteen services - a spread that proved coverage and a sum of
   // nineteen `Object.keys(...).length` that proved no two claimed the same channel. Both proofs now
   // ride on one list, so both are pinned here.
+  it('keeps native ui reads on the confirmed owner cache, including refusal and external edits', async () => {
+    const hub = hubUnderTest()
+    const cache = (hub as unknown as { configCache: ConfigSectionsCache }).configCache
+    const owner = orchestratorOf(hub) as { api: OrchestratorApi; configStore: ConfigStore; remoteControl: RemoteControl }
+    expect(cache.read('ui')).toEqual(UiSettings.defaultValue())
+    await hub.initialize()
+    const sender = FakeWindow.created[0].webContents
+    const invoke = captured.ipcHandlers.get('control:call')!
+    const call = (operation: string, body: unknown) => invoke({ sender, senderFrame: sender.mainFrame }, operation, body)
+    const before = cache.read('ui')
+    const next = { ...before, fontScalePercent: 125 }
+    let confirm!: () => void
+    const confirmed = new Promise<void>(resolve => { confirm = resolve })
+    const execute = owner.remoteControl.registry.execute.bind(owner.remoteControl.registry)
+    vi.spyOn(owner.remoteControl.registry, 'execute').mockImplementationOnce(async (...args) => {
+      await confirmed
+      return execute(...args)
+    })
+    const pending = call('uiSettings.save', { value: next })
+    await Promise.resolve()
+    expect(cache.read('ui')).toEqual(before)
+    confirm()
+    expect(await pending).toMatchObject({ ok: true, value: { ok: true } })
+    expect(cache.read('ui')).toEqual(next)
+    const persisted = JSON.parse(readFileSync(join(stateRoot, 'config', 'config.json'), 'utf8'))
+    expect(persisted.ui).toEqual(next)
+
+    const save = vi.spyOn(owner.configStore, 'saveSection').mockReturnValueOnce({ ok: false, code: 'config-latched', detail: 'fixture refusal' })
+    const publish = vi.spyOn(cache, 'update')
+    expect(await call('uiSettings.save', { value: { ...next, fontScalePercent: 130 } }))
+      .toMatchObject({ ok: true, value: { ok: false } })
+    expect(cache.read('ui')).toEqual(next)
+    expect(publish).not.toHaveBeenCalled()
+    save.mockRestore()
+
+    const edited = { ...next, fontScalePercent: 135 }
+    const configFile = join(stateRoot, 'config', 'config.json')
+    writeFileSync(configFile, JSON.stringify({ ...persisted, ui: edited }))
+    const modified = new Date(Date.now() + 2_000)
+    utimesSync(configFile, modified, modified)
+    expect(cache.read('ui')).toEqual(next)
+    expect(await call('uiSettings.get', {})).toMatchObject({ ok: true, value: { ok: true, value: edited } })
+    expect(cache.read('ui')).toEqual(edited)
+  })
+
+  it('passes serializable snap-in descriptors to the native menu', () => {
+    const hub = hubUnderTest()
+    const api = (orchestratorOf(hub) as { api: OrchestratorApi }).api
+    const descriptors = api.snapinDefinitions()
+    expect(descriptors.length).toBeGreaterThan(0)
+    expect(structuredClone(descriptors)).toEqual(descriptors)
+    for (const descriptor of descriptors) expect(Object.keys(descriptor).sort()).toEqual(['kind', 'title'])
+  })
+
+  it('closes the orchestration media owner when native quit begins', async () => {
+    const hub = hubUnderTest()
+    const api = (orchestratorOf(hub) as { api: OrchestratorApi }).api
+    hub.beginQuit()
+    await expect(api.mediaOpen({ requestId: 'after-quit', resourceId: 'resource', version: 'v1', offset: 0, length: 1 }))
+      .rejects.toThrow('File media is stopping')
+  })
+
+  it.each(['registry', 'control'] as const)('publishes confirmed UI values through the direct %s entry', async entry => {
+    const hub = hubUnderTest()
+    const cache = (hub as unknown as { configCache: ConfigSectionsCache }).configCache
+    const owner = orchestratorOf(hub) as { api: OrchestratorApi; configStore: ConfigStore; remoteControl: RemoteControl }
+    const nativeCall = vi.spyOn(owner.api, 'controlExecute')
+    const publish = vi.spyOn(cache, 'update')
+    let sequence = 0
+    const execute = entry === 'registry' ? owner.remoteControl.registry : owner.remoteControl
+    const call = (operation: string, body: unknown) => execute.execute({
+      protocol: RemoteControlConst.protocol, requestId: `request-${++sequence}`,
+      ...(operation === 'uiSettings.save' ? { operationId: `operation-${sequence}` } : {}), operation, body,
+    }, { callerId: 'local-cli:fixture', callerKind: 'local-cli', allowedOperations: ['uiSettings.get', 'uiSettings.save'] })
+    const next = { ...cache.read('ui'), fontScalePercent: 125 }
+    expect(await call('uiSettings.save', { value: next })).toMatchObject({ ok: true })
+    expect(cache.read('ui')).toEqual(next)
+    expect(publish).toHaveBeenCalledTimes(1)
+    publish.mockClear()
+    const save = vi.spyOn(owner.configStore, 'saveSection').mockReturnValueOnce({ ok: false, code: 'config-latched', detail: 'fixture refusal' })
+    expect(await call('uiSettings.save', { value: { ...next, fontScalePercent: 130 } })).toMatchObject({ ok: false })
+    expect(publish).not.toHaveBeenCalled()
+    expect(cache.read('ui')).toEqual(next)
+    save.mockRestore()
+    const configFile = join(stateRoot, 'config', 'config.json')
+    const persisted = JSON.parse(readFileSync(configFile, 'utf8'))
+    const edited = { ...next, fontScalePercent: 135 }
+    writeFileSync(configFile, JSON.stringify({ ...persisted, ui: edited }))
+    const modified = new Date(Date.now() + 2_000)
+    utimesSync(configFile, modified, modified)
+    expect(await call('uiSettings.get', {})).toMatchObject({ ok: true, value: edited })
+    expect(cache.read('ui')).toEqual(edited)
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(nativeCall).not.toHaveBeenCalled()
+  })
+
   describe('the IPC contract', () => {
     it('gives every channel of the contract exactly one owning service', () => {
-      const owned = Object.keys(AppHub.ipcChannelsConst)
+      const owned = Object.keys(MainHub.ipcChannelsConst)
       const services = [
         ServiceShellIpc.channelsConst,
         ServiceRemarkableIpc.channelsConst,
         ServiceTabsIpc.channelsConst,
+        ServiceTabRequestsIpc.channelsConst,
+        ServiceFileViewerIpc.channelsConst,
+        ServiceFileViewerShellIpc.channelsConst,
       ]
 
       expect(owned.length).toBe(new Set(owned).size)
@@ -1371,9 +1713,7 @@ describe('app-client-ui/app/appHub', () => {
     // A channel claimed twice reaches only whichever service registered second, and the first
     // silently handles nothing. The merge is what makes that loud, and it names the channel.
     it('refuses two services that claim the same channel', () => {
-      const merge = (AppHub as unknown as {
-        mergedChannelsOf(tables: readonly Record<string, true>[]): unknown
-      }).mergedChannelsOf
+      const merge = ServiceChannels.merge
 
       expect(() => merge([{ 'app:info': true }, { 'app:info': true }]))
         .toThrow('Two IPC services claim the same channel: app:info')

@@ -192,6 +192,7 @@ class AppClientStub {
     // `satisfies`, like the preload: a channel added to the bridge without a stub here is a
     // compile error, instead of every mount throwing into an unhandled rejection at run time.
     const bridge = {
+      perf: { batch: async () => ({ ok: true as const, value: undefined }) },
       appInfo: () => Promise.resolve({
         ok: true as const,
         value: {
@@ -336,6 +337,7 @@ class AppClientStub {
       // The workspace shell reaches none of it: the bridge is one superset for both documents.
       debug: {
         sectionActive: () => Promise.resolve({ ok: true as const, value: undefined }),
+        blockLoop: () => Promise.resolve({ ok: false as const, error: 'debug.blockLoop requires --smoke' }),
       },
       versioning: {
         revertCommitFile: async () => { throw new Error('unused') },
@@ -378,6 +380,7 @@ class AppClientStub {
         restore: () => { throw new Error('No test of the shell restores a file') },
         text: () => { throw new Error('No test of the shell reads file text') },
         version: () => { throw new Error('No test of the shell polls a file version') },
+        toggleTask: () => { throw new Error('No test of the shell toggles a task') },
         chunk: () => { throw new Error('No test of the shell reads file bytes') },
         rootDirectory: (sessionId) => {
           return Promise.resolve({
@@ -1538,22 +1541,6 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       .toEqual([{ sessionId: 's-working', path: 'D:/reports/nightly-logs' }]))
   })
 
-  it('uses a UUID for every probe opened in a holder', async () => {
-    const first = '00000000-0000-4000-8000-000000000001'
-    const second = '00000000-0000-4000-8000-000000000002'
-    const randomUUID = vi.spyOn(crypto, 'randomUUID')
-      .mockReturnValueOnce(first)
-      .mockReturnValueOnce(second)
-    const { client, view } = await mountHolder()
-
-    client.run('debug.newProbe')
-    client.run('debug.newProbe')
-
-    expect(randomUUID).toHaveBeenCalledTimes(2)
-    await waitFor(() => expect(view.container.textContent).toContain('Lifecycle Probe 2'))
-    expect(view.container.textContent).toContain('Lifecycle Probe 1')
-  })
-
   it('reports renderer readiness only after dockview requested its stored layout', async () => {
     const { client } = await mount({ sidebars: null, failed: false })
 
@@ -1995,7 +1982,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
       .toBe('Dirty worktree')
   })
 
-  it('requests Session actions from an ended worktree row on its first click', async () => {
+  it('requests Session actions from an ended worktree row on its confirming second click', async () => {
     const client = new AppClientStub(
       { sidebars: null, failed: false },
       false,
@@ -2022,6 +2009,10 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     if (!(finish instanceof HTMLElement)) throw new Error('The row offered no Finish action')
 
     fireEvent.click(finish)
+    expect(control).not.toHaveBeenCalledWith('sessions.finishWorktree', expect.anything())
+    const confirm = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Finish?')
+    if (!(confirm instanceof HTMLElement)) throw new Error('The row did not arm its Finish')
+    fireEvent.click(confirm)
 
     await waitFor(() => expect(control).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-dirty' }))
     expect(control).toHaveBeenCalledWith('sessions.finishWorktree', {

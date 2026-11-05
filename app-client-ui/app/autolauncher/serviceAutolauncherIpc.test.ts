@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import type { WebContents } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,7 +8,7 @@ import type {
   IpcResult,
 } from '../../shared/appClientUiIpc'
 import type { AutolauncherResult, AutolauncherSnapshot } from '../../shared/autolauncher'
-import { AutolauncherManager } from './autolauncherManager'
+import { AutolauncherManager } from '../../../app-orchestrator/app/autolauncher/autolauncherManager'
 import { ServiceAutolauncherIpc } from './serviceAutolauncherIpc'
 
 const electronMock = vi.hoisted(() => ({
@@ -46,7 +47,7 @@ describe('app-client-ui/app/autolauncher/serviceAutolauncherIpc', () => {
     const enable = vi.spyOn(manager, 'enable').mockResolvedValue({ ok: true, snapshot })
     const disable = vi.spyOn(manager, 'disable').mockResolvedValue({ ok: true, snapshot })
     const acceptsRenderer = vi.fn((sender: WebContents) => sender === acceptedSender)
-    new ServiceAutolauncherIpc(manager, acceptsRenderer).initialize()
+    bindService(new ServiceAutolauncherIpc(manager, acceptsRenderer)).initialize()
     return { get, enable, disable, inspect, acceptsRenderer }
   }
 

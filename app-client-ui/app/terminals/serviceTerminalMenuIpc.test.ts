@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,6 +16,7 @@ import type { AppClientUiIpcInvokeMap } from '../../shared/appClientUiIpc'
 import type { ServiceTerminalIpc } from './serviceTerminalIpc'
 import { TerminalDetectorLimits } from '../../../lib-orchestrator/terminalDetector/terminalDetectorLimits'
 import { ServiceTerminalMenuIpc } from './serviceTerminalMenuIpc'
+import { VsCodeWorkspace } from './vsCodeWorkspace'
 
 const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
@@ -91,6 +93,8 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
   let attachOwner: FakeSender
   let editorOpens: string[]
   let editorRefusal: string | null
+  let viewer: FileViewer
+  let sessions: SessionManager
 
   async function root(prefix: string): Promise<string> {
     const path = await realpath(await mkdtemp(join(tmpdir(), prefix)))
@@ -127,7 +131,7 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
         requestId.startsWith('request') ? hits.get(detectionId) ?? null : null,
       markOpened: (path: string, kind: string) => markedOpen.push({ path, kind }),
     } as unknown as TerminalDetector
-    const sessions = {
+    sessions = {
       workingContext: (sessionId: string) => Promise.resolve(sessionId === 'session-gone'
         ? { ok: false as const, code: 'unknown-session', detail: 'no such session' }
         : sessionId === 'session-worktree'
@@ -143,24 +147,27 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
       snapshot: () => ({ sessions: [{ sessionId: 'session-worktree', svnAction: { mergeBrief: join(workspace, 'a1-merge.md') } }, { sessionId: 'session-1' }] }),
     } as unknown as SessionManager
     const terminals = {
-      ownsAttach: (sender: WebContents, attachId: string) =>
-        attachId === 'a1' && sender === attachOwner.asSender(),
-      sessionOfAttach: (attachId: string) => attachId === 'a1' ? attachSession : null,
+      authorize: async (sender: WebContents, attachId: string) => {
+        if (sender !== attachOwner.asSender()) throw new Error(`Terminal attach is not owned by this renderer: ${attachId}`)
+        return attachId === 'a1' ? attachSession : null
+      },
     } as unknown as ServiceTerminalIpc
-    new ServiceTerminalMenuIpc(
-      detector,
-      new FileViewer(),
-      sessions,
+    viewer = new FileViewer()
+    bindService(new ServiceTerminalMenuIpc(
+      { detect: (...args) => detector.detect(...args), pathOf: async (...args) => detector.pathOf(...args), markOpened: (...args) => detector.markOpened(...args) },
+      viewer,
+      { workingContext: (...args) => sessions.workingContext(...args), conflictRootOf: (...args) => sessions.conflictRootOf(...args), snapshot: async () => sessions.snapshot() },
       terminals,
       (sender) => sender === owner.asSender() ? 'window-1' : null,
       { open: async (path: string) => {
         editorOpens.push(path)
         return editorRefusal === null ? { ok: true as const, closed: Promise.resolve() } : { ok: false as const, detail: editorRefusal }
       } },
-    ).initialize()
+    )).initialize()
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })))
   })
 
@@ -186,6 +193,72 @@ describe('app-client-ui/app/terminals/serviceTerminalMenuIpc', () => {
   it('registers a handler for every channel it declares', () => {
     expect([...electronMock.handlers.keys()].sort())
       .toEqual(Object.keys(ServiceTerminalMenuIpc.channelsConst).sort())
+  })
+
+  it.each(['terminal:menu-open-file', 'terminal:menu-open-conflict-file', 'terminal:menu-open-merge-brief'] as const)(
+    'discards a late grant from %s without revoking its replacement', async channel => {
+      await writeFile(join(workspace, 'notes.md'), '# Notes')
+      await writeFile(join(workspace, 'a1-merge.md'), '# Merge')
+      await detect(owner)
+      hits.set('d1', { sessionId: 'session-1', path: join(workspace, 'notes.md'), kind: 'file', line: null, opensExternally: false })
+      let release!: () => void
+      let started!: () => void
+      const blocked = new Promise<void>(resolve => { release = resolve })
+      const entered = new Promise<void>(resolve => { started = resolve })
+      const original = viewer.openDetected.bind(viewer)
+      vi.spyOn(viewer, 'openDetected').mockImplementationOnce(async (...args) => {
+        started()
+        await blocked
+        return original(...args)
+      })
+      const released = vi.spyOn(viewer, 'releaseGrant')
+      let args: unknown[]
+      if (channel === 'terminal:menu-open-file') args = [requestIdConst, 'd1']
+      else if (channel === 'terminal:menu-open-conflict-file') args = ['session-update', 'notes.md']
+      else if (channel === 'terminal:menu-open-merge-brief') args = ['session-worktree']
+      else throw new Error(`Unexpected channel: ${channel}`)
+      const pending = invoke(channel, owner, ...args)
+      await entered
+      owner.fire('did-start-navigation', {}, '', false, true)
+      const replacement = await viewer.openWorkspace('window-1', 'session-1', workspace, 'notes.md')
+      if (!replacement.ok) throw new Error(replacement.detail)
+      release()
+      expect(await pending).toEqual({ ok: false, error: 'The renderer is no longer available' })
+      expect(released).toHaveBeenCalledTimes(1)
+      expect(await viewer.text('window-1', released.mock.calls[0][1])).toMatchObject({ ok: false, code: 'document-expired' })
+      expect(await viewer.text('window-1', replacement.value.documentId)).toMatchObject({ ok: true, text: '# Notes' })
+      expect(markedOpen).toEqual([])
+    },
+  )
+
+  it('does not register a detected directory after its caller reloads during realpath', async () => {
+    await detect(owner)
+    hits.set('d1', { sessionId: 'session-1', path: workspace, kind: 'directory', line: null, opensExternally: false })
+    const pending = invoke('terminal:menu-open-directory', owner, requestIdConst, 'd1')
+    owner.fire('did-start-navigation', {}, '', false, true)
+    expect(await pending).toEqual({ ok: false, error: 'The renderer is no longer available' })
+    expect(markedOpen).toEqual([])
+  })
+
+  it('does not open a project or conflict editor after its caller reloads during context reads', async () => {
+    const project = invoke('terminal:menu-open-project-vscode', owner, 'session-1')
+    owner.fire('did-start-navigation', {}, '', false, true)
+    expect(await project).toEqual({ ok: false, error: 'The renderer is no longer available' })
+    const conflict = invoke('terminal:menu-open-conflict-editor', owner, 'session-update', 'notes.md')
+    owner.fire('did-start-navigation', {}, '', false, true)
+    expect(await conflict).toEqual({ ok: false, error: 'The renderer is no longer available' })
+    expect(launcherMock.opens).toEqual([])
+    expect(editorOpens).toEqual([])
+  })
+
+  it('checks the caller again when asynchronous workspace selection reaches the launcher', async () => {
+    vi.spyOn(VsCodeWorkspace, 'open').mockImplementationOnce(async launcher => {
+      owner.fire('did-start-navigation', {}, '', false, true)
+      launcher.open(workspace, null)
+    })
+    expect(await invoke('terminal:menu-open-project-vscode', owner, 'session-1'))
+      .toEqual({ ok: false, error: 'The renderer is no longer available' })
+    expect(launcherMock.opens).toEqual([])
   })
 
   it('detects for the renderer that owns the attach and derives the session itself', async () => {

@@ -6,7 +6,7 @@ export class HostWireConst {
    * sees 1, and refuses loudly instead of half-working.
    */
   static readonly protocolMajor = 1
-  static readonly protocolMinor = 1
+  static readonly protocolMinor = 2
 
   static readonly capabilities = [
     'controller-lease.v1',
@@ -20,6 +20,7 @@ export class HostWireConst {
     'terminal.replay.v1',
     'terminal.screen.v1',
     'terminal.snapshot.v1',
+    'terminal.snapshot-stream.v1',
   ] as const
 
   static readonly runtimeChannels = ['production', 'development'] as const
@@ -48,6 +49,7 @@ export class HostWireConst {
   } as const
 
   static readonly maxInputBytes = 4_096
+  static readonly maxSnapshotFrameBytes = 64 * 1_024
   static readonly maxOpBodyBytes = 64 * 1_024
   static readonly maxControllerLeaseTtlMs = 30_000
   static readonly defaultControllerLeaseTtlMs = 15_000
@@ -334,13 +336,24 @@ export type HostWsClientMsg =
       sinceSeq?: number
       cols?: number
       rows?: number
+      snapshotStreamId?: string
     }
+  | { type: 'terminal.snapshot-next'; streamId: string; index: number }
   | { type: 'terminal.detach' }
   | { type: 'terminal.input'; data: string }
   | { type: 'terminal.resize'; cols: number; rows: number }
   | { type: 'events.subscribe'; afterRevision?: number }
 
-export type HostWsServerMsg =
+export type TerminalSnapshotHeader = Pick<TerminalProjectionSnapshot,
+  'runtimeSessionId' | 'generation' | 'outputEpoch' | 'outputSeq' | 'cols' | 'rows' | 'alive' | 'lastOutputAt'>
+
+export type TerminalSnapshotFrame =
+  | { type: 'terminal.snapshot-start'; streamId: string; index: number; reset: boolean; projection: TerminalSnapshotHeader }
+  | { type: 'terminal.snapshot-chunk'; streamId: string; index: number; data: string }
+  | { type: 'terminal.snapshot-end'; streamId: string; index: number }
+
+export type HostWsServerMsg = TerminalSnapshotFrame
+  | { type: 'terminal.snapshot-complete'; streamId: string }
   | { type: 'terminal.attached'; writer: boolean; session: RuntimeSessionInfo }
   | { type: 'terminal.snapshot'; projection: TerminalProjectionSnapshot }
   | {

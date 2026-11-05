@@ -2,30 +2,37 @@ import type { WebContents } from 'electron'
 
 import type { WindowAppearance, WindowInfo } from '../../shared/windowInfo'
 import type { ClientStateStore } from '../clientState/clientStateStore'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import { ElectronServiceIpcBase } from './electronServiceIpcBase'
 import { WindowAppearanceRules } from './windowAppearance'
 import { WindowIcon } from './windowIcon'
 import type { WorkspaceWindows } from './workspaceWindows'
 
 /** Renderer identity and the appearance mutation authorized to that renderer's own window. */
-export class ServiceWindowsIpc extends ServiceIpcBase<typeof ServiceWindowsIpc.channelsConst> {
+export class ServiceWindowsIpc extends ElectronServiceIpcBase<typeof ServiceWindowsIpc.channelsConst> {
   static readonly channelsConst = {
     'shell:window-info': true,
     'window:save-appearance': true,
   } as const
 
+  private readonly windows: WorkspaceWindows
+  private readonly store: ClientStateStore
+  private readonly onAppearanceChanged: () => void
+
   constructor(
-    private readonly windows: WorkspaceWindows,
-    private readonly store: ClientStateStore,
-    private readonly onAppearanceChanged: () => void = () => undefined,
+    windows: WorkspaceWindows,
+    store: ClientStateStore,
+    onAppearanceChanged: () => void = () => undefined,
   ) {
     super()
+    this.windows = windows
+    this.store = store
+    this.onAppearanceChanged = onAppearanceChanged
   }
 
   initialize(): void {
-    this.register('shell:window-info', (event) => this.infoOf(event.sender))
+    this.register('shell:window-info', (event) => this.infoOf(this.sender(event)))
     this.register('window:save-appearance', (event, appearance) =>
-      this.saveAppearance(event.sender, appearance))
+      this.saveAppearance(this.sender(event), appearance))
     this.assertComplete(ServiceWindowsIpc.channelsConst)
   }
 

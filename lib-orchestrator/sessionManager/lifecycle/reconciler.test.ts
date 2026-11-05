@@ -294,7 +294,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
   })
 
   describe('an install nobody waits for', () => {
-    // `mintSetup` and `rearmSetup` write the install first and arm the waiting record second, so a
+    // `SetupFlow.restart` writes the install first and arms the waiting record second, so a
     // crash between the two leaves an install `starting` under its own pending pair with no owner
     // holding it. Replaying that runs `pnpm install` in a worktree nothing is waiting on, and
     // nothing will ever judge its exit code: `setupJudgement` is asked by the owner, and there is

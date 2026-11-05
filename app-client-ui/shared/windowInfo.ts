@@ -1,4 +1,4 @@
-export type WindowRole = 'main' | 'holder'
+export type { WindowRole, WindowAppearance, WindowInfo } from '../../lib-orchestrator/clientApi/windowInfo.types'
 
 /**
  * What a window's name and colour may be. Both ends of this wire have to agree: the card offers
@@ -12,12 +12,3 @@ export class WindowAppearanceLimits {
   static readonly colorPattern = /^#[0-9a-f]{6}$/i
 }
 
-export interface WindowAppearance {
-  name: string | null
-  color: string | null
-}
-
-export interface WindowInfo extends WindowAppearance {
-  windowId: string
-  role: WindowRole
-}

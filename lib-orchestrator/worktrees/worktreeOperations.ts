@@ -13,7 +13,7 @@ import { SvnStepRunner, type SvnStepRunnerDeps } from './svnStepRunner'
 import type { WorktreeSvnCommands } from './worktreeSvnCommands'
 
 export interface WorktreeOperationsDeps extends Pick<SvnStepRunnerDeps, 'records' | 'scripts' | 'now' | 'newId' | 'changed'>,
-  Pick<FinishDriverDeps, 'results' | 'handoffs' | 'busyReason' | 'holdInput'> {
+  Pick<FinishDriverDeps, 'results' | 'handoffs' | 'busyReason' | 'terminals' | 'perf'> {
   svn: SvnWorktreeManager
   commands: WorktreeSvnCommands
   resolver: SvnActionFlowDeps['resolver']

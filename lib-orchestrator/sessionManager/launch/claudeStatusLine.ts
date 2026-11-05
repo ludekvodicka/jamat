@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { IdentityReceiptFile } from './identityReceiptFile'
 import type { RunTools } from './runTools'
 
 /** What a Claude settings file says about the status line, as far as a relay has to repeat it. */
@@ -111,8 +112,6 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
   private static readonly unsafeWrapperCharactersConst = /["%\r\n]/
   /** A session or conversation id: it becomes a file name and a word of the status line command. */
   private static readonly idPatternConst = /^[0-9A-Za-z-]{1,64}$/
-  /** A receipt is a few hundred bytes; a larger file is not one. */
-  private static readonly receiptBytesConst = 8192
 
   private readonly directory: string
   private readonly snapshots: string
@@ -122,6 +121,7 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
   private readonly platform: NodeJS.Platform
   private readonly report: (message: string) => void
   private readonly reported = new Set<string>()
+  private readonly receipts = new IdentityReceiptFile()
 
   constructor(options: {
     directory: string
@@ -179,13 +179,12 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
    * The conversation the relay last saw Claude run for this Jamat session in this launch generation,
    * or null: no receipt yet, a receipt of another generation, or one that is malformed (reported once).
    */
-  identity(sessionId: string, launchId: string): { nativeSessionId: string; sequence: number } | null {
+  async identity(sessionId: string, launchId: string): Promise<{ nativeSessionId: string; sequence: number } | null> {
     if (!ClaudeStatusLine.idPatternConst.test(sessionId)) return null
     const file = join(this.identities, `${sessionId}.json`)
     try {
-      if (!existsSync(file)) return null
-      if (statSync(file).size > ClaudeStatusLine.receiptBytesConst) throw new Error('Identity receipt exceeds 8 KiB')
-      const receipt = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown> | null
+      const receipt = await this.receipts.read(file) as Record<string, unknown> | null
+      if (receipt === null) return null
       const nativeSessionId = receipt?.['nativeSessionId']
       const sequence = receipt?.['sequence']
       if (receipt?.['schemaVersion'] !== 1 || receipt['jamatSessionId'] !== sessionId || typeof receipt['launchId'] !== 'string'

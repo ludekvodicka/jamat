@@ -2,9 +2,10 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { writeFileSync } from 'node:fs'
-import { link, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises'
+import { readFile, realpath, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { setTimeout } from 'node:timers/promises'
+import { ImmutableFileLease } from '../shared/immutableFileLease'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { RemoteControlInstanceRegistry } from '../remoteControl/remoteControlInstanceRegistry'
 import type { CommandRunner } from '../shared/commandInvoker.types'
@@ -63,52 +64,10 @@ export class WorktreeLease {
     { ok: true; release(): Promise<void> } | { ok: false; heldBy: WorktreeLeaseFile }> {
     const file = WorktreeLease.fileOf(root)
     await this.assertNoWriter(file, checkedWriter)
-    await mkdir(dirname(file), { recursive: true })
     const processBirth = await WorktreeLease.ownBirth()
     const lease: WorktreeLeaseFile = { instanceId: this.instanceId, pid: process.pid, processBirth, purpose, takenAt: Date.now(), token: randomUUID() }
-    const candidate = `${file}.${lease.token}.candidate`
-    await writeFile(candidate, JSON.stringify(lease), { encoding: 'utf8', flag: 'wx' })
-    try {
-      try { await link(candidate, file) }
-      catch (error) {
-        if (ErrnoCode.of(error) !== 'EEXIST') throw error
-        const previous = await WorktreeLease.read(file)
-        if (previous === null) throw new Error('The lease owner disappeared; retry acquisition')
-        let holder = previous
-        // Immutable claims serialize retirement without an ownerless lock creation window.
-        const seen = new Set<string>()
-        for (;;) {
-          if (seen.has(holder.token) || seen.size >= 64) throw new Error('Invalid lease takeover chain; takeover is refused')
-          seen.add(holder.token)
-          if (await this.ownerAlive(holder))
-            return { ok: false, heldBy: holder }
-          await this.assertNoWriter(file, checkedWriter)
-          const claim = `${file}.${holder.token}.takeover`
-          try { await link(candidate, claim); break }
-          catch (claimError) {
-            if (ErrnoCode.of(claimError) !== 'EEXIST') throw claimError
-            const next = await WorktreeLease.read(claim)
-            if (next === null) throw new Error('The lease takeover evidence disappeared')
-            holder = next
-          }
-        }
-        const latest = await WorktreeLease.read(file)
-        if (latest !== null && latest.token !== previous.token) return { ok: false, heldBy: latest }
-        if (latest !== null) await WorktreeLease.removeFile(file, previous.token)
-        try { await link(candidate, file) }
-        catch (installError) {
-          if (ErrnoCode.of(installError) !== 'EEXIST') throw installError
-          const installed = await WorktreeLease.read(file)
-          if (installed === null) throw new Error('The lease owner disappeared during takeover')
-          return { ok: false, heldBy: installed }
-        }
-      }
-      let releasing: Promise<void> | undefined
-      return { ok: true, release: () => releasing ??= (async () => {
-        const latest = await WorktreeLease.read(file)
-        if (latest?.token === lease.token) await WorktreeLease.removeFile(file, lease.token)
-      })() }
-    } finally { await WorktreeLease.removeFile(candidate) }
+    return ImmutableFileLease.take(file, lease, { read: WorktreeLease.read,
+      alive: owner => this.ownerAlive(owner), beforeTakeover: () => this.assertNoWriter(file, checkedWriter) })
   }
 
   private async assertNoWriter(file: string, checkedWriter?: string): Promise<void> {
@@ -205,11 +164,12 @@ export class WorktreeLease {
     }
   }
 
+  // Probes run from the OS temp directory: an inherited working directory inside a worktree kept it open after an orphaned probe outlived its caller (Jamat 098).
   private static async machineSvnProcesses(): Promise<number[]> {
     const output = await new Promise<string>((accept, reject) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process -Filter \"Name='svn.exe'\" | Select-Object -ExpandProperty ProcessId) | ConvertTo-Json -Compress"],
     // A CIM query under load has taken more than 5 s here, the same budget as the Host's descendant query.
-    { windowsHide: true, timeout: 10_000 }, (error, stdout) => error === null ? accept(stdout) : reject(error)))
+    { windowsHide: true, timeout: 10_000, cwd: tmpdir() }, (error, stdout) => error === null ? accept(stdout) : reject(error)))
     const active: unknown = output.trim() === '' ? [] : JSON.parse(output)
     if (typeof active === 'number') return [active]
     if (!Array.isArray(active) || active.some((pid) => !Number.isSafeInteger(pid)))
@@ -243,7 +203,7 @@ export class WorktreeLease {
     if (!windows && process.platform !== 'darwin') throw new Error('Process birth identity is unavailable on this platform')
     const output = await new Promise<string>((accept, reject) => execFile(windows ? 'powershell.exe' : 'ps', windows
       ? ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; (Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks.ToString()`]
-      : ['-p', String(pid), '-o', 'lstart='], { windowsHide: true, timeout: 5000 },
+      : ['-p', String(pid), '-o', 'lstart='], { windowsHide: true, timeout: 5000, cwd: tmpdir() },
     (error, stdout) => error === null ? accept(stdout.trim()) : reject(error)))
     if (output.length === 0) throw new Error('Cannot read process birth identity')
     return output
@@ -280,17 +240,7 @@ export class WorktreeLease {
   }
 
   private static async removeFile(file: string, token?: string): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        if (token !== undefined && (await WorktreeLease.read(file))?.token !== token) return
-        await unlink(file)
-        return
-      } catch (error) {
-        if (ErrnoCode.of(error) === 'ENOENT') return
-        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(ErrnoCode.of(error) ?? '') || attempt >= 5) throw error
-        await setTimeout(20 * 2 ** attempt)
-      }
-    }
+    await ImmutableFileLease.remove(file, WorktreeLease.read, token)
   }
 
   private static async read(file: string): Promise<WorktreeLeaseFile | null> {

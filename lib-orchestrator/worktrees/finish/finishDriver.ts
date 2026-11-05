@@ -244,7 +244,7 @@ export class FinishDriver {
             return { ok: false, code: 'review-stale', detail: reason }
           }
           const findings = press.selection.length === 0 || press.repositories !== undefined ? []
-            : SvnCommitMessageCheck.blocking(press.message ?? '', press.messageSource ?? 'unknown', press.acknowledgedFindings ?? [])
+            : SvnCommitMessageCheck.blocking(press.message ?? '')
           if (findings.length > 0)
             return { ok: false, code: 'message-unchecked', detail: findings.map(SvnCommitMessageCheck.wordOf).join('; ') }
           if (press.reviewVersion === undefined) return { ok: false, code: 'review-stale', detail: 'Open the current review before approving it' }

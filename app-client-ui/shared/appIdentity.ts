@@ -12,7 +12,6 @@
  */
 export class AppIdentity {
   static readonly nameConst = 'Jamat V3'
-  static readonly debugNameConst = `${AppIdentity.nameConst} Debug`
 
   /** Null is a window with no name of its own, which wears the application's. */
   static titleOf(windowName: string | null): string {

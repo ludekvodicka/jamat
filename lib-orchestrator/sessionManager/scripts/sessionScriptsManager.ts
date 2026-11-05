@@ -3,7 +3,6 @@ import type { HostClient } from '../../hostClient/hostClient'
 import { ErrorText } from '../../shared/errorText'
 import { LaunchBackoff } from '../lifecycle/launchBackoff'
 import { OperationOutcomes } from '../lifecycle/operationOutcomes'
-import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import type {
   SessionRecord,
   SessionRecordLaunchWait,
@@ -66,6 +65,32 @@ type ScriptRows =
   | { ok: true; rows: readonly string[] }
   | { ok: false; reason: string }
 
+/** The last `ScriptLogText.maxBytesConst` bytes of a local run's output, cut on a UTF-8 character boundary. */
+class LocalOutputTail {
+  private readonly chunks: Buffer[] = []
+  private bytes = 0
+  truncated = false
+
+  append(text: string): void {
+    const chunk = Buffer.from(text, 'utf8')
+    this.chunks.push(chunk)
+    this.bytes += chunk.length
+    const max = ScriptLogText.maxBytesConst
+    if (this.bytes <= max) return
+    this.truncated = true
+    while (this.bytes - this.chunks[0]!.length >= max) this.bytes -= this.chunks.shift()!.length
+    const first = this.chunks[0]!
+    let start = this.bytes - max
+    while (start < first.length && (first[start]! & 0xc0) === 0x80) start += 1
+    this.chunks[0] = first.subarray(start)
+    this.bytes -= start
+  }
+
+  get text(): string {
+    return Buffer.concat(this.chunks, this.bytes).toString('utf8')
+  }
+}
+
 /**
  * Every script run from its end to its history: the log saved off the Host's dead runtime, the entry
  * written on the parent, and the record removed once nothing names the run any more. What decides
@@ -115,9 +140,9 @@ export class SessionScriptsManager {
     const startedAt = this.now()
     const phase = options.phase ?? 'after'
     const scriptId = options.scriptId ?? 'declared'
-    const local = { parentId, text: '', info: { runId, phase, scriptId,
+    const tail = new LocalOutputTail()
+    const local = { parentId, get text() { return tail.text }, info: { runId, phase, scriptId,
       name: title, title, state: 'running' as const, summary: title, startedAt, commands: options.commands ?? [], row: false, log: 'none' as const } }
-    let truncated = false
     let pendingSave: Promise<void> | null = null
     let needsSave = false
     const save = (): void => {
@@ -146,14 +171,10 @@ export class SessionScriptsManager {
     let succeeded = false
     let exitCode: number | undefined
     try {
+      // The output is not in the snapshot, so a chunk saves the log and recomposes nothing.
       const result = await work((text) => {
-        const bytes = Buffer.from(local.text + text, 'utf8')
-        truncated ||= bytes.length > ScriptLogText.maxBytesConst
-        let start = Math.max(0, bytes.length - ScriptLogText.maxBytesConst)
-        while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start += 1
-        local.text = bytes.subarray(start).toString('utf8')
+        tail.append(text)
         save()
-        changed()
       })
       succeeded = result.ok
       exitCode = result.exitCode
@@ -166,7 +187,7 @@ export class SessionScriptsManager {
         if (!saved.ok && options.durable) throw new Error(`The local command log could not be saved: ${saved.detail}`)
         const completed: SessionRecordScriptRun = { ...entry, endedAt, exitCode,
           outcome: succeeded ? 'succeeded' : 'failed', reason: undefined,
-          log: saved.ok ? { state: 'saved', bytes: saved.bytes, truncated }
+          log: saved.ok ? { state: 'saved', bytes: saved.bytes, truncated: tail.truncated }
             : { state: 'unavailable', reason: saved.detail } }
         const written = await this.records.update(parentId, (current) => ({ ...current,
           scriptRuns: (current.scriptRuns ?? []).map((run) => run.runId === runId ? completed : run) }))
@@ -174,7 +195,7 @@ export class SessionScriptsManager {
       } finally {
         this.localRuns.delete(runId)
         const parent = this.records.get(parentId)
-        if (parent === null || SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId)) await this.parentRemoved(parentId)
+        if (parent === null || this.records.endedHistory().has(parent.sessionId)) await this.parentRemoved(parentId)
         else if (!SessionScriptsManager.entryOf(parent, runId)) await this.logs.removeRun(parentId, runId)
         changed()
       }
@@ -191,7 +212,7 @@ export class SessionScriptsManager {
     const link = run?.scriptOf
     if (!run || !link || link.historyExpired === true || (run.life !== 'ended' && run.life !== 'lost')) return false
     const parent = this.records.get(link.sessionId)
-    if (!parent || SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId) || SessionScriptsManager.entryOf(parent, runId)) return false
+    if (!parent || this.records.endedHistory().has(parent.sessionId) || SessionScriptsManager.entryOf(parent, runId)) return false
     // The record is all there is to judge by: an ended run carries the exit code the Host reported.
     const judged = ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(link))
     if (judged.kind === 'running') return false
@@ -237,7 +258,8 @@ export class SessionScriptsManager {
   private async collapseRun(runId: string): Promise<CollapseOutcome> {
     const run = this.records.get(runId)
     const link = run?.scriptOf
-    if (!run || !link || ScriptRunPlanning.liveOrBound(run)) return { kind: 'not-collapsed' }
+    if (!run || !link || ScriptRunPlanning.liveOrBound(run)
+      || ScriptRunPlanning.launchDue(run, this.records.get(link.sessionId))) return { kind: 'not-collapsed' }
     const target = OperationOutcomes.targetOf(run)
     if (target) {
       const removed = await this.host.runtimeRemove(target)
@@ -333,8 +355,8 @@ export class SessionScriptsManager {
    * leave them running. A gated run is not one of them: its gate's own rules judge it.
    */
   async stopWithParent(parentId: string): Promise<void> {
-    for (const run of this.records.list())
-      if (run.scriptOf?.sessionId === parentId && SessionScriptDefinitions.of(run.scriptOf).stopsWithParent
+    for (const run of this.records.runsOf(parentId))
+      if (SessionScriptDefinitions.of(run.scriptOf!).stopsWithParent
         && ScriptRunPlanning.liveOrBound(run) && !run.stopRequested) await this.stopRun(run.sessionId)
   }
 
@@ -344,7 +366,7 @@ export class SessionScriptsManager {
    */
   async cascadeOf(parent: SessionRecord): Promise<{ removeWith: readonly string[] }> {
     const removeWith: string[] = []
-    for (const run of this.records.list().filter((record) => record.scriptOf?.sessionId === parent.sessionId)) {
+    for (const run of this.records.runsOf(parent.sessionId)) {
       const target = OperationOutcomes.targetOf(run)
       if (ScriptRunPlanning.liveOrBound(run)) await this.stopRun(run.sessionId)
       else {
@@ -392,7 +414,7 @@ export class SessionScriptsManager {
     if (parent !== null && SessionScriptDefinitions.awaitsVerdictOf(runId, link, parent))
       return { ok: false, code: 'live-refused', detail: `The script run ${runId} is still being judged for `
         + `session ${link.sessionId}; remove it once its verdict is written` }
-    if (parent !== null && link.historyExpired !== true && !SessionWorkflows.endedHistoryOf(this.records.list()).has(parent.sessionId) && (run.life === 'ended' || run.life === 'lost')) {
+    if (parent !== null && link.historyExpired !== true && !this.records.endedHistory().has(parent.sessionId) && (run.life === 'ended' || run.life === 'lost')) {
       await this.settle(runId)
       if (!SessionScriptsManager.entryOf(this.records.get(link.sessionId) ?? parent, runId))
         return { ok: false, code: 'live-refused', detail: `The output of script run ${runId} is not saved yet, `
@@ -539,9 +561,11 @@ export class SessionScriptsManager {
    * parent removed here, so this only catches what a crash between the two left.
    */
   async sweep(): Promise<void> {
-    if (this.records.latched || !this.records.loadedFromFile) return
+    // An archive that could not be read names no session either, and its records still own logs.
+    if (this.records.latched || !this.records.loadedFromFile || !this.records.archiveRead) return
     try {
-      await this.logs.sweep(new Set(this.records.list().map((record) => record.sessionId)),
+      // An archived record still names its logs.
+      await this.logs.sweep(new Set(this.records.listAll().map((record) => record.sessionId)),
         this.now() - SessionScriptsManager.sweepAgeConst)
     } catch (error) {
       this.report(`The script logs could not be swept: ${ErrorText.of(error)}`)
@@ -592,7 +616,7 @@ export class SessionScriptsManager {
    */
   private runsOf(parent: SessionRecord, requestedCommands: boolean): SessionScriptRunInfo[] {
     const history = parent.scriptRuns ?? []
-    const rows = this.records.list().filter((run) => run.scriptOf?.sessionId === parent.sessionId && run.scriptOf.historyExpired !== true)
+    const rows = this.records.runsOf(parent.sessionId).filter((run) => run.scriptOf!.historyExpired !== true)
     const rowIds = new Set(rows.map((run) => run.sessionId))
     const settledIds = new Set(history.map((entry) => entry.runId))
     const runs = [

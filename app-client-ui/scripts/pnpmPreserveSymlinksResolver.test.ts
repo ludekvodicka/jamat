@@ -1,10 +1,11 @@
 import { dirname, join } from 'node:path'
-import { realpathSync } from 'node:fs'
-import { BuildEnvironment, normalizePath, resolveConfig } from 'vite'
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { BuildEnvironment, normalizePath, optimizeDeps, resolveConfig, type UserConfig } from 'vite'
 
 import { describe, expect, it } from 'vitest'
 
-import { PnpmPreserveSymlinksResolver } from '../electron.vite.config'
+import rendererConfig, { PnpmPreserveSymlinksResolver } from '../electron.vite.config'
 
 interface RecordedResolve {
   path: string
@@ -49,13 +50,13 @@ describe('app-client-ui/scripts/pnpmPreserveSymlinksResolver', () => {
   }
 
   it('hands a transitive import to esbuild from the real pnpm directory of its importer', async () => {
-    const fixtures: readonly (readonly [string, string, string])[] = [
-      ['shiki/dist/langs/typescript.mjs', '@shikijs/langs/typescript', 'shiki@4.4.3'],
-      ['vega/build/vega.module.js', 'vega-util', 'vega@6.4.0'],
-      ['mermaid/dist/mermaid.core.mjs', 'd3', 'mermaid@11.16.1'],
-      ['react-markdown/lib/index.js', 'unified', 'react-markdown@10.1.0'],
+    const fixtures: readonly (readonly [string, string])[] = [
+      ['shiki/dist/langs/typescript.mjs', '@shikijs/langs/typescript'],
+      ['vega/build/vega.module.js', 'vega-util'],
+      ['mermaid/dist/mermaid.core.mjs', 'd3'],
+      ['react-markdown/lib/index.js', 'unified'],
     ]
-    for (const [importer, source, expectedPackage] of fixtures) {
+    for (const [importer, source] of fixtures) {
       const build = installed()
       const full = join(packageRoot, 'node_modules', importer)
 
@@ -63,7 +64,8 @@ describe('app-client-ui/scripts/pnpmPreserveSymlinksResolver', () => {
 
       expect(build.asked).toHaveLength(1)
       expect(build.asked[0].path).toBe(source)
-      expect(build.asked[0].importer).toContain(expectedPackage)
+      expect(build.asked[0].importer).toBe(realpathSync(full))
+      expect(build.asked[0].importer).not.toBe(full)
       expect(build.asked[0].resolveDir).toBe(dirname(build.asked[0].importer))
     }
   })
@@ -106,6 +108,26 @@ describe('app-client-ui/scripts/pnpmPreserveSymlinksResolver', () => {
     expect(build.asked).toHaveLength(0)
   })
 
+  /*
+   * The Usage chart failed in the dev server with `Unrecognized transform type: "formula"`: every
+   * vega package linked vega-dataflow through its own pnpm directory, esbuild bundled one copy per
+   * link, and vega registered its transforms in a copy the parser did not read.
+   */
+  it('bundles a dependency shared by several pnpm packages once', async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'jamat-optimizer-'))
+    try {
+      const renderer = (rendererConfig as { renderer: UserConfig }).renderer
+      const config = await resolveConfig({ ...renderer, configFile: false, cacheDir, logLevel: 'silent',
+        optimizeDeps: { ...renderer.optimizeDeps, include: ['vega', 'vega-lite'], noDiscovery: true } }, 'serve')
+      await optimizeDeps(config, true)
+      const bundled = readdirSync(join(cacheDir, 'deps')).filter((file) => file.endsWith('.js'))
+        .map((file) => readFileSync(join(cacheDir, 'deps', file), 'utf8')).join('\n')
+      expect(bundled.match(/^var transforms\d* = \{\};$/gm)).toHaveLength(1)
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true })
+    }
+  }, 120_000)
+
   it('steps aside when esbuild cannot resolve it either', async () => {
     const build = installed({ errors: [{ text: 'Could not resolve' }] })
     const importer = join(packageRoot, 'node_modules', 'vega', 'build', 'vega.module.js')
@@ -122,14 +144,14 @@ describe('app-client-ui/scripts/pnpmPreserveSymlinksResolver', () => {
     const dependency = join(packageRoot, 'node_modules/vega/build/vega.module.js')
     const resolved = { id: `${dependency}?raw`, moduleSideEffects: false, meta: { fixture: true } }
     const answer = await resolveId.call({ environment: new BuildEnvironment('client', config), resolve: async (id: string) => ({ ...resolved, id }) } as never, 'vega?raw',
-      join(packageRoot, 'renderer/usageWindow/usageChart.tsx'), { attributes: {}, isEntry: false })
+      join(packageRoot, 'renderer/usage/usageChart.tsx'), { attributes: {}, isEntry: false })
     expect(answer).toEqual({ ...resolved, id: `${normalizePath(realpathSync(dependency))}?raw` })
   })
 
   it('preserves application identities and external resolutions', async () => {
     const plugin = PnpmPreserveSymlinksResolver.plugin(), resolveId = plugin.resolveId
     if (typeof resolveId !== 'function') throw new Error('Expected a renderer resolver hook')
-    const application = join(packageRoot, 'renderer/usageWindow/usageChart.tsx')
+    const application = join(packageRoot, 'renderer/usage/usageChart.tsx')
     const config = await resolveConfig({ configFile: false, root: packageRoot,
       resolve: { preserveSymlinks: true, alias: { fixture: application } } }, 'build')
     if (typeof plugin.configResolved !== 'function') throw new Error('Expected renderer resolver initialization')

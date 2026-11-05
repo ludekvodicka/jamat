@@ -28,6 +28,7 @@ import { PathCompare } from '../../shared/pathCompare'
 import { Slug } from '../../shared/slug'
 import type { CommandAgreement } from '../scripts/commandAgreement'
 import { ScriptChain } from '../scripts/scriptChain'
+import { ScriptRunPlanning } from '../scripts/scriptRunPlanning'
 import { FinishScriptsFlow, type FinishChecksGate } from './finishScriptsFlow'
 import { InnerRunFlow } from './innerRunFlow'
 import { ScriptRunLauncher } from './scriptRunLauncher'
@@ -700,7 +701,7 @@ export class SessionLifecycle {
       return { ok: false, code: 'invalid-spec', detail: 'history needs a catalog project' }
     await this.captureProjectConfirmedIds(directory.projectPath)
     const references: SessionHistoryReference[] = []
-    for (const record of this.records.list()) {
+    for (const record of this.records.listAll()) {
       if (!SessionLifecycle.isProjectRecord(record, directory.projectPath)) continue
       const agent = record.agent
       if (!agent?.nativeSessionId) continue
@@ -1593,7 +1594,7 @@ export class SessionLifecycle {
   private async withConfirmedId(record: SessionRecord): Promise<SessionRecord> {
     const agent = record.agent
     if (!agent || !SessionLifecycle.tracksIdentity(record) || this.records.latched) return record
-    const receipt = this.confirmedIdOf(record)
+    const receipt = await this.confirmedIdOf(record)
     if (receipt === null || receipt.sequence <= (agent.identitySequence ?? 0)) return record
     await this.records.update(record.sessionId, (latest) => {
       if (latest.agent?.identityLaunchId !== agent.identityLaunchId || receipt.sequence <= (latest.agent?.identitySequence ?? 0)) return null
@@ -1604,14 +1605,14 @@ export class SessionLifecycle {
   }
 
   /** What the running agent of this launch generation reported, through the witness of its kind. */
-  private confirmedIdOf(record: SessionRecord): { nativeSessionId: string; sequence: number; source: 'codex-app-server' | 'claude-statusline' } | null {
+  private async confirmedIdOf(record: SessionRecord): Promise<{ nativeSessionId: string; sequence: number; source: 'codex-app-server' | 'claude-statusline' } | null> {
     const agent = record.agent!
     if (agent.agentId === 'codex') {
-      const receipt = this.codexSessions.identity(record)
+      const receipt = await this.codexSessions.identity(record)
       return receipt === null ? null : { nativeSessionId: receipt.nativeSessionId, sequence: receipt.sequence, source: 'codex-app-server' }
     }
     else if (agent.agentId === 'claude') {
-      const receipt = this.claudeStatusLine.identity(record.sessionId, agent.identityLaunchId!)
+      const receipt = await this.claudeStatusLine.identity(record.sessionId, agent.identityLaunchId!)
       return receipt === null ? null : { ...receipt, source: 'claude-statusline' }
     }
     else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
@@ -1834,6 +1835,7 @@ export class SessionLifecycle {
     const previous = this.records.get(sessionId)
     if (previous?.life === 'live') await this.withConfirmedId(previous)
     return this.records.update(sessionId, (record) => {
+      if (record.scriptOf !== undefined && ScriptRunPlanning.launchDue(record, this.records.get(record.scriptOf.sessionId))) return null
       const lost: SessionRecord = { ...record, life: 'lost', accountSegments: SessionAccounts.close(record, this.now()), binding: null, pendingOperationId: undefined,
         pendingOperationKind: undefined, launchWait: undefined }
       // Losing the Host does not weaken an earlier request to complete this session.

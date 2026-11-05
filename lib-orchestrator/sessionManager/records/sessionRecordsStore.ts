@@ -1,6 +1,7 @@
 import { WorktreeLifecycleMigration } from '../../worktrees/worktreeLifecycleMigration'
 import { WorktreeStateValidation } from '../../worktrees/worktreeStateValidation'
 import { WorktreePublication } from '../../worktrees/worktreePublication'
+import { SvnStepRunner } from '../../worktrees/svnStepRunner'
 import { JsonShape } from '../../shared/jsonShape'
 import { randomUUID } from 'node:crypto'
 import { copyFile, readdir, unlink } from 'node:fs/promises'
@@ -15,6 +16,7 @@ import type { SessionParentKind, SessionWorktreeKind, SvnLabelledRevision } from
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import { SessionActionHistory } from './sessionActionHistory'
+import { SessionRecordsArchive } from './sessionRecordsArchive'
 import type {
   SessionRecord,
   SessionRecordActionHistory,
@@ -34,7 +36,18 @@ import type {
   SvnActionNotice,
 } from './sessionRecord.types'
 
+/** A staged change: `false` when refused before staging, else the answer of the write that lands it. */
+type Staged = boolean | { landed: Promise<boolean> }
+
+interface QueuedWrite {
+  document: SessionRecordsDocument
+  records: SessionRecord[]
+  effects: (() => Promise<void>)[]
+  landed: ((written: boolean) => void)[]
+}
+
 export interface SessionRecordsStoreOptions {
+  perf?: import('../../perfMonitor/perfSpans').PerfSpans
   snapshotsDirectory: string
   report?: (message: string) => void
   removeSessionLogs?: (sessionId: string, keepIds?: readonly string[]) => Promise<void>
@@ -69,6 +82,24 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private static readonly conflictActorsConst: readonly unknown[] = ['jamat', 'agent', 'merger', 'person']
   private static readonly parentKindsConst: readonly unknown[] = ['worktree', 'ticket', 'worker'] satisfies readonly SessionParentKind[]
   private records: SessionRecord[] = []
+  /** Indexes over `records`, rebuilt with every assignment: compose looks records up per record. */
+  private byId = new Map<string, SessionRecord>()
+  private runsByParent = new Map<string, SessionRecord[]>()
+  private liveRecords: readonly SessionRecord[] = []
+  /**
+   * What every mutation reads and builds on: the records of the file plus the writes still on their
+   * way to it. It equals `records` whenever no write is pending; a write that fails resets it.
+   */
+  private head: SessionRecord[] = []
+  private headById = new Map<string, SessionRecord>()
+  /** Writes staged while another write runs; they land together, in the next write. */
+  private queued: QueuedWrite | null = null
+  private writing: Promise<void> | null = null
+  private static readonly endedCache = new WeakMap<readonly SessionRecord[], ReadonlySet<string>>()
+  private archive: SessionRecordsArchive | null = null
+  /** Records this process moved back out of the archive; see `restore`. */
+  private readonly restored = new Set<string>()
+  private allCache: { active: readonly SessionRecord[]; archived: readonly SessionRecord[]; all: readonly SessionRecord[] } | null = null
   private readonly unreadableRecords = new Map<string, SessionRecord>()
   private readonly pendingUserInput = new Map<string, number>()
   /** How many records the read turned from a cut-short finish into an `interrupted` outcome. */
@@ -77,7 +108,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private migratedLifecycles = 0
   private migratedSetups = 0
   private documentRead = false
+  private writesSucceeded: boolean
   private readonly snapshotsDirectory: string
+  private readonly perf: SessionRecordsStoreOptions['perf']
   private readonly removeSessionLogs: (sessionId: string, keepIds?: readonly string[]) => Promise<void>
 
   private constructor(
@@ -85,8 +118,11 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     snapshotsDirectory: string,
     report: (message: string) => void,
     removeSessionLogs: (sessionId: string, keepIds?: readonly string[]) => Promise<void>,
+    perf: SessionRecordsStoreOptions['perf'],
   ) {
     super(file, report)
+    this.writesSucceeded = true
+    this.perf = perf
     this.snapshotsDirectory = snapshotsDirectory
     this.removeSessionLogs = removeSessionLogs
   }
@@ -121,19 +157,24 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       options.snapshotsDirectory,
       options.report ?? ((message) => console.warn(message)),
       options.removeSessionLogs ?? (() => Promise.resolve()),
+      options.perf,
     )
     await store.read()
     const endedIds = SessionWorkflows.endedHistoryOf(store.records)
     const ended = store.records.filter((record) => endedIds.has(record.sessionId))
     if ((store.interruptedFinishes + store.migratedActions + store.migratedLifecycles + store.migratedSetups > 0
       || ended.some((record) => record.actionHistory !== undefined || record.scriptRuns !== undefined))
-      && !await store.inTurn(() => store.commit(store.records, true)))
+      && !await store.inTurn(() => store.commit(store.head, true), true))
       store.report(`Session records at ${file}: migrated worktree records could not be written back; `
         + 'they stay migrated in memory until the next write')
     if (!store.latched)
       for (const record of ended)
         if (!store.unreadableRecords.has(record.sessionId) && store.get(record.sessionId)?.actionHistory === undefined && store.get(record.sessionId)?.scriptRuns === undefined)
           await store.removeLogs(record.sessionId)
+    store.archive = await SessionRecordsArchive.load(SessionRecordsArchive.fileOf(file), store.report)
+    // A move cut short between its two writes leaves a record in both files; the active copy wins.
+    const twice = store.archive.list().filter((record) => store.get(record.sessionId) !== null).map((record) => record.sessionId)
+    if (twice.length > 0 && !store.latched) await store.archive.drop(twice)
     return store
   }
 
@@ -154,7 +195,113 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   }
 
   get(sessionId: string): SessionRecord | null {
-    return this.records.find((record) => record.sessionId === sessionId) ?? null
+    return this.byId.get(sessionId) ?? null
+  }
+
+  /** The run records whose `scriptOf` names `parentId`, in file order. */
+  runsOf(parentId: string): readonly SessionRecord[] {
+    return this.runsByParent.get(parentId) ?? []
+  }
+
+  /** `SessionWorkflows.endedHistoryOf` of the current records, computed once per write. */
+  endedHistory(): ReadonlySet<string> {
+    return SessionRecordsStore.endedOf(this.records)
+  }
+
+  private static endedOf(records: readonly SessionRecord[]): ReadonlySet<string> {
+    let ended = SessionRecordsStore.endedCache.get(records)
+    if (ended === undefined) {
+      ended = SessionWorkflows.endedHistoryOf(records)
+      SessionRecordsStore.endedCache.set(records, ended)
+    }
+    return ended
+  }
+
+  /**
+   * Ended records that moved to the archive. Only readers of the whole history ask for them: Historic
+   * sessions, token attribution, session numbers and the log sweep. Compose reads `list()`.
+   */
+  archived(): readonly SessionRecord[] {
+    if (this.archive === null) return []
+    const twice = this.archive.list().some((record) => this.byId.has(record.sessionId))
+    return twice ? this.archive.list().filter((record) => !this.byId.has(record.sessionId)) : this.archive.list()
+  }
+
+  /** `list()` and then `archived()`. */
+  listAll(): readonly SessionRecord[] {
+    const archived = this.archived()
+    if (archived.length === 0) return this.records
+    if (this.allCache?.active !== this.records || this.allCache.archived !== archived)
+      this.allCache = { active: this.records, archived, all: [...this.records, ...archived] }
+    return this.allCache.all
+  }
+
+  /** A record of either file, the active copy first. */
+  getAny(sessionId: string): SessionRecord | null {
+    return this.get(sessionId) ?? this.archive?.get(sessionId) ?? null
+  }
+
+  /**
+   * Moves the ended records `eligible` accepts to the archive: the archive file first, then the records
+   * file as a destructive write with a recovery point. A refused second write takes them back out of the
+   * archive, so a record is in one file; a crash between the two leaves both, and load keeps the active
+   * copy. Logs a moved record names stay. Answers how many moved.
+   */
+  async archiveEnded(now: number, eligible: (record: SessionRecord) => boolean): Promise<number> {
+    const archive = this.archive
+    if (archive === null || this.latched || archive.latched) return 0
+    let moved = 0
+    await this.inTurn(async () => {
+      const referenced = new Set<string>()
+      for (const record of this.head) {
+        if (record.scriptOf !== undefined) referenced.add(record.scriptOf.sessionId)
+        if (record.parent !== undefined) referenced.add(record.parent.sessionId)
+      }
+      const moving = this.head.filter((record) => !this.unreadableRecords.has(record.sessionId) && !this.restored.has(record.sessionId)
+        && SessionRecordsArchive.eligible(record, now, referenced) && eligible(record))
+      if (moving.length === 0) return true
+      if (!await archive.add(moving)) return false
+      const gone = new Set(moving.map((record) => record.sessionId))
+      const written = await this.commit(this.head.filter((record) => !gone.has(record.sessionId)), true, undefined, undefined, gone)
+      if (written === true) moved = moving.length
+      else await archive.drop([...gone])
+      return written
+    }, true)
+    return moved
+  }
+
+  /**
+   * Brings an archived record back into the records file before an operation that needs it there:
+   * Reopen, Restart, Fork or a history open. The records write comes first; a crash before the archive
+   * lets go of it leaves both copies and load keeps the active one. False only when an archived record
+   * could not be written back.
+   *
+   * One `alone` turn for both writes: an archive pass queued beside it would otherwise move the record
+   * it just put back, and the archive's drop would then remove the only copy. A record restored here is
+   * not archived again by this process, so the operation that asked for it still finds it.
+   */
+  async restore(sessionId: string): Promise<boolean> {
+    const archive = this.archive
+    if (archive === null) return true
+    return this.inTurn(async () => {
+      const record = archive.get(sessionId)
+      if (record === undefined || this.headById.has(sessionId)) return true
+      const staged = await this.commit([...this.head, record], false)
+      if (!(typeof staged === 'boolean' ? staged : await staged.landed)) return false
+      this.restored.add(sessionId)
+      await archive.drop([sessionId])
+      return true
+    }, true)
+  }
+
+  /** Whether the archive was read, so a sweep of logs knows every record that names them. */
+  get archiveRead(): boolean {
+    return this.archive !== null && !this.archive.latched
+  }
+
+  /** The records whose life is `live` or `starting`, in file order. */
+  live(): readonly SessionRecord[] {
+    return this.liveRecords
   }
 
   lastUserInputAt(sessionId: string): number | null {
@@ -168,7 +315,8 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   }
 
   /**
-   * Resolves once every write queued so far has landed on disk.
+   * Waits for queued writes and reports whether every attempted commit landed. A failed commit
+   * remains unconfirmed for this store lifetime, even if a later independent write succeeds.
    *
    * It exists for shutdown. The write went off the event loop on 2026-09-21, so a poll that was
    * still in flight when `stop()` ran can queue a record write AFTER the flush that stop awaits -
@@ -176,13 +324,17 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    * meets a file still being written. The queue is the evidence: a turn that does nothing is
    * behind every turn that does.
    */
-  async settled(): Promise<void> {
+  async settled(): Promise<void> { await this.settlement() }
+
+  async settlement(): Promise<boolean> {
     await this.inTurn(() => Promise.resolve(true))
+    await this.idle()
+    return this.writesSucceeded && !this.latched && this.pendingUserInput.size === 0
   }
 
   async flushUserInput(): Promise<boolean> {
     return this.inTurn(() => this.pendingUserInput.size === 0
-      ? Promise.resolve(true) : this.commit(this.records, false))
+      ? Promise.resolve(true) : this.commit(this.head, false))
   }
 
   /** Insert or replace. Routine, so it spends no recovery point. Answers whether it landed. */
@@ -192,7 +344,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // that wrote it, at the moment they wrote it, rather than after a wait behind somebody else.
     SessionRecordsStore.assertValid(record)
     return this.inTurn(() => {
-      const next = this.records.filter((entry) => entry.sessionId !== record.sessionId)
+      const next = this.head.filter((entry) => entry.sessionId !== record.sessionId)
       next.push(record)
       return this.commit(next, false, options.newLifetime === true ? record.sessionId : undefined)
     })
@@ -206,13 +358,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   async update(sessionId: string, change: (record: SessionRecord) => SessionRecord | null, options: { newLifetime?: boolean } = {}): Promise<boolean> {
     return this.inTurn(() => {
       if (this.unreadableRecords.has(sessionId)) return Promise.resolve(false)
-      const current = this.get(sessionId)
+      const current = this.headById.get(sessionId) ?? null
       const changed = current === null ? null : change(current)
       const next = changed === null ? null : SessionRecordsStore.retainPublication(changed, current ?? undefined)
       if (next === null) return Promise.resolve(false)
       if (next.sessionId !== sessionId) throw new Error(`An update of ${sessionId} answered ${next.sessionId}`)
       SessionRecordsStore.assertValid(next)
-      return this.commit(this.records.map((record) => record.sessionId === sessionId ? next : record), false, options.newLifetime ? sessionId : undefined)
+      return this.commit(this.head.map((record) => record.sessionId === sessionId ? next : record), false, options.newLifetime ? sessionId : undefined)
     })
   }
 
@@ -225,13 +377,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (this.unreadableRecords.has(record.sessionId) || this.unreadableRecords.has(parentId)) return false
     SessionRecordsStore.assertValid(record)
     return this.inTurn(() => {
-      const current = this.get(parentId)
+      const current = this.headById.get(parentId) ?? null
       const changed = current === null ? null : change(current)
       const parent = changed === null ? null : SessionRecordsStore.retainPublication(changed, current ?? undefined)
       if (parent === null) return Promise.resolve(false)
       if (parent.sessionId !== parentId) throw new Error(`An update of ${parentId} answered ${parent.sessionId}`)
       SessionRecordsStore.assertValid(parent)
-      return this.commit([...this.records.filter((entry) => entry.sessionId !== record.sessionId)
+      return this.commit([...this.head.filter((entry) => entry.sessionId !== record.sessionId)
         .map((entry) => entry.sessionId === parentId ? parent : entry), record], false)
     })
   }
@@ -239,9 +391,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   async clearActions(sessionId: string): Promise<boolean> {
     if (this.unreadableRecords.has(sessionId)) return false
     return this.inTurn(() => {
-      const current = this.get(sessionId)
+      const current = this.headById.get(sessionId) ?? null
       if (current === null) return Promise.resolve(false)
-      const runs = (id: string): SessionRecord | null => this.get(id)
+      const runs = (id: string): SessionRecord | null => this.headById.get(id) ?? null
       const sections = SessionWorkflows.sectionsOf(current, runs)
       const cleared = sections.filter((section) => !section.open && section.actions.length === 0).map((section) => section.workflowId)
       if (cleared.length === 0) return Promise.resolve(true)
@@ -251,12 +403,12 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
           if (run.phase === 'before') keepRunIds.add(run.runId)
         if (current.pendingSetup !== undefined) keepRunIds.add(current.pendingSetup.setupSessionId)
       }
-      for (const run of this.records)
+      for (const run of this.head)
         if (run.scriptOf?.sessionId === sessionId && (run.life === 'live' || run.life === 'starting')) keepRunIds.add(run.sessionId)
       if (current.worktreeOutcome !== undefined) cleared.push(`ended:${current.worktreeOutcome.at}`)
       const next = { ...current, clearedWorkflowIds: [...new Set([...current.clearedWorkflowIds ?? [], ...cleared])] }
-      return this.commit(this.records.map((record) => record.sessionId === sessionId ? next : record), true, undefined, { sessionId, keepRunIds })
-    })
+      return this.commit(this.head.map((record) => record.sessionId === sessionId ? next : record), true, undefined, { sessionId, keepRunIds })
+    }, true)
   }
 
   /**
@@ -274,10 +426,10 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (!this.mayWrite()) return false
     const gone = new Set(typeof sessionIds === 'string' ? [sessionIds] : sessionIds)
     return this.inTurn(() => {
-      const next = this.records.filter((record) => !gone.has(record.sessionId))
-      if (next.length === this.records.length) return Promise.resolve(true)
+      const next = this.head.filter((record) => !gone.has(record.sessionId))
+      if (next.length === this.head.length) return Promise.resolve(true)
       return this.commit(next, options.recoveryPoint)
-    })
+    }, options.recoveryPoint)
   }
 
   /**
@@ -288,10 +440,10 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (this.unreadableRecords.has(record.sessionId)) return false
     SessionRecordsStore.assertValid(record)
     return this.inTurn(() => {
-      const next = this.records.filter((entry) => entry.sessionId !== record.sessionId)
+      const next = this.head.filter((entry) => entry.sessionId !== record.sessionId)
       next.push(record)
       return this.commit(next, true)
-    })
+    }, true)
   }
 
   /**
@@ -308,11 +460,56 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    * The queue is per store, like the records it guards. A rejection is swallowed on the CHAIN
    * only, or it would be re-thrown into every write that queued behind it; the caller who asked
    * still gets it.
+   *
+   * A turn ends once its change is STAGED on `head`; the caller's answer comes when the write that
+   * holds it landed. That is the group commit: the turns queued behind a write in flight stage on top
+   * of it and land together in one write after it. An `alone` turn - every destructive one - first
+   * waits until nothing is staged or in flight, and writes inside its own turn, so it is never merged
+   * with another change and its recovery point is the file as every earlier write left it.
    */
-  private async inTurn(work: () => Promise<boolean>): Promise<boolean> {
-    const run = this.writes.then(work)
+  private async inTurn(work: () => Promise<Staged>, alone = false): Promise<boolean> {
+    const run = this.writes.then(async () => {
+      if (alone) await this.idle()
+      return work()
+    })
     this.writes = run.catch(() => undefined)
-    return run
+    const staged = await run
+    return typeof staged === 'boolean' ? staged : staged.landed
+  }
+
+  private async idle(): Promise<void> {
+    while (this.writing !== null) await this.writing
+  }
+
+  private enqueue(document: SessionRecordsDocument, records: SessionRecord[], effect: () => Promise<void>): Promise<boolean> {
+    return new Promise<boolean>((landed) => {
+      this.queued ??= { document, records, effects: [], landed: [] }
+      this.queued.document = document
+      this.queued.records = records
+      this.queued.effects.push(effect)
+      this.queued.landed.push(landed)
+      this.writing ??= this.drain()
+    })
+  }
+
+  private async drain(): Promise<void> {
+    while (this.queued !== null) {
+      const batch = this.queued
+      this.queued = null
+      if (await this.writeDocument(batch.document, undefined, true)) {
+        this.setRecords(batch.records)
+        for (const effect of batch.effects) await effect()
+        for (const landed of batch.landed) landed(true)
+        continue
+      }
+      this.writesSucceeded = false
+      // Every write staged behind this one was built on it, so none of them may land either.
+      const failed = this.queued === null ? [batch] : [batch, this.queued]
+      this.queued = null
+      this.setHead(this.records)
+      for (const write of failed) for (const landed of write.landed) landed(false)
+    }
+    this.writing = null
   }
 
   /**
@@ -331,9 +528,18 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    * the rest of the session, because writing over damage is how a workspace was lost.
    */
   private async commit(records: SessionRecord[], destructive: boolean, newLifetime?: string,
-    clear?: { sessionId: string; keepRunIds: ReadonlySet<string> }): Promise<boolean> {
-    const previous = new Map(this.records.map((record) => [record.sessionId, record]))
-    records = records.map((record) => this.unreadableRecords.has(record.sessionId) ? record
+    clear?: { sessionId: string; keepRunIds: ReadonlySet<string> }, archived: ReadonlySet<string> = new Set()): Promise<Staged> {
+    const work = () => this.commitRecords(records, destructive, newLifetime, clear, archived)
+    return this.perf ? this.perf.operation('records.commit', work) : work()
+  }
+
+  private async commitRecords(records: SessionRecord[], destructive: boolean, newLifetime: string | undefined,
+    clear: { sessionId: string; keepRunIds: ReadonlySet<string> } | undefined, archived: ReadonlySet<string>): Promise<Staged> {
+    const previous = this.headById
+    const previousRecords = this.head
+    // A record this write did not touch is the object the last write produced: it was retained,
+    // preserved and validated then, so only the records whose object changed pay for that again.
+    records = records.map((record) => this.unreadableRecords.has(record.sessionId) || previous.get(record.sessionId) === record ? record
       : SessionRecordsStore.retainPublication(record, previous.get(record.sessionId)))
     const at = Date.now()
     const resetHistory = new Map(records.filter((record) => record.sessionId === newLifetime
@@ -346,16 +552,17 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         ? { ...record, scriptOf: { ...link, historyExpired: true } } : record
     })
     const ended = SessionWorkflows.endedHistoryOf(records)
-    const previouslyEnded = SessionWorkflows.endedHistoryOf(this.records)
+    const previouslyEnded = SessionRecordsStore.endedOf(previousRecords)
     const nextIds = new Set(records.map((record) => record.sessionId))
-    const removedLogs = new Set(this.records.filter((record) => !nextIds.has(record.sessionId)).map((record) => record.sessionId))
+    const removedLogs = new Set(previousRecords.filter((record) => !nextIds.has(record.sessionId) && !archived.has(record.sessionId))
+      .map((record) => record.sessionId))
     for (const id of resetHistory.keys()) removedLogs.add(id)
     for (const record of records)
       if (record.scriptOf?.historyExpired === true && record.life !== 'live' && record.life !== 'starting'
         && (previous.get(record.sessionId)?.scriptOf?.historyExpired !== true
           || previous.get(record.sessionId)?.life === 'live' || previous.get(record.sessionId)?.life === 'starting'))
         removedLogs.add(record.scriptOf.sessionId)
-    for (const record of this.records)
+    for (const record of previousRecords)
       if (record.scriptOf?.historyExpired === true && !nextIds.has(record.sessionId)) removedLogs.add(record.scriptOf.sessionId)
     records = records.map((record) => {
       const before = previous.get(record.sessionId) ?? null
@@ -380,33 +587,51 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         delete next.scriptRuns
         return next
       }
+      if (before === record) return record
       return SessionActionHistory.preserve(before !== null && previouslyEnded.has(record.sessionId) ? null : before, record, at)
     })
-    for (const record of records) SessionRecordsStore.assertValid(record)
-    const inputTimes = new Map(this.records.map((record) => [record.sessionId, record.lastUserInputAt ?? 0]))
-    for (const [sessionId, at] of this.pendingUserInput) inputTimes.set(sessionId, at)
+    for (const record of records)
+      if (previous.get(record.sessionId) !== record) SessionRecordsStore.assertValid(record)
     records = records.map((record) => {
-      const at = Math.max(record.lastUserInputAt ?? 0, inputTimes.get(record.sessionId) ?? 0)
-      return at > 0 ? { ...record, lastUserInputAt: at } : record
+      const at = Math.max(record.lastUserInputAt ?? 0, this.pendingUserInput.get(record.sessionId) ?? 0,
+        previous.get(record.sessionId)?.lastUserInputAt ?? 0)
+      return at > 0 && at !== record.lastUserInputAt ? { ...record, lastUserInputAt: at } : record
     })
     const document: SessionRecordsDocument = { schemaVersion: 1, savedAt: Date.now(),
       records: records.map((record) => this.unreadableRecords.get(record.sessionId) ?? record) }
+    const effect = (): Promise<void> => this.afterWrite(records, removedLogs, ended, resetHistory)
+    if (!destructive) {
+      this.setHead(records)
+      return { landed: this.enqueue(document, records, effect) }
+    }
     // A destructive write with no recovery point behind it is refused rather than made: `false`
     // means "the file was left as this write found it", and that has to stay true of the case
     // where the undo this class promises would not be there afterwards.
     const written = await this.writeDocument(document, async () => {
-      if (!destructive || await this.snapshotCurrent()) return true
+      if (await this.snapshotCurrent()) return true
       this.report(
         `Session records at ${this.file} were not changed: no recovery point could be taken `
         + 'first, and a destructive write without one cannot be undone',
       )
       return false
-    })
-    if (!written) return false
-    this.records = records
+    }, true)
+    if (!written) {
+      this.writesSucceeded = false
+      return false
+    }
+    this.setRecords(records)
+    this.setHead(records)
+    await effect()
+    return true
+  }
+
+  /** The log removals and the user-input bookkeeping of one landed write, against what it wrote. */
+  private async afterWrite(records: readonly SessionRecord[], removedLogs: ReadonlySet<string>, ended: ReadonlySet<string>,
+    resetHistory: ReadonlyMap<string, ReadonlySet<string>>): Promise<void> {
+    const written = removedLogs.size === 0 ? null : new Map(records.map((record) => [record.sessionId, record]))
     for (const sessionId of removedLogs) {
       if (this.unreadableRecords.has(sessionId)) continue
-      const parent = this.get(sessionId)
+      const parent = written?.get(sessionId) ?? null
       if (parent !== null && SessionWorkflows.holdsWorktreeHistory(parent)) continue
       const keepIds = parent === null || ended.has(sessionId) ? [] : [
         ...resetHistory.get(sessionId) ?? [],
@@ -420,7 +645,6 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     for (const [sessionId, at] of this.pendingUserInput)
       if (!this.get(sessionId) || at <= (this.get(sessionId)?.lastUserInputAt ?? 0))
         this.pendingUserInput.delete(sessionId)
-    return true
   }
 
   private async removeLogs(sessionId: string, keepIds?: readonly string[]): Promise<void> {
@@ -432,7 +656,32 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   }
 
   private async read(): Promise<void> {
-    this.records = await this.readDocument()
+    const records = await this.readDocument()
+    this.setRecords(records)
+    this.setHead(records)
+  }
+
+  private setHead(records: SessionRecord[]): void {
+    this.head = records
+    this.headById = new Map(records.map((record) => [record.sessionId, record]))
+  }
+
+  private setRecords(records: SessionRecord[]): void {
+    const runs = new Map<string, SessionRecord[]>()
+    const live: SessionRecord[] = []
+    for (const record of records) {
+      const parentId = record.scriptOf?.sessionId
+      if (parentId !== undefined) {
+        const list = runs.get(parentId)
+        if (list === undefined) runs.set(parentId, [record])
+        else list.push(record)
+      }
+      if (record.life === 'live' || record.life === 'starting') live.push(record)
+    }
+    this.records = records
+    this.byId = new Map(records.map((record) => [record.sessionId, record]))
+    this.runsByParent = runs
+    this.liveRecords = live
   }
 
   private static retainPublication(record: SessionRecord, previous?: SessionRecord): SessionRecord {
@@ -564,12 +813,31 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       }
       const retained = SessionRecordsStore.retainPublication(migrated)
       if (JSON.stringify(retained.worktreeLifecycle) !== JSON.stringify(migrated.worktreeLifecycle)) this.migratedLifecycles++
-      records.push(retained)
+      const bounded = SessionRecordsStore.boundedJournalOf(retained)
+      if (bounded !== retained) this.migratedLifecycles++
+      records.push(bounded)
     }
     if (unverified > 0)
       this.report(`Codex identity migration: ${unverified} old inferred bindings are unverified; `
         + 'their original IDs are preserved. Open the intended conversation explicitly from Codex history to resume it')
     return records
+  }
+
+  /**
+   * Before 2026-11-01 a step journal kept the whole svn output, hundreds of kilobytes per worktree,
+   * rewritten with every records write. The load cuts it to the tail `SvnStepRunner` keeps now; the
+   * whole output stays in the step's log, and the write that follows takes a recovery point first.
+   */
+  private static boundedJournalOf(record: SessionRecord): SessionRecord {
+    const state = record.worktreeLifecycle
+    if (state === undefined || state.unreadable !== undefined) return record
+    const journal = state.journal.map((entry) => {
+      const output = entry.output === undefined ? undefined : SvnStepRunner.journalOutputOf(entry.output)
+      return output === entry.output ? entry : { ...entry, output }
+    })
+    const stoppedFailure = state.stoppedFailure === undefined ? undefined : SvnStepRunner.stoppedFailureOf(state.stoppedFailure)
+    if (journal.every((entry, index) => entry === state.journal[index]) && stoppedFailure === state.stoppedFailure) return record
+    return { ...record, worktreeLifecycle: { ...state, journal, ...stoppedFailure === undefined ? {} : { stoppedFailure } } }
   }
 
   /**

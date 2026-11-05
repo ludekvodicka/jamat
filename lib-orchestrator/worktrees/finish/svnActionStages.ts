@@ -2,7 +2,7 @@ import type { SessionRecord } from '../../sessionManager/worktreeSessionRecords'
 import type { SessionRecordScriptLink, SessionRecordScriptStep, SessionRecordSvnAction, SvnActionPass } from '../../sessionManager/worktreeSessionRecords'
 import type { SessionSvnActionInfo, SvnActionStage, SvnFinishPhase } from '../../sessionManager/sessionManagerApi.types'
 import { SvnConflictFlow } from '../conflicts/svnConflictFlow'
-import { SvnConflictWords, type SvnConflictSide } from '../conflicts/svnConflictWords'
+import { SvnConflictWords, type SvnConflictOwner, type SvnConflictSide } from '../conflicts/svnConflictWords'
 import { FinishStepPolicy } from './finishStepPolicy'
 
 /**
@@ -173,7 +173,7 @@ export class SvnActionStages {
   }
 
   /** What the snapshot and `sessions worktree` say about an action; a conflict set adds its summary, every open entry and settled ones up to 50. */
-  static infoOf(action: SessionRecordSvnAction): SessionSvnActionInfo {
+  static infoOf(action: SessionRecordSvnAction, owner: SvnConflictOwner = 'person'): SessionSvnActionInfo {
     const roots = action.roots ?? []
     const root = action.stage === 'reviewing' ? roots[action.rootCursor] : undefined
     const set = action.conflictSet
@@ -185,7 +185,7 @@ export class SvnActionStages {
       review: root === undefined ? null : { index: action.rootCursor + 1, count: roots.length, scopeRoot: root.path },
       ...SvnConflictFlow.open(set)
         ? {
-          summary: SvnConflictWords.summaryOf(set),
+          summary: SvnConflictWords.summaryOf(set, owner),
           conflicts: SvnConflictWords.listOf(set, SvnConflictFlow.wireMaxConst, SvnActionStages.sideOf(action)),
           ...action.mergeBrief === undefined ? {} : { mergeBrief: action.mergeBrief },
         }

@@ -102,7 +102,7 @@ export class PassLauncher {
     try {
       answer = await context.sessions.createSession({ kind: 'agent', directory: spec.directory, title: spec.title,
         number: spec.number, color: definition.colour, agent: { agentId: grant.agentId, mode: 'new',
-          initialPrompt: PassLauncher.prompt(template, inbox.directory) },
+          initialPrompt: PassLauncher.prompt(spec.promptTemplate ?? template, inbox.directory) },
         ...(grant.item.mode === 'wt' ? { worktree: { slug: spec.worktreeSlug!, tag: attemptId } } : {}),
         ...(grant.entry.acknowledgeSetup ? { acknowledgeSetup: grant.entry.acknowledgeSetup } : {}),
       }, { callerOperationId: attemptId })

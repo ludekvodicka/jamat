@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
@@ -16,21 +15,20 @@ import type { ConfigStore } from '../../lib-orchestrator/configStore/configStore
 import type { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type { RemoteReviewDecision, RemoteReviewRequest } from '../../lib-orchestrator/remoteControl/remoteReviewApi.types.js'
 import type { RemoteSessionView } from '../../lib-orchestrator/remoteControl/remoteSessionApi.types.js'
-import type { RemoteConnectionsManager } from '../../app-client-ui/app/remoteControl/remoteConnectionsManager.js'
+import type { RemoteConnectionsManager } from '../../app-gateway/app/peers/remoteConnectionsManager.js'
 
-import type { VersioningCommitDraftDto, VersioningCommitFilesResult, VersioningCommitOpenResult, VersioningCommitRunResult, VersioningReviewEditResult } from '../../app-client-ui/shared/versioningCommit.js'
+import type { VersioningCommitDraftDto, VersioningCommitFilesResult, VersioningCommitOpenResult, VersioningCommitRunResult, VersioningReviewEditResult } from '../../lib-orchestrator/versioning/versioningCommit.js'
 
 import { RemoteContentScenarios } from './remoteContentScenarios.js'
 
-const requireUi = createRequire(import.meta.url)
-const { RemoteReviewAccess } = requireUi('../../app-client-ui/app/remoteControl/remoteReviewAccess.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteReviewAccess.js')
-const { FileChangesAccess } = requireUi('../../app-client-ui/app/fileChanges/fileChangesAccess.ts') as typeof import('../../app-client-ui/app/fileChanges/fileChangesAccess.js')
-const { VersioningCommitManager } = requireUi('../../app-client-ui/app/versioning/versioningCommitManager.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitManager.js')
-const { VersioningCommitMessageStore } = requireUi('../../app-client-ui/app/versioning/versioningCommitMessageStore.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitMessageStore.js')
-const { VersioningReviewStore } = requireUi('../../app-client-ui/app/versioning/versioningReviewStore.ts') as typeof import('../../app-client-ui/app/versioning/versioningReviewStore.js')
-const { ReviewInteractionAccess } = requireUi('../../app-client-ui/app/versioning/reviewInteractionAccess.ts') as typeof import('../../app-client-ui/app/versioning/reviewInteractionAccess.js')
-const { RemoteContentRead } = requireUi('../../app-client-ui/shared/remoteContentRead.ts') as typeof import('../../app-client-ui/shared/remoteContentRead.js')
-const { RemoteReviewResults } = requireUi('../../app-client-ui/shared/remoteReviewResults.ts') as typeof import('../../app-client-ui/shared/remoteReviewResults.js')
+import { RemoteReviewAccess } from '../../app-orchestrator/app/remoteControl/remoteReviewAccess.js'
+import { FileChangesAccess } from '../../app-orchestrator/app/fileChanges/fileChangesAccess.js'
+import { VersioningCommitManager } from '../../app-orchestrator/app/versioning/versioningCommitManager.js'
+import { VersioningCommitMessageStore } from '../../app-orchestrator/app/versioning/versioningCommitMessageStore.js'
+import { VersioningReviewStore } from '../../app-orchestrator/app/versioning/versioningReviewStore.js'
+import { ReviewInteractionAccess } from '../../app-orchestrator/app/versioning/reviewInteractionAccess.js'
+import { RemoteContentRead } from '../../lib-orchestrator/clientApi/remoteContentRead.js'
+import { RemoteReviewResults } from '../../lib-orchestrator/clientApi/remoteReviewResults.js'
 
 export class RemoteReviewScenarios {
   static async prove(workspace: RemoteContentScenarios, sessions: SessionManager, config: ConfigStore,

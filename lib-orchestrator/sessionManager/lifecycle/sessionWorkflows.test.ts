@@ -131,4 +131,29 @@ describe('Session actions sections', () => {
     expect(step).toMatchObject({ startedAt: offered, endedAt: pressed })
   })
 
+  it('offers Commit & merge and Discard last on a running SVN worktree before any Finish, and nowhere else', () => {
+    const record: SessionRecord = { sessionId: 's4', title: 'Work', kind: 'agent', directory: { mode: 'adHoc', path: 'Q:/app' },
+      life: 'live', binding: null, createdAt: 0,
+      worktree: { kind: 'svn', worktreePath: 'Q:/app/.worktrees/004', repositoryRoot: 'Q:/app', branch: '', baseCommit: '4' },
+      worktreeLifecycle: { version: 1, actionId: 'none', phase: 'active', outOfDate: 0, journal: [],
+        facts: { worker: { liveness: 'alive', resumeFailures: 0 } } } }
+    const choice = SessionWorkflows.sectionsOf(record, () => null).at(-1)
+    expect(choice).toMatchObject({ kind: 'finish', workflowId: 'choose:s4', title: 'Finish of Work', open: false, rounds: [] })
+    expect(choice?.actions.map((action) => [action.id, action.label, action.primary])).toEqual([
+      ['prepare-worktree', 'Commit & merge', true], ['discard', 'Discard', false]])
+    expect(choice?.actions[1].confirm).toContain('Discard')
+    expect(SessionWorkflows.choiceOf({ ...record, life: 'ended' })).toBeNull()
+    expect(SessionWorkflows.choiceOf({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'kept' } })).toBeNull()
+    // A ready sync leaves finishing/checking without an execution: no Finish was pressed, so the choice stays.
+    const readySynced = { ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing' as const, step: 'checking' as const,
+      facts: { ...record.worktreeLifecycle!.facts, syncedAt: { revision: 4, at: 1, headMovedBy: 0 } } } }
+    expect(SessionWorkflows.choiceOf(readySynced)?.workflowId).toBe('choose:s4')
+    expect(SessionWorkflows.choiceOf({ ...readySynced, worktreeLifecycle: { ...readySynced.worktreeLifecycle, phase: 'waiting' as const,
+      step: undefined, wait: { kind: 'svn-failed' as const, reason: 'svn failed', at: 2 } } })?.workflowId).toBe('choose:s4')
+    expect(SessionWorkflows.choiceOf({ ...readySynced, worktreeLifecycle: { ...readySynced.worktreeLifecycle,
+      execution: { root: 'Q:/app/.worktrees/004', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1 } } })).toBeNull()
+    expect(SessionWorkflows.choiceOf({ ...record, worktree: { ...record.worktree!, kind: 'git' } })).toBeNull()
+    expect(SessionWorkflows.choiceOf({ ...record, worktree: undefined })).toBeNull()
+  })
+
 })

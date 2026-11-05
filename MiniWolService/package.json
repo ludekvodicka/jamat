@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node start.mjs",
-    "test": "node --test *.test.mjs"
+    "test": "node --import ../scripts/checks/test-tmpdir.mjs --test *.test.mjs"
   },
   "engines": { "node": ">=22.16.0" }
 }

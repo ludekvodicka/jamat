@@ -31,8 +31,6 @@ import type { PanelOpenOutcome } from './appShell.types'
  */
 export class WorkspacePanels {
   static readonly probeTitleConst = 'Lifecycle Probe'
-  /** Per document, so two probes in one window are told apart by their titles. */
-  private static probeIndex = 0
 
   static openTaskKeys(controller: TabsController): ReadonlySet<string> {
     return new Set(controller.openPanels().flatMap((panel) => panel.key === PanelKeysConst.terminal
@@ -497,14 +495,9 @@ export class WorkspacePanels {
     return params as Record<string, unknown>
   }
 
-  /** The probe is the only panel this shell can meaningfully open a new one of. */
-  static openProbe(controller: TabsController): void {
-    WorkspacePanels.probeIndex += 1
-    void controller.openPanel(
-      PanelKeysConst.probe,
-      `${WorkspacePanels.probeTitleConst} ${WorkspacePanels.probeIndex}`,
-      { serial: crypto.randomUUID() },
-    ).then((outcome) => WorkspacePanels.reportPanelOpen(outcome))
+  /** One Usage or Debug tab per client: a second open focuses the tab wherever it is. */
+  static openSingle(controller: TabsController, key: typeof PanelKeysConst.usage | typeof PanelKeysConst.debug, title: string): void {
+    void controller.openPanel(key, title, {}).then((outcome) => WorkspacePanels.reportPanelOpen(outcome))
   }
 
   static reportPanelOpen(outcome: PanelOpenOutcome): void {

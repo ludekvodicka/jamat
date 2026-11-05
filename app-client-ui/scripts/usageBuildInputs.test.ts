@@ -3,15 +3,21 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 describe('Usage build inputs', () => {
-  it('registers the third renderer and third main input with their packaged paths', () => {
+  it('builds Usage into the workspace document and the token worker at its development and packaged paths', () => {
     const root = join(import.meta.dirname, '..')
     const config = readFileSync(join(root, 'electron.vite.config.ts'), 'utf8')
-    expect(config).toContain("tokenUsageWorker: resolve(__dirname, 'app/tokenUsage/tokenUsageWorkerEntry.ts')")
-    expect(config).toContain("usage: resolve(__dirname, 'renderer/usage.html')")
+    expect(config).not.toContain('tokenUsageWorker:')
+    const workerBuild = readFileSync(join(root, '../scripts/release/prepare-orchestrator.ts'), 'utf8')
+    expect(workerBuild).toContain("tokenUsageWorker: resolve(root, 'app-orchestrator/app/tokenUsage/tokenUsageWorkerEntry.ts')")
+    expect(workerBuild).toContain("outExtension: { '.js': '.cjs' }")
+    expect(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).build.extraResources)
+      .toContainEqual({ from: '../out/orchestrator', to: 'orchestrator', filter: ['**/*'] })
+    expect(config).not.toContain('usage.html')
     const context = readFileSync(join(root, 'app/appContext.ts'), 'utf8')
-    expect(context).toContain("join(outputMainDir, 'tokenUsageWorker.js')")
-    expect(context).toContain("join(outputMainDir, '../renderer/usage.html')")
-    expect(readFileSync(join(root, 'renderer/usage.html'), 'utf8')).toContain('./usageWindow/usageMain.tsx')
+    const utilityContext = readFileSync(join(root, '../app-orchestrator/app/appContext.ts'), 'utf8')
+    expect(utilityContext).toContain("join(bundleDirectory, 'tokenUsageWorker.cjs')")
+    expect(context).toContain("join(process.resourcesPath, 'orchestrator', 'start.cjs')")
+    expect(readFileSync(join(root, 'renderer/shell/appShell.tsx'), 'utf8')).toContain("from '../usage/usagePanel'")
     const inputs = readFileSync(join(root, '../scripts/release/localPackageInputs.ts'), 'utf8')
     expect(inputs).toContain("'app-client-ui/app'")
     expect(inputs).toContain("'app-client-ui/renderer'")

@@ -36,6 +36,7 @@ interface KindRuntime {
 }
 
 export interface SnapinsManagerOptions {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
   definitions: SnapinDefinition[]
   ports: Pick<SnapinContext, 'sessions' | 'svn' | 'projects'>
   settings(): SnapinsSettings
@@ -131,7 +132,9 @@ export class SnapinsManager {
       this.again = true
       return
     }
-    this.ticking = this.tick().catch((error: unknown) => this.options.report(ErrorText.of(error))).finally(() => {
+    const tick = () => this.tick()
+    this.ticking = (this.options.perf ? this.options.perf.operation('snapins.tick', tick) : tick())
+      .catch((error: unknown) => this.options.report(ErrorText.of(error))).finally(() => {
       this.ticking = null
       this.armTimer()
       if (this.again) {
@@ -190,7 +193,9 @@ export class SnapinsManager {
         && [...this.kinds.values()].some((value) => value.store.current.queue.length)) {
         try {
         const currentSnapshot = this.options.ports.sessions.snapshot()
-        const admission = currentSnapshot.reconciled ? admit(await this.admissionInput(guard, currentSnapshot)) : { grants: [], holds: [], dropped: [] }
+        const input = currentSnapshot.reconciled ? await this.admissionInput(guard, currentSnapshot) : null
+        const admission = input === null ? { grants: [], holds: [], dropped: [] }
+          : this.options.perf ? this.options.perf.span('snapins.tick', () => admit(input)) : admit(input)
         for (const value of this.kinds.values()) value.holds.clear()
         for (const hold of admission.holds)
           for (const value of this.kinds.values())
@@ -212,7 +217,8 @@ export class SnapinsManager {
     }
     for (const [kind, value] of this.kinds) {
       const next = await this.compose(value, value.view?.revision ?? 0)
-      if (JSON.stringify(next) === JSON.stringify(value.view)) continue
+      const unchanged = () => JSON.stringify(next) === JSON.stringify(value.view)
+      if (this.options.perf ? this.options.perf.span('snapins.tick', unchanged) : unchanged()) continue
       next.revision += 1
       value.view = next
       this.options.onChanged(kind)
@@ -227,7 +233,8 @@ export class SnapinsManager {
       const answer = await value.definition.list(this.context(value), values)
       if (answer.ok) {
         value.items = await Promise.all(answer.items.map(async (item) => ({ ...item,
-          projectDirectory: await realpath(item.projectDirectory) })))
+          projectDirectory: item.projectDirectory === '' && item.hold && !item.selectable
+            ? '' : await realpath(item.projectDirectory) })))
         value.listedValues = JSON.stringify(values)
         value.listingError = null
       } else value.listingError = answer.detail
@@ -282,8 +289,8 @@ export class SnapinsManager {
           : itemKeys.map((key) => value.items.find((item) => item.key === key)).filter((item): item is SnapinItem => !!item)
         for (const item of items) {
           if (item.hold || !item.selectable || doc.queue.some((entry) => entry.itemKey === item.key)
-            || doc.attempts.some((a) => a.itemKey === item.key && (isOpen(a) || a.phase === 'review'))) {
-            void this.log(value, `Skipped ${item.title}: held, queued or already running`)
+            || doc.attempts.some((a) => a.itemKey === item.key && (isOpen(a) || a.phase === 'review' || a.phase === 'completed'))) {
+            void this.log(value, `Skipped ${item.title}: held, queued, already running or completed`)
             continue
           }
           doc.queue.push({ itemKey: item.key, addedAt: this.now() })
@@ -306,7 +313,8 @@ export class SnapinsManager {
     const newest = newestOf(doc, itemKeys[0]!)
     const holder = holderOf(doc, itemKeys[0]!)
     if (actionId === 'shared.restart') {
-      if (!newest || !value.items.some((item) => item.key === itemKeys[0]) || doc.queue.some((entry) => entry.itemKey === itemKeys[0])
+      if (!newest || doc.attempts.some((attempt) => attempt.itemKey === itemKeys[0] && attempt.phase === 'completed')
+        || !value.items.some((item) => item.key === itemKeys[0]) || doc.queue.some((entry) => entry.itemKey === itemKeys[0])
         || !(newest.phase === 'ended' || (newest.phase === 'review' && newest.attention === 'not-published')))
         return { ok: false, code: 'invalid-items', detail: 'Restart requires a listed item with an ended or unpublished attempt' }
     } else if (actionId === 'shared.release') {
@@ -365,6 +373,12 @@ export class SnapinsManager {
 
   private async compose(value: KindRuntime, revision: number): Promise<SnapinView> {
     await value.pendingLogs
+    const view = this.options.perf ? this.options.perf.span('snapins.tick', () => this.composeView(value, revision)) : this.composeView(value, revision)
+    view.sections.push({ kind: 'log', lines: await value.log.read() })
+    return view
+  }
+
+  private composeView(value: KindRuntime, revision: number): SnapinView {
     const groups: Extract<SnapinView['sections'][number], { kind: 'items' }>['groups'] = []
     const byDirectory = new Map<string, (typeof groups)[number]>()
     const doc = value.store.current
@@ -380,7 +394,7 @@ export class SnapinsManager {
     }
     const counts: SnapinView['counts'] = {}
     for (const item of items) {
-      const directory = PathCompare.comparable(item.projectDirectory)
+      const directory = item.projectDirectory === '' ? '' : PathCompare.comparable(item.projectDirectory)
       let group = byDirectory.get(directory)
       if (!group) {
         group = { title: item.group, mode: item.mode, items: [] }
@@ -389,6 +403,7 @@ export class SnapinsManager {
       }
       if (group.mode !== item.mode) delete group.mode
       const attempt = newestOf(doc, item.key)
+      const completed = doc.attempts.some((attempt) => attempt.itemKey === item.key && attempt.phase === 'completed')
       const holder = holderOf(doc, item.key)
       const entry = doc.queue.find((entry) => entry.itemKey === item.key)
       let hold = entry?.setupAgreement && entry.acknowledgeSetup !== entry.setupAgreement.hash
@@ -410,13 +425,13 @@ export class SnapinsManager {
       if (holder || (attempt && (isOpen(attempt) || attempt.phase === 'review')))
         actions.push(this.action('release', 'Release', 'item'))
       if (holder?.sessionId && holder.attemptId !== attempt?.attemptId) actions.push(this.action('openHolder', 'Open lease holder', 'item'))
-      if (listed.has(item.key) && !entry && attempt && (attempt.phase === 'ended' || (attempt.phase === 'review' && attempt.attention === 'not-published')))
+      if (listed.has(item.key) && !completed && !entry && attempt && (attempt.phase === 'ended' || (attempt.phase === 'review' && attempt.attention === 'not-published')))
         actions.push(this.action('restart', 'Restart', 'item'))
       if (state !== 'ready') counts[state as keyof typeof counts] = (counts[state as keyof typeof counts] ?? 0) + 1
       group.items.push({ key: item.key, title: item.title, state: label, mode: item.mode,
         tone: state === 'completed' ? 'done' : hold || state === 'review' || state === 'blocked' ? 'attention'
           : state === 'working' || state === 'pending' ? 'active' : 'neutral', hold,
-        sessionId: attempt?.sessionId, selectable: listed.has(item.key) && item.selectable, actions })
+        sessionId: attempt?.sessionId, selectable: listed.has(item.key) && item.selectable && !completed, actions })
     }
     const state = this.state(value)
     const sections: SnapinView['sections'] = []
@@ -426,8 +441,7 @@ export class SnapinsManager {
     if (state === 'reconciling') sections.push({ kind: 'notice', tone: 'info', text: 'Reconciling worker sessions' })
     sections.push({ kind: 'items', groups, actions: [this.action('solveSelected', 'Solve selected', 'selection'),
       this.action('solveAll', 'Solve all', 'kind'), this.action(doc.paused ? 'resume' : 'pause', doc.paused ? 'Resume' : 'Pause', 'kind'),
-      this.action('refresh', 'Refresh', 'kind')] },
-      { kind: 'log', lines: await value.log.read() })
+      this.action('refresh', 'Refresh', 'kind')] })
     return { kind: value.definition.kind, title: value.definition.title, revision, state,
       counts, sections }
   }

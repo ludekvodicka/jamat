@@ -2,7 +2,7 @@ import type { RemoteConnectionsSnapshot } from '../../../lib-orchestrator/remote
 import type { SessionInfo, SessionDetailsUpdate, SessionDetailsSaved, SessionsOpResult } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import type { CommandId } from '../../shared/commands'
-import type { RemoteSessionCommand } from '../../shared/remoteSessionCommand'
+import type { RemoteSessionCommand } from '../../../lib-orchestrator/remoteControl/remoteSessionCommand'
 import { TerminalTargetCodec, type TerminalTarget } from '../../shared/terminalTarget'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import { SessionCommandRun } from '../commands/sessionCommandRun'

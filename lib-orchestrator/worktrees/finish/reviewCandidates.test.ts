@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { WorktreeLease } from '../worktreeLease'
 import { finishTestRecords, testAssembly } from './finishTestRecords'
 import { ReviewCandidates } from './reviewCandidates'
-import { SvnCommitMessageCheck } from '../../svn/svnCommitMessageCheck'
 
 async function harness() {
   const h = await finishTestRecords({ step: 'reviewing', facts: { worker: { liveness: 'alive', resumeFailures: 0 }, syncedAt: { at: 1, revision: 5, headMovedBy: 4 } } })
@@ -74,7 +73,7 @@ describe('ReviewCandidates', () => {
     const accepted = await h.step.approve('worker', { ...second.review, reviewVersion: second.review.version })
     expect(accepted.ok && accepted.review.repositories?.map((row) => row.message)).toEqual(['My exact wording', 'My exact wording'])
   })
-  it('checks an agent repository message as proposed, before its prefix is added (UA1-J12-2)', async () => {
+  it('publishes an agent repository message with findings, its prefix added (UA1-J12-2)', async () => {
     const h = await harness(), root = h.records.get('worker')!.worktree!.worktreePath
     h.deps.svn.changes = async () => ({ ok: true, value: ['a', 'lib/ea/v'].map((path) => ({ path, kind: 'item', conflict: false })) })
     h.deps.svn.reviewRoots = async () => ({ ok: true, value: [{ path: root, own: '', pinned: false, changed: [] }, { path: join(root, 'lib/ea'), own: 'lib/ea', pinned: false, changed: [] }] })
@@ -83,11 +82,9 @@ describe('ReviewCandidates', () => {
     const { review } = await h.step.create('worker', '', 'unknown')
     const repositories = review.repositories!.map((row) => row.root === root ? row : { ...row, message: '[j12] J12 W4 EA', source: 'person-local' as const })
     const press = { ...review, reviewVersion: review.version, repositories }
-    expect(await h.step.approve('worker', press)).toMatchObject({ ok: false, code: 'message-unchecked', detail: 'j12: No [Project] prefix; Chat opening' })
-    const acknowledged = repositories.map((row) => ({ ...row, acknowledged: SvnCommitMessageCheck.findings(row.message, row.source) }))
-    const approved = await h.step.approve('worker', { ...press, repositories: acknowledged })
+    const approved = await h.step.approve('worker', press)
     expect(approved.ok && approved.review.repositories?.find((row) => row.root === root)).toMatchObject({
-      message: '[j12] Here is the commit message for the change:\n[j12] J12 W4 app: limit 50', source: 'agent-proposal', acknowledged: ['no-prefix', 'chat-opening'] })
+      message: '[j12] Here is the commit message for the change:\n[j12] J12 W4 app: limit 50', source: 'agent-proposal' })
   })
   it('excludes sidecars, includes setup in the tested set and binds the second window to its version', async () => {
     const h = await harness()

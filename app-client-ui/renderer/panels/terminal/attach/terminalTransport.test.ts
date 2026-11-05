@@ -318,7 +318,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalTransport', () => {
       const stub = install()
       const seen: TerminalFrame[] = []
       const off = TerminalTransports.of(localTarget).attachment('a1')
-        .onFrame((frame) => seen.push(frame))
+        .onFrame((frame) => { seen.push(frame) })
 
       stub.serve('a2', exitFrame)
       expect(seen).toHaveLength(0)
@@ -332,7 +332,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalTransport', () => {
     it('takes only the endpoint it attached to', () => {
       const stub = install()
       const seen: TerminalFrame[] = []
-      TerminalTransports.of(remoteTarget).attachment('a1').onFrame((frame) => seen.push(frame))
+      TerminalTransports.of(remoteTarget).attachment('a1').onFrame((frame) => { seen.push(frame) })
 
       stub.serveRemote('e2', 'a1', exitFrame)
       stub.serveRemote('e1', 'a2', exitFrame)

@@ -294,6 +294,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionFlow', () => {
     const results = new WorktreeResultsStore(resultsDirectory, { now: () => clock.now, logs, report: (message) => { reports.push(message) } })
     const port: SvnActionPort = {
         updateTargets: emptyUpdateTargets,
+        mountStates: async () => ok(new Map()),
         assembly: async () => ok(testAssembly()),
         present: async () => true,
         publicationRows: async () => ok({ changed: [], items: [] }),
@@ -354,7 +355,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionFlow', () => {
         await store.update(sessionId, (record) => ({ ...record, svnAction: { ...record.svnAction!, runId } }))
         launched.push(run)
         return new Promise<SvnStepResult>((resolve) => { local.set(runId, resolve) })
-      } },
+      }, note: async () => `note-${++minted}` },
       logs,
       svn: port,
       labels,

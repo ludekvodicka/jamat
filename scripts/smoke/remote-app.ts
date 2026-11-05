@@ -1,4 +1,9 @@
+import { PeerTrustSet } from '../../lib-orchestrator/remoteControl/peerTrustSet.js'
+import { RemoteControlLiveTerminal } from '../../lib-orchestrator/remoteControl/remoteControlLiveTerminal.js'
+import { PastedFileStore } from '../../lib-orchestrator/pastedFiles/pastedFileStore.js'
+import type { RemoteControlListenerSettings } from '../../lib-orchestrator/remoteControl/remotePeerListener.types'
 import { createRequire } from 'node:module'
+import { SmokeTerminalOwner } from './smokeTerminalOwner'
 import { RemoteReviewScenarios } from './remoteReviewScenarios.js'
 import { RemoteContentScenarios } from './remoteContentScenarios.js'
 
@@ -8,9 +13,9 @@ import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
-import type { RemoteControlListenerSettings } from '../../app-client-ui/shared/remoteControlSettings.js'
+
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore.js'
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import {
@@ -78,40 +83,38 @@ import type {
   WorktreeResultsFilter,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types.js'
 import type {
+  TerminalPort,
   TerminalAttachOwner,
   TerminalInputResult,
   TerminalResizeResult,
-} from '../../lib-orchestrator/sessionManager/terminals/terminalGateway.js'
+} from '../../lib-orchestrator/sessionManager/terminalPort.js'
 import { ConfigIdentityStore } from '../../lib-orchestrator/shared/configIdentityStore.js'
 
 const requireUi = createRequire(import.meta.url)
-const { RemoteSessionSnapshots } = requireUi('../../app-client-ui/app/remoteControl/remoteSessionSnapshots.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteSessionSnapshots.js')
-const { ClientStatePaths } = requireUi('../../app-client-ui/app/clientState/clientStatePaths.ts') as typeof import('../../app-client-ui/app/clientState/clientStatePaths.js')
-const { RemoteConnectionsManager } = requireUi('../../app-client-ui/app/remoteControl/remoteConnectionsManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteConnectionsManager.js')
-type RemoteConnectionsManager = import('../../app-client-ui/app/remoteControl/remoteConnectionsManager.js').RemoteConnectionsManager
-const { RemoteControlInboundRegistry } = requireUi('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.js')
-type RemoteControlInboundRegistry = import('../../app-client-ui/app/remoteControl/remoteControlInboundRegistry.js').RemoteControlInboundRegistry
-const { RemoteControlPairingManager } = requireUi('../../app-client-ui/app/remoteControl/remoteControlPairingManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js')
-type RemoteControlPairingImportResult = import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js').RemoteControlPairingImportResult
-type RemoteControlPairingManager = import('../../app-client-ui/app/remoteControl/remoteControlPairingManager.js').RemoteControlPairingManager
-const { RemoteControlPeerServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlPeerServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlPeerServer.js')
-type RemoteControlPeerServer = import('../../app-client-ui/app/remoteControl/remoteControlPeerServer.js').RemoteControlPeerServer
-const { RemoteInboundApprovalManager } = requireUi('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js')
-type RemoteInboundApprovalRequest = import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js').RemoteInboundApprovalRequest
-type RemoteInboundApprovalManager = import('../../app-client-ui/app/remoteControl/remoteInboundApprovalManager.js').RemoteInboundApprovalManager
-const { RemoteControlServer } = requireUi('../../app-client-ui/app/remoteControl/remoteControlServer.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlServer.js')
-type RemoteControlServer = import('../../app-client-ui/app/remoteControl/remoteControlServer.js').RemoteControlServer
-const { RemoteControlSettingsSection } = requireUi('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteControlSettingsSection.js')
-const { RemoteEndpointIdentityStore } = requireUi('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteEndpointIdentityStore.js')
-const { RemotePeerListenerManager } = requireUi('../../app-client-ui/app/remoteControl/remotePeerListenerManager.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js')
-type RemoteListenerApplyResult = import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js').RemoteListenerApplyResult
-type RemotePeerListenerManager = import('../../app-client-ui/app/remoteControl/remotePeerListenerManager.js').RemotePeerListenerManager
-const { RemotePeerCredentialStore } = requireUi('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.ts') as typeof import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js')
-type RemotePeerTrustedIdentity = import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js').RemotePeerTrustedIdentity
-type RemotePeerCredentialStore = import('../../app-client-ui/app/remoteControl/remotePeerCredentialStore.js').RemotePeerCredentialStore
-const { RemoteProfileLifecycle } = requireUi('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.ts') as typeof import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js')
-type RemoteProfileSaveResult = import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js').RemoteProfileSaveResult
-type RemoteProfileLifecycle = import('../../app-client-ui/app/remoteControl/remoteProfileLifecycle.js').RemoteProfileLifecycle
+import { PeerWorkService } from '../../app-orchestrator/app/remoteControl/peerWorkService.js'
+import { RemoteControlAudit } from '../../app-orchestrator/app/remoteControl/remoteControlAudit.js'
+import { RemoteSessionSnapshots } from '../../app-orchestrator/app/remoteControl/remoteSessionSnapshots.js'
+import { ClientStatePaths } from '../../lib-orchestrator/shared/clientStatePaths.js'
+const { RemoteConnectionsManager } = requireUi('../../app-gateway/app/peers/remoteConnectionsManager.ts') as typeof import('../../app-gateway/app/peers/remoteConnectionsManager.js')
+type RemoteConnectionsManager = import('../../app-gateway/app/peers/remoteConnectionsManager.js').RemoteConnectionsManager
+const { RemoteControlInboundRegistry } = requireUi('../../app-gateway/app/peers/remoteControlInboundRegistry.ts') as typeof import('../../app-gateway/app/peers/remoteControlInboundRegistry.js')
+type RemoteControlInboundRegistry = import('../../app-gateway/app/peers/remoteControlInboundRegistry.js').RemoteControlInboundRegistry
+import { RemoteControlPairingManager } from '../../app-orchestrator/app/remoteControl/remoteControlPairingManager.js'
+type RemoteControlPairingImportResult = import('../../app-orchestrator/app/remoteControl/remoteControlPairingManager.js').RemoteControlPairingImportResult
+const { RemoteControlPeerServer } = requireUi('../../app-gateway/app/peers/remoteControlPeerServer.ts') as typeof import('../../app-gateway/app/peers/remoteControlPeerServer.js')
+type RemoteControlPeerServer = import('../../app-gateway/app/peers/remoteControlPeerServer.js').RemoteControlPeerServer
+import { RemoteInboundApprovalManager } from '../../app-orchestrator/app/remoteControl/remoteInboundApprovalManager.js'
+type RemoteInboundApprovalRequest = import('../../app-orchestrator/app/remoteControl/remoteInboundApprovalManager.js').RemoteInboundApprovalRequest
+import { RemoteControlServer } from '../../app-orchestrator/app/remoteControl/remoteControlServer.js'
+import { RemoteControlSettingsSection } from '../../app-orchestrator/app/remoteControl/remoteControlSettingsSection.js'
+import { RemoteEndpointIdentityStore } from '../../app-orchestrator/app/remoteControl/remoteEndpointIdentityStore.js'
+const { RemotePeerListenerManager } = requireUi('../../app-gateway/app/peers/remotePeerListenerManager.ts') as typeof import('../../app-gateway/app/peers/remotePeerListenerManager.js')
+type RemoteListenerApplyResult = import('../../lib-orchestrator/remoteControl/remotePeerListener.types.js').RemoteListenerApplyResult
+type RemotePeerListenerManager = import('../../app-gateway/app/peers/remotePeerListenerManager.js').RemotePeerListenerManager
+import { RemotePeerCredentialStore } from '../../app-orchestrator/app/remoteControl/remotePeerCredentialStore.js'
+type RemotePeerTrustedIdentity = import('../../app-orchestrator/app/remoteControl/remotePeerCredentialStore.js').RemotePeerTrustedIdentity
+import { RemoteProfileLifecycle } from '../../app-orchestrator/app/remoteControl/remoteProfileLifecycle.js'
+type RemoteProfileSaveResult = import('../../app-orchestrator/app/remoteControl/remoteProfileLifecycle.js').RemoteProfileSaveResult
 
 interface SmokeRuntimeIdentity {
   hostInstanceId: string
@@ -227,7 +230,7 @@ class SmokeRemoteApp extends SmokeHarness {
       this.requiredController().workspaceConnections(), this.requiredTarget().peerIdentity.remoteEndpointId, sessionId, this.workDir)
     const localFrames = new SmokeTerminalFrames()
     const remoteFrames = new SmokeTerminalFrames()
-    this.attachLocal('target-local-before-restarts', sessionId, localFrames)
+    await this.attachLocal('target-local-before-restarts', sessionId, localFrames)
     await this.attachRemote('controller-remote-before-restarts', sessionId, remoteFrames)
     await this.waitForWriters(localFrames, remoteFrames)
     await this.verifyDualTerminal(sessionId, localFrames, remoteFrames)
@@ -248,7 +251,7 @@ class SmokeRemoteApp extends SmokeHarness {
     await this.restartTarget(sessionId, controllerRestartFrames)
     this.checkRuntimeIdentity('target AppClientUI restart', before)
     const targetRestartFrames = new SmokeTerminalFrames()
-    this.attachLocal('target-local-after-target-restart', sessionId, targetRestartFrames)
+    await this.attachLocal('target-local-after-target-restart', sessionId, targetRestartFrames)
     await this.waitUntil(
       () => targetRestartFrames.writer,
       'the local target terminal did not become writable after the target restart',
@@ -521,7 +524,7 @@ class SmokeRemoteApp extends SmokeHarness {
     const target = this.requiredTarget()
     const controller = this.requiredController().peerIdentity
     const raised = this.approvals.count
-    target.revokeInbound(controller)
+    await target.revokeInbound(controller)
     await this.checkWaiting(
       'Revoke in the Allowed-in list hangs up what the trust was holding open',
       () => target.inboundSnapshot().length === 0,
@@ -666,20 +669,20 @@ class SmokeRemoteApp extends SmokeHarness {
     this.check('a remote resize yields to an active local terminal',
       remoteResizeValue?.applied === false)
     this.check('the active local terminal owns geometry',
-      this.requiredTarget().sessions.terminalResize(
+      (await this.requiredTarget().sessions.terminals.resize(
         'target-local-before-restarts',
         110,
         31,
-      ).kind === 'applied')
+      )).kind === 'applied')
     await this.writeAndObserve(
       'echo smoke-local-writer',
       'smoke-local-writer',
       localFrames,
       remoteFrames,
-      () => Promise.resolve(this.requiredTarget().sessions.terminalInput(
+      async () => Promise.resolve((await this.requiredTarget().sessions.terminals.input(
         'target-local-before-restarts',
         'echo smoke-local-writer\r',
-      )),
+      ))),
     )
     await this.writeAndObserve(
       'echo smoke-remote-writer',
@@ -798,16 +801,16 @@ class SmokeRemoteApp extends SmokeHarness {
     )
   }
 
-  private attachLocal(
+  private async attachLocal(
     attachId: string,
     sessionId: string,
     frames: SmokeTerminalFrames,
-  ): void {
-    const answer = this.requiredTarget().sessions.terminalAttach(
+  ): Promise<void> {
+    const answer = (await this.requiredTarget().sessions.terminals.attach(
       attachId,
       { sessionId, size: { cols: 110, rows: 31 } },
       { source: 'local', onFrame: (frame) => frames.add(frame) },
-    )
+    ))
     if (!answer.ok) throw new Error(`FAILED: local terminal attach refused: ${answer.detail}`)
   }
 
@@ -985,8 +988,11 @@ class SmokeRemoteApp extends SmokeHarness {
 }
 
 class SmokeTargetApp {
+  private readonly peerTrust = new PeerTrustSet()
+  private readonly peerWork: InstanceType<typeof PeerWorkService>
   readonly workspace: RemoteContentScenarios
   readonly sessions: SessionManager
+  private readonly terminalOwner: SmokeTerminalOwner
   readonly peerIdentity: RemoteControlPeerIdentity
   private readonly config: ConfigStore
   private readonly credentials: RemotePeerCredentialStore
@@ -1024,18 +1030,22 @@ class SmokeTargetApp {
       () => 'remote-app-smoke-target-endpoint',
     ).identity(this.credentials.machineIdentity())
     let inbound: RemoteControlInboundRegistry | null = null
+    this.terminalOwner = new SmokeTerminalOwner({ configIdentity: paths.configIdentity, channel: 'development',
+      controllerId: 'remote-app-smoke-target-controller', onError: message => this.errors.push(message),
+      activity: { userInput: marks => this.sessions.terminalActivity.userInput(marks),
+        pendingInputHint: counts => this.sessions.terminalActivity.pendingInputHint(counts) } })
     this.sessions = new SessionManager({
+      ...this.terminalOwner.sessionDeps,
       applicationRoot,
       resourcesRoot: null,
       configDir: paths.configDir,
       configIdentity: paths.configIdentity,
       channel: 'development',
       autoStartHost: false,
-      controllerId: 'remote-app-smoke-target-controller',
       onChanged: () => inbound?.publishEvent('sessions.changed'),
       onError: (message) => this.errors.push(message),
     })
-    const terminal = new RemoteControlTerminal(this.sessions, {
+    const terminal = new RemoteControlTerminal(this.sessions, this.sessions.terminals, {
       onError: (message) => this.errors.push(message),
     })
     const identity = SmokeRemoteAppPorts.system(paths.configIdentity, 'target')
@@ -1062,15 +1072,19 @@ class SmokeTargetApp {
       this.credentials,
       this.peerIdentity,
       paths.pairingBundleFile,
-      () => Promise.resolve(true),
+      { confirm: () => Promise.resolve(true) },
     )
     this.workspace = new RemoteContentScenarios(this.sessions)
+    const audit = new RemoteControlAudit(paths.auditFile, message => this.errors.push(message))
+    this.peerWork = new PeerWorkService({ control, views: this.workspace.views,
+      snapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot()),
+      files: new PastedFileStore(join(dirname(paths.auditFile), 'pasted-files')), audit,
+      unknownPeer: (claimant, address) => this.approval.request(claimant, address), bound: () => null })
+    this.peerTrust.replace(this.credentials.inboundPeers().map(peer => peer.identity))
     this.inbound = new RemoteControlInboundRegistry({
-      sessionViews: this.workspace.views,
-      sessionSnapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot()),
-      control,
-      terminal,
-      auditFile: paths.auditFile,
+      forward: this.peerWork, trust: this.peerTrust, audit,
+      perf: { span: (_name, run) => run() },
+      terminal: new RemoteControlLiveTerminal(this.sessions.terminals, { onError: message => this.errors.push(message) }),
       onChanged: () => undefined,
       onError: (message) => this.errors.push(message),
     })
@@ -1082,8 +1096,8 @@ class SmokeTargetApp {
      */
     this.approval = new RemoteInboundApprovalManager({
       credentials: this.credentials,
-      confirm: (request) => approvals.confirm(request),
-      onChanged: () => undefined,
+      shell: { confirm: request => { if (request.kind !== 'inbound') throw new Error('Unexpected confirmation'); return approvals.confirm(request.request) } },
+      onChanged: () => { this.peerTrust.replace(this.credentials.inboundPeers().map(peer => peer.identity)) },
       onError: (message) => this.errors.push(message),
       now: () => approvals.now(),
     })
@@ -1130,6 +1144,7 @@ class SmokeTargetApp {
   }
 
   async start(port: number): Promise<number> {
+    this.terminalOwner.start()
     await this.sessions.start()
     const applied = await this.listener.apply(SmokeTargetApp.listenerSettings(port))
     if (!applied.ok)
@@ -1140,10 +1155,14 @@ class SmokeTargetApp {
 
   async stop(): Promise<void> {
     this.connections.stop()
+    this.peerWork.beginStop()
     this.listener.beginStop()
     await this.listener.stop()
-    this.inbound.stop()
+    await this.inbound.stop()
+    this.peerWork.flush()
     await this.sessions.stop()
+    await this.peerWork.stop()
+    await this.terminalOwner.stop()
   }
 
   rebindListener(port: number): Promise<RemoteListenerApplyResult> {
@@ -1158,8 +1177,9 @@ class SmokeTargetApp {
   }
 
   /** What the Allowed-in list's Revoke does: the socket first, because trust is read at connect. */
-  revokeInbound(identity: RemoteControlPeerIdentity): void {
-    this.inbound.closeEndpoint(identity.remoteComputerId, identity.remoteEndpointId)
+  async revokeInbound(identity: RemoteControlPeerIdentity): Promise<void> {
+    this.peerTrust.revoke(identity.remoteComputerId, identity.remoteEndpointId)
+    await this.inbound.closeEndpoint(identity.remoteComputerId, identity.remoteEndpointId)
     this.credentials.revokeInbound(identity.remoteComputerId, identity.remoteEndpointId)
   }
 
@@ -1393,7 +1413,7 @@ class SmokeControllerApp {
       paths.pairingBundleFile,
       // The smoke stands in for the person at the dialog: it drives pairing deliberately, which is
       // exactly the answer the dialog exists to require.
-      () => Promise.resolve(true),
+      { confirm: () => Promise.resolve(true) },
     )
     /*
      * A real listener on the controlling side, and it is the point rather than scenery: this machine
@@ -1435,7 +1455,7 @@ class SmokeControllerApp {
       onError: (message) => this.errors.push(message),
     })
     const unavailableSessions = new SmokeUnavailableSessions()
-    const terminal = new RemoteControlTerminal(unavailableSessions, {
+    const terminal = new RemoteControlTerminal(unavailableSessions, unavailableSessions, {
       onError: (message) => this.errors.push(message),
     })
     const identity = SmokeRemoteAppPorts.system(paths.configIdentity, 'controller')
@@ -1623,7 +1643,14 @@ class SmokeControllerApp {
   }
 }
 
-class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteControlTerminalSessionPort {
+class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteControlTerminalSessionPort, TerminalPort {
+  async inhibit() { return { release: () => {} } }
+  async pendingInput() { return 0 }
+  async authorize() { return { refused: true as const } }
+  transaction(_attachId: string): ReturnType<TerminalPort['transaction']> {
+    return Promise.resolve({ refused: 'not-writer' })
+  }
+
   snapshot(): SessionsSnapshot {
     return {
       revision: 0,
@@ -1783,29 +1810,29 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
-  terminalAttach(
+  async attach(
     _attachId: string,
     _spec: { sessionId: string; size: { cols: number; rows: number } | null },
     _owner: TerminalAttachOwner,
-  ): TerminalAttachResult {
+  ): Promise<TerminalAttachResult> {
     return { ok: false, code: 'host-unreachable', detail: 'controller smoke has no local Host' }
   }
 
-  terminalInput(_attachId: string, _data: string): TerminalInputResult {
+  async input(_attachId: string, _data: string): Promise<TerminalInputResult> {
     return { kind: 'unknown-attach' }
   }
 
-  terminalResize(_attachId: string, _cols: number, _rows: number): TerminalResizeResult {
+  async resize(_attachId: string, _cols: number, _rows: number): Promise<TerminalResizeResult> {
     return { kind: 'unknown-attach' }
   }
 
-  terminalSetGeometryActive(_attachId: string, _active: boolean): TerminalResizeResult {
+  async setGeometryActive(_attachId: string, _active: boolean): Promise<TerminalResizeResult> {
     return { kind: 'unknown-attach' }
   }
 
-  terminalDetach(_attachId: string): void {}
+  detach(_attachId: string): void {}
 
-  terminalDetachAll(_attachIds: readonly string[]): void {}
+  detachAll(_attachIds: readonly string[]): void {}
 
   terminalComposer(_sessionId: string): Promise<TerminalComposerResult> {
     return Promise.resolve({ ok: false, code: 'unknown-session' })

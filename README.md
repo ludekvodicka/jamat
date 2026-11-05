@@ -176,7 +176,7 @@ The invitation is redeemed directly from that PC over trusted-LAN HTTP.
 
 ## Architecture
 
-A TypeScript monorepo of five packages, each with its own lockfile and its own `node_modules`. The
+A TypeScript monorepo with independent packages, each with its own lockfile and its own `node_modules`. The
 split is by process rather than by layer: something gets its own package because it owns state that
 outlives whoever called it.
 
@@ -184,7 +184,8 @@ outlives whoever called it.
 | --- | --- |
 | `app-host` | The process that owns the terminals, and the reason a session survives the client. Create, inspect, attach, input, resize, stop and remove, over a token-guarded loopback HTTP and WebSocket API. It is agent-agnostic: it spawns exactly the command, environment and terminal size it is handed, and knows nothing about Claude or Codex. No import of its own leaves the package. |
 | `lib-orchestrator` | The library both clients link, and the entire seam between a client and the host. Projects and their catalog, provider session history, durable session records, launching and reconciliation, work state, file changes and diffs, file viewing, the rate, model and transcript readers, git worktrees and merges, project setup, host control, and the transport-independent remote-control contract. It owns no process, and it is where the meaning of a session lives. |
-| `app-client-ui` | The Electron client. Workspace windows, native menu, status bar, sessions tree, launcher, settings, dockview tabs, live terminal panels, a Debug window, and the authenticated loopback control endpoint. It reaches the host only through `lib-orchestrator`. |
+| `app-client-ui` | The Electron client. Workspace windows, native menu, status bar, sessions tree, launcher, settings, dockview tabs, live terminal panels, Debug and Usage tabs, and native capabilities. It composes app-orchestrator in-process and reaches the Host through Gateway/library contracts. |
+| `app-orchestrator` | Domain composition, authenticated loopback control, pairing, audit, remote source views, versioning, tab requests, reMarkable and file access. It runs in main until the utility-process extraction. |
 | `app-client-cli` | A short-lived JSON client for that control endpoint, and through it for paired computers. It owns no durable state, and no peer credential ever passes through it. |
 | `mdext-renderer` | The renderer for the enriched Markdown the file viewer draws. Sources only; the client compiles it. |
 
@@ -208,11 +209,12 @@ pinned version), and Claude Code or Codex on your `PATH`.
 ```bash
 git clone https://github.com/ludekvodicka/jamat && cd jamat
 
-# Five installs. All of them: typecheck compiles every package, and the smokes spawn a real host.
+# Install each required package: typecheck compiles every package, and the smokes spawn a real host.
 pnpm install
 pnpm -C app-host install
 pnpm -C lib-orchestrator install
 pnpm -C app-client-ui install
+pnpm -C app-orchestrator install
 pnpm -C app-client-cli install
 
 pnpm run ui                                                 # the client

@@ -64,6 +64,10 @@ export class OrchestratorPaths {
     )
   }
 
+  static clientPerfDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.machineRoot(), 'client-ui', configIdentity, channel, 'perf')
+  }
+
   static relocationJournalsDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(
       OrchestratorPaths.directory(configIdentity, channel),

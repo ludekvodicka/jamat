@@ -63,18 +63,20 @@ export class AtomicJsonFile {
    * keystroke to the Host and every frame back. On Windows, with a real-time scanner over the
    * machine-state root, that rename alone is tens to hundreds of milliseconds.
    *
-   * The serialization is still synchronous, and deliberately: `JSON.stringify` of the document is
-   * microseconds, and building it off-thread would need the document copied to a worker.
+   * The serialization is still synchronous: building it off-thread would need the document copied to
+   * a worker. It is not free for a large document, so a file nobody reads by eye passes `compact` and
+   * skips the indentation, which is a third of the bytes and of the stringify time.
    */
   static async writeAsync(
     file: string,
     value: unknown,
-    mode = AtomicJsonFile.ownerOnlyFileConst,
+    options: { mode?: number; compact?: boolean } = {},
   ): Promise<void> {
     const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
     let committed = false
     try {
-      await writeFile(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
+      const text = options.compact === true ? JSON.stringify(value) : JSON.stringify(value, null, 2)
+      await writeFile(temporaryFile, text, { encoding: 'utf-8', mode: options.mode ?? AtomicJsonFile.ownerOnlyFileConst, flush: true })
       for (let attempt = 0; ; attempt++) {
         try { await rename(temporaryFile, file); break }
         catch (error) {

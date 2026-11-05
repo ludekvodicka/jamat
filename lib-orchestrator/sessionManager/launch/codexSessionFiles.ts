@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import type { RuntimeLaunchSpec } from '../../../app-host/app/wire/hostWire.js'
 import type { CodexSessionIdentity, CodexSessionLaunch } from '../codexSessionIdentity'
 import type { SessionRecord } from '../records/sessionRecord.types'
+import { IdentityReceiptFile } from './identityReceiptFile'
 import type { LaunchPlanOptions } from './launchPlanner'
 import { WindowsCommand } from './windowsCommand'
 import { CodexLaunchConfiguration } from '../../agentAccounts/codexProfileView'
@@ -16,6 +17,7 @@ export class CodexSessionFiles {
   private readonly resourcesRoot: string | null
   private readonly report: (message: string) => void
   private readonly reported = new Set<string>()
+  private readonly receipts = new IdentityReceiptFile()
 
   constructor(options: {
     directory: string; applicationRoot: string; resourcesRoot: string | null
@@ -75,14 +77,12 @@ export class CodexSessionFiles {
     else throw new Error(`Unsupported Codex bridge platform: ${process.platform}`)
   }
 
-  identity(record: SessionRecord): CodexSessionIdentity | null {
+  async identity(record: SessionRecord): Promise<CodexSessionIdentity | null> {
     if (!CodexSessionFiles.tracked(record)) return null
     try {
-      const file = this.receiptFile(record)
-      if (!existsSync(file)) return null
-      if (statSync(file).size > 8192) throw new Error('Identity receipt exceeds 8 KiB')
-      const receipt = JSON.parse(readFileSync(file, 'utf8')) as Partial<CodexSessionIdentity> | null
-      if (receipt?.schemaVersion !== 1 || receipt.jamatSessionId !== record.sessionId
+      const receipt = await this.receipts.read(this.receiptFile(record)) as Partial<CodexSessionIdentity> | null
+      if (receipt === null) return null
+      if (receipt.schemaVersion !== 1 || receipt.jamatSessionId !== record.sessionId
         || receipt.launchId !== record.agent!.identityLaunchId
         || typeof receipt.nativeSessionId !== 'string'
         || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(receipt.nativeSessionId)

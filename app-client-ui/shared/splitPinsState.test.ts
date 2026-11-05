@@ -36,7 +36,6 @@ describe('app-client-ui/shared/splitPinsState', () => {
     [{ key: '' }],
     [{ key: 1 }],
     [{ key: 'same' }, { key: 'same' }],
-    Array.from({ length: SplitPinsState.itemsMaxConst + 1 }, (_, index) => ({ key: `k${index}` })),
     [{ key: 'big', title: 'x'.repeat(70_000) }],
   ])('refuses invalid items %#', (value) => {
     expect(SplitPinsState.isValidItems(value)).toBe(false)

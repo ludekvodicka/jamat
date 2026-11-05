@@ -11,6 +11,7 @@ import { CommitPaneChannel } from '../versioning/commitPanePorts'
 import { CommitTargets } from '../../shared/commitTargets'
 import type { FileViewerChangedOpen } from '../fileViewer/fileViewerPanel.types'
 import { StepBody } from './stepBody'
+import { useFollowEnd } from '../taskView/useFollowEnd'
 import { WorktreeValidation } from './worktreeValidation'
 import './sessionActions.css'
 
@@ -47,7 +48,7 @@ export function SessionActionsPane(props: ActionsPaneProps): React.JSX.Element {
     if (typeof outerRef === 'function') outerRef(node)
     else if (outerRef) outerRef.current = node
   }, [outerRef])
-  SessionActionsScroll.useFollowEnd(container)
+  useFollowEnd(container)
   if (props.unavailable) return <section ref={props.ref} tabIndex={-1} aria-label="Session actions"><p role="status">{props.unavailable}</p></section>
   if (props.session?.actions === undefined) return <WorkflowPane {...props} />
   const sections = props.session.actions.sections.map((section) => {
@@ -113,12 +114,8 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   // A peer of an older build sends no separateMessages, only its several repositories.
   const multipleRepositories = repositoryReviews.length > 1 || props.review?.body?.kind === 'commit' && props.review.body.separateMessages === true && repositoryReviews.length > 0
   const [repositoryMessages, setRepositoryMessages] = useState<Record<string, string>>({})
-  const [repositoryAcknowledgements, setRepositoryAcknowledgements] = useState<Record<string, string>>({})
   const [repositoryDrafts, setRepositoryDrafts] = useState<CommitPaneDraftState['repositories']>()
-  const repositories = (repositoryDrafts ?? repositoryReviews).map((repository) => ({ ...repository,
-    acknowledged: repositoryAcknowledgements[repositoryKey(repository)] === repository.message
-      ? ('findings' in repository ? repository.findings?.map((finding) => finding.id) ?? [] : []) : [],
-  }))
+  const repositories = (repositoryDrafts ?? repositoryReviews).map((repository) => ({ ...repository, acknowledged: [] }))
   const unsavedRepositories = repositories.some((repository) => repositoryMessages[repositoryKey(repository)] !== undefined
     && repositoryMessages[repositoryKey(repository)] !== repository.message)
   const draft = useRef<CommitPaneDraftState | null>(null)
@@ -128,8 +125,6 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   if (props.reviewOpen && props.review !== undefined && reviewVersion.current?.key !== props.review.key)
     reviewVersion.current = { key: props.review.key, version: props.session?.worktreeView?.version }
   const outdated = reviewVersion.current !== null && reviewVersion.current.version !== props.session?.worktreeView?.version
-  const [acknowledgedMessage, setAcknowledgedMessage] = useState<string | null>(null)
-  const messageKey = (state: CommitPaneDraftState): string => JSON.stringify([state.message, state.messageSource, state.messageFindings])
   // Nothing is missing from a selection that has not loaded yet; it named every file while the dialog opened (UA1-J13-7).
   const missingSelection = (state: CommitPaneDraftState): string[] => !state.ready ? [] : section.validation?.requiredSelection?.filter((path) =>
     !state.checked.some((selected) => selected.replace(/\\/g, '/') === path.replace(/\\/g, '/'))) ?? []
@@ -140,16 +135,14 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
     .flatMap((repository) => {
       const findings = 'findings' in repository ? repository.findings ?? [] : []
       const label = `${repository.repositoryName} (${mountOf(reviewScope, repository.root) || '.'})`
-      if (findings.some((finding) => finding.id === 'empty')) return [`Enter a commit message for ${label}.`]
-      return findings.some((finding) => finding.confirm === true && !repository.acknowledged.includes(finding.id))
-        ? [`Check the message for ${label} and tick "I checked this repository message".`] : []
+      return findings.some((finding) => finding.id === 'empty') ? [`Enter a commit message for ${label}.`] : []
     })
   const reviewPane = useRef<HTMLElement>(null)
   const historyPane = useRef<HTMLDivElement>(null)
   const visible = props.visible && expanded && !props.hidden && !props.reviewOpen
   useEffect(() => {
     if (props.visible && !props.hidden)
-      (props.reviewOpen ? reviewPane.current : historyPane.current)?.focus()
+      (props.reviewOpen ? reviewPane.current : historyPane.current)?.focus({ preventScroll: true })
   }, [props.reviewOpen, props.visible, props.hidden])
   const now = useSecondTicks(visible && section.open)
   const lines = useRunLines(props.sessions, section)
@@ -189,7 +182,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
         ...(multipleRepositories ? { repositories } : {}),
         selection: [...state.checked], message: proof?.message ?? state.message, messageSource: state.messageSource ?? 'unknown',
         ...pressedVersion === undefined ? {} : { reviewVersion: pressedVersion },
-        acknowledgedFindings: acknowledgedMessage === messageKey(state) ? state.messageFindings?.map((finding) => finding.id) ?? [] : [],
+        acknowledgedFindings: [],
         ...(proof ? { reviewed: { proof, workflowId: section.workflowId, revision: revision! } } : {}),
       })
       if (action.id === 'later' && action.deferred !== undefined && answer.kind === 'done' && current !== null) setDeferred({ key: current, line: action.deferred })
@@ -201,8 +194,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   const buttons = (actions: SessionWorkflowAction[], state?: CommitPaneDraftState): React.JSX.Element => <>
     {actions.map((action) => <button key={action.id} type="button"
       className={`workflow__action${action.primary ? ' workflow__action--primary' : ''}${action.confirm ? ' session-actions__danger' : ''}`}
-      disabled={busy || action.requiresCommit === true && (outdated || state?.ready !== true || missingSelection(state).length > 0 || unsavedRepositories || repositoryWaits(state).length > 0 || !multipleRepositories && state.checked.length > 0 && (state.messageFindings?.some((finding) => finding.id === 'empty') === true
-        || state.messageFindings?.some((finding) => finding.confirm === true) === true && acknowledgedMessage !== messageKey(state)) || !multipleRepositories && (state.checked.length > 0 ? !state.message.trim() : state.hasChanges))}
+      disabled={busy || action.requiresCommit === true && (outdated || state?.ready !== true || missingSelection(state).length > 0 || unsavedRepositories || repositoryWaits(state).length > 0 || !multipleRepositories && state.checked.length > 0 && state.messageFindings?.some((finding) => finding.id === 'empty') === true || !multipleRepositories && (state.checked.length > 0 ? !state.message.trim() : state.hasChanges))}
       onClick={() => action.confirm === undefined ? void press(action, {}, state) : setConfirm(action)}>{action.label}</button>)}
     {actions.some((action) => !action.primary && action.note !== undefined) && <ul className="workflow__action-notes">
       {actions.filter((action) => !action.primary && action.note !== undefined).map((action) => <li key={action.id}>{action.label}: {action.note}</li>)}
@@ -267,8 +259,6 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
         <button type="button" className="workflow__action" disabled={busy} onClick={() => {
           draft.current = null
           reviewVersion.current = { key: props.review!.key, version: props.session?.worktreeView?.version }
-          setAcknowledgedMessage(null)
-          setRepositoryAcknowledgements({})
           setRepositoryDrafts(undefined)
           setReviewReload((value) => value + 1)
         }}>Reload current review</button></div>}
@@ -295,10 +285,6 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
                 }} />
             </label>
             {findings.map((finding) => <p key={finding.id} className="commit-warning" role="status">{finding.text}</p>)}
-            {findings.some((finding) => finding.confirm === true) && !findings.some((finding) => finding.id === 'empty') && <label>
-              <input type="checkbox" checked={repositoryAcknowledgements[repositoryKey(repository)] === repository.message}
-                onChange={(event) => setRepositoryAcknowledgements((messages) => ({ ...messages, [repositoryKey(repository)]: event.target.checked ? repository.message : '' }))} />
-              I checked this repository message</label>}
           </div>
         })}</div> : undefined}
         item={{ kind: 'commit', key: `actions:${reviewBody.scopeRoot}`, title: props.review!.title, vcs: reviewBody.vcs, scopeRoot: reviewBody.scopeRoot }}
@@ -314,11 +300,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
             <p>Include the whole verified change set. Missing:</p>
             <ul aria-label="Missing from the selection">{missingSelection(state).map((path) => <li key={path} title={path}>{mountOf(reviewBody.scopeRoot, path) || '.'}</li>)}</ul>
           </div>}{repositoryWaits(state).map((wait) => <p key={wait} role="status" className="session-actions__missing">{wait}</p>)}
-          {/* With several repositories the top-level message is hidden and nothing publishes it, so nobody checks it. */}
-          {!multipleRepositories && state.checked.length > 0 && state.messageFindings?.some((finding) => finding.confirm === true) === true && !state.messageFindings.some((finding) => finding.id === 'empty') && <label>
-          <input type="checkbox" checked={acknowledgedMessage === messageKey(state)} onChange={(event) => setAcknowledgedMessage(event.target.checked ? messageKey(state) : null)} />
-          I checked this message
-        </label>}{buttons(section.actions.filter((action) => action.requiresCommit), state)}</div>}
+          {buttons(section.actions.filter((action) => action.requiresCommit), state)}</div>}
         onOpenChanged={props.onOpenChanged ?? (() => 'The file viewer is unavailable')}
         onOpenSeparately={(root) => props.onOpenSeparately?.(reviewBody.vcs, root)} />
     </section>}
@@ -345,34 +327,8 @@ function ActionsStep(props: { step: SessionWorkflowStep; sessionId: string; now:
       onClick={() => props.onExpand(!expanded)}>{expanded ? 'Hide details' : 'Show details'}: {step.title}</button>}
     {expanded && step.body !== undefined && step.body.kind !== 'commit' && <div className="session-actions__body">
       <StepBody ports={props.ports} body={step.body} sessionId={props.sessionId} title={step.title} visible={props.visible} conflicts={props.ports.conflicts}
-        onClose={() => { props.onExpand(false); detailsToggle.current?.focus() }} />
+        onClose={() => { props.onExpand(false); detailsToggle.current?.focus({ preventScroll: true }) }} />
     </div>}
   </>
 }
 
-/**
- * New steps and output land at the end, so the pane follows them while the person reads the end.
- * Scrolling up stops the following; scrolling back to the end resumes it.
- */
-export class SessionActionsScroll {
-  static readonly endSlackPxConst = 24
-
-  static useFollowEnd(element: HTMLElement | null): void {
-    useEffect(() => {
-      if (element === null) return
-      let following = true
-      const onScroll = (): void => {
-        following = element.scrollHeight - element.scrollTop - element.clientHeight <= SessionActionsScroll.endSlackPxConst
-      }
-      const follow = (): void => { if (following) element.scrollTop = element.scrollHeight }
-      const observer = new MutationObserver(follow)
-      observer.observe(element, { childList: true, subtree: true, characterData: true })
-      element.addEventListener('scroll', onScroll)
-      follow()
-      return () => {
-        observer.disconnect()
-        element.removeEventListener('scroll', onScroll)
-      }
-    }, [element])
-  }
-}

@@ -1,3 +1,4 @@
+import '../checks/test-tmpdir.mjs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'

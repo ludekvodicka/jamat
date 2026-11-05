@@ -27,6 +27,13 @@ describe('admission', () => {
     const k = kind(); k.queue = [queued(item('a'))]; k.attempts = [attempt('a', 'review')]
     expect(admit(input(k)).holds).toEqual([{ itemKey: 'a', hold: 'already running' }])
   })
+  it('drops stale completed keys while admitting new keys and ended retries', () => {
+    const k = kind()
+    k.queue = ['done', 'fresh', 'retry'].map(key => queued(item(key)))
+    k.attempts = [attempt('done', 'completed', 'ended'), attempt('retry', 'ended', 'ended')]
+    expect(admit(input(k))).toMatchObject({ dropped: ['done'], holds: [],
+      grants: [{ item: { key: 'fresh' } }, { item: { key: 'retry' } }] })
+  })
   it('conflicts parent and child working copies but permits separate projects', () => {
     const k = kind(); k.queue = [queued(item('a', 'Q:/Projects/A')), queued(item('sub', 'Q:/Projects/A/sub'))]
     expect(admit(input(k)).holds[0]?.hold).toBe('working copy busy')

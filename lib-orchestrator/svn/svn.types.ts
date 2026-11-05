@@ -66,6 +66,30 @@ export interface SvnVerboseItem {
   changed: number
 }
 
+/** What `status -v` of a whole tree says about the nodes of one mount, before its URL is known. */
+export interface SvnMountNodes {
+  /** The one BASE of its versioned nodes, as `updateProblems` reads them, or `mixed`. */
+  base: number | 'mixed'
+  missing: boolean
+  switched: boolean
+  /** A node an update would skip: incomplete, obstructed or conflicted. */
+  skipped: boolean
+  /** Any local change of its own nodes or of a mount below it, unversioned files included. */
+  localChanges: boolean
+  /** A property change of its own nodes, which may change its `svn:externals`. */
+  propertyChanges: boolean
+}
+
+/** One directory mount of a worktree as one read of its round saw it (`SvnWorktreeManager.mountStates`). */
+export interface SvnMountState extends SvnMountNodes {
+  /** Absolute. */
+  path: string
+  url: string
+  repository: string
+  /** It holds `svn:externals` definitions, or a property change that may be one. */
+  carrier: boolean
+}
+
 export type SvnLogAction = 'A' | 'D' | 'M' | 'R'
 
 /** One path a revision changed, relative to the worktree (`.` the worktree or mount root). */

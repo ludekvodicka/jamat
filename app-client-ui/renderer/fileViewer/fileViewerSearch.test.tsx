@@ -132,8 +132,10 @@ describe('FileViewer search', () => {
       <SearchViewer name="First"><p>target target</p></SearchViewer>
       <SearchViewer name="Second"><p>target <strong>target</strong> target</p></SearchViewer>
     </>)
-    await waitFor(() => expect(second.getByText('1 / 3')).toBeVisible())
-    expect(CSS.highlights.get('file-viewer-search')?.size).toBe(3)
+    await waitFor(() => {
+      expect(second.getByText('1 / 3')).toBeVisible()
+      expect(CSS.highlights.get('file-viewer-search')?.size).toBe(3)
+    })
     fireEvent.change(second.getByRole('textbox'), { target: { value: 'absent' } })
     expect(second.getByText('No matches')).toBeVisible()
     expect(second.getByRole('button', { name: 'Next match' })).toBeDisabled()

@@ -1,3 +1,4 @@
+import type { SessionProcessPriorityLevel } from '../../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import {
   AgentSettings,
   type AgentSettingsAgentId,
@@ -21,6 +22,7 @@ export type AgentSettingsInput =
   | { input: 'contextPanelPercent'; agentId: AgentSettingsAgentId; value: number }
   | { input: 'autoCompactPercent'; agentId: AgentSettingsAgentId; value: number }
   | { input: 'autoCompactEnabled'; agentId: AgentSettingsAgentId; value: boolean }
+  | { input: 'processPriority'; value: SessionProcessPriorityLevel }
 
 export type AgentSettingsEffect = SettingsCardEffect<AgentSettingsValue>
 
@@ -51,7 +53,8 @@ export class AgentSettingsModel {
       && loaded.claude.autoCompactPercent === buffer.claude.autoCompactPercent
       && loaded.codex.autoCompactPercent === buffer.codex.autoCompactPercent
       && loaded.claude.autoCompactEnabled === buffer.claude.autoCompactEnabled
-      && loaded.codex.autoCompactEnabled === buffer.codex.autoCompactEnabled)
+      && loaded.codex.autoCompactEnabled === buffer.codex.autoCompactEnabled
+      && AgentSettings.processPriorityOf(loaded) === AgentSettings.processPriorityOf(buffer))
   }
 
   static transition(
@@ -94,6 +97,9 @@ export class AgentSettingsModel {
     else if (input.input === 'autoCompactEnabled')
       return AgentSettingsModel.edited(state, (buffer) =>
         AgentSettings.withAutoCompactEnabled(buffer, input.agentId, input.value))
+    else if (input.input === 'processPriority')
+      return AgentSettingsModel.edited(state, (buffer) =>
+        AgentSettings.withProcessPriority(buffer, input.value))
     else
       throw new Error(`Unknown agent settings input: ${JSON.stringify(input)}`)
   }

@@ -1,3 +1,4 @@
+import { bindService } from '../shared/serviceIpcTestHarness'
 import type { BrowserWindow, WebContents } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -49,8 +50,8 @@ describe('app-client-ui/app/shell/serviceDialogIpc', () => {
     electronMock.messageBoxes.length = 0
     electronMock.directoryAnswer = { canceled: true, filePaths: [] }
     electronMock.messageAnswer = { response: 1 }
-    service = new ServiceDialogIpc((sender) =>
-      sender === holderSender ? holderWindowConst : windowConst)
+    service = bindService(new ServiceDialogIpc((sender) =>
+      sender === holderSender ? holderWindowConst : windowConst))
   })
 
   async function pick(
@@ -80,7 +81,7 @@ describe('app-client-ui/app/shell/serviceDialogIpc', () => {
     electronMock.messageAnswer = { response: 0 }
     expect(await service.confirmRevert(sender, ['Q:/app/file.txt'], 'svn')).toBe(true)
     expect(electronMock.messageBoxes[1].options.detail).toContain('SVN BASE')
-    expect(await new ServiceDialogIpc(() => null).confirmRevert(sender, ['file'], 'svn')).toBe(false)
+    expect(await bindService(new ServiceDialogIpc(() => null)).confirmRevert(sender, ['file'], 'svn')).toBe(false)
     expect(electronMock.messageBoxes).toHaveLength(2)
   })
 
@@ -153,7 +154,7 @@ describe('app-client-ui/app/shell/serviceDialogIpc', () => {
   // action - and it must reach the caller as a failed result, not as an unparented dialog nobody
   // can see.
   it('refuses to open a picker with no window to open it over', async () => {
-    const orphan = new ServiceDialogIpc(() => null)
+    const orphan = bindService(new ServiceDialogIpc(() => null))
     orphan.initialize()
 
     const answer = await pick('Choose a projects root')
@@ -214,7 +215,7 @@ describe('app-client-ui/app/shell/serviceDialogIpc', () => {
    * alternative answer is silence where somebody is waiting for a yes or a no.
    */
   it('asks without a parent rather than refusing when the window has gone', async () => {
-    const orphan = new ServiceDialogIpc(() => null)
+    const orphan = bindService(new ServiceDialogIpc(() => null))
     orphan.initialize()
 
     expect(await confirm('Restart this session?', 'detail')).toEqual({ ok: true, value: false })

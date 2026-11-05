@@ -108,6 +108,25 @@ describe('app-client-cli/app/appConfig', () => {
     })).toThrow(AppClientCliError)
   })
 
+  it('selects the session controller pair inside a Jamat session, and lets every explicit selector replace it', () => {
+    const session = { JAMAT_V3_SESSION_ID: 'session-1', JAMAT_V3_SESSION_CONTROLLER: 'identity-own', JAMAT_V3_SESSION_CHANNEL: 'development' }
+
+    expect(AppConfig.load(CliArguments.parse(['sessions', 'list']), session)).toMatchObject({
+      configDir: null, configIdentity: 'identity-own', runtimeChannel: 'development', identity: null,
+    })
+    expect(AppConfig.load(CliArguments.parse(['sessions', 'list', '--config-identity', 'identity-other']), session))
+      .toMatchObject({ configIdentity: 'identity-other', runtimeChannel: null })
+    expect(AppConfig.load(CliArguments.parse(['sessions', 'list', '--channel', 'production']), session))
+      .toMatchObject({ configIdentity: null, runtimeChannel: 'production' })
+    expect(AppConfig.load(CliArguments.parse(['sessions', 'list']), { ...session, JAMAT_V3_RUNTIME_CHANNEL: 'production' }))
+      .toMatchObject({ configIdentity: null, runtimeChannel: 'production' })
+    // Half a pair selects nothing, and a damaged channel is refused rather than read as discovery.
+    expect(AppConfig.load(CliArguments.parse(['sessions', 'list']), { JAMAT_V3_SESSION_CONTROLLER: 'identity-own' }))
+      .toMatchObject({ configIdentity: null, runtimeChannel: null })
+    expect(() => AppConfig.load(CliArguments.parse(['sessions', 'list']), { ...session, JAMAT_V3_SESSION_CHANNEL: 'preview' }))
+      .toThrow(/JAMAT_V3_SESSION_CHANNEL/)
+  })
+
   it('keeps the config env strict and refuses identity selection beside it', () => {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-cli-env-strict-'))
     roots.push(root)

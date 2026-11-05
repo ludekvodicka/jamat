@@ -2,8 +2,10 @@ import { spawn } from 'node:child_process'
 
 import { CommandInvoker } from '../shared/commandInvoker'
 import type { CommandOutcome, CommandRunner, CommandRunOptions } from '../shared/commandInvoker.types'
+import type { PerfSpans } from '../perfMonitor/perfSpans'
 
 export interface SvnInvokerOptions {
+  perf?: PerfSpans
   /** As for git: `svn log` and `svn cat` reach the repository server, so the default is far too long. */
   timeoutMilliseconds?: number
 }
@@ -13,6 +15,7 @@ export class SvnInvoker implements CommandRunner {
 
   constructor(options?: SvnInvokerOptions) {
     this.invoker = new CommandInvoker({
+      perf: options?.perf,
       spawnImpl: spawn,
       ...(options?.timeoutMilliseconds === undefined
         ? {}
@@ -28,8 +31,18 @@ export class SvnInvoker implements CommandRunner {
     const separator = args.indexOf('--')
     const optionsAndCommand = separator === -1 ? args : args.slice(0, separator)
     const nonInteractive = optionsAndCommand.some((arg) => writes.has(arg)) && !optionsAndCommand.includes('--non-interactive')
-    return this.invoker.run({ command: 'svn', args: nonInteractive ? ['--non-interactive', ...args] : args,
+    return this.invoker.run({ command: 'svn', perfName: `svn:${SvnInvoker.subcommand(optionsAndCommand)}`,
+      args: nonInteractive ? ['--non-interactive', ...args] : args,
       cwd, env: SvnInvoker.childEnv(), ...options })
+  }
+
+  private static subcommand(args: readonly string[]): string {
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index]!
+      if (['--username', '--password', '--config-dir', '--config-option', '--revision', '-r', '--depth', '--set-depth', '--accept', '--changelist'].includes(arg)) index++
+      else if (!arg.startsWith('-')) return arg
+    }
+    return ''
   }
 
   private static childEnv(): NodeJS.ProcessEnv {

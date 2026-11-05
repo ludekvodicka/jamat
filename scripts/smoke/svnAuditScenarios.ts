@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -33,9 +32,8 @@ import { GitInvoker } from '../../lib-orchestrator/git/gitInvoker.js'
 import type { SvnStepJournalEntry } from '../../lib-orchestrator/worktrees/worktreeState.js'
 import { SvnTextResolutionScenarios } from './svnTextResolutionScenarios.js'
 
-const requireUi = createRequire(import.meta.url)
-const { VersioningCommitManager } = requireUi('../../app-client-ui/app/versioning/versioningCommitManager.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitManager.js')
-const { VersioningCommitMessageStore } = requireUi('../../app-client-ui/app/versioning/versioningCommitMessageStore.ts') as typeof import('../../app-client-ui/app/versioning/versioningCommitMessageStore.js')
+import { VersioningCommitManager } from '../../app-orchestrator/app/versioning/versioningCommitManager.js'
+import { VersioningCommitMessageStore } from '../../app-orchestrator/app/versioning/versioningCommitMessageStore.js'
 
 export class SvnAuditScenarios {
   static async run(parent: string): Promise<void> {
@@ -168,7 +166,7 @@ export class SvnAuditScenarios {
     const resolver = { briefs: logs, unavailable: () => 'No agent in this fixture', withMarkers: SvnResolverLauncher.markersIn, cli: () => ({ ok: false as const, detail: 'No agent in this fixture' }),
       instance: { configIdentity: 'audit', channel: 'development' as const } }
     const operations = new WorktreeOperations({ records, scripts, now: Date.now, newId: randomUUID, changed: () => {}, commands,
-      svn: manager, results, resolver, busyReason: () => null, holdInput: () => () => {}, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} } })
+      svn: manager, results, resolver, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} } })
     const flow = new SvnConflictFlow({ svn: manager, briefs: logs, handover: results, resolutions: operations.resolutions,
       savedDirectoryOf: (id) => results.savedDirectoryOf(id), withMarkers: resolver.withMarkers, unavailable: resolver.unavailable, cli: resolver.cli, now: Date.now })
     let action: SessionRecordSvnAction = { actionId: 'audit', kind: 'finish', stage: 'fixing', root: tree, checks: [], checkCursor: 0, rootCursor: 0,

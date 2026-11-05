@@ -105,7 +105,7 @@ export class SvnFinishContractCases {
   [
     "NF19",
     "finish/finishDriver",
-    "requires acknowledgements of a proposed message"
+    "refuses only an empty proposed message and publishes one with findings without an acknowledgement"
   ],
   [
     "NF20",

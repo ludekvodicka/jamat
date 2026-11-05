@@ -6,14 +6,21 @@ import type {
   AppClientUiBridgeCalls,
   AppClientUiBridgeListeners,
   AppClientUiIpcEventMap,
+  AppClientUiIpcInvokeMap,
 } from '../shared/appClientUiIpc'
 import {
   AppClientUiBridgeCallsConst,
   AppClientUiBridgeEventsConst,
+  AppClientUiChannelOwnersConst,
 } from '../shared/appClientUiIpc'
 import type { AutoUpdateApi } from '../shared/electron/autoUpdate/common/autoUpdateApi'
 import { AutoUpdateBridge } from '../shared/electron/autoUpdate/preload/autoUpdateBridge'
 import { invokeAppClientUi, onAppClientUiEvent } from '../shared/typedIpc'
+import { WindowGateway } from './windowGateway'
+import { WindowOrchestrator } from './windowOrchestrator'
+
+const gateway = new WindowGateway()
+const orchestrator = new WindowOrchestrator()
 
 /**
  * Every member of the bridge does the same two things - name a channel, and pass on exactly what it
@@ -29,7 +36,7 @@ import { invokeAppClientUi, onAppClientUiEvent } from '../shared/typedIpc'
 /** The two wrappers as the walk can call them: a channel it holds as a plain string, and the rest. */
 type AppClientUiInvokeLoose = (channel: string, ...args: readonly unknown[]) => Promise<unknown>
 type AppClientUiSubscribeLoose =
-  (channel: string, callback: (...args: readonly unknown[]) => void) => () => void
+  (channel: string, callback: (...args: readonly unknown[]) => void | Promise<void>) => () => void
 
 class AppClientUiBridgeBuild {
   static calls<T extends AppClientUiBridgeCallTable>(table: T): AppClientUiBridgeCalls<T> {
@@ -39,7 +46,7 @@ class AppClientUiBridgeBuild {
         // `Object.entries` loses which channel the string is, so the wrapper is called in the shape
         // the walk holds. Which channels exist is checked where the table is declared.
         built[member] = (...args: readonly unknown[]) =>
-          (invokeAppClientUi as AppClientUiInvokeLoose)(entry, ...args)
+          AppClientUiBridgeBuild.invoke(entry as keyof AppClientUiIpcInvokeMap, args)
       else if (entry !== null && typeof entry === 'object')
         built[member] = AppClientUiBridgeBuild.calls(entry)
       else
@@ -55,9 +62,26 @@ class AppClientUiBridgeBuild {
   ): AppClientUiBridgeListeners<T> {
     const built: Record<string, unknown> = {}
     for (const [member, channel] of Object.entries(table))
-      built[member] = (callback: (...args: readonly unknown[]) => void) =>
-        (onAppClientUiEvent as AppClientUiSubscribeLoose)(channel, callback)
+      built[member] = (callback: (...args: readonly unknown[]) => void | Promise<void>) => {
+        const owner = AppClientUiChannelOwnersConst[channel] ?? 'main'
+        switch (owner) {
+          case 'main': return (onAppClientUiEvent as AppClientUiSubscribeLoose)(channel, callback)
+          case 'gateway': return gateway.subscribe(channel, callback)
+          case 'orchestrator': return orchestrator.subscribe(channel, callback)
+          default: throw new Error(`Unknown channel owner: ${owner}`)
+        }
+      }
     return built as AppClientUiBridgeListeners<T>
+  }
+
+  private static invoke(channel: keyof AppClientUiIpcInvokeMap, args: readonly unknown[]): Promise<unknown> {
+    const owner = AppClientUiChannelOwnersConst[channel] ?? 'main'
+    switch (owner) {
+      case 'main': return (invokeAppClientUi as AppClientUiInvokeLoose)(channel, ...args)
+      case 'gateway': return gateway.invoke(channel, ...args)
+      case 'orchestrator': return orchestrator.invoke(channel, ...args)
+      default: throw new Error(`Unknown channel owner: ${owner}`)
+    }
   }
 }
 

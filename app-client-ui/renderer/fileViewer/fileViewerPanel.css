@@ -94,6 +94,7 @@
   padding: 2px var(--space-2);
 }
 .file-viewer-view-control button[aria-pressed='true'],
+.file-viewer-wrap[aria-pressed='true'],
 .file-diff-toolbar button[aria-pressed='true'] {
   border-color: var(--color-accent-strong);
   color: var(--color-accent);
@@ -125,7 +126,8 @@
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
-.file-viewer-reload {
+.file-viewer-reload,
+.file-viewer-wrap {
   padding: 2px var(--space-2);
 }
 .file-viewer-gone {
@@ -244,6 +246,36 @@
 }
 .file-viewer-code .shiki .line {
   white-space: pre;
+}
+/* Wrap: every text surface breaks its long lines at the panel edge and keeps their indentation
+   characters. The containers drop their content-wide floor, which is what made them scroll. Hex
+   rows stay as they are: a dump is read by its columns. A MdExt document's prose already wraps, so
+   only its code blocks change. */
+.file-viewer[data-file-wrap] .file-viewer-raw,
+.file-viewer[data-file-wrap] .file-viewer-code .shiki,
+.file-viewer[data-file-wrap] .file-diff-lines {
+  min-width: 0;
+}
+.file-viewer[data-file-wrap] .file-viewer-raw,
+.file-viewer[data-file-wrap] .file-viewer-code .shiki .line,
+.file-viewer[data-file-wrap] .file-diff-text,
+.file-viewer[data-file-wrap] .mdext-code .shiki,
+.file-viewer[data-file-wrap] .mdext-code-fallback {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* A wrapped diff row continues beside its gutters rather than under them. The newline after each
+   row is a whitespace-only flex child, which a flex container does not draw. */
+.file-viewer[data-file-wrap] .file-diff-line {
+  display: flex;
+}
+.file-viewer[data-file-wrap] .file-diff-gutter,
+.file-viewer[data-file-wrap] .file-diff-marker {
+  flex: none;
+}
+.file-viewer[data-file-wrap] .file-diff-text {
+  flex: 1;
+  min-width: 0;
 }
 .file-viewer-line-target {
   animation: file-viewer-line-target 1.8s ease-out;

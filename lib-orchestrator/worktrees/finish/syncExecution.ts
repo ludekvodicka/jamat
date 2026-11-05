@@ -33,6 +33,10 @@ export class SyncExecution {
     if (state.approvedAt !== undefined || state.preparation !== undefined)
       await this.state.write(sessionId, (current) => ({ ...current, approvedAt: undefined, preparation: undefined, review: undefined, checks: undefined,
         execution: { ...current.execution!, preparationRound: 0 } }))
+    // The idle gate passed or the person confirmed a busy worker: the round runs now, so the step shows
+    // the update and its log, not the wait it outlived by minutes in the 133 Finish.
+    if (state.awaitingIdleAt !== undefined || state.awaitingIdleReason !== undefined)
+      await this.state.write(sessionId, (current) => ({ ...current, awaitingIdleAt: undefined, awaitingIdleReason: undefined }))
     const synced = await this.deps.sync.run(sessionId, 'finish', state.execution?.confirmBusy)
     const attempts = this.deps.records.get(sessionId)!.worktreeLifecycle!.journal
       .filter((row) => row.kind === 'update' && row.endedAt !== undefined && row.stepId.startsWith(`${state.actionId}-`))
@@ -43,9 +47,13 @@ export class SyncExecution {
     return true
   }
 
-  /** Names what holds the worker for the view; written only when it changed, since the step is looked at every poll. */
+  /**
+   * Names what holds the worker for the view, and keeps the gate armed when the round found the worker
+   * busy after the gate passed; written only when it changed, since the step is looked at every poll.
+   */
   private async awaitIdle(sessionId: string, busy: string): Promise<void> {
-    if (this.deps.records.get(sessionId)?.worktreeLifecycle?.awaitingIdleReason === busy) return
-    await this.state.write(sessionId, (current) => ({ ...current, awaitingIdleReason: busy }))
+    const current = this.deps.records.get(sessionId)?.worktreeLifecycle
+    if (current?.awaitingIdleReason === busy && current.awaitingIdleAt !== undefined) return
+    await this.state.write(sessionId, (latest) => ({ ...latest, awaitingIdleAt: latest.awaitingIdleAt ?? Date.now(), awaitingIdleReason: busy }))
   }
 }

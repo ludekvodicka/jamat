@@ -1,3 +1,5 @@
+export type ControllerLeaseRelease = 'released' | 'not-held' | 'failed'
+
 /**
  * What this subsystem can observe of the Host, in its own words. The wire shapes are the Host's and
  * are imported from `app-host/app/wire/hostWire.ts`; nothing here restates one.

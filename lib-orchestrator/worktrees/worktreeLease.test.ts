@@ -105,6 +105,23 @@ describe('WorktreeLease', () => {
     expect(outside).not.toHaveBeenCalled()
     expect(await readFile(fingerprint, 'utf8')).toBe('old fingerprint')
   })
+  // r823: the main-copy UPDATE a Finish starts as it ends ran inside the drive's lease scope and re-entered its lease.
+  it('runs work started through outside() without the leases of the scope that started it', async () => {
+    const path = await root(), lease = new WorktreeLease('outside', () => [])
+    const order: string[] = []
+    let detached: Promise<void> = Promise.resolve()
+    await lease.within(path, 'finish', async () => {
+      expect(lease.heldRootsFor(path)).toHaveLength(1)
+      detached = lease.outside(async () => {
+        order.push(`outside holds ${lease.heldRootsFor(path).length}`)
+        await lease.within(path, 'update', async () => { order.push('update') })
+      })
+      await Promise.resolve()
+      order.push('drive ends')
+    })
+    await detached
+    expect(order).toEqual(['outside holds 0', 'drive ends', 'update'])
+  })
   it('queues concurrent calls in one owner and releases the queue after a failure', async () => {
     const path = await root(), lease = new WorktreeLease('one', () => [])
     const order: string[] = []
@@ -334,6 +351,16 @@ describe('WorktreeLease', () => {
       .toBe(WorktreeFingerprint.of('<info><entry path="."><wc-info><wcroot-abspath>q:/projects</wcroot-abspath></wc-info></entry></info>', status))
     for (const changed of [status.replace('normal', 'conflicted'), status.replace('revision="1"', 'revision="2"')])
       expect(WorktreeFingerprint.of(info, changed)).not.toBe(WorktreeFingerprint.of(info, status))
+  })
+
+  // The parser alone reads every one of these without a word, so the validation pass stays.
+  it('refuses truncated or malformed SVN XML instead of hashing what the parser made of it', () => {
+    const info = '<info><entry revision="1" path="."/></info>'
+    const status = '<status><target path="."><entry path="a"><wc-status item="modified" props="normal" revision="1"/></entry></target></status>'
+    expect(WorktreeFingerprint.of(info, status)).toMatch(/^[0-9a-f]{64}$/)
+    for (const [badInfo, badStatus] of [[info, '<status><target path="."><entry path="a"></target></status>'], [info, status.slice(0, -20)],
+      ['<info><entry revision="1" path="." path="."/></info>', status], ['svn: E155007: not a working copy', status]])
+      expect(() => WorktreeFingerprint.of(badInfo!, badStatus!)).toThrow('Invalid SVN fingerprint XML')
   })
 
   it.skipIf(process.platform !== 'win32')('keeps the fingerprint stable when a held main-copy lease uses normalized path casing', async () => {

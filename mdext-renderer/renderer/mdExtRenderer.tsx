@@ -24,25 +24,29 @@ export const MdExtRenderer = memo(function MdExtRenderer(
   // One budget per document, so what it decided about a fence survives every re-render of it and
   // only a different document starts counting again.
   const budget = useMemo(() => new MdExtBudget(), [split.body])
+  const interactive = split.frontmatter?.some(([key, value]) => key === 'jamat' && value === 'interactive') ?? false
+  const context = useMemo(() => ({ budget, interaction: interactive ? props.interaction : undefined }),
+    [budget, interactive, props.interaction])
   const components = useMemo(() => MdExtComponents.create({
     resolveImage: props.resolveImage,
     onLink: props.onLink,
-    budget,
     lineOffset: split.bodyLineOffset,
-  }), [budget, props.onLink, props.resolveImage, split.bodyLineOffset])
+  }), [props.onLink, props.resolveImage, split.bodyLineOffset])
   const className = ['mdext', props.className].filter(Boolean).join(' ')
   return (
     <div className={className}>
       {split.frontmatter !== null && (
         <MdExtFrontmatterView entries={split.frontmatter} endLine={split.bodyLineOffset} />
       )}
-      <ReactMarkdown
+      <MdExtComponents.context.Provider value={context}>
+        <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkDirective, MdExtDirectives.plugin]}
         rehypePlugins={[[rehypeSanitize, MdExtSecurity.sanitizeSchema]]}
         components={components}
       >
         {split.body}
-      </ReactMarkdown>
+        </ReactMarkdown>
+      </MdExtComponents.context.Provider>
     </div>
   )
 })

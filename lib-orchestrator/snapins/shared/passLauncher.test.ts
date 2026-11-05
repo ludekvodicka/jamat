@@ -9,6 +9,31 @@ describe('pass launch', () => {
   beforeEach(async () => { rig = await SnapinTestRig.create(['test', 'other']) })
   afterEach(async () => { await rig.close(); vi.restoreAllMocks() })
 
+  it.each([undefined, 'Direct task {pass}'])('uses source prompt %s or the configured default without changing the selected agent', async promptTemplate => {
+    await rig.item('one', 'wt')
+    vi.mocked(rig.definitions[0]!.launchSpec).mockImplementationOnce(async (_ctx, _values, item, id) => ({
+      directory: { mode: 'adHoc', path: item.projectDirectory }, title: item.title, number: 'p1',
+      worktreeSlug: id.slice(0, 8), promptTemplate, work: { kind: 'opaque-task', instruction: 'Implement and report ready' },
+    }))
+    await rig.list(); await rig.press('solveSelected', ['one'])
+    const attempt = rig.store().current.attempts[0]!
+    const spec = vi.mocked(rig.sessions.createSession).mock.calls[0]![0]
+    expect(spec.agent?.agentId).toBe('claude')
+    expect(spec.agent?.initialPrompt).toBe(`${promptTemplate === undefined ? 'Work' : 'Direct task'} "${rig.pass(attempt)}"`)
+    expect(JSON.parse(await readFile(`${rig.pass(attempt)}/brief.json`, 'utf8')).work)
+      .toEqual({ kind: 'opaque-task', instruction: 'Implement and report ready' })
+  })
+
+  it('does not let a source prompt bypass configured-worker admission', async () => {
+    await rig.item('one', 'wt')
+    rig.settings.workerPrompts = {}
+    vi.mocked(rig.definitions[0]!.launchSpec).mockResolvedValue({ directory: { mode: 'adHoc', path: rig.root },
+      title: 'One', number: 'p1', promptTemplate: 'Direct task {pass}', work: { kind: 'opaque-task' } })
+    await rig.list(); await rig.press('solveSelected', ['one'])
+    expect(rig.sessions.createSession).not.toHaveBeenCalled()
+    expect(rig.definitions[0]!.launchSpec).not.toHaveBeenCalled()
+  })
+
   it('writes identity, brief and pending attempt before the single create and replaces every placeholder', async () => {
     await rig.item('r900', 'wt')
     const order: string[] = []

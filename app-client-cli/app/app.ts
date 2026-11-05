@@ -1,7 +1,10 @@
+import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { readFileSync, statSync } from 'node:fs'
 import { PassInbox, type PassEvent } from '../../lib-orchestrator/snapins/passInboxView'
+import { PerfReportView } from '../../lib-orchestrator/perfMonitor/perfReportView'
+import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 
 import type {
   RemoteControlCatalogEntryDto,
@@ -91,6 +94,7 @@ export interface AppClientCliDeps {
 type AppClientCliPlan =
   | CommitPlan
   | { kind: 'pass'; directory: string; event?: PassEvent }
+  | { kind: 'perf'; since: number }
   | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
@@ -166,6 +170,14 @@ export class AppClientCli {
       if (plan.kind === 'pass') return await this.runPass(plan)
       if (plan.kind === 'commit') return await this.runCommit(plan)
       const config = this.deps.loadConfig(args)
+      if (plan.kind === 'perf') {
+        if (config.configIdentity === null || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.configIdentity) || config.runtimeChannel === null)
+          throw new AppClientCliError('invalid-request', 'perf report needs --config-dir, or --config-identity and --channel, or the session controller identity')
+        const directory = OrchestratorPaths.clientPerfDirectory(config.configIdentity, config.runtimeChannel)
+        this.write({ ok: true, value: await PerfReportView.read([directory,
+          HostDescriptorPaths.perfDirectory(config.configIdentity, config.runtimeChannel)], plan.since, this.deps.now()) })
+        return 0
+      }
       const descriptor = await this.deps.discover(config)
       if (!descriptor.ok)
         return this.finishFailure(plan, descriptor.error)
@@ -364,6 +376,14 @@ export class AppClientCli {
   }
 
   private plan(args: CliArguments): AppClientCliPlan {
+    if (args.command === 'perf report') {
+      const duration = /^(\d+(?:\.\d+)?)(m|h|d)$/.exec(args.option('--since') ?? '2h')
+      const units: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000 }
+      const ms = duration === null ? NaN : Number(duration[1]) * units[duration[2]]!
+      if (!Number.isFinite(ms) || ms <= 0)
+        throw new AppClientCliError('invalid-request', '--since must be a positive duration such as 30m, 2h or 7d')
+      return { kind: 'perf', since: Math.max(0, this.deps.now() - ms) }
+    }
     if (args.command === 'snapins pass brief') return { kind: 'pass', directory: args.required('--pass') }
     if (args.command === 'snapins pass event') return this.passPlan(args)
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')

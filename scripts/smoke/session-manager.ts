@@ -1,3 +1,4 @@
+import { SmokeTerminalOwner } from './smokeTerminalOwner'
 /**
  * End-to-end proof that lib-orchestrator's SessionManager drives the whole chain against a real
  * AppHost: the record a client that died mid-create left behind, replayed under the id it was written
@@ -140,6 +141,7 @@ class SmokeSessionManager extends SmokeHarness {
   private readonly errors: string[] = []
   /** What the manager removed on its own after a worktree ended. */
   private readonly removedItself: string[] = []
+  private readonly terminalOwner: SmokeTerminalOwner
   private readonly manager: SessionManager
   private readonly git = new GitInvoker()
   private readonly crashedRecord: SessionRecord
@@ -189,7 +191,12 @@ class SmokeSessionManager extends SmokeHarness {
       this.configIdentity,
       SmokeSessionManager.channelConst,
     )
+    this.terminalOwner = new SmokeTerminalOwner({ configIdentity: this.configIdentity, channel: SmokeSessionManager.channelConst,
+      controllerId: SmokeSessionManager.controllerIdConst, onError: message => this.errors.push(message),
+      activity: { userInput: marks => this.manager.terminalActivity.userInput(marks),
+        pendingInputHint: counts => this.manager.terminalActivity.pendingInputHint(counts) } })
     this.manager = new SessionManager({
+      ...this.terminalOwner.sessionDeps,
       configDir: this.configDir,
       configIdentity: this.configIdentity,
       channel: SmokeSessionManager.channelConst,
@@ -198,7 +205,6 @@ class SmokeSessionManager extends SmokeHarness {
       onChanged: () => { this.changes += 1 },
       onError: (message) => { this.errors.push(message) },
       onRemovedItself: (sessionId) => { this.removedItself.push(sessionId) },
-      controllerId: SmokeSessionManager.controllerIdConst,
       applicationRoot: SmokeSessionManager.repoRootConst,
       // A source tree: the Host starts from `app-host/start.ts`, never from a packaged bundle.
       resourcesRoot: null,
@@ -224,6 +230,16 @@ class SmokeSessionManager extends SmokeHarness {
     const smoke = new SmokeSessionManager(root)
     try {
       await smoke.execute()
+    } catch (error) {
+      console.error(JSON.stringify({ snapshot: smoke.manager.snapshot(), debug: smoke.manager.debugStatus(), errors: smoke.errors }, null, 2))
+      const logs = OrchestratorPaths.scriptLogsDirectory(smoke.configIdentity, SmokeSessionManager.channelConst)
+      if (existsSync(logs))
+        for (const entry of readdirSync(logs, { recursive: true, withFileTypes: true }))
+          if (entry.isFile() && entry.name.endsWith('.log')) {
+            const file = join(entry.parentPath, entry.name)
+            console.error(`Script log ${file}\n${readFileSync(file, 'utf8')}`)
+          }
+      throw error
     } finally {
       await smoke.retire()
       rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
@@ -236,6 +252,7 @@ class SmokeSessionManager extends SmokeHarness {
     // Before the manager reads them: the records are loaded once, at start, which is exactly the
     // moment a client that crashed during a create comes back to them.
     await this.seedCrashedCreate()
+    this.terminalOwner.start()
     await this.manager.start()
     await this.waitUntil(
       () => this.manager.snapshot().host.presence === 'running',
@@ -1507,9 +1524,14 @@ class SmokeSessionManager extends SmokeHarness {
     this.check('an end while the client is down is not recorded by the stopped notifier',
       (await eventsOf(this.manager, offline)).length === 0 && terminal.typed.length === 2)
 
+    const recoveredOwner = new SmokeTerminalOwner({ configIdentity: this.configIdentity, channel: SmokeSessionManager.channelConst,
+      controllerId: SmokeSessionManager.controllerIdConst, onError: message => this.errors.push(message),
+      activity: { userInput: marks => recovered.terminalActivity.userInput(marks),
+        pendingInputHint: counts => recovered.terminalActivity.pendingInputHint(counts) } })
     const recovered = new SessionManager({
+      ...recoveredOwner.sessionDeps,
       configDir: this.configDir, configIdentity: this.configIdentity, channel: SmokeSessionManager.channelConst,
-      autoStartHost: false, controllerId: SmokeSessionManager.controllerIdConst,
+      autoStartHost: false,
       applicationRoot: SmokeSessionManager.repoRootConst, resourcesRoot: null,
       versioningModeOf: () => this.versioningMode, claudeHome: join(this.configDir, 'claude'),
       onChanged: () => { this.changes += 1 },
@@ -1517,6 +1539,7 @@ class SmokeSessionManager extends SmokeHarness {
     })
     const recoveredNotifier = notifierFor(recovered)
     try {
+      recoveredOwner.start()
       await recovered.start()
       await this.waitUntil(() => recovered.snapshot().sessions.some((session) =>
         session.sessionId === offline && session.life === 'ended'), 'the restarted client never found the end')
@@ -1540,6 +1563,7 @@ class SmokeSessionManager extends SmokeHarness {
     } finally {
       recoveredNotifier.stop()
       await recovered.stop()
+      await recoveredOwner.stop()
     }
   }
 
@@ -1622,14 +1646,18 @@ class SmokeSessionManager extends SmokeHarness {
     // one is written by hand: it is the seed path a lost counter file has to recover through.
     mkdirSync(join(this.projectRoot, '.worktrees', '044-carried-over'), { recursive: true })
     rmSync(file, { force: true })
+    const reloadedOwner = new SmokeTerminalOwner({ configIdentity: this.configIdentity, channel: SmokeSessionManager.channelConst,
+      controllerId: SmokeSessionManager.controllerIdConst, onError: message => this.errors.push(message),
+      activity: { userInput: marks => reloaded.terminalActivity.userInput(marks),
+        pendingInputHint: counts => reloaded.terminalActivity.pendingInputHint(counts) } })
     const reloaded = new SessionManager({
+      ...reloadedOwner.sessionDeps,
       configDir: this.configDir,
       configIdentity: this.configIdentity,
       channel: SmokeSessionManager.channelConst,
       autoStartHost: false,
       onChanged: () => {},
       onError: (message) => { this.errors.push(message) },
-      controllerId: SmokeSessionManager.controllerIdConst,
       applicationRoot: SmokeSessionManager.repoRootConst,
       resourcesRoot: null,
     })
@@ -1638,6 +1666,7 @@ class SmokeSessionManager extends SmokeHarness {
     this.check(`a lost counter file counts on from the worktrees on disk (${recovered.token})`,
       recovered.token === '045')
     await reloaded.stop()
+    await reloadedOwner.stop()
   }
 
   /**
@@ -1776,6 +1805,7 @@ class SmokeSessionManager extends SmokeHarness {
   private async checkDetachKillsNothing(): Promise<void> {
     const descriptor = this.readDescriptor()
     await this.manager.stop()
+    await this.terminalOwner.stop()
     const listed = await SmokeSessionManager.op<RuntimeListResult>(descriptor, 'runtime.list', {})
     this.check('detaching the client leaves every runtime the Host owns alive',
       listed.sessions.some((session) =>
@@ -1921,6 +1951,7 @@ class SmokeSessionManager extends SmokeHarness {
   /** Detach, then take the Host down with the runtimes it owns: this root is about to be deleted. */
   private async retire(): Promise<void> {
     await this.manager.stop()
+    await this.terminalOwner.stop()
     await this.killHost()
   }
 

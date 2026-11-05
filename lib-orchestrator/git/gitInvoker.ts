@@ -3,8 +3,10 @@ import { spawn } from 'node:child_process'
 import type { GitCommandFailure, GitCommandOutcome, GitCommandRunner } from './git.types'
 import { CommandInvoker } from '../shared/commandInvoker'
 import type { CommandFailure } from '../shared/commandInvoker.types'
+import type { PerfSpans } from '../perfMonitor/perfSpans'
 
 export interface GitInvokerOptions {
+  perf?: PerfSpans
   /** The tests script every outcome through this; nothing in production passes it. */
   spawnImpl?: typeof spawn
   /**
@@ -27,6 +29,7 @@ export class GitInvoker implements GitCommandRunner {
 
   constructor(options?: GitInvokerOptions) {
     this.invoker = new CommandInvoker({
+      perf: options?.perf,
       spawnImpl: options?.spawnImpl ?? spawn,
       ...(options?.timeoutMilliseconds === undefined
         ? {}
@@ -43,6 +46,7 @@ export class GitInvoker implements GitCommandRunner {
   async run(cwd: string, args: string[], onOutput?: (text: string) => void): Promise<GitCommandOutcome> {
     const outcome = await this.invoker.run({
       command: 'git',
+      perfName: `git:${GitInvoker.subcommand(args)}`,
       args,
       cwd,
       env: GitInvoker.childEnv(),
@@ -53,6 +57,15 @@ export class GitInvoker implements GitCommandRunner {
       ...outcome,
       failure: outcome.failure === null ? null : GitInvoker.failureOf(outcome.failure),
     }
+  }
+
+  private static subcommand(args: readonly string[]): string {
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index]!
+      if (arg === '-C' || arg === '-c' || arg === '--git-dir' || arg === '--work-tree' || arg === '--namespace') index++
+      else if (!arg.startsWith('-')) return arg
+    }
+    return ''
   }
 
   private static failureOf(failure: CommandFailure): GitCommandFailure {

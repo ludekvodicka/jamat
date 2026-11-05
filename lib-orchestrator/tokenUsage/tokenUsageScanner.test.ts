@@ -102,14 +102,50 @@ describe('TokenUsageScanner', () => {
     expect(await readFile(cacheFile, 'utf8')).toBe(old)
     source.parse = parse
     expect(await refreshed.scan()).toMatchObject([{ input: 85, output: 23, cacheRead: 35, cacheWrite: 0 }])
-    expect(JSON.parse(await readFile(cacheFile, 'utf8'))).toMatchObject({ schema: 2,
-      files: { [resolved]: { offset: metadata.size, records: [{ input: 70 }, { input: 15 }] } } })
+    expect(JSON.parse(await readFile(cacheFile, 'utf8'))).toMatchObject({ schema: 3,
+      files: { [resolved]: { offset: metadata.size, strings: ['rollout-old', '', 'unknown'],
+        records: [[at, 70, 20, 30, 0, 0, 1, 2, -1, null], [at, 15, 3, 5, 0, 0, 1, 2, -1, null]] } } })
     source.parse = () => { throw new Error('Repaired unchanged transcript must not be reparsed') }
     expect(await refreshed.scan()).toMatchObject([{ input: 85, output: 23, cacheRead: 35 }])
     expect(await scanner([source]).scan()).toMatchObject([{ input: 85, output: 23, cacheRead: 35 }])
     source.parse = parse
     await appendFile(rollout, event({ total_token_usage: { input_tokens: 150, cached_input_tokens: 45, output_tokens: 30 } }))
     expect(await scanner([source]).scan()).toMatchObject([{ input: 120, output: 33, cacheRead: 50 }])
+  })
+  it('converts a schema 2 cache to schema 3 with equal buckets and without reading a transcript again', async () => {
+    await writeFile(file, line('one') + line('two', 5, at + 3_600_000, 'other'))
+    const resolved = await realpath(file), metadata = await stat(file), cacheFile = join(root, 'cache.json')
+    const record = (dedupe: string, input: number, time: number, cwd: string) => ({ at: time, nativeId: 'native', cwd, model: 'opus',
+      rolloutAccount: null, dedupe, input, output: 0, cacheRead: 0, cacheWrite: 0 })
+    const buckets = [
+      { day: '2026-10-26', hour: 9, projectKey: 'project', agentId: 'claude', accountId: 'main', model: 'opus', input: 10, output: 0, cacheRead: 0, cacheWrite: 0 },
+      { day: '2026-10-26', hour: 10, projectKey: 'other', agentId: 'claude', accountId: 'main', model: 'opus', input: 5, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ]
+    await writeFile(cacheFile, JSON.stringify({ schema: 2, files: { [resolved]: {
+      file: resolved, agentId: 'claude', size: metadata.size, mtimeMs: metadata.mtimeMs,
+      identity: `${metadata.dev}:${metadata.ino}:${metadata.birthtimeMs}`, offset: metadata.size, carry: '',
+      parser: { nativeId: 'native', cwd: 'other', model: 'opus', rolloutAccount: null, cumulative: null },
+      records: [record('["one","request"]', 10, at, 'project'), record('["two","request"]', 5, at + 3_600_000, 'other')],
+    } }, buckets }, null, 2))
+    const source = ClaudeUsageParser.source(root)
+    source.parse = () => { throw new Error('A converted cache must not reread its transcript') }
+    expect(await scanner([source]).scan()).toEqual(buckets)
+    const converted = JSON.parse(await readFile(cacheFile, 'utf8'))
+    expect(converted).toMatchObject({ schema: 3, buckets, files: { [resolved]: { strings: ['native', 'project', 'opus', 'other'],
+      records: [[at, 10, 0, 0, 0, 0, 1, 2, -1, '["one","request"]'], [at + 3_600_000, 5, 0, 0, 0, 0, 3, 2, -1, '["two","request"]']] } } })
+    expect(await scanner([source]).scan()).toEqual(buckets)
+  })
+  it('writes nothing for a pass in which no transcript changed', async () => {
+    await writeFile(file, line('one'))
+    const first = scanner(), cacheFile = join(root, 'cache.json')
+    expect(total(await first.scan())).toBe(10)
+    expect((await stat(cacheFile)).size).toBeLessThan(1_000)
+    await rm(cacheFile)
+    expect(total(await first.scan())).toBe(10)
+    await expect(stat(cacheFile)).rejects.toMatchObject({ code: 'ENOENT' })
+    await appendFile(file, line('two'))
+    expect(total(await first.scan())).toBe(20)
+    expect(JSON.parse(await readFile(cacheFile, 'utf8')).schema).toBe(3)
   })
   it('keeps the previous cursor and partial line when a parse pass fails, then rebuilds malformed cache', async () => {
     const bytes = line('one')

@@ -22,6 +22,8 @@ export interface CliClientOptions {
   /** Optional private state root. Auto-discovery omits it to prove the stripped-agent environment. */
   stateRoot?: string
   timeoutMilliseconds: number
+  /** Actual prepared distribution wrapper; omitted uses the source checkout wrapper. */
+  wrapperPath?: string
 }
 
 /**
@@ -80,7 +82,7 @@ export class CliClient {
       const child = spawn(
         process.execPath,
         [
-          CliClient.wrapperConst,
+          this.options.wrapperPath ?? CliClient.wrapperConst,
           ...args,
           ...selectors,
         ],

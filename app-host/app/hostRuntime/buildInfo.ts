@@ -1,15 +1,42 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { HostWireConst, type BuildInfo } from '../wire/hostWire.js'
+
+export interface HostPerfBuild { version: string; inputHash: string; builtAt: string }
+declare const __JAMAT_V3_HOST_PERF_BUILD__: HostPerfBuild
 
 export class BuildInfoSource {
   private static readonly unreadableVersionConst = '0.0.0'
   /** `app/hostRuntime` -> `app` -> `app-host`: as far as this file's own package can ever be. */
   private static readonly packageSearchDepthConst = 2
   private static configured: BuildInfo | null = null
+  private static perf: HostPerfBuild | null = null
+
+  static perfBuild(packageRoot?: string): HostPerfBuild {
+    if (packageRoot === undefined && typeof __JAMAT_V3_HOST_PERF_BUILD__ !== 'undefined')
+      return { ...__JAMAT_V3_HOST_PERF_BUILD__ }
+    if (packageRoot === undefined && BuildInfoSource.perf !== null) return { ...BuildInfoSource.perf }
+    const root = packageRoot ?? join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+    const files: string[] = []
+    const walk = (relative: string): void => {
+      for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+        const path = `${relative}/${entry.name}`
+        if (entry.isDirectory()) walk(path)
+        else if (entry.isFile() && !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(path)) files.push(path)
+      }
+    }
+    walk('app')
+    files.push('start.ts', 'package.json', 'pnpm-lock.yaml', 'tsconfig.json')
+    const hash = createHash('sha256').update(`host-input-v1\0${process.platform}\0${process.arch}\0`)
+    for (const path of files.sort()) hash.update(path).update('\0').update(readFileSync(join(root, path))).update('\0')
+    const version = BuildInfoSource.versionIn(join(root, 'package.json')) ?? BuildInfoSource.unreadableVersionConst
+    const build = { version, inputHash: hash.digest('hex'), builtAt: new Date().toISOString() }
+    if (packageRoot === undefined) BuildInfoSource.perf = build
+    return build
+  }
 
   static current(): BuildInfo {
     if (BuildInfoSource.configured)

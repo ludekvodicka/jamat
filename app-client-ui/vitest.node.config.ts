@@ -1,6 +1,14 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
+  plugins: [{
+    name: 'jamat-test-build-identity',
+    resolveId(id) { if (id === 'virtual:jamat-client-build') return '\0jamat-test-build-identity' },
+    load(id) {
+      if (id === '\0jamat-test-build-identity')
+        return `export default ${JSON.stringify({ version: '0.0.0', inputHash: 'a'.repeat(64), builtAt: '2026-11-03T00:00:00.000Z' })}`
+    },
+  }],
   test: {
     name: 'node',
     environment: 'node',

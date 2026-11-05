@@ -27,6 +27,7 @@ export interface WorkspaceWindowsDeps {
   onVisibilityChanged(windowId: string, visible: boolean): void
   onRendererGone(windowId: string): void
   onClosed(windowId: string): void
+  onAcceptingChanged(windowId: string, accepting: boolean): void
   confirmMainWindowClose(parent: BrowserWindow | null, holderCount: number): Promise<boolean>
   requestQuit(): void
   /**
@@ -37,6 +38,7 @@ export interface WorkspaceWindowsDeps {
    */
   explicitlyClosing(windowId: string): void
   /** A key pressed in a workspace window, or one taking the focus: the person is at work in Jamat. */
+  onFocusChanged?(): void
   onPersonActive(): void
   report(message: string): void
 }
@@ -218,6 +220,7 @@ export class WorkspaceWindows {
     const state = this.lifecycle.get(windowId)
     if (state === 'loading' || state === 'ready') {
       this.lifecycle.set(windowId, 'closing')
+      this.deps.onAcceptingChanged(windowId, false)
       this.readyByWindow.get(windowId)?.release()
       return true
     } else if (state === 'closing')
@@ -236,6 +239,7 @@ export class WorkspaceWindows {
     const state = this.lifecycle.get(windowId)
     if (state === 'closing') {
       this.lifecycle.set(windowId, 'ready')
+      this.deps.onAcceptingChanged(windowId, true)
       this.readyByWindow.get(windowId)?.release()
     } else if (state === 'loading')
       return
@@ -303,6 +307,7 @@ export class WorkspaceWindows {
       workspaceWindow = new WorkspaceWindow(this.context, windowId, {
         store: this.store,
         onWindowCreated: (window) => {
+          window.on('blur', () => this.deps.onFocusChanged?.())
           window.on('focus', () => {
             this.lastFocusedWindowId = windowId
             this.deps.onPersonActive()

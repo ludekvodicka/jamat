@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
-import { FileImageSurface } from './fileImageSurface'
+import type { PromptInsertTarget } from '../shell/terminalInputRegistry'
 import {
   FileViewerDiffControl,
   FileViewerGoneNote,
   FileViewerViewControl,
+  FileViewerWrapControl,
   FileViewerZoomControl,
 } from './fileViewerControls'
 import type {
@@ -35,6 +36,7 @@ export function FileViewerPane(props: {
   onClose(): void
   onOpenItem(item: PanelSplitFileItem): string | null
   onRefused(reason: string): void
+  insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
   const model = useFileViewerDocument(
     props.item.source,
@@ -66,6 +68,12 @@ export function FileViewerPane(props: {
       onRefused(refusal)
   }, [onOpenItem, onRefused, props.item])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
+  const wrapLines = props.item.wrapLines === true
+  const changeWrap = useCallback((wrap: boolean): void => {
+    const refusal = onOpenItem({ ...props.item, wrapLines: wrap ? true : undefined })
+    if (refusal !== null)
+      onRefused(refusal)
+  }, [onOpenItem, onRefused, props.item])
   const search = useFileViewerSearch(body, () => {
     if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
   })
@@ -90,6 +98,7 @@ export function FileViewerPane(props: {
       ref={props.ref}
       tabIndex={-1}
       data-file-search-open={search.open || undefined}
+      data-file-wrap={wrapLines || undefined}
       onKeyDown={search.onKeyDown}
       style={{ '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent) } as React.CSSProperties}
     >
@@ -126,6 +135,7 @@ export function FileViewerPane(props: {
               />
             )}
             <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
+            <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
             <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
             {freshness.missing && <FileViewerGoneNote />}
           </>
@@ -136,17 +146,18 @@ export function FileViewerPane(props: {
         {model.error && <p className="file-viewer-error">{model.error}</p>}
         {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}
         {model.document && (
-          <FileImageSurface key={model.document.documentId} name={model.document.name}>
             <FileViewerContent ports={props.ports.viewer}
+              insertPrompt={props.insertPrompt}
               document={model.document}
               mode={model.mode}
               baselines={model.baselines}
               text={model.text}
+              textReady={model.textReady}
               diff={model.diff}
               location={props.item.location}
               onOpenSource={openSource}
+              onReload={model.reload}
             />
-          </FileImageSurface>
         )}
       </div>
     </section>

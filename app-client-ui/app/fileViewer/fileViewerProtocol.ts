@@ -1,4 +1,5 @@
 import { protocol } from 'electron'
+import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewerLimits'
 import type { FileMediaSource } from './fileMediaSource'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 
@@ -74,7 +75,7 @@ export class FileViewerProtocol {
       async pull(stream) {
         try {
           controller.signal.throwIfAborted()
-          const size = Math.min(64 * 1024, end - offset + 1)
+          const size = Math.min(FileViewerLimits.chunkBytes, end - offset + 1)
           const bytes = await source.read(resourceId, resource.version, offset, size, controller.signal)
           controller.signal.throwIfAborted()
           if (bytes.length === 0 || bytes.length > size) throw new Error('Invalid media byte range')

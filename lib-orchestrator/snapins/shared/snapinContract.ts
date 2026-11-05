@@ -80,6 +80,7 @@ export interface SnapinItem {
   title: string
   group: string
   mode: PassMode
+  /** Empty only while held and nonselectable, before a project has been configured. */
   projectDirectory: string
   hold?: string
   selectable: boolean
@@ -91,6 +92,7 @@ export interface LaunchSpec {
   title: string
   number: string
   worktreeSlug?: string
+  promptTemplate?: string
   work: PassBrief['work']
 }
 export interface SnapinContext {

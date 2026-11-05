@@ -2,7 +2,7 @@
  * A length of time as the two units that matter at its size, in the one place that decides them.
  *
  * There were two, over the same fields of the same reading: the status bar's tooltip described
- * `fetchedAt` and the Debug window described `lastSuccessAt` and `lastAttemptAt` beside it, and they
+ * `fetchedAt` and the Debug tab described `lastSuccessAt` and `lastAttemptAt` beside it, and they
  * rounded differently at the bottom - `12m` in one and `12m 5s` in the other - so one reading's age
  * had two answers depending on where it was read.
  *

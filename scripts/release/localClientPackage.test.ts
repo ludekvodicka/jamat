@@ -22,8 +22,9 @@ class FixturePackage extends LocalClientPackage {
   protected override async packageSnapshot(snapshot: string, release: string): Promise<void> {
     this.builds++
     await this.onBuild(snapshot, release)
-    for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs', 'resources/codex/start.cjs',
+    for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs', 'resources/codex/start.cjs', 'resources/gateway/start.cjs',
       'resources/remarkable-sidecar/manifest.json', 'resources/cli/jamat-v3.cjs',
+      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => 'resources/orchestrator/' + name + '.cjs'),
       ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => `resources/skills/${agent}/${skill}/SKILL.md`)),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',
@@ -49,6 +50,9 @@ function fixture(): string {
     'app-client-ui/tsconfig.web.json', 'app-host/start.ts', 'app-host/pnpm-lock.yaml',
     'app-launcher/start.ts', 'app-launcher/app/app.ts', 'app-launcher/package.json',
     'app-launcher/README.md', 'app-codex/start.ts', 'app-codex/app/app.ts', 'app-codex/package.json',
+    'app-gateway/start.ts', 'app-orchestrator/app/appHub.ts', 'app-orchestrator/package.json',
+    'app-orchestrator/pnpm-lock.yaml', 'app-client-ui/scripts/gatewayBuildPlugin.ts',
+    'app-client-ui/scripts/restartPredecessor.ts',
     'lib-orchestrator/index.ts', 'lib-orchestrator/pnpm-lock.yaml',
     'mdext-renderer/renderer/index.ts', 'mdext-renderer/USAGE.md', 'mdext-renderer/reference.md',
     'mdext-renderer/svg-style.md', 'mdext-renderer/examples/example.md',
@@ -58,7 +62,7 @@ function fixture(): string {
     'scripts/release/start-packaged-client.ts', 'scripts/smoke/finishUiScenario.ts', 'scripts/setup/prepare-remarkable-sidecar.ts',
     'scripts/setup/install-launcher.ps1'])
     write(join(root, path), path)
-  for (const directory of ['', 'app-client-ui', 'app-host', 'lib-orchestrator'])
+  for (const directory of ['', 'app-client-ui', 'app-host', 'app-orchestrator', 'lib-orchestrator'])
     write(join(root, directory, 'node_modules', 'sentinel'), 'installed dependency')
   write(join(root, 'app-client-ui', 'out', 'main', 'start.js'), 'live client')
   write(join(root, 'out', 'host-bundle', 'current', 'start.cjs'), 'live host')
@@ -86,7 +90,7 @@ test('content hashes detect backdated edits, additions, deletions and dependency
     rmSync(added)
     assert.equal(LocalPackageInputs.read(root).hash, initial)
     for (const path of ['pnpm-lock.yaml', 'app-client-ui/pnpm-lock.yaml',
-      'app-host/pnpm-lock.yaml', 'lib-orchestrator/pnpm-lock.yaml',
+      'app-host/pnpm-lock.yaml', 'app-orchestrator/pnpm-lock.yaml', 'lib-orchestrator/pnpm-lock.yaml',
       'configs/remarkable-sidecar/package-lock.json']) {
       write(join(root, path), 'changed lock')
       assert.notEqual(LocalPackageInputs.read(root).hash, initial, path)
@@ -117,6 +121,21 @@ test('launcher source, runtime recipe, setup and documentation invalidate captur
   } finally { dispose(root) }
 })
 
+test('in-process orchestration source and dependencies participate in the client build identity', () => {
+  const root = fixture()
+  try {
+    const initial = LocalPackageInputs.read(root).hash
+    for (const path of ['app-orchestrator/app/appHub.ts', 'app-orchestrator/package.json', 'app-orchestrator/pnpm-lock.yaml']) {
+      write(join(root, path), 'changed orchestration input')
+      assert.notEqual(LocalPackageInputs.read(root).hash, initial, path)
+      write(join(root, path), path)
+      assert.equal(LocalPackageInputs.read(root).hash, initial, path)
+    }
+    write(join(root, 'app-orchestrator/app/appHub.test.ts'), 'test only')
+    assert.equal(LocalPackageInputs.read(root).hash, initial)
+  } finally { dispose(root) }
+})
+
 test('builds from captured bytes and keeps live output and successful releases unchanged', async () => {
   const root = fixture()
   try {
@@ -128,6 +147,9 @@ test('builds from captured bytes and keeps live output and successful releases u
         readFileSync(join(root, 'scripts/setup/install-launcher.ps1'), 'utf8'))
       assert.equal(readFileSync(join(snapshot, 'app-launcher/start.ts'), 'utf8'),
         readFileSync(join(root, 'app-launcher/start.ts'), 'utf8'))
+      assert.equal(readFileSync(join(snapshot, 'app-orchestrator/app/appHub.ts'), 'utf8'),
+        readFileSync(join(root, 'app-orchestrator/app/appHub.ts'), 'utf8'))
+      assert.equal(readFileSync(join(snapshot, 'app-orchestrator/node_modules/sentinel'), 'utf8'), 'installed dependency')
       write(join(snapshot, 'app-client-ui/out/main/start.js'), 'new client')
       write(join(snapshot, 'out/host-bundle/current/start.cjs'), 'new host')
     }
@@ -141,7 +163,7 @@ test('builds from captured bytes and keeps live output and successful releases u
     assert.equal(readFileSync(second.executablePath, 'utf8'), 'build-2')
     assert.equal(readFileSync(join(root, 'app-client-ui/out/main/start.js'), 'utf8'), 'live client')
     assert.equal(readFileSync(join(root, 'out/host-bundle/current/start.cjs'), 'utf8'), 'live host')
-    for (const directory of ['', 'app-client-ui', 'app-host', 'lib-orchestrator'])
+    for (const directory of ['', 'app-client-ui', 'app-host', 'app-orchestrator', 'lib-orchestrator'])
       assert.equal(readFileSync(join(root, directory, 'node_modules/sentinel'), 'utf8'), 'installed dependency')
     assert.deepEqual(readdirSync(join(root, 'out')).filter((name) => name.startsWith('.pkg-')), [])
   } finally { dispose(root) }
@@ -208,6 +230,10 @@ test('missing packaged resources trigger a new immutable release', async () => {
     const third = await builder.ensure()
     assert.notEqual(third.executablePath, second.executablePath)
     assert.equal(builder.builds, 3)
+    rmSync(join(dirname(third.executablePath), 'resources/gateway/start.cjs'))
+    const fourth = await builder.ensure()
+    assert.notEqual(fourth.executablePath, third.executablePath)
+    assert.equal(builder.builds, 4)
   } finally { dispose(root) }
 })
 
@@ -225,5 +251,21 @@ test('every missing launcher resource forces a new immutable release', async () 
       current = next
     }
     assert.equal(builder.builds, 9)
+  } finally { dispose(root) }
+})
+
+test('every orchestration utility and worker artifact is required for package reuse', async () => {
+  const root = fixture()
+  try {
+    const builder = new FixturePackage(root)
+    let current = await builder.ensure()
+    for (const name of ['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker']) {
+      rmSync(join(dirname(current.executablePath), 'resources/orchestrator', name + '.cjs'))
+      const next = await builder.ensure()
+      assert.notEqual(next.executablePath, current.executablePath)
+      assert.equal(existsSync(join(dirname(next.executablePath), 'resources/orchestrator', name + '.cjs')), true)
+      current = next
+    }
+    assert.equal(builder.builds, 5)
   } finally { dispose(root) }
 })

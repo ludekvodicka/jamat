@@ -110,7 +110,7 @@ export class ReviewCandidates {
       // The check reads the text as its author wrote it: a prefix added first hid the chat line above it (UA1-J12-2).
       const selected = (repository: WorktreeRepositoryReview): boolean => press.selection.some((path) => repository.paths.includes(reviewed.get(path)!))
       for (const repository of (proposed ?? []).filter(selected)) {
-        const findings = SvnCommitMessageCheck.blocking(repository.message, repository.source, repository.acknowledged)
+        const findings = SvnCommitMessageCheck.blocking(repository.message)
         if (findings.length > 0)
           return { ok: false, code: 'message-unchecked', detail: `${repository.repositoryName}: ${findings.map(SvnCommitMessageCheck.wordOf).join('; ')}` }
       }

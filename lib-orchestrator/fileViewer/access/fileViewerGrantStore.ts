@@ -81,6 +81,12 @@ export class FileViewerGrantStore {
     return directoryId
   }
 
+  refreshVersion(documentId: string, ownerId: string, contentVersion: string): void {
+    const found = this.document(documentId, ownerId)
+    if (found.ok)
+      found.value.document = { ...found.value.document, contentVersion }
+  }
+
   setDirectoryEntries(directoryId: string, entries: ReadonlyMap<string, StoredFileViewerEntry>): void {
     const found = this.directories.get(directoryId)
     if (!found) throw new Error(`Unknown directory token: ${directoryId}`)
@@ -192,6 +198,12 @@ export class FileViewerGrantStore {
       if (found.value.ownerId === ownerId) this.directories.delete(id)
     for (const [id, found] of this.resources)
       if (found.value.ownerId === ownerId) this.resources.delete(id)
+  }
+
+  revokeGrant(ownerId: string, grantId: string): void {
+    if (this.documents.get(grantId)?.value.ownerId === ownerId) this.documents.delete(grantId)
+    if (this.directories.get(grantId)?.value.ownerId === ownerId) this.directories.delete(grantId)
+    if (this.resources.get(grantId)?.value.ownerId === ownerId) this.resources.delete(grantId)
   }
 
   private expiring<T>(value: T): Expiring<T> {

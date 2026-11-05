@@ -47,12 +47,11 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     processEntities: false,
   })
 
-  constructor(
-    private readonly runner: CommandRunner = new SvnInvoker({
-      timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds,
-    }),
-  ) {
+  private readonly runner: CommandRunner
+
+  constructor(runner?: CommandRunner, perf?: import('../../perfMonitor/perfSpans').PerfSpans) {
     super()
+    this.runner = runner ?? new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.readTimeoutMilliseconds, perf })
   }
 
   async detect(cwd: string): Promise<FileChangesVcsDetection | null> {

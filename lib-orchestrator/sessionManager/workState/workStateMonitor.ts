@@ -134,7 +134,7 @@ export class WorkStateMonitor {
 
   /**
    * Why that activity: the hint and the evidence of the last screen actually rendered. Null for a
-   * session never classified. Read by the Debug window through the session manager, and by nothing
+   * session never classified. Read by the Debug tab through the session manager, and by nothing
    * that decides anything - a surface draws this, it does not reason from it.
    */
   inspection(runtimeSessionId: string): AgentWorkInspection | null {

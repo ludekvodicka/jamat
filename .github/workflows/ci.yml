@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 22.23.4 # tested security release; the engines floor is >=22.19.0
           cache: pnpm
-          cache-dependency-path: "**/pnpm-lock.yaml" # one key over all five lockfiles
+          cache-dependency-path: "**/pnpm-lock.yaml" # one key over all package lockfiles
 
       - name: Install root dependencies
         run: pnpm install --frozen-lockfile
@@ -53,9 +53,13 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: app-host
 
-      - name: Install orchestrator dependencies
+      - name: Install orchestration library dependencies
         run: pnpm install --frozen-lockfile
         working-directory: lib-orchestrator
+
+      - name: Install orchestration application dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: app-orchestrator
 
       # Electron itself is never launched here (the node tests mock it, the web tests run under
       # jsdom), so its binary download can stay disabled.
@@ -69,7 +73,7 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: app-client-cli
 
-      # Five TS programs plus the skill-adapter byte-identity check, all chained in one script.
+      # Every TS program plus the skill-adapter byte-identity check, all chained in one script.
       - name: Type-check
         run: pnpm run typecheck
 

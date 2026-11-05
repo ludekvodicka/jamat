@@ -20,6 +20,7 @@ import { FileChangesLimits } from '../fileChangesLimits'
 import { SvnInvoker } from '../../svn/svnInvoker'
 
 export interface FileChangesWorkingTreeSourcesDeps {
+  perf?: import('../../perfMonitor/perfSpans').PerfSpans
   checkpointStore?: Pick<GitCheckpointStore, 'existingContextOf'>
   gitOf?: (commandArgs: readonly string[]) => FileChangesVcsGit
   svn?: FileChangesVcs
@@ -55,12 +56,12 @@ export class FileChangesWorkingTreeSources {
 
   constructor(deps?: FileChangesWorkingTreeSourcesDeps) {
     this.checkpointStore = deps?.checkpointStore
-      ?? new GitCheckpointStore(new GitInvoker())
+      ?? new GitCheckpointStore(new GitInvoker({ perf: deps?.perf }))
     this.gitOf = deps?.gitOf
-      ?? ((commandArgs) => new FileChangesVcsGit(undefined, commandArgs))
-    this.svn = deps?.svn ?? new FileChangesVcsSvn()
+      ?? ((commandArgs) => new FileChangesVcsGit(undefined, commandArgs, deps?.perf))
+    this.svn = deps?.svn ?? new FileChangesVcsSvn(undefined, deps?.perf)
     this.commitSvn = deps?.commitSvn ?? new FileChangesVcsSvn(
-      new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds }))
+      new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds, perf: deps?.perf }))
   }
 
   async read(

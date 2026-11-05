@@ -398,7 +398,7 @@ describe('app-client-ui/renderer/statusBar/hostStatusItem', () => {
     expect(HostStopConfirmation.textOf(1, [])).toContain('This will end all 1 running terminal.')
   })
 
-  // The one derivation the bar and the Debug window's host section both read, so it is exhaustive
+  // The one derivation the bar and the Debug tab's host section both read, so it is exhaustive
   // here or the two of them disagree about a presence neither was taught.
   it('refuses a presence it was never taught', () => {
     const host = { ...SessionsFixtures.mixed().host, presence: 'napping' as HostPresence }

@@ -10,3 +10,39 @@
 .file-viewer-back {
   padding: 2px var(--space-2);
 }
+
+.file-viewer-checklist {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+  color: var(--color-text-2);
+  font-size: var(--fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.file-viewer-checklist button {
+  padding: 2px var(--space-2);
+}
+
+.file-viewer-checklist__send {
+  display: inline-flex;
+}
+
+.file-viewer-checklist__send > button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.file-viewer-checklist__send > .file-viewer-checklist__more {
+  margin-left: -1px;
+  padding: 2px var(--space-1);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}

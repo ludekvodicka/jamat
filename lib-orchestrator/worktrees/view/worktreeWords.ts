@@ -3,10 +3,10 @@ import type { FinishStep, WorktreeLifecycle, WorktreeWaitKind } from '../worktre
 import { WorktreeTransitions } from '../worktreeTransitions'
 import { WorktreePublication } from '../worktreePublication'
 import { SvnConflictFlow } from '../conflicts/svnConflictFlow'
-import { SvnConflictWords } from '../conflicts/svnConflictWords'
+import { SvnConflictWords, type SvnConflictOwner } from '../conflicts/svnConflictWords'
 import { SvnMergerLauncher } from '../conflicts/svnMergerLauncher'
 import { ConflictStep } from '../finish/conflictStep'
-import type { SvnLabelledRevision } from '../worktreeContracts'
+import type { SvnActionKind, SvnLabelledRevision } from '../worktreeContracts'
 import { SvnRevisionLabels } from '../finish/svnRevisionLabels'
 import { SvnActionStages } from '../finish/svnActionStages'
 
@@ -160,8 +160,9 @@ export class WorktreeWords {
         ? { title: 'Preparation needs to run again', tone: 'wait' as const }
       : state.step === 'reviewing' && state.wait === undefined
       ? WorktreeWords.reviewReady(state) ? WorktreeWords.wait('review') : { title: 'Preparing the synced review', tone: 'running' as const }
-      : state.wait === undefined ? { title: SvnActionStages.installOf(state.execution ?? {}) === null ? WorktreeWords.step(state.step)
-        : 'Installing dependencies for changed inputs', tone: 'running' as const }
+      : state.wait === undefined ? { title: SvnActionStages.installOf(state.execution ?? {}) !== null ? 'Installing dependencies for changed inputs'
+        // An owner without declared checks runs none while its review is prepared (D15).
+        : state.step === 'checking' && state.execution?.checks.length === 0 ? 'Preparing the synced review' : WorktreeWords.step(state.step), tone: 'running' as const }
       : state.wait.kind === 'conflict-person' && state.syncConflictSet !== undefined && !SvnConflictFlow.unsettled(state.syncConflictSet)
         ? { title: 'Conflicts settled', tone: 'wait' as const } : WorktreeWords.wait(state.wait.kind)
     switch (state.phase) {
@@ -188,6 +189,17 @@ export class WorktreeWords {
     if (state.step === 'syncing' && state.wait === undefined)
       return `The worker is ending its turn on the conflicts Jamat handed it: ${state.awaitingIdleReason}. ${WorktreeWords.idleDelayConst}; press Sync now if it has already finished.`
     return null
+  }
+
+  /**
+   * The worker owns the open conflicts while its handoff for them stands, with no wait for the person
+   * and no merger; "need you" there sent the person to a press the sync did not need.
+   */
+  /** Who settles the conflicts of an action: the person, unless Jamat handed a Finish's conflicts to the worker. */
+  static conflictOwnerOf(state: WorktreeLifecycle | undefined, kind: SvnActionKind): SvnConflictOwner {
+    if (state === undefined || kind === 'update-main') return 'person'
+    return state.step === 'worker-resolving' && state.wait === undefined && state.execution?.merger === undefined
+      && state.handoff?.key.startsWith(`conflicts:${state.actionId}:`) === true ? 'worker' : 'person'
   }
 
   static reviewReady(state: WorktreeLifecycle): boolean {

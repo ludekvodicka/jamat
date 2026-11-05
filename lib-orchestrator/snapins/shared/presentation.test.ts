@@ -1,3 +1,4 @@
+import type { TickGuard } from './tickGuard'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AttemptRecord } from './snapinContract'
 import type { WorktreeResultDto } from '../../sessionManager/sessionManagerApi.types'
@@ -44,7 +45,7 @@ describe('phase presentation', () => {
   it('applies the note and records the phase when a missing group cannot be restored', async () => {
     const a = await rig.attempt({ sessionId: 'worker' }); rig.snapshot.sessions.push(SnapinTestRig.session('worker', a.attemptId))
     vi.mocked(rig.presentation.ensureGroups).mockResolvedValue(false)
-    vi.mocked(rig.presentation.assign).mockReturnValue('missing-group')
+    vi.mocked(rig.presentation.assign).mockResolvedValue('missing-group')
     await rig.tick(); await rig.tick()
     expect(rig.presentation.setNote).toHaveBeenCalledOnce()
     expect(rig.store().current.attempts[0]?.presentedPhase).toBe('working')
@@ -61,7 +62,7 @@ describe('phase presentation', () => {
     rig.now++; await rig.tick(); expect(rig.presentation.setNote).toHaveBeenCalledTimes(2)
     expect(rig.store().current.attempts[0]?.presentationRetryAt).toBeUndefined()
     const b = await rig.attempt({ itemKey: 'two', sessionId: 'gone', leaseHeld: false, phase: 'review' })
-    vi.mocked(rig.presentation.assign).mockReturnValueOnce('missing-session')
+    vi.mocked(rig.presentation.assign).mockResolvedValueOnce('missing-session')
     await rig.tick()
     expect(rig.store().current.attempts.find((attempt) => attempt.attemptId === b.attemptId)?.presentedPhase).toBe('review')
   })
@@ -112,4 +113,22 @@ describe('phase presentation', () => {
     expect(rig.sessions.acknowledgeWorktreeResult).toHaveBeenCalledOnce()
     expect(rig.store().current.attempts[0]).toMatchObject({ presentedPhase: 'completed', resultsSettled: true })
   })
+  it.each(['stop', 'expired-tick'] as const)('does not write a note after %s during an assignment', async reason => {
+    let stopped = false, open = true
+    let finish!: (value: 'ok') => void
+    const assign = vi.fn(() => new Promise<'ok'>(resolve => { finish = resolve }))
+    const note = vi.fn(async () => 'ok' as const), write = vi.fn()
+    const presentation = new Presentation({ ensureGroups: async () => true, assign, setNote: note }, () => 0, () => stopped)
+    const pending = presentation.apply('kind', { phase: 'working', sessionId: 'worker' } as AttemptRecord,
+      { open: () => open, write } as unknown as TickGuard, () => {})
+    await vi.waitFor(() => expect(assign).toHaveBeenCalledTimes(1))
+    if (reason === 'stop') stopped = true
+    else if (reason === 'expired-tick') open = false
+    else throw new Error(`Unknown stop reason: ${reason satisfies never}`)
+    finish('ok')
+    await pending
+    expect(note).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
+  })
+
 })

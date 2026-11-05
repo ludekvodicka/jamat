@@ -6,6 +6,8 @@ import { ControllerLeaseManager } from './controller/controllerLeaseManager.js'
 import { ServiceController } from './controller/serviceController.js'
 import { EventHub } from './events/eventHub.js'
 import { HostStatePaths } from './hostRuntime/hostStatePaths.js'
+import { HostPerfMonitor } from './hostRuntime/hostPerfMonitor.js'
+import { BuildInfoSource } from './hostRuntime/buildInfo.js'
 import type { HostOperationRouter } from './hostTransport/hostOperationRouter.js'
 import { ServiceSessions } from './sessions/serviceSessions.js'
 import { SessionManager } from './sessions/sessionManager.js'
@@ -24,10 +26,13 @@ export class AppHub {
   private readonly attach: AttachHub
   private readonly serviceSessions: ServiceSessions
   private readonly serviceController: ServiceController
+  private readonly perf: HostPerfMonitor
 
   constructor(context: AppContext) {
     const { configIdentity } = context.config.identity
     const channel = context.config.runtimeChannel
+    this.perf = new HostPerfMonitor(HostStatePaths.perf(configIdentity, channel), BuildInfoSource.perfBuild(),
+      message => context.log(`WARN ${message}`))
     // Constructed empty, never loaded: a new Host instance inherits nothing, because nothing a dead
     // Host wrote can still be true. See the class comment on SessionStore.
     const store = new SessionStore(
@@ -74,7 +79,12 @@ export class AppHub {
     this.leases.require(controllerLeaseId)
   }
 
-  destroy(): void {
+  startPerf(): void { this.perf.start() }
+
+  stopPerf(): Promise<void> { return this.perf.stop() }
+
+  async destroy(): Promise<void> {
     this.sessions.destroy()
+    await this.perf.stop()
   }
 }

@@ -14,7 +14,7 @@ import type {
 /**
  * Whether Claude is read at all in this run, decided before anything is built. The token travels as a
  * value through one call and is never a field: it is here only so the sentinel below can prove that
- * what the Debug window would draw does not contain it.
+ * what the Debug tab would draw does not contain it.
  */
 type ClaudeDecision =
   | { read: true; accessToken: string }
@@ -105,7 +105,7 @@ class SmokeRateMonitor extends SmokeHarness {
       this.checkProvider('Claude', snapshot.providers.claude)
       // The one seam a credential could cross. `RateProviderDebug` has no field for a token, so this
       // is the assertion that the type is telling the truth about the real file.
-      this.check('nothing the Debug window would draw carries the OAuth access token',
+      this.check('nothing the Debug tab would draw carries the OAuth access token',
         !JSON.stringify(monitor.debugStatus()).includes(decision.accessToken))
     }
     if (snapshot.providers.claude.kind === 'ok' || snapshot.providers.codex.kind === 'ok')

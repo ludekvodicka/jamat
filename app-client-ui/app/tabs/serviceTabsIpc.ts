@@ -1,8 +1,4 @@
-import { versioningReviewSchema } from '../../shared/versioningReviewSchemas'
-import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/remoteSessionSchemas'
-import type { SessionViewOpenRequest } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
-import type { SessionOpen } from '../../shared/sessionViewItems'
-import type { SessionViewItemsStore } from './sessionViewItemsStore'
+import type { ScriptRunHandOff } from '../../../lib-orchestrator/clientApi/scriptRunHandOff.types'
 import { PanelKeysConst } from '../../shared/tabTransfer'
 import { randomUUID } from 'node:crypto'
 
@@ -10,21 +6,19 @@ import type { WebContents } from 'electron'
 
 import { ErrorText } from '../../shared/errorText'
 import type { ClaimPanelResult, WorkspacePanelPresence } from '../../shared/tabTransfer'
-import { type TerminalTarget, TerminalTargetCodec } from '../../shared/terminalTarget'
-import { ServiceIpcBase } from '../shared/serviceIpcBase'
+import { TerminalTargetCodec } from '../../shared/terminalTarget'
+import { ElectronServiceIpcBase } from '../shell/electronServiceIpcBase'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
-import type { TabControlBroker } from './tabControlBroker'
+import type { TabWindowRouter } from '../shell/tabWindowRouter'
 import type { TabTransferBroker } from './tabTransferBroker'
 import { WorkspacePanelIndex } from './workspacePanelIndex'
 
 /** Where the tabs of a collapsed script run go: to this session, or nowhere when it is null. */
-export type ScriptRunHandOff = { target: TerminalTarget; title: string } | null
+export type { ScriptRunHandOff } from '../../../lib-orchestrator/clientApi/scriptRunHandOff.types'
 
 /** Panel ownership and cross-window transfer routing. */
-export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channelsConst> {
+export class ServiceTabsIpc extends ElectronServiceIpcBase<typeof ServiceTabsIpc.channelsConst> {
   static readonly channelsConst = {
-    'tabs:open-shared-item': true,
-    'tabs:session-items': true,
     'tabs:claim-panel': true,
     'tabs:reconcile-panels': true,
     'tabs:release-panel': true,
@@ -38,10 +32,6 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
     'tabs:transfer-abort': true,
     'tabs:move-panel': true,
     'tabs:control-ack': true,
-    'tabs:open-session-task': true,
-    'tabs:project-review': true,
-    'tabs:projected-review-changed': true,
-    'tabs:open-session-actions': true,
   } as const
 
   private static readonly collapsedRunsMaxConst = 64
@@ -50,49 +40,37 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
    * hold the run's tab at that moment; a tab asked for later (a stale menu, a click before the next
    * snapshot, a restored layout, a tab dropped into another window) is answered from here.
    */
-  private readonly collapsedRuns = new Map<string, ScriptRunHandOff>()
+  private readonly collapsedRuns: Map<string, ScriptRunHandOff>
 
-  private readonly items?: Pick<SessionViewItemsStore, 'page'> & { open(owner: string, sessionId: string, body: SessionViewOpenRequest): Promise<SessionOpen> }
 
   private readonly windows: WorkspaceWindows
   private readonly index: WorkspacePanelIndex
   private readonly broker: TabTransferBroker
-  private readonly controlBroker: TabControlBroker
+  private readonly controlBroker: TabWindowRouter
   private readonly onPresenceChanged: () => void
 
   constructor(
     windows: WorkspaceWindows,
     index: WorkspacePanelIndex,
     broker: TabTransferBroker,
-    controlBroker: TabControlBroker,
+    controlBroker: TabWindowRouter,
     onPresenceChanged: () => void,
-    items?: Pick<SessionViewItemsStore, 'page'> & { open(owner: string, sessionId: string, body: SessionViewOpenRequest): Promise<SessionOpen> },
   ) {
     super()
+    this.collapsedRuns = new Map()
     this.windows = windows
     this.index = index
     this.broker = broker
     this.controlBroker = controlBroker
     this.onPresenceChanged = onPresenceChanged
-    this.items = items
   }
 
   initialize(): void {
-    this.register('tabs:open-shared-item', (event, sessionId, body) => {
-      const owner = this.requireAcceptingWindowId(event.sender)
-      if (!this.items) throw new Error('Shared items are unavailable')
-      return this.items.open(owner, sessionId, RemoteSessionSchemas.sharedOpen.parse(body))
-    })
-    this.register('tabs:session-items', (event, sessionId, cursor) => {
-      this.requireAcceptingWindowId(event.sender)
-      if (!this.items) throw new Error('Shared session items are unavailable')
-      return this.items.page(sessionId, cursor)
-    })
     this.register('tabs:claim-panel', (event, panel, activate) => {
-      const windowId = this.windows.windowIdOf(event.sender)
+      const windowId = this.windows.windowIdOf(this.sender(event))
       if (windowId === null)
         return { kind: 'refused', detail: 'Unknown workspace renderer' }
-      if (!this.windows.acceptsRenderer(event.sender))
+      if (!this.windows.acceptsRenderer(this.sender(event)))
         return { kind: 'refused', detail: 'The workspace window is closing' }
       const answer = this.collapsedRunAnswer(panel) ?? this.index.claimOpen(windowId, panel)
       if (answer.kind === 'owned') {
@@ -120,8 +98,8 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
       return answer
     })
     this.register('tabs:reconcile-panels', (event, panels) => {
-      const windowId = this.windows.windowIdOf(event.sender)
-      if (windowId === null || !this.windows.acceptsRenderer(event.sender))
+      const windowId = this.windows.windowIdOf(this.sender(event))
+      if (windowId === null || !this.windows.acceptsRenderer(this.sender(event)))
         return { acceptedPanelIds: [], rejectedPanelIds: panels.map((panel) => panel.panelId) }
       const admitted = panels.filter((panel) => this.collapsedRunAnswer(panel) === null)
       const answer = this.index.reconcile(windowId, admitted)
@@ -135,47 +113,19 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
       }
     })
     this.register('tabs:release-panel', (event, panelId) => {
-      this.index.release(panelId, this.requireWindowId(event.sender))
+      this.index.release(panelId, this.requireWindowId(this.sender(event)))
       this.announcePresence()
     })
     this.register('tabs:set-active-panel', (event, panelId) => {
-      this.index.setActivePanel(this.requireWindowId(event.sender), panelId)
+      this.index.setActivePanel(this.requireWindowId(this.sender(event)), panelId)
       this.announcePresence()
     })
-    this.register('tabs:open-session-task', async (event, target, task, title) => {
-      this.requireAcceptingWindowId(event.sender)
-      const decoded = target.kind === 'local' ? TerminalTargetCodec.read({ sessionId: target.sessionId }) : TerminalTargetCodec.read({ target })
-      if (!decoded || typeof title !== 'string' || title.length > 400) throw new Error('Invalid task target')
-      const parsed = RemoteSessionSchemas.sharedOpen.parse({ openId: 'validate-task', item: { kind: 'task', task } })
-      if (parsed.item.kind !== 'task') throw new Error('Invalid task reference')
-      const result = await this.controlBroker.openSessionTask(decoded.target, parsed.item.task, title)
-      if (!result.ok) throw new Error(result.error.detail)
-    })
-    this.register('tabs:project-review', (event, target, input, itemKey, openId) => {
-      this.requireAcceptingWindowId(event.sender)
-      const draft = versioningReviewSchema.parse(input)
-      if (target.kind !== 'remote' || target.sessionId !== draft.sessionId || typeof itemKey !== 'string' || itemKey.length > 32768)
-        throw new Error('Invalid review projection')
-      if (typeof openId !== 'string' || openId.length === 0 || openId.length > 256) throw new Error('Invalid review open identity')
-      return this.controlBroker.projectReview(target, draft, itemKey, openId)
-    })
-    this.register('tabs:projected-review-changed', (event, target, input, closed) => {
-      this.requireAcceptingWindowId(event.sender)
-      const draft = versioningReviewSchema.parse(input)
-      if (target.kind !== 'remote' || target.sessionId !== draft.sessionId || typeof closed !== 'boolean') throw new Error('Invalid review projection')
-      this.controlBroker.updateProjectedReview(target, draft, closed)
-    })
-    this.register('tabs:open-session-actions', async (event, target) => {
-      this.requireAcceptingWindowId(event.sender)
-      const result = await this.controlBroker.openSessionActions(target)
-      if (!result.ok) throw new Error(result.error.detail)
-    })
     this.register('tabs:open-session-ids', (event) => {
-      this.requireMain(event.sender)
+      this.requireMain(this.sender(event))
       return this.index.openSessionIds()
     })
     this.register('tabs:close-terminal-panel', (event, targetKey) => {
-      this.requireMain(event.sender)
+      this.requireMain(this.sender(event))
       this.closeTerminalPanels(targetKey)
     })
     this.register('tabs:publish-terminal-restarted', (event, targetKey) => {
@@ -185,7 +135,7 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
       // panel drawing that session attached to a runtime that had just been replaced. This
       // publishes only to windows that already own a panel for the target, so a holder gains
       // nothing here it did not already have.
-      this.requireAcceptingWindowId(event.sender)
+      this.requireAcceptingWindowId(this.sender(event))
       const notified = new Set<string>()
       for (const owner of this.index.panelsOfTerminalTarget(targetKey))
         if (!notified.has(owner.windowId)) {
@@ -194,15 +144,15 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
         }
     })
     this.register('tabs:drag-started', (event, token, panel) => {
-      const sourceWindowId = this.requireAcceptingWindowId(event.sender)
+      const sourceWindowId = this.requireAcceptingWindowId(this.sender(event))
       if (panel.key === PanelKeysConst.welcome)
         throw new Error('The welcome panel cannot be transferred')
       this.broker.start(token, panel, sourceWindowId)
     })
     this.register('tabs:transfer-prepare', (event, token) =>
-      this.broker.prepare(token, this.requireAcceptingWindowId(event.sender)))
+      this.broker.prepare(token, this.requireAcceptingWindowId(this.sender(event))))
     this.register('tabs:transfer-commit', (event, token) => {
-      const windowId = this.requireWindowId(event.sender)
+      const windowId = this.requireWindowId(this.sender(event))
       this.broker.commit(token, windowId)
       this.announcePresence()
       for (const [runKey, handOff] of this.collapsedRuns)
@@ -211,10 +161,10 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
             this.publishCollapsed(owner, handOff)
     })
     this.register('tabs:transfer-abort', (event, token) => {
-      this.broker.abort(token, this.requireWindowId(event.sender))
+      this.broker.abort(token, this.requireWindowId(this.sender(event)))
     })
     this.register('tabs:move-panel', async (event, panel, target) => {
-      const sourceWindowId = this.requireAcceptingWindowId(event.sender)
+      const sourceWindowId = this.requireAcceptingWindowId(this.sender(event))
       if (panel.key === PanelKeysConst.welcome)
         return
       let targetWindowId: string
@@ -232,12 +182,13 @@ export class ServiceTabsIpc extends ServiceIpcBase<typeof ServiceTabsIpc.channel
       // that publishes a token the broker has already reaped, which is a move that silently does
       // nothing. A window that will never load rejects here instead, which the renderer can report.
       await this.windows.whenRendererReady(targetWindowId)
+      if (!this.transport.isCurrent(event)) throw new Error('The source renderer is no longer available')
       const token = randomUUID()
       this.broker.start(token, panel, sourceWindowId)
       this.windows.publishTo(targetWindowId, 'tabs:transfer-in', token)
     })
     this.register('tabs:control-ack', (event, ack) => {
-      this.controlBroker.acknowledge(this.requireWindowId(event.sender), ack)
+      this.controlBroker.acknowledge(this.requireWindowId(this.sender(event)), ack)
     })
     this.assertComplete(ServiceTabsIpc.channelsConst)
   }

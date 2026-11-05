@@ -28,23 +28,23 @@ function harness() {
   }
 }
 
-it('reads only a receipt for the exact Jamat tab and launch generation', () => {
+it('reads only a receipt for the exact Jamat tab and launch generation', async () => {
   const {files, write, reports} = harness()
-  expect(files.identity(record)).toBeNull()
+  expect(await files.identity(record)).toBeNull()
   write({})
-  expect(files.identity(record)?.nativeSessionId).toBe(nativeId)
+  expect((await files.identity(record))?.nativeSessionId).toBe(nativeId)
   for (const fields of [{launchId: 'old'}, {jamatSessionId: 'sibling'}, {schemaVersion: 2},
     {nativeSessionId: 'not-a-thread'}, {sequence: 0}, {sequence: 1.2}]) {
     write(fields)
-    expect(files.identity(record)).toBeNull()
+    expect(await files.identity(record)).toBeNull()
   }
   expect(reports).toHaveLength(1)
 })
 
-it('never reads a receipt as a substitute for a legacy inferred identity', () => {
+it('never reads a receipt as a substitute for a legacy inferred identity', async () => {
   const {files, write} = harness()
   write({})
-  expect(files.identity({...record, agent: {agentId: 'codex', launchMode: 'new'}})).toBeNull()
+  expect(await files.identity({...record, agent: {agentId: 'codex', launchMode: 'new'}})).toBeNull()
 })
 
 it('launches the bridge with a private generation and preserves native argument boundaries', () => {
@@ -88,9 +88,9 @@ it('keeps both account homes in the bridge environment while retaining the same 
   expect(launch).not.toHaveProperty('env')
 })
 
-it('refuses path traversal in a persisted launch identity', () => {
+it('refuses path traversal in a persisted launch identity', async () => {
   const {files} = harness()
-  expect(files.identity({...record, agent: {...record.agent!, identityLaunchId: '../other'}})).toBeNull()
+  expect(await files.identity({...record, agent: {...record.agent!, identityLaunchId: '../other'}})).toBeNull()
 })
 
 it('uses the shipped console Node runtime for a packaged bridge and refuses a missing runtime', () => {

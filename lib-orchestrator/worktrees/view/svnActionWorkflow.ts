@@ -90,6 +90,10 @@ export class SvnActionWorkflow {
       step.state = 'running'
       step.detail = 'Preparing the synced review'
     }
+    // An owner without declared checks runs none: its step prepares the review and is named so (D15).
+    const unchecked = driven && action.stage === 'checks' && action.checks.length === 0 && action.needs === undefined
+      && SvnActionStages.installOf(action) === null
+    if (unchecked) for (const step of current) Object.assign(step, { base: 'preparing', title: 'Prepare the review', detail: 'Preparing the synced review' })
     if (reviewReady)
       for (const step of current) {
         step.base += `:candidate-${record.worktreeLifecycle!.review?.version ?? 'pending'}`
@@ -103,6 +107,9 @@ export class SvnActionWorkflow {
       step.state = 'waits'
       step.detail = idleWait
     }
+    const owner = driven ? WorktreeWords.conflictOwnerOf(record.worktreeLifecycle, action.kind) : 'person'
+    const handed = owner === 'worker' && SvnConflictFlow.open(action.conflictSet) ? action.conflictSet : null
+    if (handed !== null) for (const step of current) if (step.stage === 'fixing') step.detail = SvnConflictWords.summaryOf(handed, owner)
     const ahead = (verifying === null ? SvnActionWorkflow.aheadOf(action) : SvnActionWorkflow.afterPublicationOf(action)).map(SvnActionWorkflow.pendingOf)
     const conflicts = SvnActionWorkflow.conflictWaitOf(action)
     let badge: string
@@ -114,7 +121,7 @@ export class SvnActionWorkflow {
     const rounds = SvnActionWorkflow.roundsOf(SvnActionWorkflow.kindWordOf(action.kind), SvnActionWorkflow.withSaved(action, [...done, ...current, ...ahead, ...retry]))
     const conflictStep = rounds.flatMap((round) => round.steps).filter((step) => step.body?.kind === 'conflicts').at(-1)
     if (conflictStep !== undefined && action.conflictSet !== undefined)
-      conflictStep.body = { kind: 'conflicts', summary: SvnConflictWords.summaryOf(action.conflictSet),
+      conflictStep.body = { kind: 'conflicts', summary: SvnConflictWords.summaryOf(action.conflictSet, owner),
         conflicts: SvnConflictWords.listOf(action.conflictSet, SvnConflictFlow.wireMaxConst, SvnActionStages.sideOf(action)), mergeBrief: action.mergeBrief ?? null }
     if (action.stage === 'changes' && (!driven || reviewReady)) {
       const step = rounds.flatMap((round) => round.steps).filter((step) => step.state === 'waits').at(-1)
@@ -137,7 +144,7 @@ export class SvnActionWorkflow {
       workflowId: action.actionId,
       title: SvnActionWorkflow.titleOf(record, action.kind, action.root),
       badge: action.kind !== 'update-main' && record.worktreeLifecycle?.execution !== undefined ? WorktreeWords.presentation(record.worktreeLifecycle).title ?? badge : badge,
-      summary: preparing ? 'Preparing the synced review' : action.needs !== undefined ? `Waits for you: ${action.needs.reason}`
+      summary: preparing || unchecked ? 'Preparing the synced review' : action.needs !== undefined ? `Waits for you: ${action.needs.reason}`
         : SvnActionWorkflow.failureOf(action) ?? (driven && record.worktreeLifecycle?.step === 'reviewing'
           ? SvnActionWorkflow.incomingOf(record) ?? 'Validate the prepared application, then review and publish the whole verified change set'
         : verifying !== null ? `Verifying the publication${verifying.revision === null ? '' : ` r${verifying.revision}`}` : idleWait ?? SvnActionWorkflow.runningSummaryOf(action)),

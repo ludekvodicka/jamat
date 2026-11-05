@@ -456,6 +456,13 @@
   text-overflow: ellipsis;
 }
 
+/* The agent and worktree marks are one or two letters that tell rows apart, so they never give way:
+   a long name once hid both. The title's 8em floor still keeps the name from vanishing beside them. */
+.jamat-sessions__row > :is(.jamat-sessions__agent, .jamat-sessions__worktree) {
+  flex: none;
+  overflow: visible;
+}
+
 /* A running Finish says so on its row; it gives way after the name, never first (Finish 072). */
 .jamat-sessions__row > .jamat-sessions__finish--running {
   flex-shrink: 1;

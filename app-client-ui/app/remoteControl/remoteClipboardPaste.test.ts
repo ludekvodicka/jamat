@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { RemoteControlPasteFileConst } from '../../../lib-orchestrator/remoteControl/remoteControlProtocol'
 import { RemoteClipboardPaste } from './remoteClipboardPaste'
+import { GatewayOutboundClient } from '../../../app-orchestrator/app/remoteControl/gatewayOutboundClient'
+import { ProcessCalls } from '../../../lib-orchestrator/shared/processCalls'
 
 const clipboardMock = vi.hoisted(() => ({
   text: '',
@@ -100,6 +102,22 @@ describe('app-client-ui/app/remoteControl/remoteClipboardPaste', () => {
     expect(outbound.chunks.every((chunk) => chunk.fileName === 'log.txt' && chunk.size === size)).toBe(true)
   })
 
+  it('stops reading and forwarding file chunks when its window or claim lifetime is revoked', async () => {
+    const file = join(directory, 'cancelled.bin')
+    writeFileSync(file, Buffer.alloc(RemoteControlPasteFileConst.chunkBytesConst * 2 + 1))
+    clipboardMock.text = file
+    const lifetime = new AbortController(), original = outbound.terminalPasteFile.bind(outbound)
+    const send = vi.spyOn(outbound, 'terminalPasteFile').mockImplementation(async (...args) => {
+      const answer = await original(...args)
+      lifetime.abort(new Error('Claim replaced'))
+      return answer
+    })
+    await expect(paste.paste('endpoint', 'private-claim', lifetime.signal)).rejects.toThrow('Claim replaced')
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]!.slice(0, 2)).toEqual(['endpoint', 'private-claim'])
+    expect(outbound.chunks).toHaveLength(1)
+  })
+
   it('pastes the local path with the reason for a file over the limit, and sends the others', async () => {
     const large = join(directory, 'dump.bin')
     const small = join(directory, 'empty.txt')
@@ -128,6 +146,27 @@ describe('app-client-ui/app/remoteControl/remoteClipboardPaste', () => {
 
     expect(await paste.paste('e1', 'a1')).toEqual({ ok: true, value: { kind: 'text', text: '"D:/remote/clip board.png"' } })
     expect(outbound.images).toEqual([Buffer.from([0x89, 0x50]).toString('base64')])
+  })
+
+  it('reads the native clipboard in main and sends image and file data through the private window authority route', async () => {
+    let gateway!: ProcessCalls
+    const sent: unknown[][] = []
+    const main = new ProcessCalls({ send: message => gateway.receive(structuredClone(message)), invoke: async () => {}, event: () => {}, report: message => { throw new Error(message) } })
+    gateway = new ProcessCalls({ send: message => main.receive(structuredClone(message)), invoke: async (target, method, args) => {
+      sent.push([target, method, args]); return { ok: true, value: { path: 'remote-file' } }
+    }, event: () => {}, report: message => { throw new Error(message) } })
+    const client = new GatewayOutboundClient(main, () => [], () => {}, () => {}), window = { windowId: '7', epoch: 'document-epoch' }
+    const native = new RemoteClipboardPaste({ terminalPasteImage: (...args) => client.pasteImage(window, ...args),
+      terminalPasteFile: (...args) => client.pasteFile(window, ...args) })
+    try {
+      clipboardMock.image = Uint8Array.from([1, 2, 3])
+      expect(await native.paste('peer', 'private-claim')).toEqual({ ok: true, value: { kind: 'text', text: 'remote-file' } })
+      expect(sent[0]).toEqual(['windows', 'remote-paste-image', ['7', 'document-epoch', 'peer', 'private-claim', 'AQID']])
+      const file = join(directory, 'copy.txt'); writeFileSync(file, 'file-bytes'); clipboardMock.text = file
+      expect(await native.paste('peer', 'private-claim')).toEqual({ ok: true, value: { kind: 'text', text: 'remote-file' } })
+      expect(sent[1]).toEqual(['windows', 'remote-paste-file', ['7', 'document-epoch', 'peer', 'private-claim',
+        { uploadId: expect.any(String), fileName: 'copy.txt', size: 10, offset: 0, data: Buffer.from('file-bytes').toString('base64') }]])
+    } finally { main.close(); gateway.close() }
   })
 
   it('answers empty for an empty clipboard', async () => {

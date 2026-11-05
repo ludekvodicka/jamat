@@ -121,7 +121,8 @@ export class WorktreeLifecycle {
           ? null
           : { worktreePath: retired.worktreePath, revisions: retired.revisions, removedAt: retired.removedAt },
         finish: finish === undefined ? null : { phase: finish.phase, scopeRoot: finish.scopeRoot ?? null },
-        action: FinishProjection.action(record) === undefined ? null : SvnActionStages.infoOf(FinishProjection.action(record)!),
+        action: FinishProjection.action(record) === undefined ? null
+          : SvnActionStages.infoOf(FinishProjection.action(record)!, WorktreeWords.conflictOwnerOf(record.worktreeLifecycle, FinishProjection.action(record)!.kind)),
         outcome: record.worktreeOutcome ?? null,
         cleanup: record.worktreeCleanup === undefined
           ? null
@@ -160,7 +161,7 @@ export class WorktreeLifecycle {
       sessionId: parent.sessionId,
       actionId: action.actionId,
       stage: action.stage,
-      summary: SvnConflictWords.summaryOf(set),
+      summary: SvnConflictWords.summaryOf(set, WorktreeWords.conflictOwnerOf(lifecycle, parent.svnAction?.kind ?? 'finish')),
       entries: listed.entries,
       more: listed.more,
     } }

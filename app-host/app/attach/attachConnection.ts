@@ -7,12 +7,14 @@ import { SessionError } from '../sessions/sessionError.js'
 import type { SessionErrorCode } from '../sessions/sessionError.js'
 import { SessionManager } from '../sessions/sessionManager.js'
 import type { TerminalInstanceEvent } from '../terminal/terminal.types.js'
+import { SnapshotStream } from './snapshotStream.js'
 import {
   HostWireConst,
   type HostWsClientMsg,
   type HostWsErrorCode,
   type HostWsServerMsg,
   type RuntimeRef,
+  type TerminalSnapshotHeader,
 } from '../wire/hostWire.js'
 
 export interface AttachSocket extends EventSocket {
@@ -32,13 +34,28 @@ export class AttachConnection {
   private truncated: Extract<HostWsServerMsg, { type: 'terminal.stream-truncated' }> | null = null
   private truncationTimer: ReturnType<typeof setTimeout> | null = null
   private terminalBuffer: TerminalInstanceEvent[] | null = null
+  private terminalBufferBytes = 0
+  private bufferOverflow = false
+  private bufferedTruncation: Extract<HostWsServerMsg, { type: 'terminal.stream-truncated' }> | null = null
+  private bufferedExit: Extract<TerminalInstanceEvent, { type: 'exit' }> | null = null
+  private snapshotStream: SnapshotStream | null = null
+  private snapshotStarted = false
+  private readonly webSocket: AttachSocket
+  private readonly sessions: SessionManager
+  private readonly leases: ControllerLeaseManager
+  private readonly events: EventHub
 
   constructor(
-    private readonly webSocket: AttachSocket,
-    private readonly sessions: SessionManager,
-    private readonly leases: ControllerLeaseManager,
-    private readonly events: EventHub,
-  ) {}
+    webSocket: AttachSocket,
+    sessions: SessionManager,
+    leases: ControllerLeaseManager,
+    events: EventHub,
+  ) {
+    this.webSocket = webSocket
+    this.sessions = sessions
+    this.leases = leases
+    this.events = events
+  }
 
   async onMessage(raw: Buffer): Promise<void> {
     let parsed: unknown
@@ -88,6 +105,16 @@ export class AttachConnection {
   private async dispatch(message: HostWsClientMsg): Promise<void> {
     if (message.type === 'terminal.attach')
       await this.attach(message)
+    else if (message.type === 'terminal.snapshot-next') {
+      const stream = this.snapshotStream
+      try { await stream?.pull(message.streamId, message.index) }
+      catch (error) {
+        if (this.snapshotStream !== stream) return
+        this.detach()
+        this.report(error)
+        this.webSocket.close()
+      }
+    }
     else if (message.type === 'terminal.detach')
       this.detach()
     else if (message.type === 'terminal.input')
@@ -113,6 +140,9 @@ export class AttachConnection {
     if (message.outputEpoch !== undefined
       && (!Number.isInteger(message.outputEpoch) || message.outputEpoch < 1))
       throw new Error('outputEpoch must be a positive integer')
+    if (message.snapshotStreamId !== undefined
+      && (typeof message.snapshotStreamId !== 'string' || message.snapshotStreamId.length < 1 || message.snapshotStreamId.length > 128))
+      throw new Error('snapshotStreamId must be a non-empty string of at most128 characters')
     const session = this.sessions.session(message.target)
 
     this.detach()
@@ -144,13 +174,44 @@ export class AttachConnection {
       session: this.sessions.session(this.attachedRef),
     })
 
+    const ref = this.attachedRef
     this.terminalBuffer = []
     this.unsubscribeTerminal = this.sessions.subscribeTerminal((event) => this.onTerminalEvent(event))
+    if (message.snapshotStreamId !== undefined) {
+      const stream = new SnapshotStream(message.snapshotStreamId, async () => {
+        this.snapshotStarted = true
+        if (message.outputEpoch !== undefined && message.sinceSeq !== undefined) {
+          const delta = this.sessions.terminalDelta(ref, message.outputEpoch, message.sinceSeq)
+          if (!delta.truncated) {
+            const current = this.sessions.session(ref)
+            this.clearCapturedBuffer()
+            return { projection: { runtimeSessionId: ref.runtimeSessionId, generation: ref.generation,
+              outputEpoch: delta.outputEpoch, outputSeq: delta.outputSeq, cols: current.cols, rows: current.rows,
+              alive: current.alive, lastOutputAt: current.lastOutputAt }, screen: delta.data, reset: false }
+          }
+        }
+        const snapshot = await this.sessions.terminalSnapshot(ref, () => {
+          if (this.attachedRef === ref && this.snapshotStream === stream) this.clearCapturedBuffer()
+        })
+        return { projection: AttachConnection.header(snapshot), screen: snapshot.screen, reset: true }
+      }, frame => {
+        if (this.attachedRef === ref && this.snapshotStream === stream) this.send(frame)
+      }, projection => {
+        if (this.attachedRef !== ref || this.snapshotStream !== stream) return
+        this.snapshotStream = null
+        this.flushBuffered(projection.outputSeq, projection.outputEpoch, () => {
+          if (this.attachedRef === ref) this.send({ type: 'terminal.snapshot-complete', streamId: message.snapshotStreamId! })
+        })
+      })
+      this.snapshotStream = stream
+      return
+    }
     // Past the ack the connection is subscribed and buffering, so a throw here would leave it
     // half-attached: every later event of this generation, `terminal.exit` included, would be buffered
     // forever and the client would sit on an attach that never produces a snapshot or an exit.
-    try { await this.sendInitialProjection(message, session.generation) }
+    try { await this.sendInitialProjection(message, ref) }
     catch (error) {
+      if (this.attachedRef !== ref) return
       /*
        * The socket goes with the attach, and that is the whole point of closing it here.
        *
@@ -174,13 +235,16 @@ export class AttachConnection {
 
   private async sendInitialProjection(
     message: Extract<HostWsClientMsg, { type: 'terminal.attach' }>,
-    generation: number,
+    ref: RuntimeRef,
   ): Promise<void> {
-    if (!this.attachedRef) return
+    if (this.attachedRef !== ref) return
     let throughSeq: number
     let throughEpoch: number
     if (message.sinceSeq === undefined || message.outputEpoch === undefined) {
-      const projection = await this.sessions.terminalSnapshot(this.attachedRef)
+      const projection = await this.sessions.terminalSnapshot(ref, () => {
+        if (this.attachedRef === ref) this.clearCapturedBuffer()
+      })
+      if (this.attachedRef !== ref) return
       this.send({
         type: 'terminal.snapshot',
         projection,
@@ -189,14 +253,14 @@ export class AttachConnection {
       throughEpoch = projection.outputEpoch
     } else {
       const delta = this.sessions.terminalDelta(
-        this.attachedRef,
+        ref,
         message.outputEpoch,
         message.sinceSeq,
       )
       this.send({
         type: 'terminal.delta',
-        runtimeSessionId: this.attachedRef.runtimeSessionId,
-        generation,
+        runtimeSessionId: ref.runtimeSessionId,
+        generation: ref.generation,
         outputEpoch: delta.outputEpoch,
         data: delta.data,
         outputSeq: delta.outputSeq,
@@ -205,10 +269,39 @@ export class AttachConnection {
       throughSeq = delta.outputSeq
       throughEpoch = delta.outputEpoch
     }
-    // a close or detach during the awaits above already dropped this attach, buffer included
+    if (this.attachedRef === ref) this.flushBuffered(throughSeq, throughEpoch)
+  }
+
+  private static header(value: TerminalSnapshotHeader): TerminalSnapshotHeader {
+    return { runtimeSessionId: value.runtimeSessionId, generation: value.generation, outputEpoch: value.outputEpoch,
+      outputSeq: value.outputSeq, cols: value.cols, rows: value.rows, alive: value.alive, lastOutputAt: value.lastOutputAt }
+  }
+
+  private clearCapturedBuffer(): void {
+    this.terminalBuffer = []
+    this.terminalBufferBytes = 0
+    this.bufferOverflow = false
+    this.bufferedTruncation = null
+  }
+
+  private flushBuffered(throughSeq: number, throughEpoch: number, drained?: () => void): void {
     const buffered: TerminalInstanceEvent[] | null = this.terminalBuffer
     if (buffered === null) return
     this.terminalBuffer = null
+    this.terminalBufferBytes = 0
+    const truncated = this.bufferedTruncation
+    const overflow = this.bufferOverflow
+    const exited = this.bufferedExit
+    this.bufferedTruncation = null
+    this.bufferOverflow = false
+    this.bufferedExit = null
+    if (overflow && this.attachedRef) {
+      this.send(truncated ?? { type: 'terminal.stream-truncated', runtimeSessionId: this.attachedRef.runtimeSessionId,
+        generation: this.attachedRef.generation, outputEpoch: throughEpoch, outputSeq: throughSeq })
+      drained?.()
+      if (exited) this.deliverTerminalEvent(exited)
+      return
+    }
     for (const event of buffered) {
       if (event.type === 'data'
         && event.outputEpoch === throughEpoch
@@ -216,6 +309,8 @@ export class AttachConnection {
         continue
       this.deliverTerminalEvent(event)
     }
+    drained?.()
+    if (exited) this.deliverTerminalEvent(exited)
   }
 
   private input(data: string): void {
@@ -263,6 +358,19 @@ export class AttachConnection {
       || event.generation !== this.attachedRef.generation)
       return
     if (this.terminalBuffer) {
+      if (event.type === 'exit') { this.bufferedExit = event; return }
+      if (this.snapshotStream && !this.snapshotStarted) return
+      const bytes = Buffer.byteLength(JSON.stringify(event))
+      if (this.bufferOverflow || this.terminalBufferBytes + bytes > AttachConnection.backpressureBytesConst) {
+        this.bufferOverflow = true
+        this.terminalBuffer = []
+        this.terminalBufferBytes = 0
+        if (event.type === 'data')
+          this.bufferedTruncation = { type: 'terminal.stream-truncated', runtimeSessionId: event.runtimeSessionId,
+            generation: event.generation, outputEpoch: event.outputEpoch, outputSeq: event.outputSeq }
+        return
+      }
+      this.terminalBufferBytes += bytes
       this.terminalBuffer.push(event)
       return
     }
@@ -349,6 +457,13 @@ export class AttachConnection {
       clearTimeout(this.truncationTimer)
     this.truncationTimer = null
     this.terminalBuffer = null
+    this.terminalBufferBytes = 0
+    this.bufferOverflow = false
+    this.bufferedTruncation = null
+    this.bufferedExit = null
+    this.snapshotStream?.close()
+    this.snapshotStream = null
+    this.snapshotStarted = false
   }
 
   private scheduleTruncationFlush(): void {

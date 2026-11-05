@@ -21,6 +21,7 @@ import { CommandAgreement } from '../scripts/commandAgreement'
 import { CommandTrustStore } from '../scripts/commandTrustStore'
 import type { SetupFlowDeps } from './setupFlow'
 import { SetupFlow } from './setupFlow'
+import { Reconciler } from './reconciler'
 import { SetupWorkflow } from './setupWorkflow'
 
 describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
@@ -181,6 +182,74 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
     expect(await checkout.run('parent', true)).toBe('agreed')
     const workflow = SetupWorkflow.of(records.get('parent')!, records.get('parent')!.pendingSetup!, () => null)
     expect(workflow?.rounds.map((round) => round.title)).toEqual(['Setup'])
+  })
+
+  /** A worktree session waiting on its setup run `s`, which exited 0, with a declared step after it. */
+  async function chainOf(root: string, collapsed: string[]): Promise<{ records: SessionRecordsStore; scripts: SessionScriptsManager }> {
+    const records = await SessionRecordsStore.load(join(root, 'records.json'), { snapshotsDirectory: join(root, 'snapshots'), report: () => {} })
+    const unreachable = async (): Promise<never> => { throw new Error('An unbound run has no runtime to ask about') }
+    const scripts = new SessionScriptsManager({ records, logs: new ScriptLogStore(join(root, 'logs')), now: () => 5000, report: () => {},
+      onCollapsed: (event) => { collapsed.push(event.runId) }, host: { runtimeInspect: unreachable, runtimeStop: unreachable, runtimeRemove: unreachable } })
+    const steps = [
+      { key: 'setup', scriptId: 'setup' as const, name: 'setup', commands: [{ command: 'install', cwd: root }] },
+      { key: 'lint', scriptId: 'declared' as const, name: 'lint', commands: [{ command: 'lint', cwd: root }] },
+    ]
+    await records.put({ sessionId: 'parent', kind: 'shell', title: 'Tree', directory: { mode: 'default' }, binding: null, life: 'starting', createdAt: 1,
+      pendingOperationId: 'launch', pendingOperationKind: 'create', pendingSetup: { setupSessionId: 's', steps, cursor: 0 },
+      worktree: { worktreePath: root, repositoryRoot: root, branch: 'jamat/tree', baseCommit: 'abc' } })
+    await records.put({ sessionId: 's', kind: 'shell', title: 'setup', directory: { mode: 'adHoc', path: root }, binding: null, life: 'ended',
+      createdAt: 2, endedAt: 3, exitCode: 0, commands: steps[0].commands, scriptOf: { sessionId: 'parent', phase: 'before', scriptId: 'setup', name: 'setup', stepKey: 'setup' } })
+    return { records, scripts }
+  }
+
+  /** Runs one reconcile pass's collapses after every write of the store lands, the way a pass off the setup's queue can. */
+  function reconcileBetweenWrites(records: SessionRecordsStore, scripts: SessionScriptsManager): void {
+    for (const method of ['put', 'update', 'putWith'] as const) {
+      const original = (records as any)[method].bind(records)
+      ;(records as any)[method] = async (...args: unknown[]) => {
+        const landed = await original(...args)
+        for (const change of Reconciler.plan(records.list(), { sessions: [], throughRevision: 1, hostInstanceId: 'h' }, 5000))
+          if (change.kind === 'collapse-script-run') await scripts.collapse(change.runId)
+        return landed
+      }
+    }
+  }
+
+  it('lands the next run of the chain with the pointer that names it, so a reconcile between writes collapses nothing', async () => {
+    const root = directory({})
+    const collapsed: string[] = []
+    const { records, scripts } = await chainOf(root, collapsed)
+    reconcileBetweenWrites(records, scripts)
+    const launched: string[] = []
+    let id = 0
+    const flow = await flowOf(root, { records, scripts, newId: () => `id-${++id}`,
+      runs: { launch: async (run) => { launched.push(run.sessionId); return { ok: true, value: undefined } } } })
+
+    expect(await flow.applyBeforeSucceeded('parent')).toEqual({ kind: 'script-succeeded', sessionId: 'parent', gate: 'before' })
+
+    const next = records.get('parent')?.pendingSetup?.setupSessionId
+    expect(next).not.toBe('s')
+    expect(records.get(next!)).toMatchObject({ life: 'starting', scriptOf: { sessionId: 'parent', scriptId: 'declared', name: 'lint' } })
+    expect(records.get('parent')?.pendingSetup).toMatchObject({ cursor: 1 })
+    expect(collapsed).toEqual([])
+    expect(launched).toEqual([next])
+  })
+
+  it('collapses a starting run its gate does not name, and keeps one the gate names now', async () => {
+    const root = directory({})
+    const collapsed: string[] = []
+    const { records, scripts } = await chainOf(root, collapsed)
+    const run = (sessionId: string): SessionRecord => ({ sessionId, kind: 'shell', title: 'lint', directory: { mode: 'adHoc', path: root }, binding: null,
+      life: 'starting', createdAt: 4, pendingOperationId: `op-${sessionId}`, pendingOperationKind: 'create', commands: [{ command: 'lint', cwd: root }],
+      scriptOf: { sessionId: 'parent', phase: 'before', scriptId: 'declared', name: 'lint', stepKey: 'lint' } })
+    await records.put(run('unnamed'))
+    await records.put(run('named'))
+    await records.update('parent', (parent) => ({ ...parent, pendingSetup: { ...parent.pendingSetup!, setupSessionId: 'named', cursor: 1 } }))
+
+    expect(await scripts.collapse('unnamed')).toBe(true)
+    expect(await scripts.collapse('named')).toBe(false)
+    expect(collapsed).toEqual(['unnamed'])
+    expect(records.get('named')).not.toBeNull()
   })
 
   it('plans one setup step that installs every member of a product group in the worktree', async () => {

@@ -31,4 +31,12 @@ describe('ChecksStep', () => {
     expect(h.records.get('worker')?.worktreeLifecycle?.step).toBe('reviewing')
     expect(handoffs.pending()).toEqual([])
   })
+
+  it('records a Finish without declared checks as passed and not configured, so nothing names a check (D15)', async () => {
+    const h = await finishTestRecords({ step: 'checking' })
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      execution: { root: record.worktree!.worktreePath, requestedBy: 'window', startedAt: 1, checks: [], checkCursor: 0, rootCursor: 0, evidence: [] } } }))
+    await new ChecksStep(h.records, { checksFailed: async () => {} }).complete('worker', { passed: true, at: 10, logPath: '' })
+    expect(h.records.get('worker')?.worktreeLifecycle).toMatchObject({ step: 'reviewing', checks: { passed: true, configured: false, logPath: '' } })
+  })
 })

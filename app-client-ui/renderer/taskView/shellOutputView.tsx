@@ -1,9 +1,9 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useState } from 'react'
 
 import type { SessionShellOutput } from '../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import { DurationFormat } from '../../shared/durationFormat'
 import { SessionTaskGlyphs } from '../views/sessionsTree/sessionTaskRows'
-import { SubagentTranscriptText } from './subagentTranscriptView'
+import { useFollowEnd } from './useFollowEnd'
 import './taskView.css'
 
 /**
@@ -12,16 +12,11 @@ import './taskView.css'
  */
 export function ShellOutputView(props: { output: Extract<SessionShellOutput, { kind: 'output' }> }): React.JSX.Element {
   const { output } = props
-  const body = useRef<HTMLDivElement | null>(null)
   // A shell's latest line is what matters, so the view opens at the bottom and stays there while the
   // person does.
-  const stick = useRef(true)
+  const [body, setBody] = useState<HTMLDivElement | null>(null)
+  useFollowEnd(body)
   const now = Date.now()
-
-  useLayoutEffect(() => {
-    const element = body.current
-    if (element !== null && stick.current) element.scrollTop = element.scrollHeight
-  }, [output])
 
   return (
     <div className="task-view">
@@ -29,15 +24,7 @@ export function ShellOutputView(props: { output: Extract<SessionShellOutput, { k
         <div className="task-view__title">$ {output.command}</div>
         <div className="task-view__facts" data-state={output.state}>{SessionTaskGlyphs.titleOf(output.state)}</div>
       </header>
-      <div
-        className="task-view__entries"
-        ref={body}
-        onScroll={(event) => {
-          const element = event.currentTarget
-          stick.current = element.scrollHeight - element.scrollTop - element.clientHeight
-            <= SubagentTranscriptText.bottomSlackPixelsConst
-        }}
-      >
+      <div className="task-view__entries" ref={setBody}>
         <p className="task-view__note">Started {ShellOutputTime.clockOf(output.startedAt, now)}</p>
         {output.earlierOutputOmitted && <p className="task-view__note">Earlier output is not shown.</p>}
         {output.text === ''

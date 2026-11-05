@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { SessionRecordSvnAction } from '../../sessionManager/worktreeSessionRecords'
 import { ScriptLogStore } from '../../sessionManager/worktreeSessionScripts'
 import { type WorktreeResultRecord, WorktreeResultsStore } from './worktreeResultsStore'
 
@@ -54,6 +55,36 @@ describe('lib-orchestrator/sessionManager/results/worktreeResultsStore', () => {
     expect(later.list({ unacknowledged: true }).map((record) => record.actionId)).toEqual(['a2'])
     expect(later.list({ tag: 'run-7' })[0].acknowledgedAt).toBe(10 * dayConst)
     expect(await later.acknowledge('missing')).toMatchObject({ ok: false, code: 'not-found' })
+  })
+
+  function action(overrides: Partial<SessionRecordSvnAction>): SessionRecordSvnAction {
+    return { kind: 'finish', actionId: 'a1', stage: 'main-update', root: 'Q:/Work/App/.worktrees/014-fix-login', checks: [], checkCursor: 0,
+      rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1, ...overrides }
+  }
+
+  it('reads a result as updating its main copy from the landed Finish until its UPDATE records main or mainUnproven', () => {
+    const landed = action({})
+    const updating = action({ kind: 'update-main', actionId: 'u1', stage: 'updating', root: 'q:\\work\\app' })
+    // The Finish landed and its UPDATE is due, or the UPDATE runs or waits for the person.
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), landed)).toBe(true)
+    // The result is written right after the commit, while the Finish still verifies and removes the worktree.
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), action({ stage: 'removing' }))).toBe(true)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), action({ stage: 'committing' }))).toBe(true)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), updating)).toBe(true)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1', { result: 'partial' }), { ...updating, needs: { kind: 'conflict', reason: 'a.txt', at: 2 } })).toBe(true)
+    // A client restarted during the UPDATE reads the same action back from the records file.
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), JSON.parse(JSON.stringify(updating)) as SessionRecordSvnAction)).toBe(true)
+    // The UPDATE recorded its receipt, proven or not.
+    const main = { revision: 52, by: 'person' as const, at: 3 }
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1', { main }), updating)).toBe(false)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1', { mainUnproven: { ...main, reason: 'a.txt still at r50' } }), updating)).toBe(false)
+    // The session was removed, the Finish of another action owns it, or the UPDATE is of another main copy.
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), undefined)).toBe(false)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), action({ actionId: 'a2' }))).toBe(false)
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1'), { ...updating, root: 'Q:/Work/Other' })).toBe(false)
+    // Nothing published, nothing to update.
+    expect(WorktreeResultsStore.mainUpdatingOf(result('a1', { result: 'nothing', revisions: [] }), landed)).toBe(false)
+    expect(WorktreeResultsStore.dtoOf(result('a1')).mainUpdating).toBe(false)
   })
 
   it('retains the main-copy updater across result rewrites and restart', async () => {

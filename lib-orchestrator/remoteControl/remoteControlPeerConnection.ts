@@ -32,11 +32,12 @@ export class RemoteControlPeerConnection {
   private lastReceivedAt: number
   private closed = false
 
-  constructor(
-    private readonly socket: WebSocket,
-    private readonly codec: RemoteControlPeerCodecResult,
-    options?: RemoteControlPeerConnectionOptions,
-  ) {
+  private readonly socket: WebSocket
+  private readonly codec: RemoteControlPeerCodecResult
+
+  constructor(socket: WebSocket, codec: RemoteControlPeerCodecResult, options?: RemoteControlPeerConnectionOptions) {
+    this.socket = socket
+    this.codec = codec
     this.connectionId = codec.connectionId
     this.remoteIdentity = structuredClone(codec.remoteIdentity)
     this.capabilities = [...codec.capabilities]
@@ -59,8 +60,8 @@ export class RemoteControlPeerConnection {
     return !this.closed && this.socket.readyState === WebSocket.OPEN
   }
 
-  send(message: RemoteControlPeerApplicationMessage): boolean {
-    return this.sendEncrypted(message)
+  send(message: RemoteControlPeerApplicationMessage, sent?: (error?: Error) => void): boolean {
+    return this.sendEncrypted(message, sent)
   }
 
   onMessage(listener: (message: RemoteControlPeerInboundApplicationMessage) => void): () => void {
@@ -116,10 +117,14 @@ export class RemoteControlPeerConnection {
     this.sendEncrypted({ type: 'heartbeat-ping', sentAt: now })
   }
 
-  private sendEncrypted(message: RemoteControlPeerEncryptedMessage): boolean {
+  private sendEncrypted(message: RemoteControlPeerEncryptedMessage, sent?: (error?: Error) => void): boolean {
     if (!this.isOpen()) return false
     try {
-      this.socket.send(JSON.stringify(this.codec.outbound.seal(message)))
+      this.socket.send(JSON.stringify(this.codec.outbound.seal(message)), error => {
+        if (error) this.finishClose()
+        try { sent?.(error ?? undefined) }
+        catch { this.finishClose() }
+      })
       return true
     } catch {
       this.finishClose()

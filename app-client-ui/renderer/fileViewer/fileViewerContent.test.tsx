@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
@@ -33,6 +33,234 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
   function textOf(text: string): FileViewerTextResult {
     return { ok: true, kind: 'text', text, contentVersion: '100:1' }
   }
+
+  function checklist(ports: SessionFilePorts['viewer'], overrides: Partial<React.ComponentProps<typeof FileViewerContent>> = {}) {
+    return <FileViewerContent ports={ports}
+      document={documentOf({ kind: 'markdown', flavor: 'markdown' }, 'C:/work/guide.md')}
+      mode="rendered" text={textOf('---\njamat: interactive\n---\n- [ ] Test')}
+      diff={null} baselines={{ error: null, loading: false, chosen: false }} onOpenSource={vi.fn()} {...overrides} />
+  }
+
+  it('waits for a pending toggle before inserting results with the newly confirmed count', async () => {
+    let finish!: (value: unknown) => void
+    const ports = { toggleTask: vi.fn(() => new Promise((resolve) => { finish = resolve })) } as unknown as SessionFilePorts['viewer']
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    const view = render(checklist(ports, { insertPrompt,
+      text: textOf('---\njamat: interactive\n---\n# Checks\n- [x] First\n- [ ] Second\n- [ ] Third') }))
+    expect(view.getByText('Checklist 1/3')).toBeInTheDocument()
+    fireEvent.click(view.getAllByRole('checkbox')[1]!)
+    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    expect(insertPrompt).not.toHaveBeenCalled()
+    await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2', line: 6, checked: true } } }))
+    expect(view.getByText('Checklist 2/3')).toBeInTheDocument()
+    expect(insertPrompt).toHaveBeenCalledExactlyOnceWith('Výsledky testu C:/work/guide.md: potvrzeno 2/3.\n'
+      + 'Nepotvrzeno (neprošlo, nebo nezkoušeno):\n\n## Checks\n- L7: Third', 'submit')
+  })
+
+  it('inserts results without sending through the Insert to terminal menu item', async () => {
+    const ports = { toggleTask: vi.fn() } as unknown as SessionFilePorts['viewer']
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    const view = render(checklist(ports, { insertPrompt }))
+    fireEvent.click(view.getByRole('button', { name: 'More send options' }))
+    await act(async () => fireEvent.click(view.getByRole('menuitem', { name: 'Insert to terminal' })))
+    expect(insertPrompt).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/^Výsledky testu C:\/work\/guide\.md: potvrzeno 0\/1\./), 'insert')
+    expect(view.queryByRole('menuitem', { name: 'Insert to terminal' })).toBeNull()
+  })
+
+  it('omits empty or ordinary checklists and disables sending without a target or current grant text', () => {
+    const ports = { toggleTask: vi.fn() } as unknown as SessionFilePorts['viewer']
+    const view = render(checklist(ports))
+    expect(view.getByRole('button', { name: 'Send results' })).toBeDisabled()
+    expect(view.getByRole('button', { name: 'Send results' })).toHaveAttribute('title', 'Session session-1 has no local terminal in this window.')
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    view.rerender(checklist(ports, { insertPrompt, textReady: false }))
+    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    expect(insertPrompt).not.toHaveBeenCalled()
+    view.rerender(checklist(ports, { text: textOf('---\njamat: interactive\n---\n# Empty') }))
+    expect(view.queryByRole('group', { name: 'Checklist results' })).toBeNull()
+    view.rerender(checklist(ports, { text: textOf('- [ ] Ordinary task') }))
+    expect(view.queryByRole('group', { name: 'Checklist results' })).toBeNull()
+    view.rerender(checklist(ports, { mode: 'raw' }))
+    expect(view.queryByRole('group', { name: 'Checklist results' })).toBeNull()
+  })
+
+  it('drops a queued summary when navigation changes the document before the toggle answer', async () => {
+    let finish!: (value: unknown) => void
+    const ports = { toggleTask: vi.fn(() => new Promise((resolve) => { finish = resolve })) } as unknown as SessionFilePorts['viewer']
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    const view = render(checklist(ports, { insertPrompt }))
+    fireEvent.click(view.getByRole('checkbox'))
+    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    view.rerender(checklist(ports, { insertPrompt, document: { ...documentOf({ kind: 'markdown', flavor: 'markdown' }), documentId: 'next' } }))
+    await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2' } } }))
+    expect(insertPrompt).not.toHaveBeenCalled()
+  })
+
+  it.each(['waiting', 'removed'] as const)('uses the current prompt target when it becomes %s during a toggle', async (change) => {
+    let finish!: (value: unknown) => void
+    const ports = { toggleTask: vi.fn(() => new Promise((resolve) => { finish = resolve })) } as unknown as SessionFilePorts['viewer']
+    const original = vi.fn(() => ({ ok: true as const }))
+    const waiting = vi.fn(() => ({ ok: false as const, reason: 'agent-waiting' as const }))
+    const text = textOf('---\njamat: interactive\n---\n- [ ] Test')
+    const view = render(checklist(ports, { insertPrompt: original, text }))
+    fireEvent.click(view.getByRole('checkbox'))
+    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    switch (change) {
+      case 'waiting': view.rerender(checklist(ports, { insertPrompt: waiting, text })); break
+      case 'removed': view.rerender(checklist(ports, { text })); break
+      default: throw new Error(`Unknown target change: ${change satisfies never}`)
+    }
+    await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2', line: 4, checked: true } } }))
+    expect(original).not.toHaveBeenCalled()
+    switch (change) {
+      case 'waiting':
+        expect(waiting).toHaveBeenCalledExactlyOnceWith('Výsledky testu C:/work/guide.md: potvrzeno 1/1.', 'submit')
+        expect(view.getByRole('alert')).toHaveTextContent('agent is waiting')
+        break
+      case 'removed': expect(waiting).not.toHaveBeenCalled(); break
+      default: throw new Error(`Unknown target change: ${change satisfies never}`)
+    }
+  })
+
+  it('drops results after a stale toggle and reports a waiting-agent refusal through the shared gate', async () => {
+    const ports = { toggleTask: vi.fn().mockResolvedValue({ ok: true, value: { ok: false, code: 'document-changed', detail: 'stale' } }) } as unknown as SessionFilePorts['viewer']
+    const insertPrompt = vi.fn(() => ({ ok: false as const, reason: 'agent-waiting' as const }))
+    const onReload = vi.fn()
+    const view = render(checklist(ports, { insertPrompt, onReload }))
+    fireEvent.click(view.getByRole('checkbox'))
+    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce())
+    expect(insertPrompt).not.toHaveBeenCalled()
+    await act(async () => fireEvent.click(view.getByRole('button', { name: 'Send results' })))
+    expect(view.getByRole('alert')).toHaveTextContent('session session-1: the agent is waiting for a choice or permission')
+  })
+
+  it('offers selection Ask only in Rendered Markdown and maps code selections to the fence start', async () => {
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    const ports = {} as SessionFilePorts['viewer']
+    const text = textOf('# Plan\n\nA selected sentence.\n\n```text\ninside code\n```')
+    const view = render(checklist(ports, { text, insertPrompt }))
+    const select = (element: Element): void => {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      window.getSelection()!.removeAllRanges()
+      window.getSelection()!.addRange(range)
+      fireEvent.contextMenu(element)
+    }
+    fireEvent.contextMenu(view.getByText('A selected sentence.'))
+    expect(view.queryByRole('menuitem', { name: 'Ask' })).toBeNull()
+    select(view.getByText('A selected sentence.'))
+    fireEvent.click(view.getByRole('menuitem', { name: 'Ask' }))
+    expect(insertPrompt).toHaveBeenLastCalledWith('Mám dotaz k C:/work/guide.md:3, kapitola „Plan“, text „A selected sentence.“: ', 'insert')
+    const code = view.container.querySelector('pre')!
+    select(code)
+    fireEvent.click(view.getByRole('menuitem', { name: 'Ask' }))
+    expect(insertPrompt).toHaveBeenLastCalledWith('Mám dotaz k C:/work/guide.md:5, kapitola „Plan“, text „inside code“: ', 'insert')
+    view.rerender(checklist(ports, { text, insertPrompt, mode: 'raw' }))
+    select(view.container.querySelector('pre')!)
+    expect(view.queryByRole('menuitem', { name: 'Ask' })).toBeNull()
+  })
+
+  it('keeps the image context menu ahead of selection Ask', async () => {
+    const insertPrompt = vi.fn(() => ({ ok: true as const }))
+    const ports = { relativeResource: vi.fn(async () => ({ ok: true, value: { ok: true, value: { resourceId: 'image' } } })) } as unknown as SessionFilePorts['viewer']
+    const view = render(checklist(ports, { text: textOf('Selected sentence\n\n![Picture](image.png)'), insertPrompt }))
+    const range = document.createRange()
+    range.selectNodeContents(view.getByText('Selected sentence'))
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    const image = await view.findByRole('img')
+    fireEvent.contextMenu(image)
+    expect(view.getByRole('menuitem', { name: 'Open image full screen' })).toBeInTheDocument()
+    expect(view.queryByRole('menuitem', { name: 'Ask' })).toBeNull()
+    expect(insertPrompt).not.toHaveBeenCalled()
+  })
+
+  it('serializes toggles and adopts confirmed text and version without remounting', async () => {
+    const toggleTask = vi.fn<NonNullable<SessionFilePorts['viewer']['toggleTask']>>()
+    let finish!: (value: Awaited<ReturnType<NonNullable<SessionFilePorts['viewer']['toggleTask']>>>) => void
+    toggleTask.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+      .mockResolvedValue({ ok: true, value: { ok: true, value: { contentVersion: '100:3', line: 6, checked: false } } })
+    const ports = { toggleTask } as unknown as SessionFilePorts['viewer']
+    const onReload = vi.fn()
+    const source = textOf('---\njamat: interactive\n---\n<details><summary>Details</summary>\n\n- [ ] Test\n\n</details>')
+    const props = { text: source, onReload, onOpenSource: vi.fn() }
+    const view = render(checklist(ports, props))
+    const details = view.container.querySelector('details')!
+    details.open = true
+    const checkbox = view.getByRole('checkbox')
+    checkbox.focus()
+    fireEvent.click(checkbox)
+    expect(checkbox).toBeDisabled()
+    fireEvent.click(checkbox)
+    expect(toggleTask).toHaveBeenCalledExactlyOnceWith({ documentId: 'document-1', line: 6, checked: true, contentVersion: '100:1' })
+    await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2', line: 6, checked: true } } }))
+    expect(view.getByRole('checkbox')).toBe(checkbox)
+    expect(checkbox).toBeChecked()
+    expect(details.open).toBe(true)
+    expect(onReload).not.toHaveBeenCalled()
+    await act(async () => fireEvent.click(checkbox))
+    expect(toggleTask).toHaveBeenLastCalledWith({ documentId: 'document-1', line: 6, checked: false, contentVersion: '100:2' })
+    expect(checkbox).not.toBeChecked()
+    view.rerender(checklist(ports, { ...props, mode: 'raw' }))
+    expect(view.container.querySelector('pre')).toHaveTextContent('- [ ] Test')
+  })
+
+  it('reloads a stale document and reports other refusals without applying a toggle', async () => {
+    const toggleTask = vi.fn().mockResolvedValueOnce({ ok: true, value: { ok: false, code: 'document-changed', detail: 'stale' } })
+      .mockResolvedValueOnce({ ok: true, value: { ok: false, code: 'io-error', detail: 'Read-only file' } })
+    const onReload = vi.fn()
+    const view = render(checklist({ toggleTask } as unknown as SessionFilePorts['viewer'], { onReload }))
+    await act(async () => fireEvent.click(view.getByRole('checkbox')))
+    expect(onReload).toHaveBeenCalledOnce()
+    expect(view.getByRole('checkbox')).not.toBeChecked()
+    await act(async () => fireEvent.click(view.getByRole('checkbox')))
+    expect(view.getByRole('alert')).toHaveTextContent('Read-only file')
+    expect(view.getByRole('checkbox')).not.toBeChecked()
+    expect(view.getByRole('checkbox')).not.toBeDisabled()
+  })
+
+  it('ignores a late toggle answer after the displayed document changes', async () => {
+    let finish!: (value: unknown) => void
+    const ports = { toggleTask: vi.fn(() => new Promise((resolve) => { finish = resolve })) } as unknown as SessionFilePorts['viewer']
+    const view = render(checklist(ports))
+    fireEvent.click(view.getByRole('checkbox'))
+    view.rerender(checklist(ports, { document: { ...documentOf({ kind: 'markdown', flavor: 'markdown' }), documentId: 'document-2' } }))
+    await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2' } } }))
+    expect(view.getByRole('checkbox')).not.toBeChecked()
+    expect(view.getByRole('checkbox')).not.toBeDisabled()
+  })
+
+  it('keeps retained text read-only until the current grant text arrives', async () => {
+    const toggleTask = vi.fn().mockResolvedValue({ ok: true, value: { ok: true, value: { contentVersion: '100:2', line: 4, checked: true } } })
+    const ports = { toggleTask } as unknown as SessionFilePorts['viewer']
+    const source = textOf('---\njamat: interactive\n---\n- [ ] Test')
+    const view = render(checklist(ports, { text: source, textReady: false }))
+    expect(view.getByRole('checkbox')).toBeDisabled()
+    fireEvent.click(view.getByRole('checkbox'))
+    expect(toggleTask).not.toHaveBeenCalled()
+    view.rerender(checklist(ports, { text: { ...source }, textReady: true }))
+    await act(async () => fireEvent.click(view.getByRole('checkbox')))
+    expect(view.getByRole('checkbox')).toBeChecked()
+  })
+
+  it('requires a local capability, opt-in and eligible source', async () => {
+    const toggleTask = vi.fn()
+    const ports = { toggleTask } as unknown as SessionFilePorts['viewer']
+    const view = render(checklist({} as SessionFilePorts['viewer']))
+    expect(view.getByRole('checkbox')).toBeDisabled()
+    view.rerender(checklist(ports, { text: textOf('- [ ] Test') }))
+    expect(view.getByRole('checkbox')).toBeDisabled()
+    const document = documentOf({ kind: 'markdown', flavor: 'markdown' })
+    view.rerender(checklist(ports, { document: { ...document, source: { kind: 'scriptLog', sessionId: 'session-1', runId: 'run-1', path: document.path } } }))
+    expect(view.getByRole('checkbox')).toBeDisabled()
+    view.rerender(checklist(ports, { mode: 'raw' }))
+    expect(view.queryByRole('checkbox')).toBeNull()
+    view.rerender(checklist(ports, { text: { ok: true, kind: 'too-large', detail: 'Too large', size: 3000000, limit: 2000000 } }))
+    await waitFor(() => expect(view.queryByRole('checkbox')).toBeNull())
+    expect(toggleTask).not.toHaveBeenCalled()
+  })
 
   function content(
     document: FileViewerDocument,

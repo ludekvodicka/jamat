@@ -1,4 +1,3 @@
-import * as React from 'react'
 import { WorktreeWords } from '../../../lib-orchestrator/worktrees/worktreeViews'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SessionsSnapshot, SessionWorkflowBody, SessionWorkflowInfo } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { AppControl } from '../ipc/appControl'
 import type { WorkflowPorts } from '../workflow/workflowPane'
-import { SessionActionsPane, SessionActionsScroll } from './sessionActionsPane'
+import { SessionActionsPane } from './sessionActionsPane'
 import { StepBody } from './stepBody'
 import { WorkflowPortsOf } from '../workflow/workflowPorts'
 import type { CommitPanePorts } from '../versioning/commitPanePorts'
@@ -268,18 +267,15 @@ describe('Session actions', () => {
     expect(ports.openStep).not.toHaveBeenCalled()
   })
 
-  it('shows supplied message findings and source, and requires a fresh acknowledgement for each message', async () => {
+  it('shows supplied message findings and source as hints that do not hold Commit', async () => {
     const { workflow } = reviewFixture({ message: 'Shrnutí: U 043 zatím necommituj', messageSource: 'agent-proposal',
-      messageFindings: [{ id: 'no-prefix', text: 'No [Project] prefix', confirm: true }, { id: 'chat-opening', text: 'Chat opening', confirm: true }] })
+      messageFindings: [{ id: 'no-prefix', text: 'No [Project] prefix' }, { id: 'chat-opening', text: 'Chat opening' }] })
     render(<SessionActionsPane session={session([workflow])} sessions={store} visible ports={ports} />)
     expect(await screen.findByText('No [Project] prefix')).toBeTruthy()
     expect(screen.getByText('Chat opening')).toBeTruthy()
     expect(screen.getByText('Source: agent-proposal')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeDisabled()
-    fireEvent.click(await screen.findByRole('checkbox', { name: 'I checked this message' }))
-    expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeEnabled()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Commit message' }), { target: { value: 'Different message' } })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeDisabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeEnabled())
+    expect(screen.queryByRole('checkbox', { name: 'I checked this message' })).toBeNull()
   })
 
   it('keeps Commit disabled for an empty message even when there are no selections to change', async () => {
@@ -680,20 +676,20 @@ it('keeps the mount label and the written message of the one repository left aft
     expect.objectContaining({ repositoryName: 'apps', message: '[apps] Run 2: config limit 30' })] })))
 })
 
-function twinRepositories(app: { message: string; source: 'agent-proposal' | 'person-local' | 'unknown'; findings: { id: 'empty' | 'no-prefix' | 'chat-opening'; text: string; confirm?: true }[] }) {
+function twinRepositories(app: { message: string; source: 'agent-proposal' | 'person-local' | 'unknown'; findings: { id: 'empty' | 'no-prefix' | 'chat-opening'; text: string }[] }) {
   // The app and its external are two repositories of one name, as in UA1-J12.
   const repositories = [{ root: 'Q:/work/lib/ea', repository: 'https://svn/ea/j12', message: '[j12] EA change', source: 'person-local' as const, findings: [] },
     { root: 'Q:/work', repository: 'https://svn/app/j12', ...app }].map((row) => ({ ...row, repositoryName: 'j12', expectedPrefix: '[j12]', paths: ['a.txt'], acknowledged: [] }))
-  const f = reviewFixture({ repositories, messageFindings: [{ id: 'no-prefix', text: 'No [Project] prefix', confirm: true }] })
+  const f = reviewFixture({ repositories, messageFindings: [{ id: 'no-prefix', text: 'No [Project] prefix' }] })
   const body = f.workflow.rounds[0].steps[0].body!
   if (body.kind !== 'commit') throw new Error('Expected review')
   body.repositories = repositories.map(({ findings: _findings, ...row }) => row)
   return f
 }
 
-it('shows the findings and the source of an agent repository message and needs its own acknowledgement before Publish (UA1-J12-2)', async () => {
+it('shows the findings and the source of an agent repository message as hints that do not hold Publish (UA1-J12-2)', async () => {
   const f = twinRepositories({ message: 'Here is the commit message for the change:\n[j12] J12 W4 app', source: 'agent-proposal',
-    findings: [{ id: 'no-prefix', text: 'No [Project] prefix', confirm: true }, { id: 'chat-opening', text: 'Chat opening', confirm: true }] })
+    findings: [{ id: 'no-prefix', text: 'No [Project] prefix' }, { id: 'chat-opening', text: 'Chat opening' }] })
   const press = vi.fn<WorkflowPorts['press']>(async () => ({ kind: 'done' as const }))
   render(<SessionActionsPane session={session([f.workflow])} sessions={store} visible ports={{ ...ports, press }} />)
   const app = (await screen.findByLabelText('Commit message j12 (.)')).closest('.session-actions__repository') as HTMLElement
@@ -702,17 +698,12 @@ it('shows the findings and the source of an agent repository message and needs i
   expect(within(app).getByText('Source: agent-proposal')).toBeTruthy()
   const ea = screen.getByLabelText('Commit message j12 (lib/ea)').closest('.session-actions__repository') as HTMLElement
   expect(within(ea).getByText('Source: person-local')).toBeTruthy()
-  // The hidden top-level message asks nothing of the person.
-  expect(screen.queryByLabelText('I checked this message')).toBeNull()
+  expect(screen.queryByLabelText(/^I checked this/)).toBeNull()
   const button = screen.getByRole('button', { name: 'Commit & merge' })
-  expect(button).toBeDisabled()
-  expect(screen.getByText('Check the message for j12 (.) and tick "I checked this repository message".')).toBeTruthy()
-  fireEvent.click(within(app).getByLabelText('I checked this repository message'))
   await waitFor(() => expect(button).toBeEnabled())
-  expect(screen.queryByText(/Check the message for/)).toBeNull()
   fireEvent.click(button)
   await waitFor(() => expect(press).toHaveBeenCalledWith(expect.anything(), {}, expect.objectContaining({ repositories: expect.arrayContaining([
-    expect.objectContaining({ root: 'Q:/work', acknowledged: ['no-prefix', 'chat-opening'] })]) })))
+    expect.objectContaining({ root: 'Q:/work', acknowledged: [] })]) })))
 })
 
 it('says which repository a disabled Publish waits for (UA1-J12-7)', async () => {
@@ -751,41 +742,36 @@ it('labels each repository editor with its mount and lists the editors in the fi
   ] })))
 })
 
-describe('SessionActionsScroll', () => {
+describe('Session actions follow the end', () => {
   afterEach(cleanup)
 
-  function Follower(props: { lines: string[] }): React.JSX.Element {
-    const [element, setElement] = React.useState<HTMLElement | null>(null)
-    SessionActionsScroll.useFollowEnd(element)
-    return <section ref={setElement} data-testid="pane">{props.lines.map((line) => <p key={line}>{line}</p>)}</section>
-  }
+  const steps = (count: number): SessionWorkflowInfo => ({ ...section('Finish', true), rounds: [{ title: 'Finish', steps: Array.from({ length: count },
+    (_, index) => ({ key: `step-${index}`, title: `svn update ${index}`, detail: '', state: 'done' as const, startedAt: null, endedAt: null,
+      target: { kind: 'run' as const, runId: `r${index}` } })) }] })
 
-  function laidOut(pane: HTMLElement, height: () => number): void {
-    Object.defineProperty(pane, 'scrollHeight', { configurable: true, get: height })
+  it('stays at the end while 20 new step rows arrive, and keeps its place after the person scrolls up', async () => {
+    const view = render(<SessionActionsPane session={session([steps(5)])} sessions={store} visible ports={ports} />)
+    const pane = screen.getByRole('region', { name: 'Session actions' })
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, get: () => pane.querySelectorAll('li').length * 20 + 60 })
     Object.defineProperty(pane, 'clientHeight', { configurable: true, get: () => 100 })
-  }
+    view.rerender(<SessionActionsPane session={session([steps(25)])} sessions={store} visible ports={ports} />)
+    await waitFor(() => expect(pane.scrollTop).toBe(560))
 
-  it('follows new entries at the end, stops while the person reads above, and resumes at the end', async () => {
-    const view = render(<Follower lines={['a']} />)
-    const pane = screen.getByTestId('pane')
-    let height = 300
-    laidOut(pane, () => height)
-
-    height = 400
-    view.rerender(<Follower lines={['a', 'b']} />)
-    await waitFor(() => expect(pane.scrollTop).toBe(400))
-
-    pane.scrollTop = 50
+    fireEvent.wheel(pane)
+    pane.scrollTop = 360
     fireEvent.scroll(pane)
-    height = 500
-    view.rerender(<Follower lines={['a', 'b', 'c']} />)
+    view.rerender(<SessionActionsPane session={session([steps(26)])} sessions={store} visible ports={ports} />)
     await act(async () => { await Promise.resolve() })
-    expect(pane.scrollTop).toBe(50)
+    expect(pane.scrollTop).toBe(360)
+  })
 
-    pane.scrollTop = 400
-    fireEvent.scroll(pane)
-    height = 600
-    view.rerender(<Follower lines={['a', 'b', 'c', 'd']} />)
-    await waitFor(() => expect(pane.scrollTop).toBe(600))
+  it('focuses a shown section without scrolling the pane', () => {
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    try {
+      render(<SessionActionsPane session={session([steps(1)])} sessions={store} visible ports={ports} />)
+      expect(focus).toHaveBeenCalled()
+      expect(focus.mock.calls.every(([options]) => options?.preventScroll === true)).toBe(true)
+    }
+    finally { focus.mockRestore() }
   })
 })

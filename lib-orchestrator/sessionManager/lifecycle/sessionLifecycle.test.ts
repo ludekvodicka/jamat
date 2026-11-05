@@ -46,7 +46,7 @@ import {
   type SessionNumbersPort,
   type SessionSetupPort,
 } from './sessionLifecycle'
-import type { ReconcileChange } from './reconciler'
+import { type ReconcileChange, Reconciler } from './reconciler'
 import type { SvnActionPort } from '../../worktrees/worktreeFinish'
 import { type SvnCleanupPort, SvnWorktreeFinishFlow } from '../../worktrees/worktreeFinish'
 import type { SvnWorktreeRemoved } from '../../worktrees/worktreeRemoval'
@@ -516,6 +516,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const svnAction: Harness['svnAction'] = {
       svn: {
         updateTargets: emptyUpdateTargets,
+        mountStates: async () => ({ ok: true, value: new Map() }),
         assembly: async () => ({ ok: true, value: testAssembly() }),
         present: async () => true,
         publicationRows: async () => ({ ok: true, value: { changed: [], items: [] } }),
@@ -609,7 +610,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         numbers: numbers.port,
         codexSessions: {
           launch: (_record, native) => native,
-          identity: record => identities.get(record.sessionId) ?? null,
+          identity: async record => identities.get(record.sessionId) ?? null,
         },
         claudeStatusLine: {
           settingsFileFor: (cwd, identity) => {
@@ -617,7 +618,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
             statusLine.identities.push(identity)
             return statusLine.file
           },
-          identity: (sessionId, launchId) => {
+          identity: async (sessionId, launchId) => {
             const reported = claudeIdentities.get(sessionId)
             return reported?.launchId === launchId ? { nativeSessionId: reported.nativeSessionId, sequence: reported.sequence } : null
           },
@@ -630,7 +631,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         finish: { commands: { lease, accept: async () => {}, verify: async () => {}, acceptInterrupted: async () => {} },
           sync: { recover: async () => false, withControl: async (_id, work) => work(), run: async (id) => { svnAction.syncs.push(id); await store.update(id, (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, version: record.worktreeLifecycle!.version + 1, step: 'checking', phase: 'finishing', wait: undefined } })); return { ok: true, value: { revision: 1, conflicts: [] } } }, resolve: async () => ({ ok: false, code: 'invalid-spec', detail: 'No conflict' }) },
           handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} }, idle: () => true, busyReason: () => null,
-          holdInput: () => () => {}, awaitExit: async () => true, liveness: async () => {} },
+          terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, awaitExit: async () => true, liveness: async () => {} },
 
 
           activityOf: () => null,
@@ -639,6 +640,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
           logs,
           svn: {
             updateTargets: svnAction.svn.updateTargets,
+            mountStates: (...args) => svnAction.svn.mountStates(...args),
             assembly: (...args) => svnAction.svn.assembly(...args),
             present: (root) => svnAction.svn.present(root),
             publicationRows: (...args) => svnAction.svn.publicationRows(...args),
@@ -2926,6 +2928,24 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     expect(context.host.calls).toEqual([])
   })
 
+  // A pass planned from records read before the setup's pointer write landed must not lose the run it now names.
+  it('refuses a stale lost mark of a starting setup run its parent now names, and loses one it does not', async () => {
+    const context = await harness()
+    const starting = setupRecord({ life: 'starting', exitCode: undefined, endedAt: undefined, pendingOperationId: 'op-s1', pendingOperationKind: 'create' })
+    await context.store.put(waiting())
+    await context.store.put(starting)
+    const stale = vi.spyOn(Reconciler, 'plan').mockReturnValue([{ kind: 'mark-lost', sessionId: 's1' }])
+    try {
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([])
+      expect(context.store.get('s1')).toMatchObject({ life: 'starting', pendingOperationId: 'op-s1' })
+      await context.store.update('p1', (parent) => ({ ...parent, pendingSetup: { setupSessionId: 'other' } }))
+      expect(await context.lifecycle.reconcile(context.host.listing())).toEqual([{ kind: 'mark-lost', sessionId: 's1' }])
+      expect(context.store.get('s1')?.life).toBe('lost')
+    } finally {
+      stale.mockRestore()
+    }
+  })
+
   /*
    * The whole shape of a create with an install: two records, ONE runtime, and the session's id back
    * before anything has been installed. The session's own launch is not attempted here at all - it is
@@ -3911,20 +3931,19 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
 
     /*
-     * A client that died between the next step's write and the gate's advance. The orphan is never
-     * launched and goes without a history entry, since nothing ran; the step before it is judged
-     * succeeded once more, and one new run starts.
+     * The next step's run and the gate's advance are one write. When it does not land, nothing names
+     * a run that never started; the step before it is judged succeeded once more, and one new run starts.
      */
-    it('launches exactly one next step after a crash between its write and the advance', async () => {
+    it('launches exactly one next step after the write of the run and the advance did not land', async () => {
       const context = await harness()
       declareBefore()
       await agreeToFile(context)
       context.setup.resolution = installing([{ command: 'pnpm install', cwd: '' }])
       successOf(await context.lifecycle.create(worktreeSpec()))
-      vi.spyOn(context.store, 'update').mockResolvedValueOnce(false)
+      vi.spyOn(context.store, 'putWith').mockResolvedValueOnce(false)
 
       await exits(context, 'id-3', 0)
-      expect(context.store.get('id-5')).toEqual(expect.objectContaining({ life: 'starting', binding: null }))
+      expect(context.store.get('id-5')).toBeNull()
       expect(context.store.get('id-1')?.pendingSetup).toMatchObject({ setupSessionId: 'id-3', cursor: 0 })
       expect(createdRuntimes(context)).toEqual(['id-3'])
 

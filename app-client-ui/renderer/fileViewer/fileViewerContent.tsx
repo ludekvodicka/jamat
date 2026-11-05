@@ -1,4 +1,5 @@
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
+import { MarkdownTaskLines } from '../../../lib-orchestrator/fileViewer/markdownTaskLines'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import type { FileDiffResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
@@ -13,6 +14,7 @@ import {
   MdExtRenderer,
   MdExtSecurity,
   useHighlightedHtml,
+  type MdExtInteraction,
 } from '../../../mdext-renderer/renderer'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 import { ErrorText } from '../../shared/errorText'
@@ -21,6 +23,10 @@ import { FilePropertyChanges } from './filePropertyChanges'
 import { FileHexView } from './fileHexView'
 import { FileHtmlView } from './fileHtmlView'
 import { FileViewerPath } from './fileViewerPath'
+import { FileImageSurface } from './fileImageSurface'
+import { FileViewerPrompts } from './fileViewerPrompts'
+import { FileViewerChecklistStrip } from './fileViewerChecklistStrip'
+import type { PromptInsertMode, PromptInsertTarget } from '../shell/terminalInputRegistry'
 
 /** Why there is no diff yet, in the three ways that are not the same thing. */
 export interface FileViewerBaselineState {
@@ -36,12 +42,45 @@ export function FileViewerContent(props: {
   document: FileViewerDocument
   mode: FileViewerViewMode
   text: FileViewerTextResult | null
+  textReady?: boolean
   diff: FileDiffResult | null
   baselines: FileViewerBaselineState
   location?: FileViewerLocation
   onOpenSource(source: FileViewerDocumentSource): void
+  onReload?(): void
+  insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
   const [exportError, setExportError] = useState<string | null>(null)
+  const [promptError, setPromptError] = useState<string | null>(null)
+  const tasks = useFileViewerTasks(props.document, props.text, props.ports, props.onReload, props.textReady !== false)
+  const insertPrompt = props.insertPrompt
+  const currentInsert = useRef(insertPrompt)
+  useLayoutEffect(() => { currentInsert.current = insertPrompt }, [insertPrompt])
+  const sessionId = props.document.source.sessionId
+  const insert = useCallback((text: string, mode: PromptInsertMode): void => {
+    if (!currentInsert.current) return
+    const answer = currentInsert.current(text, mode)
+    setPromptError(answer.ok ? null : FileViewerPrompts.refusal(sessionId, answer.reason))
+  }, [sessionId])
+  useEffect(() => setPromptError(null), [props.document.documentId])
+  const source = tasks.text?.ok && tasks.text.kind === 'text' ? tasks.text.text : null
+  const askAbout = useMemo(() => insertPrompt && source !== null ? (line: number): void => {
+    const item = MarkdownTaskLines.parse(source).find((item) => item.line === line)
+    if (item) insert(FileViewerPrompts.askItem(props.document.path, item), 'insert')
+  } : undefined, [insertPrompt, insert, source, props.document.path])
+  const interaction = useMemo(() => tasks.interaction ? { ...tasks.interaction, askAbout } : undefined, [tasks.interaction, askAbout])
+  const onAskSelection = insertPrompt && props.textReady !== false && props.mode === 'rendered'
+    && props.document.kind.kind === 'markdown' && source !== null
+    ? (line: number, selection: string): void => insert(FileViewerPrompts.askSelection(
+      props.document.path, line, MarkdownTaskLines.headingAt(source, line), selection), 'insert')
+    : undefined
+  const items = useMemo(() => source === null ? [] : MarkdownTaskLines.parse(source), [source])
+  const sendResults = (mode: PromptInsertMode): void => {
+    void tasks.settled().then((confirmedText) => {
+      if (confirmedText !== null)
+        insert(FileViewerPrompts.results(props.document.path, MarkdownTaskLines.parse(confirmedText)), mode)
+    })
+  }
   let content: React.JSX.Element
   if (props.mode === 'hex') content = <FileHexView ports={props.ports} documentId={props.document.documentId} />
   else if (props.mode === 'preview') content = <FileMediaPreview ports={props.ports} document={props.document} />
@@ -49,18 +88,19 @@ export function FileViewerContent(props: {
     content = (
       <FileDiffContent
         document={props.document}
-        text={props.text}
+        text={tasks.text}
         diff={props.diff}
         baselines={props.baselines}
       />
     )
   else if (props.mode === 'raw')
-    content = <FileRawContent result={props.text} location={props.location} />
+    content = <FileRawContent result={tasks.text} location={props.location} />
   else if (props.mode === 'rendered')
     content = (
       <FileRenderedContent ports={props.ports}
         document={props.document}
-        result={props.text}
+        result={tasks.text}
+        interaction={interaction}
         location={props.location}
         onOpenSource={props.onOpenSource}
       />
@@ -69,7 +109,84 @@ export function FileViewerContent(props: {
   const displayed = props.location === undefined ? content : <FileViewerLineReveal location={props.location}>{content}</FileViewerLineReveal>
   return <>{props.ports.exportFile && <button type="button" onClick={() => {
     void props.ports.exportFile!(props.document.documentId, props.document.name).then((answer) => setExportError(answer.ok ? null : answer.error))
-  }}>Save copy…</button>}{exportError && <p role="alert">{exportError}</p>}{displayed}</>
+  }}>Save copy…</button>}{exportError && <p role="alert">{exportError}</p>}
+    {tasks.error && <p className="file-viewer-error" role="alert">{tasks.error}</p>}
+    {promptError && <p className="file-viewer-error" role="alert">{promptError}</p>}
+    {props.mode === 'rendered' && tasks.interaction && items.length > 0 && <FileViewerChecklistStrip
+      done={items.filter((item) => item.checked).length} total={items.length}
+      onSend={insertPrompt && props.textReady !== false ? sendResults : undefined}
+      unavailable={!insertPrompt ? FileViewerPrompts.unavailable(sessionId)
+        : props.textReady === false ? 'Waiting for the current document to load.' : undefined} />}
+    <FileImageSurface key={props.document.documentId} name={props.document.name} onAskSelection={onAskSelection}>
+      {displayed}
+    </FileImageSurface></>
+}
+
+function useFileViewerTasks(
+  document: FileViewerDocument,
+  result: FileViewerTextResult | null,
+  ports: SessionFilePorts['viewer'],
+  reload: (() => void) | undefined,
+  textReady: boolean,
+): { text: FileViewerTextResult | null; interaction?: MdExtInteraction; error: string | null; settled(): Promise<string | null> } {
+  const [confirmed, setConfirmed] = useState<{ documentId: string; base: typeof result; value: FileViewerTextResult } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const generation = useRef(0)
+  const pending = useRef<Promise<string | null> | null>(null)
+  const ready = useRef(textReady)
+  const text = confirmed?.documentId === document.documentId && confirmed.base === result ? confirmed.value : result
+  useLayoutEffect(() => { ready.current = textReady }, [textReady])
+  useLayoutEffect(() => {
+    generation.current++
+    pending.current = null
+    setBusy(false)
+    setError(null)
+    return () => { generation.current++ }
+  }, [document.documentId, result, ports])
+  const toggleTask = useCallback((line: number, checked: boolean): void => {
+    if (!textReady || pending.current || !ports.toggleTask || !text?.ok || text.kind !== 'text') return
+    const current = generation.current
+    const source = text.text
+    setBusy(true)
+    setError(null)
+    pending.current = ports.toggleTask({ documentId: document.documentId, line, checked, contentVersion: text.contentVersion })
+      .then((answer) => {
+        if (current !== generation.current) return null
+        if (!answer.ok) setError(answer.error)
+        else if (!answer.value.ok) {
+          if (answer.value.code === 'document-changed') {
+            reload?.()
+            return null
+          }
+          else setError(answer.value.detail)
+        }
+        else {
+          const changed = MarkdownTaskLines.flip(source, line, checked)
+          if (changed !== null)
+            setConfirmed({ documentId: document.documentId, base: result,
+              value: { ok: true, kind: 'text', text: changed, contentVersion: answer.value.value.contentVersion } })
+          return changed
+        }
+        return source
+      }).catch((reason: unknown) => {
+        if (current === generation.current) setError(ErrorText.of(reason))
+        return null
+      }).finally(() => {
+        if (current !== generation.current) return
+        pending.current = null
+        setBusy(false)
+      })
+  }, [document.documentId, ports, reload, result, text, textReady])
+  const allowed = document.kind.kind === 'markdown' && document.source.kind !== 'scriptLog'
+    && ports.toggleTask !== undefined && text?.ok && text.kind === 'text' && MarkdownTaskLines.interactive(text.text)
+  const interaction = useMemo(() => allowed ? { enabled: textReady && !busy, toggleTask } : undefined, [allowed, busy, toggleTask, textReady])
+  const settled = async (): Promise<string | null> => {
+    const current = generation.current
+    const value = await (pending.current ?? (text?.ok && text.kind === 'text' ? text.text : null))
+    return current === generation.current && ready.current ? value : null
+  }
+  return { text, interaction, error, settled }
 }
 
 function FileRenderedContent(props: {
@@ -78,6 +195,7 @@ function FileRenderedContent(props: {
   result: FileViewerTextResult | null
   location?: FileViewerLocation
   onOpenSource(source: FileViewerDocumentSource): void
+  interaction?: MdExtInteraction
 }): React.JSX.Element {
   /*
    * Both of these are memoised, and above the early return, because react-markdown takes the
@@ -117,7 +235,7 @@ function FileRenderedContent(props: {
   const source = FileViewerText.withoutBom(text.value)
   const kind = props.document.kind
   if (kind.kind === 'markdown')
-    return <MdExtRenderer source={source} resolveImage={resolveImage} onLink={onLink} />
+    return <MdExtRenderer source={source} resolveImage={resolveImage} onLink={onLink} interaction={props.interaction} />
   if (kind.kind === 'html')
     return (
       <FileHtmlView ports={props.ports}

@@ -83,6 +83,15 @@ describe('lib-orchestrator/shared/atomicJsonFile', () => {
     expect(readdirSync(root)).toEqual(['document.json'])
   })
 
+  it('writes indented JSON by default and one line when asked for compact', async () => {
+    const root = AtomicJsonFileTest.root(roots)
+    const indented = join(root, 'indented.json'), compact = join(root, 'compact.json')
+    await AtomicJsonFile.writeAsync(indented, { value: [1, 2] })
+    await AtomicJsonFile.writeAsync(compact, { value: [1, 2] }, { compact: true })
+    expect(readFileSync(indented, 'utf8')).toBe(JSON.stringify({ value: [1, 2] }, null, 2))
+    expect(readFileSync(compact, 'utf8')).toBe('{"value":[1,2]}')
+  })
+
   it('does not retry an unrelated disk error', async () => {
     const root = AtomicJsonFileTest.root(roots), file = join(root, 'document.json')
     vi.mocked(rename).mockRejectedValue(Object.assign(new Error('I/O failed'), { code: 'EIO' }))

@@ -6,8 +6,10 @@ import type { CommandFailure, CommandInvocation, CommandOutcome } from './comman
 import { ErrnoCode } from './errnoCode'
 import { ErrorText } from './errorText'
 import { ChildProcessLifetime } from './childProcessLifetime'
+import type { PerfSpans } from '../perfMonitor/perfSpans'
 
 export interface CommandInvokerOptions {
+  perf?: PerfSpans
   spawnImpl?: typeof spawn
   timeoutMilliseconds?: number
   maxOutputBytes?: number
@@ -30,8 +32,10 @@ export class CommandInvoker {
   private readonly timeoutMilliseconds: number
   private readonly maxOutputBytes: number
   private readonly platform: NodeJS.Platform
+  private readonly perf: PerfSpans | undefined
 
   constructor(options?: CommandInvokerOptions) {
+    this.perf = options?.perf
     this.spawnImpl = options?.spawnImpl ?? spawn
     this.timeoutMilliseconds = options?.timeoutMilliseconds
       ?? CommandInvoker.timeoutMillisecondsConst
@@ -53,7 +57,7 @@ export class CommandInvoker {
         failure: 'cwd-missing',
       }
     if (invocation.signal?.aborted) return CommandInvoker.abortedOutcome()
-    return this.spawn(invocation)
+    return this.perf ? this.perf.operation(invocation.perfName ?? 'other', () => this.spawn(invocation)) : this.spawn(invocation)
   }
 
   async launchInteractive(invocation: Omit<CommandInvocation, 'signal'>): Promise<InteractiveCommandResult> {
@@ -106,7 +110,8 @@ export class CommandInvoker {
         stdio: ['ignore', 'pipe', 'pipe'],
       }
       let child: ReturnType<typeof spawn>
-      try { child = this.spawnImpl(invocation.command, invocation.args, options) }
+      try { child = this.perf ? this.perf.span(invocation.perfName ?? 'other',
+        () => this.spawnImpl(invocation.command, invocation.args, options)) : this.spawnImpl(invocation.command, invocation.args, options) }
       catch (error) {
         settle({
           code: -1,

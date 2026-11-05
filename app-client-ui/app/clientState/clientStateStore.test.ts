@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { AtomicJsonFile } from '../../../lib-orchestrator/shared/atomicJsonFile'
 import { SidebarsState, type SidebarsStateValue } from '../../shared/sidebarsState'
 import { SessionsFilterState, type SavedSessionsFilter } from '../../shared/sessionsFilterState'
 import type { SessionGroupAssignment } from '../../shared/sessionsGroupsState'
@@ -259,8 +260,8 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
       expect(written.schemaVersion).toBe(2)
       expect(written.layout).toBe(source.layout)
       expect(written.sidebars).toEqual(source.sidebars)
-      if ('debugWindowBounds' in source)
-        expect(written.debugWindowBounds).toEqual(source.debugWindowBounds)
+      // The Debug window became a tab; its old placement is read past and not written back.
+      expect(written.debugWindowBounds).toBeUndefined()
       if ('sessionsView' in source)
         expect(written.sessionsView).toBe(source.sessionsView)
     }
@@ -331,6 +332,48 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     for (let generation = 1; generation <= 12; generation += 1)
       store.saveLayout('main', `{"generation":${generation}}`)
     expect(snapshotNames(snapshotsDirectory)).toHaveLength(10)
+  })
+
+  it('prunes the current assignments atomically and keeps an intervening retained-group change', () => {
+    const { store, stateFile } = fixture()
+    store.saveSessionGroups([{ key: 'session:one', group: 'waiting' }, { key: 'session:two', group: 'blocked' }])
+    const old = store.loadSessionGroups()
+    expect(store.assignSessionGroup('session:one', 'pinned')).toBe(true)
+    const changed = vi.fn()
+    store.onSessionGroupsChanged(changed)
+    expect(store.pruneSessionGroups(['none', 'waiting', 'pinned'])).toBe(true)
+    expect(old).toEqual([{ key: 'session:one', group: 'waiting' }, { key: 'session:two', group: 'blocked' }])
+    expect(store.loadSessionGroups()).toEqual([{ key: 'session:one', group: 'pinned' }])
+    expect(JSON.parse(readFileSync(stateFile, 'utf8')).sessionGroups).toEqual(store.loadSessionGroups())
+    expect(changed).toHaveBeenCalledTimes(1)
+    const bytes = readFileSync(stateFile)
+    expect(store.pruneSessionGroups(['none', 'waiting', 'pinned'])).toBe(true)
+    expect(readFileSync(stateFile)).toEqual(bytes)
+    expect(changed).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses pruning a damaged state without rewriting it or publishing', () => {
+    const { store, stateFile } = fixture()
+    writeFileSync(stateFile, '{broken')
+    const changed = vi.fn()
+    store.onSessionGroupsChanged(changed)
+    expect(store.pruneSessionGroups(['none', 'waiting'])).toBe(false)
+    expect(readFileSync(stateFile, 'utf8')).toBe('{broken')
+    expect(changed).not.toHaveBeenCalled()
+  })
+
+  it('keeps assignments and publishes nothing when the prune commit throws', () => {
+    const { store, stateFile } = fixture()
+    store.saveSessionGroups([{ key: 'session:one', group: 'blocked' }])
+    const bytes = readFileSync(stateFile), changed = vi.fn()
+    store.onSessionGroupsChanged(changed)
+    const write = vi.spyOn(AtomicJsonFile, 'write').mockImplementationOnce(() => { throw new Error('disk failure') })
+    try {
+      expect(() => store.pruneSessionGroups(['none', 'waiting'])).toThrow('disk failure')
+      expect(store.loadSessionGroups()).toEqual([{ key: 'session:one', group: 'blocked' }])
+      expect(readFileSync(stateFile)).toEqual(bytes)
+      expect(changed).not.toHaveBeenCalled()
+    } finally { write.mockRestore() }
   })
 
   it('prunes the oldest snapshots, never the newest', () => {
@@ -524,21 +567,13 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
       .toThrow(/Refusing to store window bounds/)
   })
 
-  // Two windows, two rectangles, one file. The main window keeps the field it has always had, so a
-  // state file written before the Debug window existed still opens with its own placement.
-  it('keeps each window bounds under its own key', () => {
+  it('keeps the main window bounds under the field it has always had', () => {
     const { store, stateFile, reopen } = fixture()
-    const debugBounds: WindowBounds = { x: 40, y: 40, width: 1100, height: 760, maximized: false }
     store.saveWindowBounds('main', boundsFixtureConst)
-    store.saveWindowBounds('debug', debugBounds)
 
     expect(store.loadWindowBounds('main')).toEqual(boundsFixtureConst)
-    expect(store.loadWindowBounds('debug')).toEqual(debugBounds)
     expect(documentIn(stateFile).windowBounds).toEqual(boundsFixtureConst)
-
-    const reopened = reopen()
-    expect(reopened.loadWindowBounds('main')).toEqual(boundsFixtureConst)
-    expect(reopened.loadWindowBounds('debug')).toEqual(debugBounds)
+    expect(reopen().loadWindowBounds('main')).toEqual(boundsFixtureConst)
   })
 
   it('stores a holder layout with snapshots but spends none on its bounds or appearance', () => {
@@ -609,19 +644,8 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     expect(reports.every((message) => message.includes('no extra window'))).toBe(true)
   })
 
-  it('reads a file written before the Debug window existed', () => {
-    const { store, stateFile } = fixture()
-    writeFileSync(
-      stateFile,
-      JSON.stringify({ schemaVersion: 1, windowBounds: boundsFixtureConst }),
-      'utf8',
-    )
-    expect(store.loadWindowBounds('main')).toEqual(boundsFixtureConst)
-    expect(store.loadWindowBounds('debug')).toBeNull()
-  })
-
-  // Losing a window position is cheap; failing the whole read over one would cost the layout.
-  it('drops damaged Debug bounds and keeps the rest of the document', () => {
+  // The Debug and Usage windows became tabs; whatever their old fields hold is read past.
+  it('reads past the bounds of the retired Debug and Usage windows', () => {
     const { store, stateFile } = fixture()
     writeFileSync(
       stateFile,
@@ -630,10 +654,10 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
         layout: '{"generation":1}',
         windowBounds: boundsFixtureConst,
         debugWindowBounds: { x: 0, y: 0, width: 'wide', height: 760, maximized: false },
+        usageWindowBounds: boundsFixtureConst,
       }),
       'utf8',
     )
-    expect(store.loadWindowBounds('debug')).toBeNull()
     expect(store.loadWindowBounds('main')).toEqual(boundsFixtureConst)
     expect(store.loadLayout('main')).toEqual({ layout: '{"generation":1}', failed: false })
   })

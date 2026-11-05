@@ -991,12 +991,29 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       expect(sessionIdsUnder(result.nodes, 'session:C')).toEqual(['session:R'])
     })
 
-    it('draws a child of a nested child as a root: one hop', () => {
-      const result = build(snapshotOf(session('P'), session('C', childOf('P')), session('G', childOf('C'))))
+    it('nests a child of a nested child under it, three levels deep', () => {
+      const result = build(snapshotOf(
+        session('P'), session('C', childOf('P')), session('G', childOf('C')), session('H', childOf('G')),
+      ))
 
-      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:G', 'session:P'])
+      expect(sessionIdsUnder(result.nodes, projectId)).toEqual(['session:P'])
       expect(sessionIdsUnder(result.nodes, 'session:P')).toEqual(['session:C'])
-      expect(sessionIdsUnder(result.nodes, 'session:G')).toEqual([])
+      expect(sessionIdsUnder(result.nodes, 'session:C')).toEqual(['session:G'])
+      expect(sessionIdsUnder(result.nodes, 'session:G')).toEqual(['session:H'])
+    })
+
+    it('files a grandchild in the top parent group whatever its own assignment says', () => {
+      const snapshot = snapshotOf(session('P'), session('C', childOf('P')), session('G', childOf('C')))
+      const assignments = new Map<string, SessionGroup>([['session:P', 'pinned'], ['session:G', 'automation']])
+
+      expect(sessionIdsUnder(build(snapshot, { ...all, assignments, group: 'pinned' }).nodes, 'session:C')).toEqual(['session:G'])
+      expect(build(snapshot, { ...all, assignments, group: 'automation' }).emptyState).toBe('noMatch')
+    })
+
+    it('files the family under a waiting grandchild', () => {
+      const snapshot = snapshotOf(session('P'), session('C', childOf('P')), session('G', { ...childOf('C'), activity: 'waiting' }))
+
+      expect(sessionIdsUnder(build(snapshot, { ...all, stateGroup: 'attention' }).nodes, 'session:C')).toEqual(['session:G'])
     })
 
     it('files the family under its most urgent live member, and an ended child does not count', () => {

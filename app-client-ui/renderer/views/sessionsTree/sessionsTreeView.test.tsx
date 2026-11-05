@@ -1781,6 +1781,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const { ports, onCloseTerminal, onFinalizeAsk, container } = await mount(SessionsFixtures.stoppedWorktree())
     showAll(container)
     fireEvent.click(actionNamed(container, 's-dirty', 'Finish…'))
+    // A stray click starts no commit: the first click only arms the button.
+    expect(sent).not.toHaveBeenCalled()
+    expect(opened).not.toHaveBeenCalled()
+    fireEvent.click(actionNamed(container, 's-dirty', 'Finish?'))
     expect(onFinalizeAsk).not.toHaveBeenCalled()
     expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-dirty'), choice: 'commit' })
     await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-dirty' }))
@@ -1818,19 +1822,21 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     showAll(container)
 
     expect(labelsOf(container, 's-svn')[0]).toBe('Finish…')
+    // Session actions offer Commit & merge and Discard; Finish… itself starts nothing.
     fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
 
     expect(onFinalizeAsk).not.toHaveBeenCalled()
-    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-svn'), choice: 'commit' })
-    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' }))
+    expect(sent).not.toHaveBeenCalled()
+    expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' })
+    expect(labelsOf(container, 's-svn')).not.toContain('Finish?')
     expect(ports.savedGroups).toEqual(automation)
     expect(ports.calls).toEqual([])
     expect(onCloseTerminal).not.toHaveBeenCalled()
   })
 
   // Worker-agent 032: the Finish answer waits for its first step, and Session actions opened only after it.
-  it('opens Session actions of an SVN worktree at once, before its Finish answers', async () => {
-    vi.spyOn(AppControl, 'sessionsDone').mockReturnValue(new Promise(() => {}))
+  it('opens Session actions of an SVN worktree at once, without starting a Finish', async () => {
+    const sent = vi.spyOn(AppControl, 'sessionsDone').mockReturnValue(new Promise(() => {}))
     const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const snapshot = SessionsFixtures.svnWorktrees()
     snapshot.sessions = snapshot.sessions.map((session) => session.sessionId !== 's-svn' || session.worktree === undefined ? session : {
@@ -1844,10 +1850,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
 
     expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' })
+    expect(sent).not.toHaveBeenCalled()
   })
 
   // UA1-J07-1: an application still running from the last validation of a kept worktree held Finish… silently.
-  it('prepares a kept SVN worktree while a requested run still runs, and brings its Session actions forward', async () => {
+  it('brings Session actions of a kept SVN worktree forward while a requested run still runs, preparing nothing itself', async () => {
     const sent = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
     const snapshot = SessionsFixtures.svnWorktrees()
@@ -1867,8 +1874,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
 
     expect(onFinalizeAsk).not.toHaveBeenCalled()
-    expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-svn'), choice: 'commit' })
-    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' }))
+    expect(sent).not.toHaveBeenCalled()
+    expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-svn' })
   })
 
   it.each(['shell', 'agent'] as const)('opens Keep and Discard without a Prepare press when an ended %s worktree cannot prepare', async (kind) => {
@@ -1911,6 +1918,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     showAll(container)
 
     fireEvent.click(actionNamed(container, 's-svn', 'Finish…'))
+    fireEvent.click(actionNamed(container, 's-svn', 'Finish?'))
 
     await waitFor(() => expect(onFinalizeAsk).toHaveBeenCalledOnce())
     await waitFor(() => expect(labelsOf(container, 's-svn')).toContain('Finish…'))
@@ -1969,6 +1977,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.click(rowOf(container, 's-dirty'))
     expect(labelsOf(container, 's-dirty')).toEqual(['Finish…'])
     fireEvent.click(actionNamed(container, 's-dirty', 'Finish…'))
+    fireEvent.click(actionNamed(container, 's-dirty', 'Finish?'))
 
     expect(onFinalizeAsk).not.toHaveBeenCalled()
     expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-dirty'), choice: 'commit' })
@@ -1988,6 +1997,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     expect(labelsOf(container, 's-failed')).toEqual(['Finish…'])
     fireEvent.click(actionNamed(container, 's-failed', 'Finish…'))
+    fireEvent.click(actionNamed(container, 's-failed', 'Finish?'))
     expect(onFinalizeAsk).not.toHaveBeenCalled()
     expect(sent).toHaveBeenCalledWith('sessions.finishWorktree', { session: AppControl.sessionOf('s-failed'), choice: 'commit' })
 

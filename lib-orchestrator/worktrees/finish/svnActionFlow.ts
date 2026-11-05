@@ -22,11 +22,11 @@ import type { MainCopyUpdated, WorktreeEnded } from './worktreeFinish.types'
 export type SvnActionPort = Pick<SvnWorktreeManager,
   | 'landingPaths' | 'landingProof' | 'saveLocalPaths' | 'present' | 'updateTargets' | 'assembly'
   | 'ownerCheck' | 'scheduleMissing' | 'headRevisionOf' | 'revisionOf' | 'status' | 'changes' | 'resolveWorking' | 'incoming' | 'locked'
-  | 'publicationRows' | 'publicationHashes' | 'advancePublished' | 'logSince' | 'prepareCommit' | 'unprepareCommit' | 'revertSetup' | 'commitHashes' | 'reviewRoots' | 'fingerprint' | 'lowerBounds' | 'conflictSet' | 'logOf' | 'hashes' | 'baseAbove'>
+  | 'publicationRows' | 'publicationHashes' | 'advancePublished' | 'logSince' | 'prepareCommit' | 'unprepareCommit' | 'revertSetup' | 'commitHashes' | 'reviewRoots' | 'fingerprint' | 'lowerBounds' | 'conflictSet' | 'logOf' | 'hashes' | 'baseAbove' | 'mountStates'>
 
 /** What `SessionManager` hands the lifecycle for its SVN actions. */
 export interface SvnActionPorts {
-  runner: Pick<SvnStepRunner, 'run'>
+  runner: Pick<SvnStepRunner, 'run' | 'note'>
   logs: Pick<ScriptLogStore, 'writeCommitFiles' | 'read' | 'write'>
   svn: SvnActionPort
   labels: Pick<SvnRevisionLabels, 'ownCommits' | 'afterReview' | 'inferred'>

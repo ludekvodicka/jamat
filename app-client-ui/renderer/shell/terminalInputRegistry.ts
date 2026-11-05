@@ -1,3 +1,10 @@
+import type { SessionPromptInsertRefusal } from '../../../lib-orchestrator/sessionManager/sessionPromptInsert'
+
+export type PromptInsertResult = { ok: true } | { ok: false; reason: SessionPromptInsertRefusal | 'not-writable' }
+/** `insert` leaves the text standing in the prompt; `submit` presses Enter after it. */
+export type PromptInsertMode = 'insert' | 'submit'
+export type PromptInsertTarget = (text: string, mode: PromptInsertMode) => PromptInsertResult
+
 export interface TerminalInputTarget {
   writable(): boolean
   write(data: string): boolean
@@ -27,11 +34,37 @@ export interface TerminalInputOptions {
  * is the last gate under both.
  */
 export class TerminalInputRegistry {
-  private static readonly enterConst = '\r'
+  static readonly enterConst = '\r'
   // Codex treats Enter as pasted text until the synthetic command burst has settled.
-  private static readonly enterDelayMillisecondsConst = 100
+  static readonly enterDelayMillisecondsConst = 100
 
   private readonly targets = new Map<string, TerminalInputTarget>()
+  private readonly promptTargets: Map<string, PromptInsertTarget>
+  private readonly promptListeners: Set<() => void>
+
+  constructor() {
+    this.promptTargets = new Map()
+    this.promptListeners = new Set()
+  }
+
+  registerPrompt(sessionId: string, target: PromptInsertTarget): () => void {
+    this.promptTargets.set(sessionId, target)
+    for (const listener of this.promptListeners) listener()
+    return () => {
+      if (this.promptTargets.get(sessionId) !== target) return
+      this.promptTargets.delete(sessionId)
+      for (const listener of this.promptListeners) listener()
+    }
+  }
+
+  promptTarget(sessionId: string): PromptInsertTarget | undefined {
+    return this.promptTargets.get(sessionId)
+  }
+
+  subscribePrompts(listener: () => void): () => void {
+    this.promptListeners.add(listener)
+    return () => { this.promptListeners.delete(listener) }
+  }
 
   /** The returned function retires THIS registration alone: a late unmount cannot delete a newer one. */
   register(sessionId: string, target: TerminalInputTarget): () => void {

@@ -24,7 +24,7 @@ it.each([
   const snapshot = ctx.sessions.snapshot()
   vi.mocked(ctx.sessions.snapshot).mockReturnValue({ ...snapshot, sessions: [session] })
   const dto: WorktreeResultDto = { actionId: 'a', action: 'discard', result, sessionId: 's', title: 'Test', tag: attempt().attemptId,
-    worktreePath: 'wt', mainCopy: 'project', directoryId: null, removal: 'removed', revisions: [], lines: [], logs: [], notify: null, holdsLanded: null, at: 1, acknowledgedAt: null }
+    worktreePath: 'wt', mainCopy: 'project', directoryId: null, removal: 'removed', revisions: [], lines: [], logs: [], notify: null, holdsLanded: null, mainUpdating: false, at: 1, acknowledgedAt: null }
   vi.mocked(ctx.sessions.worktreeResults).mockResolvedValue({ ok: true, value: { results: [dto] } })
   expect(await new ReviewTodosSnapin().evidence(ctx, attempt())).toEqual(discarded ? { discarded: true } : { published: false })
 })

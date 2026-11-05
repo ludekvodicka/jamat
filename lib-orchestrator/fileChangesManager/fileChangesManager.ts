@@ -78,6 +78,7 @@ export interface FileChangesLogReader {
 }
 
 export interface FileChangesManagerDeps {
+  perf?: import('../perfMonitor/perfSpans').PerfSpans
   diffExecutor: FileDiffExecutor
   vcsAdapters?: readonly FileChangesVcs[]
   transcriptResolver?: FileChangesTranscriptResolver
@@ -115,6 +116,7 @@ interface FileRegistry {
 }
 
 export class FileChangesManager {
+  private readonly perf: FileChangesManagerDeps['perf']
   private static readonly defaultHistoryPageSizeConst = 20
   private static readonly maxHistoryPageSizeConst = 50
   private static readonly vcsHistoryLimitConst = 100
@@ -132,8 +134,9 @@ export class FileChangesManager {
   private readonly svnCopied: Pick<FileChangesSvnCopied, 'expand'>
 
   constructor(deps: FileChangesManagerDeps) {
+    this.perf = deps.perf
     this.detector = new FileChangesVcsDetector(
-      deps.vcsAdapters ?? [new FileChangesVcsGit(), new FileChangesVcsSvn()],
+      deps.vcsAdapters ?? [new FileChangesVcsGit(undefined, [], deps.perf), new FileChangesVcsSvn(undefined, deps.perf)],
     )
     this.transcriptResolver = deps.transcriptResolver ?? new ProviderTranscriptView()
     const logReaders = deps.logReaders
@@ -141,7 +144,7 @@ export class FileChangesManager {
     this.logReaders = new Map(logReaders.map((source) => [source.agentId, source]))
     this.snapshots = deps.snapshotStore ?? new FileChangesSnapshotStore()
     this.diffBuilder = new FileDiffBuilder(deps.diffExecutor)
-    this.workingSources = deps.workingSources ?? new FileChangesWorkingTreeSources()
+    this.workingSources = deps.workingSources ?? new FileChangesWorkingTreeSources({ perf: deps.perf })
     this.svnUntracked = deps.svnUntracked ?? new FileChangesSvnUntracked()
     this.svnCopied = deps.svnCopied ?? new FileChangesSvnCopied()
   }
@@ -153,6 +156,12 @@ export class FileChangesManager {
     filePath?: string,
     includedPaths: readonly string[] = [],
   ): Promise<FileChangesWorkingTreeSnapshotResult> {
+    const work = () => this.readWorkingTree(context, requested, forCommit, filePath, includedPaths)
+    return this.perf ? this.perf.operation('fileChanges.poll', work) : work()
+  }
+
+  private async readWorkingTree(context: FileChangesWorkingTreeContext, requested: FileChangesWorkingTreeSource | null,
+    forCommit: boolean, filePath: string | undefined, includedPaths: readonly string[]): Promise<FileChangesWorkingTreeSnapshotResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, code: 'invalid-context', detail: invalid }
     if (filePath !== undefined && (!forCommit || !PathCompare.isInside(context.cwd, filePath)
@@ -182,7 +191,8 @@ export class FileChangesManager {
       includeDirectories: !forCommit,
     })
     const registry: FileRegistry = { ids: new Map(), files: new Map() }
-    const entries = items.map((item) => this.publicEntry(item, item.absolutePath, registry))
+    const composeEntries = () => items.map((item) => this.publicEntry(item, item.absolutePath, registry))
+    const entries = this.perf ? this.perf.span('fileChanges.poll', composeEntries) : composeEntries()
     for (const item of items) {
       const file = registry.files.get(registry.ids.get(PathCompare.normalized(item.absolutePath))!)!
       // Folder labels show the newest descendant; committing needs the node's own timestamp.
@@ -193,44 +203,52 @@ export class FileChangesManager {
         catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
       }
     }
-    const baselines = new Map<string, SnapshotBaseline>()
-    const defaultBaseline = read.selected === null
-      ? null
-      : this.vcsBaseline(
-        read.selected,
-        read.selected.baseline,
-        read.selected.baselineLabel,
-        items,
-        registry,
-        baselines,
-      )
-    return {
-      ok: true,
-      value: this.snapshots.putWorking({
-        context,
-        selectedVcs: read.selected === null
-          ? null
-          : { adapter: read.selected.adapter, detection: read.selected.detection },
-        logGroups: [],
-        files: registry.files,
-        baselines,
-        source: read.selection,
-        externalRoots: read.externalRoots.map((path) => ({
-          path,
-          displayPath: relative(context.cwd, path).replace(/\\/g, '/'),
-          fileIds: entries.filter((entry) => PathCompare.isInside(path, entry.path)).map((entry) => entry.fileId),
-        })),
-        defaultBaseline,
-        entries,
-        warnings,
-      }),
+    const compose = (): FileChangesWorkingTreeSnapshotResult => {
+      const baselines = new Map<string, SnapshotBaseline>()
+      const defaultBaseline = read.selected === null
+        ? null
+        : this.vcsBaseline(
+          read.selected,
+          read.selected.baseline,
+          read.selected.baselineLabel,
+          items,
+          registry,
+          baselines,
+        )
+      return {
+        ok: true,
+        value: this.snapshots.putWorking({
+          context,
+          selectedVcs: read.selected === null
+            ? null
+            : { adapter: read.selected.adapter, detection: read.selected.detection },
+          logGroups: [],
+          files: registry.files,
+          baselines,
+          source: read.selection,
+          externalRoots: read.externalRoots.map((path) => ({
+            path,
+            displayPath: relative(context.cwd, path).replace(/\\/g, '/'),
+            fileIds: entries.filter((entry) => PathCompare.isInside(path, entry.path)).map((entry) => entry.fileId),
+          })),
+          defaultBaseline,
+          entries,
+          warnings,
+        }),
+      }
     }
+    return this.perf ? this.perf.span('fileChanges.poll', compose) : compose()
   }
 
   async list(
     context: FileChangesContext,
     options?: FileChangesListOptions,
   ): Promise<FileChangesSnapshotResult> {
+    const work = () => this.readList(context, options)
+    return this.perf ? this.perf.operation('fileChanges.poll', work) : work()
+  }
+
+  private async readList(context: FileChangesContext, options?: FileChangesListOptions): Promise<FileChangesSnapshotResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, code: 'invalid-context', detail: invalid }
     const preferred = options?.preferredVcs ?? 'git'
@@ -267,41 +285,44 @@ export class FileChangesManager {
       logGroups,
       warnings,
     })
-    const registry: FileRegistry = { ids: new Map(), files: new Map() }
-    const currentEntries = currentItems.map((item) => this.publicEntry(item, item.absolutePath, registry))
-    const baselines = new Map<string, SnapshotBaseline>()
-    const defaultBaseline = this.defaultBaseline(selection, currentItems, registry, baselines)
-    const groups = [
-      ...this.vcsHistoryGroups(context.cwd, selection, vcsGroups, registry, baselines),
-      ...this.chatHistoryGroups(context.cwd, logGroups, registry, baselines),
-    ].sort((left, right) => right.createdAt - left.createdAt)
-    const selected = selection.selected
-    const pageSize = Math.min(
-      FileChangesManager.maxHistoryPageSizeConst,
-      Math.max(1, options?.historyPageSize ?? FileChangesManager.defaultHistoryPageSizeConst),
-    )
-    return {
-      ok: true,
-      value: this.snapshots.put({
-        context,
-        selectedVcs: selected,
-        logGroups,
-        files: registry.files,
-        baselines,
-        vcs: {
-          requested: selection.requested,
-          selected: selected?.adapter.id ?? null,
-          available: selection.available.map((item) => item.adapter.id),
-          root: selected?.detection.root ?? null,
-          fallbackReason: selection.fallbackReason,
-        },
-        defaultBaseline,
-        entries: currentEntries,
-        groups,
-        warnings,
-        pageSize,
-      }),
+    const compose = (): FileChangesSnapshotResult => {
+      const registry: FileRegistry = { ids: new Map(), files: new Map() }
+      const currentEntries = currentItems.map((item) => this.publicEntry(item, item.absolutePath, registry))
+      const baselines = new Map<string, SnapshotBaseline>()
+      const defaultBaseline = this.defaultBaseline(selection, currentItems, registry, baselines)
+      const groups = [
+        ...this.vcsHistoryGroups(context.cwd, selection, vcsGroups, registry, baselines),
+        ...this.chatHistoryGroups(context.cwd, logGroups, registry, baselines),
+      ].sort((left, right) => right.createdAt - left.createdAt)
+      const selected = selection.selected
+      const pageSize = Math.min(
+        FileChangesManager.maxHistoryPageSizeConst,
+        Math.max(1, options?.historyPageSize ?? FileChangesManager.defaultHistoryPageSizeConst),
+      )
+      return {
+        ok: true,
+        value: this.snapshots.put({
+          context,
+          selectedVcs: selected,
+          logGroups,
+          files: registry.files,
+          baselines,
+          vcs: {
+            requested: selection.requested,
+            selected: selected?.adapter.id ?? null,
+            available: selection.available.map((item) => item.adapter.id),
+            root: selected?.detection.root ?? null,
+            fallbackReason: selection.fallbackReason,
+          },
+          defaultBaseline,
+          entries: currentEntries,
+          groups,
+          warnings,
+          pageSize,
+        }),
+      }
     }
+    return this.perf ? this.perf.span('fileChanges.poll', compose) : compose()
   }
 
   history(snapshotId: string, cursor: string): FileChangesHistoryResult {

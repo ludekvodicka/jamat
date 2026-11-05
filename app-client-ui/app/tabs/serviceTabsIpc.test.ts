@@ -1,3 +1,6 @@
+import type { TabWindowRouter } from '../shell/tabWindowRouter'
+import { ServiceTabRequestsIpc } from '../../../app-orchestrator/app/tabs/serviceTabRequestsIpc'
+import { bindService, callerSource } from '../shared/serviceIpcTestHarness'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -6,7 +9,7 @@ import type { TabTransferLease, TabTransferPayload, WorkspacePanelPresence } fro
 import { TerminalTargetCodec } from '../../shared/terminalTarget'
 import type { WorkspaceWindows } from '../shell/workspaceWindows'
 import { ServiceTabsIpc } from './serviceTabsIpc'
-import type { TabControlBroker } from './tabControlBroker'
+import type { TabControlBroker } from '../../../app-orchestrator/app/tabs/tabControlBroker'
 import type { TabTransferBroker } from './tabTransferBroker'
 import { WorkspacePanelIndex } from './workspacePanelIndex'
 
@@ -164,18 +167,19 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
     controlBroker = new FakeControlBroker()
     presenceChanges = 0
     presenceFails = false
-    ipc = new ServiceTabsIpc(
+    ipc = bindService(new ServiceTabsIpc(
       windows.asRegistry(),
       index,
       broker.asBroker(),
-      controlBroker.asBroker(),
+      controlBroker as unknown as TabWindowRouter,
       () => {
         presenceChanges += 1
         if (presenceFails)
           throw new Error('presence publish failed')
       },
-    )
+    ))
     ipc.initialize()
+    bindService(new ServiceTabRequestsIpc(controlBroker.asBroker(), caller => windows.acceptsRenderer(callerSource(caller)) ? windows.windowIdOf(callerSource(caller)) : null)).initialize()
   })
 
   afterEach(() => vi.restoreAllMocks())
@@ -203,7 +207,7 @@ describe('app-client-ui/app/tabs/serviceTabsIpc', () => {
 
   it('registers every channel it declares', () => {
     expect([...ipcMainMock.handlers.keys()].sort())
-      .toEqual(Object.keys(ServiceTabsIpc.channelsConst).sort())
+      .toEqual(Object.keys({ ...ServiceTabsIpc.channelsConst, ...ServiceTabRequestsIpc.channelsConst }).sort())
   })
 
   it('routes Session actions only from an admitted workspace sender', async () => {

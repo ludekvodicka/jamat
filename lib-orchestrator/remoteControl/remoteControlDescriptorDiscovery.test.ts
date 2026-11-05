@@ -190,6 +190,34 @@ describe('lib-orchestrator/remoteControl/remoteControlDescriptorDiscovery', () =
     )).toEqual([])
   })
 
+  it('names each registration it could not use and why, for a selection that finds nothing', () => {
+    const registry = join(root, 'registry')
+    const descriptorFile = join(root, 'custom-state', 'remote-control.json')
+    const descriptor = RemoteControlDescriptorDiscoveryTest.descriptor()
+    RemoteControlDescriptorDiscoveryTest.writeDescriptor(descriptorFile, descriptor)
+    RemoteControlDescriptorDiscoveryTest.writeRegistration(registry, {
+      ...RemoteControlInstanceRegistration.of(descriptor, descriptorFile),
+      descriptorFile: join(root, 'missing.json'),
+    }, 'missing.json')
+    RemoteControlDescriptorDiscoveryTest.writeRegistration(registry, {
+      ...RemoteControlInstanceRegistration.of(descriptor, descriptorFile),
+      instanceId: 'gone-instance',
+      pid: 2_147_483_647,
+    }, 'gone.json')
+    const rejected: unknown[] = []
+
+    expect(RemoteControlDescriptorDiscovery.registeredAndDefaultRootCandidates(
+      registry,
+      join(root, 'default-state'),
+      (registration) => { rejected.push(registration) },
+    )).toEqual([])
+    expect(rejected).toEqual(expect.arrayContaining([
+      { configIdentity: 'config-1', runtimeChannel: descriptor.runtimeChannel, instanceId: descriptor.instanceId, reason: 'descriptor' },
+      { configIdentity: 'config-1', runtimeChannel: descriptor.runtimeChannel, instanceId: 'gone-instance', reason: 'not-alive' },
+    ]))
+    expect(rejected).toHaveLength(2)
+  })
+
   it('scans the default descriptor tree and deduplicates a registered instance', () => {
     const registry = join(root, 'registry')
     const defaultRoot = join(root, 'default-state')

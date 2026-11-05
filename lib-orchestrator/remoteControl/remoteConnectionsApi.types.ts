@@ -22,7 +22,7 @@ export interface RemoteOutboundEndpointDto extends RemoteControlComputerFactsDto
   connectionId: string | null
   sessions: SessionsSnapshot | null
   selectedSessionIds?: readonly string[]
-  /** Main-computed descendants of the independently selected roots. */
+  /** Connection-owner-computed descendants of the independently selected roots. */
   reachableSessionIds?: readonly string[]
   workspaceCapabilities?: readonly RemoteControlPeerWorkspaceCapability[]
 }
@@ -48,7 +48,7 @@ export interface RemoteControlPeerTransport {
   /** The names the handshake agreed on, not free-form text: a typo in a gate must not compile. */
   readonly capabilities: readonly RemoteControlPeerCapability[]
   isOpen(): boolean
-  send(message: RemoteControlPeerApplicationMessage): boolean
+  send(message: RemoteControlPeerApplicationMessage, sent?: (error?: Error) => void): boolean
   onMessage(listener: (message: RemoteControlPeerInboundApplicationMessage) => void): () => void
   onClose(listener: () => void): () => void
   close(): void
@@ -65,6 +65,7 @@ export interface RemoteConnectionsPort {
     attachId: string,
     spec: TerminalAttachSpec,
     onFrame: (frame: TerminalFrame) => void,
+    active?: boolean,
   ): Promise<RemoteControlStepResult<{ attachId: string; sessionId: string }>>
   terminalInput(
     remoteEndpointId: string,

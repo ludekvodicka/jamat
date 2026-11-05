@@ -7,6 +7,7 @@ import type {
 } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { TerminalDetectResult } from '../../../../../lib-orchestrator/terminalDetector/terminalDetectorApi.types'
 import type { IpcResult } from '../../../../shared/appClientUiIpc'
+import { AppClientUiReport } from '../../../../shared/appClientUiReport'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../../shared/terminalTarget'
 import { UiSettings } from '../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../uiSettings/uiSettingsStore'
@@ -15,7 +16,7 @@ import { TerminalClipboard } from '../input/terminalClipboard'
 import { TerminalInterrupt } from '../input/terminalInterrupt'
 import { TerminalKeyGate } from '../input/terminalKeyGate'
 import { TerminalWheelRepeat } from '../input/terminalWheelRepeat'
-import { TerminalHeldOutput } from './terminalHeldOutput'
+import { TerminalOutput } from './terminalOutput'
 import { type TerminalRefusalCode, type TerminalAttachTransport, TerminalTransports } from './terminalTransport'
 import { type TerminalAgentId, TerminalPromptNewline } from '../input/terminalPromptNewline'
 import { TerminalLinks } from '../view/terminalLinks'
@@ -423,53 +424,17 @@ export function useTerminalAttachment(
 
     terminalRef.current = terminal
 
-    /*
-     * Held while nobody is looking at this panel, and written in one go when somebody is. A hidden
-     * xterm does not DRAW, but it parses every byte on the thread that also handles `keydown`, so a
-     * window of twenty working agents paid for twenty screens to show one. See `TerminalHeldOutput`.
-     *
-     * Visible until told otherwise: a panel that opens in front never fires a visibility change.
-     */
-    const held = new TerminalHeldOutput()
-    let visible = true
-    const show = (): void => {
-      const flush = held.take()
-      if (flush === null) return
-      if (flush.reset) terminal.reset()
-      if (flush.size !== null) terminal.resize(flush.size.cols, flush.size.rows)
-      terminal.write(flush.data)
-    }
-    visibleRef.current = (next) => {
-      visible = next
-      if (next) show()
-    }
+    const output = new TerminalOutput(terminal, () => {
+      const element = holderRef.current
+      return element !== null && element.offsetWidth > 0 && element.offsetHeight > 0
+    })
+    visibleRef.current = next => { void output.setVisible(next)?.catch(error => AppClientUiReport.error(String(error))) }
 
-    const onFrame = (frame: TerminalFrame): void => {
-      if (frame.type === 'terminal.snapshot') {
-        if (!visible) {
-          held.holdSnapshot(
-            frame.projection.cols, frame.projection.rows, frame.projection.screen)
-          return
-        }
-        // In this order: a write into a terminal of the wrong width wraps where the Host did not.
-        terminal.reset()
-        terminal.resize(frame.projection.cols, frame.projection.rows)
-        terminal.write(frame.projection.screen)
-      }
-      else if (frame.type === 'terminal.data') {
-        if (visible) terminal.write(frame.delta)
-        else held.holdData(frame.delta)
-      }
-      else if (frame.type === 'terminal.delta') {
-        if (visible) terminal.write(frame.data)
-        else held.holdData(frame.data)
-      }
-      else if (frame.type === 'terminal.resize') {
-        // Written first whatever is holding: what arrived before a resize wrapped at the old width,
-        // so a flush after it would wrap the same characters somewhere else.
-        show()
-        terminal.resize(frame.cols, frame.rows)
-      }
+    const onFrame = (frame: TerminalFrame): void | Promise<void> => {
+      if (frame.type === 'terminal.snapshot-start' || frame.type === 'terminal.snapshot-chunk'
+        || frame.type === 'terminal.snapshot-end' || frame.type === 'terminal.snapshot-complete' || frame.type === 'terminal.snapshot'
+        || frame.type === 'terminal.data' || frame.type === 'terminal.delta' || frame.type === 'terminal.resize')
+        return output.frame(frame)
       else if (frame.type === 'terminal.attached') {
         lost = false
         // A runtime the Host still has and no longer runs answers an attach with the screen it died
@@ -491,6 +456,7 @@ export function useTerminalAttachment(
           detail: frame.detail,
           refusalCode: frame.code ?? null,
         }))
+        if (lost) return output.lost()
       }
       // The end of the session, and the end of this surface: the library has already closed the
       // attach, so nothing more is addressed to it.
@@ -510,8 +476,7 @@ export function useTerminalAttachment(
     const measure = (): { cols: number; rows: number } | null => {
       const element = holderRef.current
       if (element === null || element.offsetWidth === 0 || element.offsetHeight === 0) return null
-      fit.fit()
-      return { cols: terminal.cols, rows: terminal.rows }
+      return output.measure(fit)
     }
 
     /**
@@ -607,7 +572,8 @@ export function useTerminalAttachment(
       // it: a closed tab is not a decision about a PTY.
       transport.detach()
       terminalRef.current = null
-      terminal.dispose()
+      try { terminal.dispose() }
+      finally { output.dispose() }
     }
   }, [TerminalTargetCodec.key(target), holderRef, attachEpoch])
 

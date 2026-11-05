@@ -61,6 +61,8 @@ import { RemarkableOverlay } from '../overlays/remarkable/remarkableOverlay'
 import type { SessionDetailsOpenRequest } from '../overlays/sessionDetails/sessionDetailsModel'
 import { SessionDetailsOverlay } from '../overlays/sessionDetails/sessionDetailsOverlay'
 import { ProbePanel } from '../panels/probePanel'
+import { UsagePanel } from '../usage/usagePanel'
+import { DebugPanel } from '../debug/debugPanel'
 import { SnapinPanel } from '../snapins/snapinPanel'
 import { SessionFolder } from '../sessions/sessionFolder'
 import { TerminalPanel } from '../panels/terminal/terminalPanel'
@@ -657,6 +659,16 @@ class AppShellComposition {
       title: WorkspacePanels.probeTitleConst,
       component: ProbePanel,
     })
+    panels.register({
+      key: PanelKeysConst.usage,
+      title: 'Usage',
+      component: () => <ErrorBoundary what="Usage"><UsagePanel /></ErrorBoundary>,
+    })
+    panels.register({
+      key: PanelKeysConst.debug,
+      title: 'Debug',
+      component: (props) => <ErrorBoundary what="Debug"><DebugPanel api={props.api} /></ErrorBoundary>,
+    })
     const refresh = new SessionRefreshRegistry()
     const terminalInputs = new TerminalInputRegistry()
     const terminalDrafts = new TerminalDraftRegistry()
@@ -725,7 +737,7 @@ class AppShellComposition {
         <ErrorBoundary what="The file viewer">
           <Suspense fallback={<p>Opening file...</p>}>
             <SessionContentPanel params={props.params} remote={remoteSnapshot}>
-              {(ports, changesPorts) => <AppShellComposition.fileViewerPanelConst {...props} fileTools={fileTools} ports={ports} changesPorts={changesPorts} />}
+              {(ports, changesPorts) => <AppShellComposition.fileViewerPanelConst {...props} inputs={terminalInputs} fileTools={fileTools} ports={ports} changesPorts={changesPorts} />}
             </SessionContentPanel>
           </Suspense>
         </ErrorBoundary>
@@ -1127,6 +1139,8 @@ class AppShellComposition {
       settingsCommands.open('worktrees')
     })
     commands.register('tools.remarkable', () => remarkableCommands.open())
+    commands.register('tools.usage', () => WorkspacePanels.openSingle(controller, PanelKeysConst.usage, 'Usage'))
+    commands.register('debug.open', () => WorkspacePanels.openSingle(controller, PanelKeysConst.debug, 'Debug'))
     if (role === 'main') {
       if (sidebarCommands === null)
         throw new Error('The main shell has no sidebar command target')
@@ -1141,7 +1155,6 @@ class AppShellComposition {
     // writes the same intent with that answer already in it.
     commands.register('session.newRemote', () =>
       AppShellComposition.launch(intents, launcherCommands, { purpose: 'remote' }))
-    commands.register('debug.newProbe', () => WorkspacePanels.openProbe(controller))
     // The menu named no panel: it made its tab active before opening, so the active one IS the one
     // the item was clicked on.
     commands.register('tab.keepOpen', () => {

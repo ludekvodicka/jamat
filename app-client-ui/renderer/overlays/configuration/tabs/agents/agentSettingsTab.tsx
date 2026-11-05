@@ -40,6 +40,7 @@ export function AgentSettingsTab(props: ConfigurationTabProps): React.JSX.Elemen
   const codexTabId = useId()
   const claudePanelId = useId()
   const codexPanelId = useId()
+  const processPriorityId = useId()
   const [ports] = useState<AgentSettingsPorts>(() => {
     const self: AgentSettingsPorts = {
       dispatch: (input) => {
@@ -401,6 +402,34 @@ export function AgentSettingsTab(props: ConfigurationTabProps): React.JSX.Elemen
           )}
         </section>
       ))}
+      <ConfigurationSection title="Processor priority">
+        <div className="jamat-configuration-agents__row">
+          <div className="jamat-configuration-agents__heading">
+            <label htmlFor={processPriorityId}>Agent sessions and script runs</label>
+            <span>Applies to Claude, Codex and script runs, and to everything they start.</span>
+          </div>
+          <select
+            id={processPriorityId}
+            className="jamat-configuration-agents__effort"
+            disabled={state.buffer === null || saving}
+            value={state.buffer === null ? 'below-normal' : AgentSettings.processPriorityOf(state.buffer)}
+            onChange={(event) => ports.dispatch({
+              input: 'processPriority',
+              value: event.currentTarget.value === 'normal' ? 'normal' : 'below-normal',
+            })}
+          >
+            <option value="below-normal">Below normal (recommended)</option>
+            <option value="normal">Normal</option>
+          </select>
+        </div>
+        <p className="jamat-configuration-agents__note">
+          Below normal lets tests, builds and dev servers that agents start give way to Jamat and
+          your other programs when the computer is busy; an idle computer sees no difference. Choose
+          Normal to rule the priority out when something misbehaves. A change reaches running
+          sessions within 15 seconds; programs they started earlier keep their priority. A shell
+          you type in always runs at normal priority.
+        </p>
+      </ConfigurationSection>
       <div className="jamat-configuration__actions">
         <button
           className="jamat-configuration__button"

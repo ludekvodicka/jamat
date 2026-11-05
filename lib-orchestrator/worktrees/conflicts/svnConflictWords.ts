@@ -11,6 +11,9 @@ import type { SvnGuardFinding } from './svnConflictGuard'
  */
 export type SvnConflictSide = 'worktree' | 'main-copy'
 
+/** Who settles the open conflicts: the person, or the worker Jamat handed them to. */
+export type SvnConflictOwner = 'person' | 'worker'
+
 /**
  * The words of a conflict set: the summary, a description per path and the label and note of each
  * option, composed from the facts the record keeps, so no word lives in the record and every surface
@@ -31,12 +34,15 @@ export class SvnConflictWords {
   /** The label of the press that goes on from a waiting main-copy UPDATE. */
   static readonly updateConst = 'Update'
 
-  /** "3 conflicts need you", "3 conflicts: Jamat fixed 1, merger on 2", "1 conflict needs you". */
-  static summaryOf(set: SvnActionConflictSet): string {
+  /**
+   * "3 conflicts need you", "3 conflicts: Jamat fixed 1, merger on 2", "1 conflict needs you"; while the
+   * worker owns the open ones, "3 conflicts: the worker resolves them", "3 conflicts: Jamat fixed 1, the worker resolves 2".
+   */
+  static summaryOf(set: SvnActionConflictSet, owner: SvnConflictOwner = 'person'): string {
     const total = set.entries.length + set.more
     const count = (predicate: (entry: SvnActionConflictEntry) => boolean): number => set.entries.filter(predicate).length
     const person = count((entry) => entry.state === 'person') + set.more
-    if (person === total) return `${SvnConflictWords.conflicts(total)} ${total === 1 ? 'needs' : 'need'} you`
+    if (person === total) return SvnConflictWords.allOpenOf(total, owner)
     const settledBy = (by: SvnActionConflictEntry['by']): number => count((entry) => entry.state === 'settled' && entry.by === by)
     const parts = [
       [count((entry) => entry.state === 'rule') + settledBy('jamat'), 'Jamat fixed'],
@@ -46,8 +52,20 @@ export class SvnConflictWords {
       [count((entry) => entry.state === 'agent'), 'merger on'],
     ] as const
     const words = parts.flatMap(([amount, word]) => amount === 0 ? [] : [`${word} ${amount}`])
-    if (person > 0) words.push(`${person} ${person === 1 ? 'needs' : 'need'} you`)
+    if (person > 0) words.push(SvnConflictWords.openOf(person, owner))
     return `${SvnConflictWords.conflicts(total)}: ${words.join(', ')}`
+  }
+
+  private static allOpenOf(total: number, owner: SvnConflictOwner): string {
+    if (owner === 'person') return `${SvnConflictWords.conflicts(total)} ${total === 1 ? 'needs' : 'need'} you`
+    else if (owner === 'worker') return `${SvnConflictWords.conflicts(total)}: the worker resolves ${total === 1 ? 'it' : 'them'}`
+    else throw new Error(`Unknown conflict owner: ${JSON.stringify(owner satisfies never)}`)
+  }
+
+  private static openOf(count: number, owner: SvnConflictOwner): string {
+    if (owner === 'person') return `${count} ${count === 1 ? 'needs' : 'need'} you`
+    else if (owner === 'worker') return `the worker resolves ${count}`
+    else throw new Error(`Unknown conflict owner: ${JSON.stringify(owner satisfies never)}`)
   }
 
   /** An option as a step, a result line and a pass name it: "keep both", "take incoming". */

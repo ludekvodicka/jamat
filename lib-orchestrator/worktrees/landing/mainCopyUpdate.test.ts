@@ -12,6 +12,7 @@ import { MainCopyUpdate } from './mainCopyUpdate'
 import { LandedRows } from './landedRows'
 import { WorktreeRecovery } from '../worktreeRecovery'
 import { WorktreeDue } from '../worktreeDue'
+import { PathCompare } from '../../shared/pathCompare'
 
 async function harness() {
   const h = await finishTestRecords({ phase: 'waiting', step: 'removing', wait: { kind: 'removal-blocked', reason: 'editor holds file', at: 1 } })
@@ -48,6 +49,7 @@ async function harness() {
       conflictSet: async () => ({ ok: true, value: { revision: 2, rows: [], facts: conflicts.map((path) => ({ path, kind: kinds[path] ?? 'text', takesArgument: true,
         tree: null, sidecars: [], properties: [], content: kinds[path] === undefined ? { binary: false, unreadable: false, equal: 'differs' } : null })) } }),
       resolveWorking: async () => ({ ok: true, value: undefined }),
+      mountStates: async () => ({ ok: true, value: new Map() }),
     },
     runner: { run: vi.fn(async () => { events.push('update'); conflicts = after; return { ok: true, runId: 'run', exitCode: 0, output: after.length > 0 ? 'Summary of conflicts:\n  Text conflicts: 1\n' : 'Updated', failure: null } }) },
     resolver: { briefs: logs, unavailable: () => null, withMarkers: async () => [], cli: () => ({ ok: true as const, command: 'node "C:/Jamat/skills/claude/appjamat-v3/scripts/jamat-v3.mjs"' }), instance: { configIdentity: 'cfg-test', channel: 'development' as const } }, resolutions: { recoverLocked: async () => ({ ok: true, value: undefined }) },
@@ -132,6 +134,24 @@ describe('MainCopyUpdate', () => {
     expect(h.results.list({})[0].main).toEqual({ revision: 2, by: 'person', at: 10 })
     expect(h.records.get('worker')!.worktree).toBeDefined()
     expect(h.records.get('worker')!.worktreeLifecycle!.wait?.kind).toBe('removal-blocked')
+  })
+
+  it('runs no per-mount svn update after a publication that brought no external change', async () => {
+    const h = await harness()
+    const mounts = ['shared/app', 'shared/auth'].map((own) => ({ path: join(h.root, own), revision: 301, url: `https://svn.test/${own}`,
+      repository: 'https://svn.test', kind: 'dir' as const, pinned: false }))
+    const updateTargets: typeof emptyUpdateTargets = { ...emptyUpdateTargets, snapshot: async (target, discover = true) => ({ properties: {}, localMappingChanges: false,
+      children: discover && target.path === h.root ? mounts : [], missing: [], mismatched: [] }) }
+    const mountStates = vi.fn(async () => ({ ok: true as const, value: new Map(mounts.map((mount) => [PathCompare.comparable(mount.path), { path: mount.path,
+      url: mount.url, repository: mount.repository, base: mount.revision, missing: false, switched: false, skipped: false, localChanges: false, propertyChanges: false, carrier: false }])) }))
+    h.deps.runner.note = vi.fn(async () => 'note')
+    const update = new MainCopyUpdate({ ...h.deps, svn: { ...h.deps.svn, updateTargets, mountStates } })
+    expect(await update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
+    await h.settled()
+    expect(vi.mocked(h.deps.runner.run).mock.calls.map((call) => call[2])).toEqual([h.root])
+    expect(h.deps.runner.note).toHaveBeenCalledOnce()
+    expect(vi.mocked(h.deps.runner.note).mock.calls[0][4]).toBe('2 externals already at r301')
+    expect(h.results.list({})[0].main).toEqual({ revision: 2, by: 'person', at: 10 })
   })
 
   /** The landed row of a Finish that waits on the offer, with its own sync run kept from before the offer. */

@@ -32,6 +32,7 @@ export interface FileViewerDocumentModel {
   mode: FileViewerViewMode
   setMode(mode: FileViewerViewMode): void
   text: FileViewerTextResult | null
+  textReady: boolean
   diff: FileDiffResult | null
   targets: readonly FileViewerDiffTarget[]
   diffTarget: FileViewerDiffTarget | null
@@ -77,6 +78,7 @@ export function useFileViewerDocument(
   const [sourceMissing, setSourceMissing] = useState(false)
   const [mode, setMode] = useState<FileViewerViewMode>('raw')
   const [text, setText] = useState<FileViewerTextResult | null>(null)
+  const [textDocumentId, setTextDocumentId] = useState<string | null>(null)
   const [diff, setDiff] = useState<FileDiffResult | null>(null)
   const [baselineHint, setBaselineHint] = useState<FileViewerBaselineHint | undefined>(
     sourceBaselineHint,
@@ -220,6 +222,7 @@ export function useFileViewerDocument(
     else setText(null)
     void ports.viewer.text(documentValue.documentId).then((answer) => {
       if (!alive) return
+      setTextDocumentId(documentValue.documentId)
       setText(answer.ok
         ? answer.value
         : { ok: false, code: 'document-expired', detail: answer.error })
@@ -324,6 +327,7 @@ export function useFileViewerDocument(
     mode,
     setMode,
     text,
+    textReady: documentValue !== null && textDocumentId === documentValue.documentId,
     diff,
     targets,
     diffTarget,

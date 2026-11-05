@@ -1,12 +1,15 @@
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { z } from 'zod'
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
 import { PathCompare } from '../../shared/pathCompare'
+import { ProductGroup } from '../../shared/productGroup'
 import { SetupInputs } from '../../projectSetup/setupInputs'
 import { WorktreeConfig } from '../../projectSetup/worktreeConfig'
 import { SvnAssemblyReader, type SvnAssembly } from '../../svn/svnAssembly'
 import { SvnCommitGate } from '../../svn/svnCommitGate'
+import type { SvnGroupMembers } from '../../svn/svn.types'
 import type { FinishDriverDeps } from './finishDriver.types'
 import type { FinishState } from './finishState'
 import { WorktreeWords } from '../view/worktreeWords'
@@ -67,9 +70,13 @@ export class PreparationStep {
       return true
     }
     const assembly = await this.read(sessionId)
-    const second = await this.read(sessionId)
-    if (assembly.content !== second.content || assembly.metadata !== second.metadata)
-      throw new Error('The worktree changed while preparation was reading it; pause edits and prepare again')
+    // Checks run on the bytes this read proves, so it must hold still. Without checks the approval
+    // reads the assembly again before publication, which is the only proof it needs (D15).
+    if (declared.steps.length > 0) {
+      const second = await this.read(sessionId)
+      if (assembly.content !== second.content || assembly.metadata !== second.metadata)
+        throw new Error('The worktree changed while preparation was reading it; pause edits and prepare again')
+    }
     const current = this.deps.records.get(sessionId)!.worktreeLifecycle!
     const inputs = SetupInputs.of(assembly.nodes)
     const checksPolicy = await this.checksPolicy(sessionId)
@@ -187,8 +194,41 @@ export class PreparationStep {
         || before.get(path)?.metadata !== after.get(path)?.metadata)
       return { kind: 'changed', reason: `The application or an external changed after preparation; run preparation and checks again. Changed (${paths.length}): ${paths.slice(0, 20).join(', ')}${paths.length > 20 ? ', …' : ''}` }
     }
-    if (assembly.incoming.length > 0) return { kind: 'incoming', reason: PreparationStep.incomingReason(assembly.incoming), paths: assembly.incoming }
+    const published = state.review === undefined ? null : Object.keys(state.review.hashes)
+    if (assembly.incoming.length > 0 && PreparationStep.incomingMatters(assembly.incoming, published, declared.steps.length > 0, PreparationStep.membersOf(state.execution!.root)))
+      return { kind: 'incoming', reason: PreparationStep.incomingReason(assembly.incoming), paths: assembly.incoming }
     return null
+  }
+
+  /**
+   * D6: whether incoming paths make the prepared assembly stale. One that equals, holds or lies
+   * below a publication candidate always does (I1), and so does any while the candidates are not
+   * known. Without declared checks no other path does: the main-copy UPDATE takes it. With checks,
+   * a path outside `.aidocs/` and `docs/` of the owner and of each member project does.
+   */
+  static incomingMatters(incoming: readonly string[], published: readonly string[] | null, hasChecks: boolean, members: SvnGroupMembers): boolean {
+    if (published === null) return true
+    // The worktree root is named `.` and holds every path; a property change there can remap a mount.
+    const overlaps = (left: string, right: string): boolean => left === '.' || right === '.' || left === right
+      || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)
+    if (incoming.some((path) => published.some((candidate) => overlaps(path, candidate)))) return true
+    if (!hasChecks) return false
+    return incoming.some((path) => !PreparationStep.documentation(path, members))
+  }
+
+  /** How a path names its project: a product group root holds member projects, each its first segment. */
+  static membersOf(root: string): SvnGroupMembers {
+    return existsSync(join(root, ProductGroup.markerConst)) ? 'first-segment' : 'whole'
+  }
+
+  private static documentation(path: string, members: SvnGroupMembers): boolean {
+    const [first, second] = path.split('/')
+    const documents = (segment: string | undefined): boolean => segment === '.aidocs' || segment === 'docs'
+    switch (members) {
+      case 'whole': return documents(first)
+      case 'first-segment': return documents(first) || documents(second)
+      default: throw new Error(`Unknown group members: ${JSON.stringify(members satisfies never)}`)
+    }
   }
 
   async checked(sessionId: string, overridden = false): Promise<boolean> {
@@ -205,6 +245,11 @@ export class PreparationStep {
     await this.state.write(sessionId, (state) => ({ ...state, preparation: { ...state.preparation!, checkedAt: this.deps.now(),
       checks: overridden ? 'overridden' : state.execution!.checks.length === 0 ? 'none' : 'passed' } }))
     return true
+  }
+
+  /** No check ran on the prepared assembly, so nothing reads it again before the approval does (D15). */
+  async withoutChecks(sessionId: string): Promise<void> {
+    await this.state.write(sessionId, (state) => ({ ...state, preparation: { ...state.preparation!, checkedAt: this.deps.now(), checks: 'none' } }))
   }
 
   async invalidate(sessionId: string, reason: string, incoming: readonly string[] = []): Promise<void> {

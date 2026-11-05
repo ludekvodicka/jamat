@@ -207,6 +207,33 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
     ])
   })
 
+  // 133: while the worker owned the conflicts the step said "need you", and the person pressed buttons the sync did not need.
+  it('names the worker as the owner of the conflicts it was handed, and the person once a wait gives them back', () => {
+    const lifecycle = {
+      version: 9, actionId: 'a1', phase: 'finishing' as const, step: 'worker-resolving' as const, outOfDate: 0,
+      facts: { worker: { liveness: 'alive' as const, resumeFailures: 0 } },
+      execution: { root: worktreeConst, checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window' as const, startedAt: 100 },
+      journal: [{ stepId: 'a1-sync', kind: 'update' as const, attempt: 1, startedAt: 110, endedAt: 120, outcome: 'ok' as const, runId: 'sync' }],
+      handoff: { id: 'h1', key: 'conflicts:a1:130', text: '2 conflicts wait for the worker', at: 131, attempts: 1, state: 'delivered' as const },
+      syncConflictSet: { readAt: 130, baseRevision: 2, revision: 3, more: 0, entries: [
+        { path: 'a.ts', kind: 'text' as const, shape: 'text-overlap' as const, state: 'settled' as const, by: 'jamat' as const, options: ['merged' as const], facts: {} },
+        { path: 'b.ts', kind: 'text' as const, shape: 'text-overlap' as const, state: 'person' as const, options: ['merged' as const], facts: {} }] },
+    }
+    const handed = record(undefined, { worktreeLifecycle: lifecycle })
+    const workflow = SvnActionWorkflow.of(handed, FinishProjection.action(handed)!, runs({}))
+    const running = workflow.rounds.flatMap((round) => round.steps).find((step) => step.state === 'running')
+    expect(workflow.badge).toBe('The worker is resolving conflicts')
+    expect(running).toMatchObject({ detail: '2 conflicts: Jamat fixed 1, the worker resolves 1', body: { kind: 'conflicts', summary: '2 conflicts: Jamat fixed 1, the worker resolves 1' } })
+    expect(JSON.stringify(workflow)).not.toContain('need')
+
+    const person = record(undefined, { worktreeLifecycle: { ...lifecycle, phase: 'waiting' as const,
+      wait: { kind: 'conflict-person' as const, reason: '2 conflicts: Jamat fixed 1, 1 needs you: b.ts; settle them, then press Check again', at: 140 } } })
+    const waiting = SvnActionWorkflow.of(person, FinishProjection.action(person)!, runs({}))
+    expect(waiting.badge).toBe('Conflicts need your decision')
+    expect(waiting.rounds.flatMap((round) => round.steps).find((step) => step.body?.kind === 'conflicts')?.body).toMatchObject({ summary: '2 conflicts: Jamat fixed 1, 1 needs you' })
+    expect(JSON.stringify(waiting)).not.toContain('the worker resolves')
+  })
+
   it('starts the current lifecycle step when the last done step ended, not when the Finish started', () => {
     const removing = record(undefined, {
       worktreeLifecycle: {

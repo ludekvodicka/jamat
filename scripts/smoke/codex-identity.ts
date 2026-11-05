@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { SmokeTerminalOwner } from './smokeTerminalOwner'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -102,40 +103,47 @@ async function run(): Promise<void> {
   const output = new Map<string, string>()
   const writers = new Set<string>()
   let yolo = true
-  const makeManager = () => new SessionManager({
-    applicationRoot: resourcesRoot === null ? root : dirname(resourcesRoot),
-    resourcesRoot, configDir, configIdentity: identity, channel: 'development',
-    autoStartHost: false, onChanged: () => {}, onError: message => errors.push(message),
-    yoloFor: () => yolo,
-    modelFor: () => 'gpt-6.1-sol', effortFor: () => 'high',
-    spawnImpl: ((command: string, args: readonly string[], options: SpawnOptions) => {
-      host = spawn(command, args, options)
-      return host
-    }) as typeof spawn,
-  })
+  let terminalOwner: SmokeTerminalOwner
+  const makeManager = () => {
+    terminalOwner = new SmokeTerminalOwner({ configIdentity: identity, channel: 'development', onError: message => errors.push(message),
+      activity: { userInput: marks => manager.terminalActivity.userInput(marks),
+        pendingInputHint: counts => manager.terminalActivity.pendingInputHint(counts) } })
+    return new SessionManager({
+      ...terminalOwner.sessionDeps,
+      applicationRoot: resourcesRoot === null ? root : dirname(resourcesRoot),
+      resourcesRoot, configDir, configIdentity: identity, channel: 'development',
+      autoStartHost: false, onChanged: () => {}, onError: message => errors.push(message),
+      yoloFor: () => yolo,
+      modelFor: () => 'gpt-6.1-sol', effortFor: () => 'high',
+      spawnImpl: ((command: string, args: readonly string[], options: SpawnOptions) => {
+        host = spawn(command, args, options)
+        return host
+      }) as typeof spawn,
+    })
+  }
   let manager = makeManager()
   const sessions: string[] = []
   const stored = (id: string): SessionRecord => JSON.parse(readFileSync(
     OrchestratorPaths.sessionRecordsFile(identity, 'development'), 'utf8'))
     .records.find((record: SessionRecord) => record.sessionId === id)
   const row = (id: string) => manager.snapshot().sessions.find(session => session.sessionId === id)
-  const attach = (id: string) => {
+  const attach = async (id: string) => {
     writers.delete(id)
-    const attached = manager.terminalAttach(id, {sessionId: id, size: {cols: 120, rows: 35}}, {
+    const attached = (await manager.terminals.attach(id, {sessionId: id, size: {cols: 120, rows: 35}}, {
       source: 'local', onFrame: (frame: TerminalFrame) => {
         if (frame.type === 'terminal.attached' && frame.writer) writers.add(id)
         const text = frame.type === 'terminal.snapshot' ? frame.projection.screen
           : frame.type === 'terminal.delta' ? frame.data : frame.type === 'terminal.data' ? frame.delta : ''
         output.set(id, ((output.get(id) ?? '') + text).slice(-30000))
       },
-    })
+    }))
     assert.ok(attached.ok)
   }
   const enter = async (id: string, text: string) => {
     await waitFor(() => writers.has(id), () => 'terminal writer was not attached')
-    assert.equal(manager.terminalInput(id, text).kind, 'sent')
+    assert.equal((await manager.terminals.input(id, text)).kind, 'sent')
     await new Promise(resolve => setTimeout(resolve, 500))
-    assert.equal(manager.terminalInput(id, '\r').kind, 'sent')
+    assert.equal((await manager.terminals.input(id, '\r')).kind, 'sent')
   }
   const verifyYolo = async (id: string, label: string) => {
     const prompt = `Reply with the test marker for ${label}.`
@@ -149,6 +157,7 @@ async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 800))
   }
   try {
+    terminalOwner!.start()
     await manager.start()
     value(await manager.startHost())
     await waitFor(() => manager.snapshot().host.presence === 'running'
@@ -157,7 +166,7 @@ async function run(): Promise<void> {
       const created = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
         agent: {agentId: 'codex', mode: 'new'}, title: `Identity ${i}`}))
       sessions.push(created.sessionId)
-      attach(created.sessionId)
+      await attach(created.sessionId)
     }
     await waitFor(() => sessions.every(id => row(id)?.agent?.nativeSessionId),
       () => `Missing identities: ${JSON.stringify({sessions: manager.snapshot().sessions, errors, screens: [...output]})}`)
@@ -172,7 +181,7 @@ async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 800))
     const fork = value(await manager.forkSession(sessions[0]))
     sessions.push(fork.sessionId)
-    attach(fork.sessionId)
+    await attach(fork.sessionId)
     await waitFor(() => !!row(fork.sessionId)?.agent?.nativeSessionId,
       () => `No fork identity: ${output.get(fork.sessionId)}; ${errors.join('; ')}`)
     assert.notEqual(row(fork.sessionId)?.agent?.nativeSessionId, ids[0])
@@ -187,7 +196,7 @@ async function run(): Promise<void> {
     assert.notEqual(stored(sessions[0]).agent?.identityLaunchId, firstLaunch)
     assert.equal(row(sessions[0])?.agent?.nativeSessionId, ids[0])
     console.log('ok: resume preserves the confirmed conversation ID')
-    attach(sessions[0])
+    await attach(sessions[0])
     await verifyYolo(sessions[0], 'resume')
     await enter(sessions[1], '/new')
     await waitFor(() => row(sessions[1])?.agent?.nativeSessionId !== ids[1],
@@ -197,7 +206,9 @@ async function run(): Promise<void> {
     await verifyYolo(sessions[1], 'native /new')
     const beforeRestart = sessions.map(id => row(id)!.agent!.nativeSessionId)
     await manager.stop()
+    await terminalOwner!.stop()
     manager = makeManager()
+    terminalOwner!.start()
     await manager.start()
     await waitFor(() => sessions.every(id => row(id)?.life === 'live') && manager.debugStatus().lease.leaseId !== null,
       () => 'client did not reattach to live Codex terminals with its controller lease')
@@ -207,7 +218,7 @@ async function run(): Promise<void> {
     const prompted = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
       agent: {agentId: 'codex', mode: 'new', initialPrompt: prompt}, title: 'Multiline identity'}))
     sessions.push(prompted.sessionId)
-    attach(prompted.sessionId)
+    await attach(prompted.sessionId)
     await waitFor(() => !!row(prompted.sessionId)?.agent?.nativeSessionId && userInputs.includes(prompt),
       () => `multiline initial prompt did not survive launch: ${output.get(prompted.sessionId)}`)
     console.log('ok: multiline initial prompt preserves quotes and newlines through the native launch')
@@ -216,7 +227,7 @@ async function run(): Promise<void> {
     const continued = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
       agent: {agentId: 'codex', mode: 'continue'}, title: 'Continue identity'}))
     sessions.push(continued.sessionId)
-    attach(continued.sessionId)
+    await attach(continued.sessionId)
     await waitFor(() => !!row(continued.sessionId)?.agent?.nativeSessionId,
       () => `continue did not confirm its selected thread: ${output.get(continued.sessionId)}`)
     assert.equal(stored(continued.sessionId).agent?.nativeSessionIdSource, 'codex-app-server')
@@ -227,7 +238,7 @@ async function run(): Promise<void> {
     const gated = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
       agent: {agentId: 'codex', mode: 'new'}, title: 'Gated permissions'}))
     sessions.push(gated.sessionId)
-    attach(gated.sessionId)
+    await attach(gated.sessionId)
     await waitFor(() => !!row(gated.sessionId)?.agent?.nativeSessionId, () => `No gated identity: ${output.get(gated.sessionId)}`)
     const gatedPrompt = 'Reply with the test marker for gated permissions.'
     await enter(gated.sessionId, gatedPrompt)
@@ -242,13 +253,13 @@ async function run(): Promise<void> {
     value(await manager.reopenSession(gated.sessionId))
     await waitFor(() => row(gated.sessionId)?.life === 'live' && stored(gated.sessionId).agent?.identitySequence === 1,
       () => `gated session did not resume: ${output.get(gated.sessionId)}`)
-    attach(gated.sessionId)
+    await attach(gated.sessionId)
     await verifyYolo(gated.sessionId, 'resume of a previously restricted session')
     appendFileSync(join(home, 'config.toml'), `\n[mcp_servers.rejected_test]\nurl="http://127.0.0.1:${address.port}/mcp"\n`)
     const diagnostic = value(await manager.createSession({kind: 'agent', directory: {mode: 'adHoc', path: cwd},
       agent: {agentId: 'codex', mode: 'new'}, title: 'MCP diagnostics'}))
     sessions.push(diagnostic.sessionId)
-    attach(diagnostic.sessionId)
+    await attach(diagnostic.sessionId)
     await waitFor(() => !!row(diagnostic.sessionId)?.agent?.nativeSessionId, () => 'No MCP test identity')
     const logFile = join(OrchestratorPaths.directory(identity, 'development'), 'codex-sessions', diagnostic.sessionId,
       `${stored(diagnostic.sessionId).agent!.identityLaunchId}.server.log`)
@@ -263,6 +274,7 @@ async function run(): Promise<void> {
     const hostId = manager.snapshot().host.hostInstanceId
     if (hostId) await manager.stopHost(hostId).catch(() => {})
     await manager.stop()
+    await terminalOwner!.stop()
     if (host && host.exitCode === null && host.signalCode === null) host.kill()
     api.closeAllConnections()
     await new Promise<void>(resolve => api.close(() => resolve()))

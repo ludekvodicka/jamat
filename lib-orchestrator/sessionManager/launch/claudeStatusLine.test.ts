@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -108,20 +108,39 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
     expect(reports).toEqual(['Claude status line relay not installed: an identity that is not an id: "a b"'])
   })
 
-  it('reads back only the receipt of the asked session and launch', () => {
+  it('reads back only the receipt of the asked session and launch', async () => {
     const { root, reports, relay } = world()
     const statusLine = relay('win32')
     mkdirSync(join(root, 'claude-identity'))
     const receipt = { schemaVersion: 1, jamatSessionId: 'jamat-1', launchId: 'launch-1', nativeSessionId: '11126908-45f3-438e-b263-6138206cd005', sequence: 7 }
     writeFileSync(join(root, 'claude-identity', 'jamat-1.json'), JSON.stringify(receipt))
-    expect(statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 7 })
-    expect(statusLine.identity('jamat-1', 'launch-2')).toBeNull()
-    expect(statusLine.identity('jamat-2', 'launch-1')).toBeNull()
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 7 })
+    expect(await statusLine.identity('jamat-1', 'launch-2')).toBeNull()
+    expect(await statusLine.identity('jamat-2', 'launch-1')).toBeNull()
     expect(reports).toEqual([])
     writeFileSync(join(root, 'claude-identity', 'jamat-1.json'), JSON.stringify({ ...receipt, jamatSessionId: 'jamat-2' }))
-    expect(statusLine.identity('jamat-1', 'launch-1')).toBeNull()
-    expect(statusLine.identity('jamat-1', 'launch-1')).toBeNull()
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toBeNull()
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toBeNull()
     expect(reports).toHaveLength(1)
+  })
+
+  it('reads a settled receipt again only once its mtime or size moved', async () => {
+    const { root, relay } = world()
+    const statusLine = relay('win32')
+    mkdirSync(join(root, 'claude-identity'))
+    const file = join(root, 'claude-identity', 'jamat-1.json')
+    const receipt = { schemaVersion: 1, jamatSessionId: 'jamat-1', launchId: 'launch-1', nativeSessionId: '11126908-45f3-438e-b263-6138206cd005', sequence: 7 }
+    const settled = new Date(Date.now() - 60_000)
+    writeFileSync(file, JSON.stringify(receipt))
+    utimesSync(file, settled, settled)
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 7 })
+    // Same size and the same mtime: only a stat, so the old answer stands.
+    writeFileSync(file, JSON.stringify({ ...receipt, sequence: 8 }))
+    utimesSync(file, settled, settled)
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 7 })
+    const moved = new Date(settled.getTime() + 1_000)
+    utimesSync(file, moved, moved)
+    expect(await statusLine.identity('jamat-1', 'launch-1')).toEqual({ nativeSessionId: receipt.nativeSessionId, sequence: 8 })
   })
 
   it('writes an executable shell wrapper on POSIX and single-quotes its path', () => {
