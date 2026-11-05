@@ -298,7 +298,7 @@ type RemoteRowMenu = (
 interface SessionsTreeChrome {
   /** `hiddenWhenRemote` is given for a local session row only, the one row that offers the mark. */
   groupItem(key: string, group: SessionGroup, hiddenWhenRemote?: boolean): ContextMenuSubmenu
-  hiddenWhenRemote: ReadonlySet<string>
+  shownWhenRemote: ReadonlySet<string>
   pending: PendingConfirm | null
   collapsed: ReadonlySet<string>
   /** The one target THIS workspace window has in front. */
@@ -440,7 +440,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   const trees = useMemo((): SessionsTrees | null => {
     if (!snapshot)
       return null
-    const local = RemoteSessionsTreeModel.locallyShown(snapshot, remoteSnapshot, groupState.hiddenWhenRemote)
+    const local = RemoteSessionsTreeModel.locallyShown(snapshot, remoteSnapshot, groupState.shownWhenRemote)
     // Read once per build, so both trees answer "how long ago did this close" against one moment.
     const now = Date.now()
     /*
@@ -488,7 +488,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, groupState.hiddenWhenRemote, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, groupState.shownWhenRemote, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
 
   useEffect(() => {
     if (trees === null) return
@@ -1003,11 +1003,11 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           key: 'hidden-when-remote', label: 'Hidden when remote', checked: hiddenWhenRemote,
           title: 'While a remote computer is connected to this session, show it only under Remote connections',
           disabled: !groupState.ready || groupState.saving,
-          onSelect: () => groupState.hideWhenRemote(key, !hiddenWhenRemote),
+          onSelect: () => groupState.showWhenRemote(key, hiddenWhenRemote),
         }]),
       ],
     }),
-    hiddenWhenRemote: groupState.hiddenWhenRemote,
+    shownWhenRemote: groupState.shownWhenRemote,
     pending,
     collapsed,
     inFront: activeTargetKey,
@@ -1057,7 +1057,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
     toggle, request, onLaunch, onOpenTerminal, props.onOpenTask, props.onOpenSessionActions, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
-    groupState.ready, groupState.saving, groupState.assign, groupState.hideWhenRemote, groupState.hiddenWhenRemote, sections,
+    groupState.ready, groupState.saving, groupState.assign, groupState.showWhenRemote, groupState.shownWhenRemote, sections,
   ])
 
   const resetFilters = (): void => {
@@ -1273,7 +1273,7 @@ function TreeMenu(props: {
         groupItem={menu.node.filedWithParent
           ? undefined
           : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group,
-            props.chrome.hiddenWhenRemote.has(SessionsTreeModel.groupKeyOf(menu.node)))}
+            !props.chrome.shownWhenRemote.has(SessionsTreeModel.groupKeyOf(menu.node)))}
         onAction={(action) => props.chrome.request(menu.node, action)}
         onSwitchAccount={accounts => props.onSwitchAccount(menu.node.sessionId, accounts)}
         onClose={onClose}

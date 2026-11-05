@@ -47,7 +47,7 @@ interface ClientStateFields {
   sessionsView?: SessionsTabsView
   sessionFilters?: readonly SavedSessionsFilter[]
   sessionGroups?: readonly SessionGroupAssignment[]
-  sessionsHiddenWhenRemote?: readonly string[]
+  sessionsShownWhenRemote?: readonly string[]
   splitPins?: SplitPinsBySession
   newSessionAgent?: SessionAgentId
 }
@@ -229,18 +229,21 @@ export class ClientStateStore {
     return this.assignSessionGroup(toKey, group)
   }
 
-  /** The session keys whose rows leave the person's own sections while a remote computer has them attached. */
-  loadHiddenWhenRemote(): readonly string[] {
-    return structuredClone(this.documentOnDisk().sessionsHiddenWhenRemote ?? [])
+  /**
+   * The session keys whose rows stay in the person's own sections while a remote computer has them
+   * attached. Every other attached session is drawn under Remote connections only.
+   */
+  loadShownWhenRemote(): readonly string[] {
+    return structuredClone(this.documentOnDisk().sessionsShownWhenRemote ?? [])
   }
 
-  setHiddenWhenRemote(key: string, hidden: boolean): boolean {
-    if (!SessionsGroupsState.isSessionKey(key) || typeof hidden !== 'boolean')
-      throw new Error('Refusing to store an invalid Hidden when remote mark')
+  setShownWhenRemote(key: string, shown: boolean): boolean {
+    if (!SessionsGroupsState.isSessionKey(key) || typeof shown !== 'boolean')
+      throw new Error('Refusing to store an invalid Shown when remote mark')
     return this.write(
       {
         ...this.documentOnDisk(),
-        sessionsHiddenWhenRemote: SessionsGroupsState.withHiddenWhenRemote(this.loadHiddenWhenRemote(), key, hidden),
+        sessionsShownWhenRemote: SessionsGroupsState.withShownWhenRemote(this.loadShownWhenRemote(), key, shown),
       },
       { snapshotLayout: false },
     )
@@ -486,7 +489,7 @@ export class ClientStateStore {
       sessionFilters?: unknown
       sessionPins?: unknown
       sessionGroups?: unknown
-      sessionsHiddenWhenRemote?: unknown
+      sessionsShownWhenRemote?: unknown
       splitPins?: unknown
       newSessionAgent?: unknown
     }
@@ -502,8 +505,10 @@ export class ClientStateStore {
           ? SessionsPinsState.coerce(document.sessionPins, report).map((key) => ({ key, group: 'pinned' as const }))
           : SessionsGroupsState.coerce(document.sessionGroups, report),
       }),
-      ...(document.sessionsHiddenWhenRemote === undefined ? {} : {
-        sessionsHiddenWhenRemote: SessionsGroupsState.coerceHiddenWhenRemote(document.sessionsHiddenWhenRemote, report),
+      // The older opt-in `sessionsHiddenWhenRemote` is dropped on the next write: hiding is the
+      // default now, so every key it held is already hidden.
+      ...(document.sessionsShownWhenRemote === undefined ? {} : {
+        sessionsShownWhenRemote: SessionsGroupsState.coerceShownWhenRemote(document.sessionsShownWhenRemote, report),
       }),
       ...(document.sessionFilters === undefined ? {} : {
         sessionFilters: SessionsFilterState.coerceSaved(document.sessionFilters, report),

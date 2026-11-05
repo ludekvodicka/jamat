@@ -183,9 +183,12 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
    * drop the fork's own row.
    */
   'state:assign-session-group': (key: string, group: SessionGroup) => boolean
-  /** The session keys marked Hidden when remote, and ONE mark set or cleared, for the same reason as above. */
-  'state:load-hidden-when-remote': () => readonly string[]
-  'state:set-hidden-when-remote': (key: string, hidden: boolean) => boolean
+  /**
+   * The session keys taken out of the default Hidden when remote, and ONE such exception set or
+   * cleared, for the same reason as above.
+   */
+  'state:load-shown-when-remote': () => readonly string[]
+  'state:set-shown-when-remote': (key: string, shown: boolean) => boolean
   /**
    * The pinned inner split items of ONE session, outside the layout so that they survive a closed
    * tab, Reset Layout and a restart. Any workspace window may write: a session's panel lives in at
@@ -591,8 +594,8 @@ export const AppClientUiBridgeCallsConst = {
     saveSessionPins: 'state:save-session-pins',
     loadSessionGroups: 'state:load-session-groups',
     assignSessionGroup: 'state:assign-session-group',
-    loadHiddenWhenRemote: 'state:load-hidden-when-remote',
-    setHiddenWhenRemote: 'state:set-hidden-when-remote',
+    loadShownWhenRemote: 'state:load-shown-when-remote',
+    setShownWhenRemote: 'state:set-shown-when-remote',
     loadSplitPins: 'state:load-split-pins',
     saveSplitPins: 'state:save-split-pins',
     loadNewSessionAgent: 'state:load-new-session-agent',
@@ -1045,8 +1048,8 @@ export const AppClientUiChannelOwnersConst = {
   'state:save-session-pins': 'main',
   'state:load-session-groups': 'main',
   'state:assign-session-group': 'main',
-  'state:load-hidden-when-remote': 'main',
-  'state:set-hidden-when-remote': 'main',
+  'state:load-shown-when-remote': 'main',
+  'state:set-shown-when-remote': 'main',
   'state:load-split-pins': 'main',
   'state:save-split-pins': 'main',
   'state:load-new-session-agent': 'main',

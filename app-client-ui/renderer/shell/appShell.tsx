@@ -899,8 +899,8 @@ class AppShellComposition {
       loadGroupDefinitions: () => AppControl.value('sessionGroups.list', {}),
       loadGroups: () => window.appClient.state.loadSessionGroups(),
       assignGroup: (key, group) => window.appClient.state.assignSessionGroup(key, group),
-      loadHiddenWhenRemote: () => window.appClient.state.loadHiddenWhenRemote(),
-      setHiddenWhenRemote: (key, hidden) => window.appClient.state.setHiddenWhenRemote(key, hidden),
+      loadShownWhenRemote: () => window.appClient.state.loadShownWhenRemote(),
+      setShownWhenRemote: (key, shown) => window.appClient.state.setShownWhenRemote(key, shown),
       subscribeGroups: (onChanged) => window.appClient.onSessionGroupsChanged(onChanged),
     }
   }

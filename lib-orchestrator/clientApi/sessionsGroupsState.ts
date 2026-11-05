@@ -201,10 +201,11 @@ export class SessionsGroupsState {
   }
 
   /**
-   * The session keys marked Hidden when remote. Session keys only: the mark is offered on a session
-   * row alone, so a project or root key here was written by something this build does not know.
+   * The session keys a person took out of the default Hidden when remote, so they stay in their own
+   * sections while a remote computer has them attached. Session keys only: the mark is offered on a
+   * session row alone, so a project or root key here was written by something this build does not know.
    */
-  static isHiddenWhenRemoteList(value: unknown): value is readonly string[] {
+  static isShownWhenRemoteList(value: unknown): value is readonly string[] {
     if (!Array.isArray(value)) return false
     const keys = new Set<string>()
     for (const key of value) {
@@ -220,15 +221,15 @@ export class SessionsGroupsState {
       && value.length > SessionsGroupsState.sessionKeyPrefixConst.length
   }
 
-  static coerceHiddenWhenRemote(value: unknown, report: (message: string) => void): readonly string[] {
+  static coerceShownWhenRemote(value: unknown, report: (message: string) => void): readonly string[] {
     if (value === undefined) return []
-    if (SessionsGroupsState.isHiddenWhenRemoteList(value)) return structuredClone(value)
-    report('Stored Hidden when remote sessions are invalid; hiding none')
+    if (SessionsGroupsState.isShownWhenRemoteList(value)) return structuredClone(value)
+    report('Stored Shown when remote sessions are invalid; hiding every attached session')
     return []
   }
 
-  static withHiddenWhenRemote(keys: readonly string[], key: string, hidden: boolean): readonly string[] {
+  static withShownWhenRemote(keys: readonly string[], key: string, shown: boolean): readonly string[] {
     const others = keys.filter((held) => held !== key)
-    return hidden ? [...others, key] : others
+    return shown ? [...others, key] : others
   }
 }

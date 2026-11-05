@@ -7,28 +7,28 @@ import { useSessionsGroups } from './useSessionsGroups'
 describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
   afterEach(cleanup)
 
-  const hiddenPorts = () => ({
-    loadHiddenWhenRemote: async () => ({ ok: true as const, value: [] as readonly string[] }),
-    setHiddenWhenRemote: vi.fn(async () => ({ ok: true as const, value: true })),
+  const shownPorts = () => ({
+    loadShownWhenRemote: async () => ({ ok: true as const, value: [] as readonly string[] }),
+    setShownWhenRemote: vi.fn(async () => ({ ok: true as const, value: true })),
   })
 
-  it('reads and stores the Hidden when remote marks', async () => {
+  it('reads and stores the Shown when remote marks', async () => {
     const ports = {
       loadGroupDefinitions: async () => ({ ok: true as const, value: SessionsGroupsState.defaultsConst }),
       loadGroups: async () => ({ ok: true as const, value: [] }),
       assignGroup: async () => ({ ok: true as const, value: true }),
       subscribeGroups: () => () => {},
-      ...hiddenPorts(),
-      loadHiddenWhenRemote: async () => ({ ok: true as const, value: ['session:one'] }),
+      ...shownPorts(),
+      loadShownWhenRemote: async () => ({ ok: true as const, value: ['session:one'] }),
     }
     const { result } = renderHook(() => useSessionsGroups(ports))
     await waitFor(() => expect(result.current.ready).toBe(true))
-    expect([...result.current.hiddenWhenRemote]).toEqual(['session:one'])
-    act(() => result.current.hideWhenRemote('session:two', true))
-    await waitFor(() => expect([...result.current.hiddenWhenRemote]).toEqual(['session:one', 'session:two']))
-    expect(ports.setHiddenWhenRemote).toHaveBeenCalledWith('session:two', true)
-    act(() => result.current.hideWhenRemote('session:one', false))
-    await waitFor(() => expect([...result.current.hiddenWhenRemote]).toEqual(['session:two']))
+    expect([...result.current.shownWhenRemote]).toEqual(['session:one'])
+    act(() => result.current.showWhenRemote('session:two', true))
+    await waitFor(() => expect([...result.current.shownWhenRemote]).toEqual(['session:one', 'session:two']))
+    expect(ports.setShownWhenRemote).toHaveBeenCalledWith('session:two', true)
+    act(() => result.current.showWhenRemote('session:one', false))
+    await waitFor(() => expect([...result.current.shownWhenRemote]).toEqual(['session:two']))
   })
 
   it('refuses changes after a failed initial read and restores saved groups on retry', async () => {
@@ -39,7 +39,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
         .mockResolvedValue({ ok: true, value: [{ key: 'category:work', group: 'pinned' as const }] }),
       assignGroup: vi.fn(async () => ({ ok: true as const, value: true })),
       subscribeGroups: () => () => {},
-      ...hiddenPorts(),
+      ...shownPorts(),
     }
     const { result } = renderHook(() => useSessionsGroups(ports))
     await waitFor(() => expect(result.current.error).toContain('Offline'))
@@ -58,7 +58,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
       loadGroups: async () => ({ ok: true as const, value: [{ key: 'category:work', group: 'pinned' as const }] }),
       assignGroup: vi.fn(() => new Promise<IpcResult<boolean>>((resolve) => { settle = resolve })),
       subscribeGroups: () => () => {},
-      ...hiddenPorts(),
+      ...shownPorts(),
     }
     const { result } = renderHook(() => useSessionsGroups(ports))
     await waitFor(() => expect(result.current.ready).toBe(true))
@@ -101,7 +101,7 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsGroups', () => {
         notify = onChanged
         return () => {}
       },
-      ...hiddenPorts(),
+      ...shownPorts(),
     }
     const { result } = renderHook(() => useSessionsGroups(ports))
     await waitFor(() => expect(result.current.ready).toBe(true))

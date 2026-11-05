@@ -303,24 +303,24 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
     }
   })
 
-  it('takes a session marked Hidden when remote out of the local tree only while it is attached', () => {
+  it('takes an attached session out of the local tree unless it is marked Shown when remote', () => {
     const run: SessionInfo = { ...RemoteSessionsTreeFixtures.session('marked-install', 'Setup'),
       script: { parentId: 'marked', phase: 'before', scriptId: 'setup' } }
     const local = RemoteSessionsTreeFixtures.snapshot([
       RemoteSessionsTreeFixtures.session('marked', 'Marked'),
       run,
       RemoteSessionsTreeFixtures.session('attached', 'Attached'),
-      RemoteSessionsTreeFixtures.session('marked-idle', 'Marked, not attached'),
+      RemoteSessionsTreeFixtures.session('idle', 'Not attached'),
     ])
     const remote = RemoteSessionsTreeFixtures.remote([], [
       RemoteSessionsTreeFixtures.inbound('connection-a', 'computer-a', 'endpoint-a', ['marked', 'attached']),
     ])
-    const hidden = new Set(['session:marked', 'session:marked-idle'])
+    const shown = new Set(['session:attached'])
 
-    expect(RemoteSessionsTreeModel.locallyShown(local, remote, hidden).sessions.map((session) => session.sessionId))
-      .toEqual(['attached', 'marked-idle'])
-    expect(RemoteSessionsTreeModel.locallyShown(local, null, hidden)).toBe(local)
-    expect(RemoteSessionsTreeModel.locallyShown(local, remote, new Set())).toBe(local)
+    expect(RemoteSessionsTreeModel.locallyShown(local, remote, shown).sessions.map((session) => session.sessionId))
+      .toEqual(['attached', 'idle'])
+    expect(RemoteSessionsTreeModel.locallyShown(local, null, new Set())).toBe(local)
+    expect(RemoteSessionsTreeModel.locallyShown(local, remote, new Set(['session:marked', 'session:attached']))).toBe(local)
     const inbound = RemoteSessionsTreeModel.build(remote, local, RemoteSessionsTreeFixtures.view(), new Set(), new Map())
     expect(RemoteSessionsTreeFixtures.sessionIds(inbound.inbound[0]?.endpoints[0]?.tree.nodes))
       .toEqual(expect.arrayContaining(['marked', 'marked-install', 'attached']))

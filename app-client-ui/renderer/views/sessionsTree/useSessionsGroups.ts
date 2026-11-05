@@ -13,8 +13,8 @@ export interface SessionsGroupsPorts {
   loadGroupDefinitions(): Promise<IpcResult<readonly SessionGroupDefinition[]>>
   loadGroups(): Promise<IpcResult<readonly SessionGroupAssignment[]>>
   assignGroup(key: string, group: SessionGroup): Promise<IpcResult<boolean>>
-  loadHiddenWhenRemote(): Promise<IpcResult<readonly string[]>>
-  setHiddenWhenRemote(key: string, hidden: boolean): Promise<IpcResult<boolean>>
+  loadShownWhenRemote(): Promise<IpcResult<readonly string[]>>
+  setShownWhenRemote(key: string, shown: boolean): Promise<IpcResult<boolean>>
   /**
    * Somebody other than this tree wrote an assignment or changed the sections themselves - a fork
    * taking its parent's group, written in the main process, or a save in the settings window. The
@@ -29,7 +29,7 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
     () => SessionsGroupsState.defaultsConst,
   )
   const [groups, setGroups] = useState<ReadonlyMap<string, SessionGroup>>(() => new Map())
-  const [hiddenWhenRemote, setHiddenWhenRemote] = useState<ReadonlySet<string>>(() => new Set())
+  const [shownWhenRemote, setShownWhenRemote] = useState<ReadonlySet<string>>(() => new Set())
   const [ready, setReady] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -45,11 +45,11 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
   useEffect(() => {
     let disposed = false
     setReady(false)
-    void Promise.all([ports.loadGroupDefinitions(), ports.loadGroups(), ports.loadHiddenWhenRemote()]).then(([known, assigned, hidden]) => {
+    void Promise.all([ports.loadGroupDefinitions(), ports.loadGroups(), ports.loadShownWhenRemote()]).then(([known, assigned, shown]) => {
       if (disposed) return
       if (!known.ok) throw new Error(known.error)
       if (!assigned.ok) throw new Error(assigned.error)
-      if (!hidden.ok) throw new Error(hidden.error)
+      if (!shown.ok) throw new Error(shown.error)
       /*
        * An assignment naming a section that no longer exists is dropped HERE as well as by whoever
        * removed the section. The two files are written separately, so a tree that trusted the map
@@ -59,7 +59,7 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
       setDefinitions(known.value)
       setGroups(new Map(SessionsGroupsState.pruned(assigned.value, known.value)
         .map(({ key, group }) => [key, group])))
-      setHiddenWhenRemote(new Set(hidden.value))
+      setShownWhenRemote(new Set(shown.value))
       setReady(true)
       setError(null)
     }).catch((thrown: unknown) => {
@@ -96,10 +96,10 @@ export function useSessionsGroups(ports: SessionsGroupsPorts) {
     store(() => ports.assignGroup(key, group), () => setGroups(next))
   }, [ports, groups, store])
 
-  const hideWhenRemote = useCallback((key: string, hidden: boolean): void => {
-    const next = new Set(SessionsGroupsState.withHiddenWhenRemote([...hiddenWhenRemote], key, hidden))
-    store(() => ports.setHiddenWhenRemote(key, hidden), () => setHiddenWhenRemote(next))
-  }, [ports, hiddenWhenRemote, store])
+  const showWhenRemote = useCallback((key: string, shown: boolean): void => {
+    const next = new Set(SessionsGroupsState.withShownWhenRemote([...shownWhenRemote], key, shown))
+    store(() => ports.setShownWhenRemote(key, shown), () => setShownWhenRemote(next))
+  }, [ports, shownWhenRemote, store])
 
-  return { definitions, groups, hiddenWhenRemote, ready, saving, error, assign, hideWhenRemote, reload }
+  return { definitions, groups, shownWhenRemote, ready, saving, error, assign, showWhenRemote, reload }
 }

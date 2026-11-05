@@ -26,8 +26,8 @@ export class ServiceShellIpc extends ElectronServiceIpcBase<typeof ServiceShellI
     'state:save-session-pins': true,
     'state:load-session-groups': true,
     'state:assign-session-group': true,
-    'state:load-hidden-when-remote': true,
-    'state:set-hidden-when-remote': true,
+    'state:load-shown-when-remote': true,
+    'state:set-shown-when-remote': true,
     'state:load-split-pins': true,
     'state:save-split-pins': true,
     'state:load-new-session-agent': true,
@@ -104,14 +104,14 @@ export class ServiceShellIpc extends ElectronServiceIpcBase<typeof ServiceShellI
         throw new Error('Only the main window can save session groups')
       return this.store.assignSessionGroup(key, group)
     })
-    this.register('state:load-hidden-when-remote', (event) => {
+    this.register('state:load-shown-when-remote', (event) => {
       this.requireWindowId(this.sender(event))
-      return this.store.loadHiddenWhenRemote()
+      return this.store.loadShownWhenRemote()
     })
-    this.register('state:set-hidden-when-remote', (event, key, hidden) => {
+    this.register('state:set-shown-when-remote', (event, key, shown) => {
       if (this.requireWindowId(this.sender(event)) !== 'main')
-        throw new Error('Only the main window can save Hidden when remote marks')
-      return this.store.setHiddenWhenRemote(key, hidden)
+        throw new Error('Only the main window can save Shown when remote marks')
+      return this.store.setShownWhenRemote(key, shown)
     })
     this.register('state:load-split-pins', (event, sessionId) => {
       this.requireWindowId(this.sender(event))

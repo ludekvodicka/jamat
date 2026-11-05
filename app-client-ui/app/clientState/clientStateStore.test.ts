@@ -143,18 +143,27 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     ])
   })
 
-  it('stores Hidden when remote marks of sessions only and drops a damaged list', () => {
+  it('stores Shown when remote marks of sessions only and drops a damaged list', () => {
     const { store, stateFile, reopen } = fixture()
-    expect(store.loadHiddenWhenRemote()).toEqual([])
-    expect(store.setHiddenWhenRemote('session:one', true)).toBe(true)
-    expect(store.setHiddenWhenRemote('session:two', true)).toBe(true)
-    expect(store.setHiddenWhenRemote('session:one', true)).toBe(true)
-    expect(reopen().loadHiddenWhenRemote()).toEqual(['session:two', 'session:one'])
-    expect(store.setHiddenWhenRemote('session:two', false)).toBe(true)
-    expect(reopen().loadHiddenWhenRemote()).toEqual(['session:one'])
-    expect(() => store.setHiddenWhenRemote('category:nodejs', true)).toThrow('Hidden when remote')
-    writeFileSync(stateFile, JSON.stringify({ schemaVersion: 2, sessionsHiddenWhenRemote: ['category:nodejs'] }), 'utf8')
-    expect(reopen().loadHiddenWhenRemote()).toEqual([])
+    expect(store.loadShownWhenRemote()).toEqual([])
+    expect(store.setShownWhenRemote('session:one', true)).toBe(true)
+    expect(store.setShownWhenRemote('session:two', true)).toBe(true)
+    expect(store.setShownWhenRemote('session:one', true)).toBe(true)
+    expect(reopen().loadShownWhenRemote()).toEqual(['session:two', 'session:one'])
+    expect(store.setShownWhenRemote('session:two', false)).toBe(true)
+    expect(reopen().loadShownWhenRemote()).toEqual(['session:one'])
+    expect(() => store.setShownWhenRemote('category:nodejs', true)).toThrow('Shown when remote')
+    writeFileSync(stateFile, JSON.stringify({ schemaVersion: 2, sessionsShownWhenRemote: ['category:nodejs'] }), 'utf8')
+    expect(reopen().loadShownWhenRemote()).toEqual([])
+  })
+
+  it('drops the older opt-in Hidden when remote list, whose keys the default already hides', () => {
+    const { stateFile, reopen } = fixture()
+    writeFileSync(stateFile, JSON.stringify({ schemaVersion: 2, sessionsHiddenWhenRemote: ['session:one'] }), 'utf8')
+    const store = reopen()
+    expect(store.loadShownWhenRemote()).toEqual([])
+    expect(store.setShownWhenRemote('session:two', true)).toBe(true)
+    expect(JSON.parse(readFileSync(stateFile, 'utf8'))).not.toHaveProperty('sessionsHiddenWhenRemote')
   })
 
   it('keeps the pinned split items of each session through a restart and removes an emptied one', () => {

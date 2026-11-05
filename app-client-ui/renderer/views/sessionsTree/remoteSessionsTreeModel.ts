@@ -175,18 +175,18 @@ export class RemoteSessionsTreeModel {
   }
 
   /**
-   * The local snapshot the person's own sections draw. A session marked Hidden when remote leaves
-   * them while an inbound connection has it attached, so it is drawn under Remote connections only;
-   * its script runs go with it, the way `shown` brings them there.
+   * The local snapshot the person's own sections draw. A session an inbound connection has attached
+   * leaves them by default, so it is drawn under Remote connections only, unless the person marked it
+   * Shown when remote; its script runs go with it, the way `shown` brings them there.
    */
   static locallyShown(
     local: SessionsSnapshot,
     remote: RemoteConnectionsSnapshot | null,
-    hiddenWhenRemote: ReadonlySet<string>,
+    shownWhenRemote: ReadonlySet<string>,
   ): SessionsSnapshot {
-    if (remote === null || hiddenWhenRemote.size === 0) return local
+    if (remote === null) return local
     const hidden = new Set(remote.inbound.flatMap((entry) => entry.activeSessionIds).filter((sessionId) =>
-      hiddenWhenRemote.has(SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }))))
+      !shownWhenRemote.has(SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId }))))
     if (hidden.size === 0) return local
     return { ...local, sessions: local.sessions.filter((session) => !hidden.has(session.sessionId)
       && !(session.script !== undefined && hidden.has(session.script.parentId))) }

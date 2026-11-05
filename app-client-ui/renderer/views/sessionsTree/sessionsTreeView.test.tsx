@@ -176,7 +176,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(container.querySelector('section[aria-label="Sessions"] [data-session="one"]')).not.toBeNull()
   })
 
-  it('draws a session marked Hidden when remote only under Remote connections while it is attached', async () => {
+  it('draws an attached session only under Remote connections until it is unmarked Hidden when remote', async () => {
     const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
       remoteSnapshot([], [inboundConnection(['s-working'])]))
     const own = container.querySelector<HTMLElement>('.jamat-sessions__default-group')!
@@ -184,20 +184,21 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
       return screen.getByRole('menuitemcheckbox', { name: 'Hidden when remote' })
     }
-    expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(2)
-
-    fireEvent.contextMenu(rowOf(own, 's-working'))
-    expect(toggle()).toHaveAttribute('aria-checked', 'false')
-    fireEvent.click(toggle())
-    await waitFor(() => expect(own.querySelector('[data-session="s-working"]')).toBeNull())
+    expect(own.querySelector('[data-session="s-working"]')).toBeNull()
     expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(1)
-    expect(ports.hiddenWhenRemote).toEqual(['session:s-working'])
 
     fireEvent.contextMenu(rowOf(container, 's-working'))
     expect(toggle()).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(toggle())
     await waitFor(() => expect(own.querySelector('[data-session="s-working"]')).not.toBeNull())
-    expect(ports.hiddenWhenRemote).toEqual([])
+    expect(container.querySelectorAll('[data-session="s-working"]')).toHaveLength(2)
+    expect(ports.shownWhenRemote).toEqual(['session:s-working'])
+
+    fireEvent.contextMenu(rowOf(own, 's-working'))
+    expect(toggle()).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle())
+    await waitFor(() => expect(own.querySelector('[data-session="s-working"]')).toBeNull())
+    expect(ports.shownWhenRemote).toEqual([])
   })
 
   it('offers Hidden when remote on a session row only', async () => {
@@ -321,14 +322,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       return () => {}
     }
 
-    hiddenWhenRemote: readonly string[] = []
+    shownWhenRemote: readonly string[] = []
 
-    loadHiddenWhenRemote(): Promise<IpcResult<readonly string[]>> {
-      return Promise.resolve({ ok: true, value: this.hiddenWhenRemote })
+    loadShownWhenRemote(): Promise<IpcResult<readonly string[]>> {
+      return Promise.resolve({ ok: true, value: this.shownWhenRemote })
     }
 
-    setHiddenWhenRemote(key: string, hidden: boolean): Promise<IpcResult<boolean>> {
-      this.hiddenWhenRemote = SessionsGroupsState.withHiddenWhenRemote(this.hiddenWhenRemote, key, hidden)
+    setShownWhenRemote(key: string, shown: boolean): Promise<IpcResult<boolean>> {
+      this.shownWhenRemote = SessionsGroupsState.withShownWhenRemote(this.shownWhenRemote, key, shown)
       return Promise.resolve({ ok: true, value: true })
     }
     filtersAnswer: IpcResult<boolean> = { ok: true, value: true }

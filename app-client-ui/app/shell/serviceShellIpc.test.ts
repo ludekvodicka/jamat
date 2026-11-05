@@ -124,14 +124,14 @@ describe('app-client-ui/app/shell/serviceShellIpc', () => {
     expect(store.loadSessionGroups()).toEqual(groups)
   })
 
-  it('sets Hidden when remote marks for main alone and refuses a key that names no session', async () => {
+  it('sets Shown when remote marks for main alone and refuses a key that names no session', async () => {
     service.initialize()
-    expect(await invoke('state:set-hidden-when-remote', 'session:one', true)).toEqual({ ok: true, value: true })
-    expect(await invokeFrom(holderSender, 'state:load-hidden-when-remote')).toEqual({ ok: true, value: ['session:one'] })
-    expect(await invokeFrom(holderSender, 'state:set-hidden-when-remote', 'session:two', true)).toMatchObject({ ok: false })
-    expect(await invokeFrom(unknownSender, 'state:load-hidden-when-remote')).toMatchObject({ ok: false })
-    expect(await invoke('state:set-hidden-when-remote', 'category:nodejs', true)).toMatchObject({ ok: false })
-    expect(store.loadHiddenWhenRemote()).toEqual(['session:one'])
+    expect(await invoke('state:set-shown-when-remote', 'session:one', true)).toEqual({ ok: true, value: true })
+    expect(await invokeFrom(holderSender, 'state:load-shown-when-remote')).toEqual({ ok: true, value: ['session:one'] })
+    expect(await invokeFrom(holderSender, 'state:set-shown-when-remote', 'session:two', true)).toMatchObject({ ok: false })
+    expect(await invokeFrom(unknownSender, 'state:load-shown-when-remote')).toMatchObject({ ok: false })
+    expect(await invoke('state:set-shown-when-remote', 'category:nodejs', true)).toMatchObject({ ok: false })
+    expect(store.loadShownWhenRemote()).toEqual(['session:one'])
   })
 
   it('stores split pins from any workspace window and refuses an unknown sender or a bad list', async () => {
