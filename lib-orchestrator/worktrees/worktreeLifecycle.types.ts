@@ -112,7 +112,7 @@ export interface WorktreeLifecycleDeps {
   actionsOf(record: SessionRecord): SessionActionsInfo
 }
 
-export type WorktreeDueChange = { kind: 'clean-worktree' | 'svn-action-due'; sessionId: string }
+export type WorktreeDueChange = { kind: 'clean-worktree' | 'svn-action-due' | 'retry-removal'; sessionId: string }
 
 export interface WorktreeActions {
   resolveConflict(sessionId: string, request: SvnConflictResolveRequest & { by: SvnConflictActor }): Promise<SessionsOpResult<SessionConflictResolved>>

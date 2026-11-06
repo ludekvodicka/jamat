@@ -18,7 +18,10 @@ import { ScreenTail } from './screenTail'
  * finished turn; it holds here for the same reason and is now one rule rather than two. It costs
  * nothing measurable: every working fixture carries the row on screen as well, and the one live
  * recording, `codex-live-working.json`, carries it ONLY there - the ring had already churned past
- * it, so the raw read was not even holding the live case.
+ * it, so the raw read was not even holding the live case. The one thing read from the ring is the
+ * terminal title, which is state rather than history: only the LAST title the tail sets counts, a
+ * finished turn sets a title without the spinner, and the monitor ages this `raw` evidence by output,
+ * so a tail that merely still holds a spinner title settles like a dead Claude row (2026-11-05, I57).
  *
  * **Absence of a recognized status is still `unknown`, but absence is no longer all there is**
  * *(2026-08-20)*.
@@ -82,6 +85,16 @@ export class AgentWorkInspectorCodex {
    * in it reads as the finished turn it is.
    */
   private static readonly turnEndedConst = /workedfor(?:\d+[hms])+(?:•\d{1,2}:\d{2})?─*›[^›]*$/
+  /** Every terminal title (OSC 0 or 2) in a tail, ended by BEL or ST. */
+  private static readonly titleConst = /\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+  /**
+   * A title Codex 0.166 animates with a braille spinner while a turn runs (`⠹ Run background sleep
+   * commands | ...`) and sets without one when the turn ends. Recorded in
+   * `codex-live-streaming-message.json`, a turn streaming a message with no status row on screen, and
+   * `codex-live-streaming-background-count.json`, where only the bare terminal count is left. That
+   * count is deliberately not read: nothing recorded shows what it means once a turn has ended.
+   */
+  private static readonly spinnerTitleConst = /^[\u2800-\u28ff]\s/
   /**
    * Codex's approval prompt. The array was empty until 2026-08-20 for the reason this file exists
    * to enforce: no frame of one had ever been captured, and a pattern written from memory is a
@@ -107,8 +120,17 @@ export class AgentWorkInspectorCodex {
     /(?:^|\n)\s*[›❯>]\s*\d+\.[^\n]*\n(?:[^\n]*\n)*?\s*\d+\.[^\n]*\n(?:[^\n]*\n)*?\s*press\s*enter\s*to\s*continue\s*$/i
   // codex-queued-question-compacting.json: queued input alone is not a question, so require
   // the positive question count and answer shortcut together in the current status region.
+  // codex-live-async-question.json: Codex 0.166 answers with `shift+←` instead of `alt + ↑`.
   private static readonly queuedQuestionScreenConst =
-    /(?:^|\n)\s*[◦•]\s*queued\s*follow-up\s*inputs\s*\?\s*[1-9]\d*\s*questions?\s*alt\s*\+\s*↑\s*to\s*answer\s*(?:\n|$)/i
+    /(?:^|\n)\s*[◦•]\s*queued\s*follow-up\s*inputs\s*\?\s*[1-9]\d*\s*questions?\s*(?:alt\s*\+\s*↑|shift\s*\+\s*←)\s*to\s*answer\s*(?:\n|$)/i
+  /**
+   * The same block in the sixteen-row window. Under 0.166's three-row footer, a question that
+   * `request_user_input_async` raised in a running turn starts above the eight-row window
+   * (`codex-live-async-question.json`; Mirabia 137's question reached nobody for 37 min, F14). Only
+   * blank rows may separate it from the current box and its footer, so a block in history never counts.
+   */
+  private static readonly queuedQuestionWideScreenConst =
+    /(?:^|\n)\s*[◦•]\s*queued\s*follow-up\s*inputs\s*\?\s*[1-9]\d*\s*questions?\s*(?:alt\s*\+\s*↑|shift\s*\+\s*←)\s*to\s*answer[ \t]*\n(?:[ \t]*\n)*[ \t]*[›❯>][^\n]*(?:\n(?![ \t]*[›❯>◦•])[^\n]*)*$/i
 
   static inspect(frame: AgentWorkFrame): AgentWorkInspection {
     const prompt: AgentWorkEvidence[] = []
@@ -137,6 +159,14 @@ export class AgentWorkInspectorCodex {
       return {
         hint: 'waiting',
         evidence: [{ source: 'screen', signal: 'questionPrompt', match: question.trim() }],
+      }
+    const wideQuestionScreen = ScreenTail.stripAnsiLower(frame.wideScreenTail)
+    const wideQuestion = wideQuestionScreen.endsWith(ScreenTail.stripAnsiLower(frame.screenTail))
+      ? wideQuestionScreen.match(AgentWorkInspectorCodex.queuedQuestionWideScreenConst)?.[0] : undefined
+    if (wideQuestion)
+      return {
+        hint: 'waiting',
+        evidence: [{ source: 'wide-screen', signal: 'questionPrompt', match: wideQuestion.slice(0, wideQuestion.indexOf('answer') + 'answer'.length).trim() }],
       }
 
     const foreground = ScreenTail.stripAnsiLower(frame.screenTail)
@@ -187,16 +217,24 @@ export class AgentWorkInspectorCodex {
 
     // After the background and working rows, never before them: Codex draws the input box under a
     // live status, so the placeholder remains on screen while it is working.
-    const emptyPrompt = ScreenTail.normalizeTty(frame.screenTail)
-      .match(AgentWorkInspectorCodex.emptyPromptConst)?.[0]
-    if (emptyPrompt)
-      return { hint: 'idle', evidence: [{ source: 'screen', signal: 'emptyPrompt', match: emptyPrompt }] }
     // A finished turn whose box holds a draft: the 072 worker sat here for hours as `unknown`, and its
     // Finish waited on it (Finish 072). A delivery still reads the box itself and waits on a draft.
     const ended = ScreenTail.normalizeTty(frame.wideScreenTail).match(AgentWorkInspectorCodex.turnEndedConst)?.[0]
     if (ended)
       return { hint: 'idle', evidence: [{ source: 'wide-screen', signal: 'turnEnded', match: ended.slice(0, ended.indexOf('›') + 1) }] }
+    const title = AgentWorkInspectorCodex.titleOf(frame.rawTail)
+    if (title !== null && AgentWorkInspectorCodex.spinnerTitleConst.test(title))
+      return { hint: 'working', evidence: [{ source: 'raw', signal: 'titleSpinner', match: title }] }
+    const emptyPrompt = ScreenTail.normalizeTty(frame.screenTail)
+      .match(AgentWorkInspectorCodex.emptyPromptConst)?.[0]
+    if (emptyPrompt)
+      return { hint: 'idle', evidence: [{ source: 'screen', signal: 'emptyPrompt', match: emptyPrompt }] }
     return { hint: 'unknown', evidence: [] }
+  }
+
+  /** The terminal's current title as the tail last set it; null when the tail sets none. */
+  private static titleOf(rawTail: string): string | null {
+    return [...rawTail.matchAll(AgentWorkInspectorCodex.titleConst)].at(-1)?.[1] ?? null
   }
 
   /** Screen first, ring last: a prompt is on the screen long after the ring has churned past it. */

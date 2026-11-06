@@ -186,7 +186,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       />,
     )
 
-    expect(await screen.findByRole('button', { name: 'Diff' })).toHaveAttribute('aria-pressed', 'true')
+    expect(await screen.findByRole('button', { name: 'View as Diff' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText('Diff against')).toHaveValue(
       JSON.stringify(['git-head', 'HEAD', 'checkpoint']),
     ))
@@ -210,8 +210,9 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       />,
     )
 
-    await screen.findByRole('button', { name: 'Raw' })
+    await screen.findByRole('button', { name: 'Get document ▾' })
     expect(screen.queryByLabelText('Diff against')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^View as/ })).toBeNull()
   })
 
   it('keeps line wrapping in its split item and draws the item it is handed', async () => {
@@ -259,9 +260,9 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     )
 
     const view = render(pane(3))
-    await screen.findByRole('button', { name: 'Raw' })
+    await screen.findByRole('button', { name: 'Get document ▾' })
     expect(fileViewer.restore).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy path' })).toBeNull()
 
     view.rerender(pane(4))

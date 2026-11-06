@@ -441,6 +441,25 @@ export interface SessionConflictResolved {
   left: number
 }
 
+/**
+ * One option for several conflicted paths in one call (`sessions.resolveConflicts`): the listed
+ * paths, or `all` open paths no Jamat rule covers. Every path is checked before the first is settled.
+ */
+export interface SvnConflictsResolveRequest {
+  paths: readonly string[] | 'all'
+  /** Applies to every listed path; `all` takes each entry's own kind. */
+  kind?: SvnConflictKind
+  option: SvnConflictOption
+  requestedBy: 'window' | 'cli' | 'peer'
+}
+
+/** The paths one `sessions.resolveConflicts` call settled, in order, and how many are still open. */
+export interface SessionConflictsResolved {
+  sessionId: string
+  settled: { path: string; kind: SvnConflictKind; state: SvnConflictState }[]
+  left: number
+}
+
 export interface SessionSvnConflictOptionInfo {
   id: SvnConflictOption
   /** "Keep both", composed by the library. */

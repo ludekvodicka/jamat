@@ -1,0 +1,25 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "idle"
+  },
+  "provenance": {
+    "origin": "captured from an isolated AppJamatV3 Host by a disposable probe (.aidocs/temp/2026-11-05-9de2a70e/probeCodexWait.ts), the same runtime.inspect view the work-state monitor reads",
+    "case": "a finished 0.166 turn whose `Start-Sleep -Seconds 150` still runs as a Codex background terminal: the same bare `1 background terminal running · /ps to view · /stop to close` row a streaming turn leaves, with a title set without the spinner",
+    "capture": "captured 77 s after task_complete (rollout: task_started 15:12:16.7, exec_command with yield 1000 ms at 15:12:28.2, task_complete 15:12:49.0 UTC); outputSeq did not move in the last four captures. It is why the bare count is not read as work (second review of I57, 2026-11-05). Sanitized: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.166.0",
+    "capturedAt": "2026-11-05",
+    "cols": 160,
+    "rows": 45
+  },
+  "frame": {
+    "rawTail": "38;1H◦\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[22m\u001b[?2026l\u001b]0;⠼ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠴ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠦ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠧ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[2m\u001b[38;13H1\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[22m\u001b[?2026l\u001b]0;⠇ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠏ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[38;1H•\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b]0;⠋ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠙ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠹ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠸ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠼ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b]0;⠴ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[2m\u001b[38;1H◦\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[22m\u001b[?2026l\u001b]0;⠦ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[2m\u001b[20;1H• \u001b[22mstarted\u001b[38;1H\u001b[K\u001b[2m\u001b[39;3H1\u001b[1Cbackground terminal running · /ps to view · /stop to close\u001b[22m\u001b[K\u001b[42;3H\u001b]0;⠧ Start background sleep | PROJECT\u0007\u001b[?25h\u001b]0;⠇ Start background sleep | PROJECT\u0007\u001b]0;⠏ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b]0;⠋ Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b]0;Start background sleep | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[2m\u001b[22;1H  Worked for 32s • 16:12                                                                                                                                        \u001b[42;3H\u001b[?25h",
+    "screenTail": "\n\u001b[2m  1 background terminal running · /ps to view · /stop to close\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Start background sleep\n  ← for agents · ? for shortcuts",
+    "wideScreenTail": "\n\n\n\n\n\n\n\n\n\u001b[2m  1 background terminal running · /ps to view · /stop to close\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Start background sleep\n  ← for agents · ? for shortcuts",
+    "screenStyled": true
+  }
+}

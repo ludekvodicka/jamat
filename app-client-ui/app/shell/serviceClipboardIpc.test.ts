@@ -7,6 +7,7 @@ import { ServiceClipboardIpc } from './serviceClipboardIpc'
 const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
   written: [] as string[],
+  rich: [] as { text: string; html: string }[],
 }))
 
 vi.mock('electron', () => ({
@@ -17,6 +18,8 @@ vi.mock('electron', () => ({
   },
   clipboard: {
     writeText: (text: string) => { electronMock.written.push(text) },
+    write: (data: { text: string; html: string }) => { electronMock.rich.push(data) },
+    readText: () => electronMock.rich.at(-1)?.text ?? '',
   },
 }))
 
@@ -26,6 +29,7 @@ describe('app-client-ui/app/shell/serviceClipboardIpc', () => {
   beforeEach(() => {
     electronMock.handlers.clear()
     electronMock.written.length = 0
+    electronMock.rich.length = 0
     service = bindService(new ServiceClipboardIpc())
   })
 
@@ -66,5 +70,13 @@ describe('app-client-ui/app/shell/serviceClipboardIpc', () => {
     await write('')
 
     expect(electronMock.written).toEqual([''])
+  })
+
+  it('writes text and HTML as one entry and confirms it by reading the text back', async () => {
+    service.initialize()
+    const handler = electronMock.handlers.get('clipboard:write-rich' satisfies keyof AppClientUiIpcInvokeMap)!
+
+    expect(await handler({ sender: {} }, '# Title', '<h1>Title</h1>')).toEqual({ ok: true, value: true })
+    expect(electronMock.rich).toEqual([{ text: '# Title', html: '<h1>Title</h1>' }])
   })
 })

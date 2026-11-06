@@ -33,7 +33,7 @@ import { SvnConflictIdentity } from '../conflicts/svnConflictIdentity'
 import { SvnResolverLauncher,type SvnResolverPort } from '../conflicts/svnResolverLauncher'
 import { SvnActionStages } from '../finish/svnActionStages'
 import type { MainCopyUpdated, WorktreeEnded } from '../finish/worktreeFinish.types'
-import { type WorktreeResultsPort } from '../results/worktreeResultsStore'
+import { type WorktreeResultsPort, WorktreeResultsStore } from '../results/worktreeResultsStore'
 
 import type { SvnActionFlowDeps,SvnActionPort,SvnActionPorts } from '../finish/svnActionFlow'
 import { WorktreeLeaseHeld, type WorktreeLease } from '../worktreeLease'
@@ -631,7 +631,7 @@ private async recordUpdate(parent: SessionRecord, action: SessionRecordSvnAction
       const proof = await this.svn.landingProof(action.root, revisions)
       return proof.ok ? proof.value : { holds: false, reason: proof.detail }
     }, { parentId: parent.sessionId, runs: MainCopyUpdate.runsOf(this.records.get(parent.sessionId) ?? parent, action),
-      lines: [LandedRows.savedOf(action.updateProtection)].flatMap((saved) => saved === null ? [] : [`   main copy update: ${saved}`]) })
+      lines: [LandedRows.savedOf(action.updateProtection)].flatMap((saved) => saved === null ? [] : [`${WorktreeResultsStore.updateLinePrefixConst}${saved}`]) })
     const written = await this.updateRecord(parent.sessionId, (latest) => {
       if (latest.svnAction?.actionId !== action.actionId) return null
       const next: SessionRecord = { ...latest }
@@ -642,7 +642,9 @@ private async recordUpdate(parent: SessionRecord, action: SessionRecordSvnAction
     })
     if (!written) return
     this.changed()
-    if (parent.retiredWorktree !== undefined) this.mainCopyUpdated({ sessionId: parent.sessionId, title: parent.title, mainCopy: action.root,
+    // A Finish whose removal Windows refused has landed as well; its UPDATE runs before the worktree goes (J8).
+    if (parent.retiredWorktree !== undefined || parent.worktreeLifecycle?.wait?.kind === 'removal-blocked')
+      this.mainCopyUpdated({ sessionId: parent.sessionId, title: parent.title, mainCopy: action.root,
       revision: revision.value, by, log: (gained.find((result) => result.sessionId === parent.sessionId) ?? gained[0])?.logs[0]?.path ?? null })
     this.landedDue(action.root)
     if (parent.retiredWorktree !== undefined && (parent.retiredWorktree.landed?.length ?? 0) === 0)
@@ -702,7 +704,8 @@ private static listed(what: string, paths: readonly string[]): string {
       case 'updating': case 'cleaning': case 'resolving': case 'diffing':
         if (SvnResolverLauncher.overdue(action, this.now())) { await this.resolverOverdue(parent, action); return true }
         if (!SvnActionStages.launchLost(action) && (action.retryAt === undefined || this.now() < action.retryAt)) return false
-        await this.launch(parent, { ...action, retryAt: undefined }); return true
+        // A launch the client lost begins again now; its step showed the stopped client's start (I41, Mirabia 118).
+        await this.launch(parent, { ...action, retryAt: undefined, ...SvnActionStages.launchLost(action) ? { stageAt: this.now() } : {} }); return true
       case 'changes': case 'reviewing': case 'stopping': case 'evidence': case 'fixing': case 'removing': case 'committing': case 'checks': case 'merging':
         throw new Error('Finish stages belong to FinishDriver')
       default: throw new Error('Unknown UPDATE stage')

@@ -40,6 +40,7 @@ export class CommitStep {
     commands: Pick<import('../worktreeSvnCommands').WorktreeSvnCommands, 'lease' | 'verify'>
     svn: Pick<SvnWorktreeManager, 'commitHashes' | 'unprepareCommit' | 'assembly'>
     busyReason: (sessionId: string) => string | null
+    reading: (sessionId: string) => Promise<void>
     terminals: TerminalInputControl
   }): Promise<CommitPublication> {
     return control.commands.lease.within(action.root, 'commit', async () => {
@@ -75,6 +76,7 @@ export class CommitStep {
       // carried from an earlier press does not.
       const inhibit = await control.terminals.inhibit(sessionId)
       try {
+        await control.reading(sessionId)
         const pending = await control.terminals.pendingInput(sessionId)
         const busy = pending > 0 ? 'input typed for the worker has not reached it yet' : control.busyReason(sessionId)
         if (busy !== null && state.busyConfirmedFor !== state.approvedAt) {

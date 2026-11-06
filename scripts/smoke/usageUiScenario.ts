@@ -112,8 +112,51 @@ export class UsageUiScenario {
       assert((await ui.evaluate<string>('document.body.innerText')).includes('JamatProof'))
       assert.equal((await open(3)).windows, 1)
       await ui.capture(join(screenshotRoot, 'phase3-usage-overview-1440x900.png'))
+      // After the first capture: its viewport change resizes the charts, which clears a hover readout.
+      const card = 'document.querySelector(".jamat-usage__quotas > .jamat-usage__card")'
+      const hover = async (scope: string, share: number): Promise<string> => {
+        let text = ''
+        await RemoteUiScenarios.until(async () => {
+          text = await ui.evaluate<string>(`(() => { const plot = ${scope}.querySelector(".jamat-usage__plot"), svg = plot?.querySelector("svg")
+            if (!svg) return ""
+            const box = svg.getBoundingClientRect()
+            plot.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: box.left + box.width * ${share}, clientY: box.top + box.height / 2 }))
+            return plot.querySelector("[role=tooltip]")?.innerText ?? "" })()`)
+          return text !== ''
+        }, 'Usage chart hover readout')
+        return text
+      }
+      await ui.evaluate(`${card}.querySelector('[aria-label="Range"] button:nth-child(2)').click()`)
+      await RemoteUiScenarios.until(async () => (await ui.evaluate<string>(`${card}.querySelector('[aria-label="Range"] [aria-pressed="true"]')?.innerText ?? ""`)) === '7 days'
+        && await ui.evaluate<boolean>(`!!${card}.querySelector(".jamat-usage__graph svg")`), 'Usage 7-day pool chart')
+      assert.match(await hover(card, 0.9), /Projected\s+\d+\.\d%/)
+      await ui.capture(join(screenshotRoot, 'usage-pool-hover-1440x900.png'))
       await ui.evaluate('document.querySelector(".jamat-usage__tokens").scrollIntoView()')
+      assert.match(await hover('document.querySelector(".jamat-usage__tokens figure")', 0.5), /Total\s+[\d.]+k?/)
       await ui.capture(join(screenshotRoot, 'phase3-usage-tokens-1440x900.png'))
+      // The FileViewer toolbar: View as, icon buttons, Get document and the checklist button with its count.
+      const viewerRoot = join(root, 'viewer')
+      await mkdir(viewerRoot)
+      await writeFile(join(viewerRoot, 'guide.md'), '---\njamat: interactive\n---\n# Guide\n\n- [x] One\n- [ ] Two\n- [ ] Three\n')
+      const created = await ui.bridge<any>(`window.appClient.control.call('sessions.create', { spec: { kind: 'shell', directory: { mode: 'adHoc', path: ${JSON.stringify(viewerRoot)} }, title: 'Viewer toolbar proof' } })`)
+      assert(created.ok, JSON.stringify(created))
+      const viewerSession = created.value.session.sessionId
+      await ui.bridge(`window.appClient.control.call('tabs.open', { session: { kind: 'sessionId', sessionId: ${JSON.stringify(viewerSession)} } })`)
+      const openedFile = await ui.bridge<any>(`window.appClient.control.call('tabs.openFile', { session: { kind: 'sessionId', sessionId: ${JSON.stringify(viewerSession)} }, path: ${JSON.stringify(join(viewerRoot, 'guide.md'))} })`)
+      assert(openedFile.ok, JSON.stringify(openedFile))
+      let toolbar = ''
+      await RemoteUiScenarios.until(async () => {
+        toolbar = await ui.evaluate<string>('Array.from(document.querySelectorAll(".file-viewer-toolbar button")).map(button => button.getAttribute("aria-label") ?? button.textContent).join(" | ")')
+        return toolbar.includes('Send to agent 1/3')
+      }, 'FileViewer toolbar with the checklist button').catch((error: unknown) => { throw new Error(`${String(error)}; toolbar ${toolbar}`) })
+      for (const expected of ['View as Rendered', 'Wrap', 'Find', 'Reload', 'Get document ▾'])
+        assert(toolbar.includes(expected), `${expected} missing from the toolbar: ${toolbar}`)
+      assert(!toolbar.includes('Diff against'), toolbar)
+      await ui.capture(join(screenshotRoot, 'file-viewer-toolbar-1440x900.png'))
+      await ui.evaluate('document.querySelector(".file-viewer-get-document__button").click()')
+      await ui.capture(join(screenshotRoot, 'file-viewer-get-document-menu-1440x900.png'))
+      await ui.evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))')
+      console.log('[smoke:ui] FileViewer toolbar: View as, icon buttons, Get document and Send to agent 1/3')
       const tokens = await ui.bridge<any>(`window.appClient.control.call('usage.tokens', { from: '${new Date(now - 6 * 86_400_000).toISOString().slice(0, 10)}', to: '${new Date(now + 86_400_000).toISOString().slice(0, 10)}', groupBy: 'project' })`)
       assert.equal(tokens.value.rows.length, 2)
       assert.equal(tokens.value.rows.find((row: { agentId: string }) => row.agentId === 'codex').input, 2000)

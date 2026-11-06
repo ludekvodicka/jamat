@@ -52,8 +52,8 @@ export function TokensSection(): React.JSX.Element {
     return () => { reader.current = null; stop() }
   }, [period, agent])
   const charts = useMemo(() => views ? {
-    day: TokensSectionModel.chart(views.day.rows, 'Day', usageChartTheme()),
-    hour: TokensSectionModel.chart(views.hour.rows, 'Hour (local time)', usageChartTheme()),
+    day: TokensSectionModel.chart(views.day.rows, usageChartTheme()),
+    hour: TokensSectionModel.chart(views.hour.rows, usageChartTheme()),
   } : null, [views])
   const totals = useMemo(() => views ? TokensSectionModel.sum(views.day.rows) : null, [views])
   const progress = views?.day.progress
@@ -93,8 +93,8 @@ export function TokensSection(): React.JSX.Element {
         <Tile label="Cache write" value={UsageModel.tokens(totals.cacheWrite)} />
       </div>
       <div className="jamat-usage__pair">
-        <figure><figcaption>Per day</figcaption><UsageChart spec={charts.day} label="Token usage per day" /></figure>
-        <figure><figcaption>Hour of day</figcaption><UsageChart spec={charts.hour} label="Token usage per hour in this machine's local time" /></figure>
+        <figure><figcaption>Per day</figcaption><UsageChart spec={charts.day} label="Token usage per day" readout={label => TokensSectionModel.readout(views.day.rows, String(label))} /></figure>
+        <figure><figcaption>Hour of day</figcaption><UsageChart spec={charts.hour} label="Token usage per hour in this machine's local time" readout={label => TokensSectionModel.readout(views.hour.rows, String(label))} /></figure>
       </div>
       <div className="jamat-usage__pair">
         <TokenTable rows={views.project.rows} subject="Project" showAgent={agent === 'all'} />

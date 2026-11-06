@@ -46,6 +46,7 @@ class SmokeVcsCommit extends SmokeHarness {
     await this.checkSvnGitIgnoredDirectory(message)
     await this.checkSvnNodeOnlyDirectory(message)
     await this.checkSvnMovedOutOfDate(message)
+    await this.checkSvnLargeOutOfDate(message)
     console.log(`\nsmoke-vcs-commit: ${this.passed} checks passed`)
   }
 
@@ -306,6 +307,77 @@ class SmokeVcsCommit extends SmokeHarness {
       && !('reloadRequired' in refused) && !await stale.conflicts()
       && await this.svnRun(stale.working, ['info', '--show-item', 'revision', '--', join(stale.working, 'app', 'blocks')]) === before)
     stale.manager.release(stale.draftId, 'owner')
+  }
+
+  /**
+   * Jamat#77 (Mirabia review, 28.10.): an out-of-date commit of more than a thousand selected nodes,
+   * moves among them, failed with `spawn ENAMETOOLONG` and its recovery turned the moves into tree
+   * conflicts. Here the selection's paths are several times longer than one Windows command line:
+   * staging runs in batches, the update takes only the directory SVN named, and the retry publishes
+   * every node and both sides of every move.
+   */
+  private async checkSvnLargeOutOfDate(message: string): Promise<void> {
+    const repository = join(this.root, 'large-repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: this.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) throw new Error(created.stderr)
+    const working = join(this.root, 'large-working')
+    const other = join(this.root, 'large-other')
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, working])
+    const blocks = join(working, 'app', 'blocks')
+    const nodeTypes = join(working, 'app', 'nodeTypes')
+    const movedNames = Array.from({ length: 60 }, (_, index) => `block-${index}.ts`)
+    await mkdir(blocks, { recursive: true })
+    for (const name of movedNames) await writeFile(join(blocks, name), `${name} base\n`)
+    await this.svnRun(working, ['add', '--', 'app'])
+    await this.svnRun(working, ['commit', '--file', message])
+    // A commit of one of its files leaves the directory's BASE behind it, so deleting it is out of date.
+    await writeFile(join(blocks, movedNames[0]), `${movedNames[0]} edited\n`)
+    await this.svnRun(working, ['commit', '--file', message, '--', join(blocks, movedNames[0])])
+    await this.svnRun(this.root, ['checkout', pathToFileURL(repository).href, other])
+    await writeFile(join(other, 'app', 'other.ts'), 'unrelated\n')
+    await this.svnRun(other, ['add', '--', join(other, 'app', 'other.ts')])
+    await this.svnRun(other, ['commit', '--file', message])
+    await this.svnRun(working, ['mkdir', '--', nodeTypes])
+    await this.svnRun(working, ['move', '--', ...movedNames.map((name) => join(blocks, name)), nodeTypes])
+    await this.svnRun(working, ['delete', '--', blocks])
+    const generated = Array.from({ length: 1_100 }, (_, index) =>
+      join(working, 'app', 'generated', `group-${Math.floor(index / 100)}`, `generated-module-with-a-descriptive-name-${index}.ts`))
+    for (const path of generated) {
+      await mkdir(join(path, '..'), { recursive: true })
+      await writeFile(path, `export const value = ${generated.indexOf(path)}\n`)
+    }
+    const commandLine = 32_767
+    if (generated.join(' ').length < 3 * commandLine) throw new Error('The large selection must exceed several Windows command lines')
+    const manager = new VersioningCommitManager({
+      messages: new VersioningCommitMessageStore(join(this.root, 'large-messages.json'), (detail) => console.error(detail)),
+      sessions: { worktreeAt: async () => null, workingContext: async () => ({ ok: true, value: { sessionId: 'large', cwd: working, agent: null, worktree: null } }) },
+      vcsStatus: new VcsStatusView(),
+      fileAccess: (_owner, snapshot, file) => this.files.fileAccess(snapshot, file),
+      snapshotOf: (_owner, snapshot) => this.files.workingSnapshot(snapshot),
+      git: this.commits, svn: this.svnCommits,
+      tortoise: { open: async () => { throw new Error('Unexpected Tortoise fallback') } }, onChanged: () => {},
+    })
+    const prepared = await manager.prepare('large', 'svn', working, null)
+    if (!prepared.ok) throw new Error(prepared.detail)
+    manager.attach(prepared.value.draftId, 'owner')
+    const read = await this.files.workingTree({ sessionId: 'large', cwd: working, agent: null, worktree: null }, 'svn', true)
+    if (!read.ok) throw new Error(read.detail)
+    const snapshot = manager.files('owner', prepared.value.draftId, read.value)
+    this.check('The large review lists more than a thousand nodes, the moves among them', snapshot.entries.length > 1_000
+      && movedNames.every((name) => snapshot.entries.some((entry) => entry.path === join(nodeTypes, name))))
+    const result = await manager.run('owner', { draftId: prepared.value.draftId, snapshotId: snapshot.snapshotId,
+      fileIds: snapshot.entries.map((entry) => entry.fileId), message: await readFile(message, 'utf8') })
+    if (!result.ok) throw new Error(result.detail)
+    const log = await this.svnRun(working, ['log', '--verbose', '-r', result.revision, pathToFileURL(repository).href])
+    const phase = manager.read('owner', prepared.value.draftId)?.phase
+    const status = await this.svnRun(working, ['status', '--xml'])
+    this.check('An out-of-date commit of more than a thousand nodes with moves updates the named directory and publishes every node (Jamat#77)',
+      phase?.kind === 'done' && phase.output.includes('Updating')
+      && movedNames.every((name) => log.includes(`/app/nodeTypes/${name} (from /app/blocks/${name}:`))
+      && generated.every((path) => log.includes(`/app/generated/${path.split(/[\\/]/).slice(-2).join('/')}`))
+      && log.includes('D /app/blocks')
+      && !/tree-conflicted="true"|item="conflicted"|item="(?:added|deleted|modified|unversioned)"/.test(status))
+    manager.release(prepared.value.draftId, 'owner')
   }
 
   /**

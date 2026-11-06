@@ -11,28 +11,18 @@
   padding: 2px var(--space-2);
 }
 
-.file-viewer-checklist {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  border-bottom: 1px solid var(--color-border-hairline);
-  background: var(--color-surface-raised);
-  color: var(--color-text-2);
-  font-size: var(--fs-secondary);
+.file-viewer-checklist__send {
+  display: inline-flex;
   font-variant-numeric: tabular-nums;
 }
 
-.file-viewer-checklist button {
-  padding: 2px var(--space-2);
+/* Right-aligned in the toolbar, on whichever line it wraps to. */
+.file-viewer-toolbar .file-viewer-checklist__send {
+  margin-left: auto;
 }
 
-.file-viewer-checklist__send {
-  display: inline-flex;
+.file-viewer-checklist__send > button {
+  padding: 2px var(--space-2);
 }
 
 .file-viewer-checklist__send > button:first-child {
@@ -46,3 +36,30 @@
   border-top-left-radius: 0;
   border-bottom-left-radius: 0;
 }
+
+/* Get document: its last outcome beside the button, shortened; the full text is the title. */
+.file-viewer-get-document {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.file-viewer-get-document__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+}
+
+.file-viewer-get-document__done,
+.file-viewer-get-document__failed {
+  overflow: hidden;
+  max-width: 420px;
+  font-size: var(--fs-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.file-viewer-get-document__done { color: var(--color-text-3); }
+.file-viewer-get-document__failed { color: var(--color-danger); }

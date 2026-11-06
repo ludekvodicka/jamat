@@ -24,6 +24,7 @@
       "mermaid": ["node_modules/mermaid"],
       "react": ["node_modules/@types/react/index.d.ts"],
       "react/jsx-runtime": ["node_modules/@types/react/jsx-runtime.d.ts"],
+      "react-dom/server": ["node_modules/@types/react-dom/server.d.ts"],
       "react-markdown": ["node_modules/react-markdown"],
       "rehype-sanitize": ["node_modules/rehype-sanitize"],
       "remark-directive": ["node_modules/remark-directive"],

@@ -1375,6 +1375,8 @@ class SmokeSessionManager extends SmokeHarness {
           terminal.typed.push(text)
           return 'delivered'
         },
+        taken: async () => true,
+        holding: () => undefined,
       },
       now: () => clock.now,
       report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },
@@ -1420,6 +1422,8 @@ class SmokeSessionManager extends SmokeHarness {
           terminal.typed.push(line)
           return 'delivered'
         },
+        taken: async () => true,
+        holding: () => undefined,
       },
       now: () => clock.now,
       report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },
@@ -1467,6 +1471,8 @@ class SmokeSessionManager extends SmokeHarness {
           terminal.typed.push(line)
           return 'delivered'
         },
+        taken: async () => true,
+        holding: () => undefined,
       },
       now: () => clock.now,
       report: (message) => { throw new Error(`FAILED: the notifier reported: ${message}`) },

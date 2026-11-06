@@ -5,14 +5,21 @@ import type { WorktreeSvnCommands } from '../worktreeSvnCommands'
 import { SvnCommitGate } from '../../svn/svnCommitGate'
 
 export class WorkerIdle {
+  private static readonly freshMillisecondsConst = 10_000
+
   static of(activity: SessionActivity | null, polledAt: number | null, pendingDeliveries: number, now = Date.now()): boolean {
     return WorkerIdle.busyOf(activity, polledAt, pendingDeliveries, now) === null
+  }
+
+  /** Whether a reading of the worker's activity is recent enough to call it idle. */
+  static fresh(polledAt: number | null, now = Date.now()): boolean {
+    return polledAt !== null && now >= polledAt && now - polledAt < WorkerIdle.freshMillisecondsConst
   }
 
   /** Why the worker does not count as idle, as a person reads it; null when it does. */
   static busyOf(activity: SessionActivity | null, polledAt: number | null, pendingDeliveries: number, now = Date.now()): string | null {
     if (pendingDeliveries !== 0) return 'input typed for the worker has not reached it yet'
-    if (polledAt === null || now < polledAt || now - polledAt >= 10_000) return 'the activity of the worker was not read in the last 10 seconds'
+    if (!WorkerIdle.fresh(polledAt, now)) return 'the activity of the worker was not read in the last 10 seconds'
     switch (activity) {
       case 'idle': case 'waiting': return null
       case 'working': return 'the worker is working'

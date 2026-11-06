@@ -341,7 +341,9 @@ export class SessionScriptsManager {
     }
     this.stopRefusals.delete(runId)
     this.stopsConfirmed.add(runId)
-    await this.markStopRequested(runId)
+    // A run that had ended when a gate confirmed its stop ended by itself: marked, a later judgement of
+    // the same run read its failure, or its success, as "stopped" (J17 review).
+    if (run.life !== 'ended') await this.markStopRequested(runId)
     return true
   }
 

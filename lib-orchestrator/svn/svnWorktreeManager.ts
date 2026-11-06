@@ -370,6 +370,19 @@ export class SvnWorktreeManager {
     })
   }
 
+  /**
+   * Whether anything but empty directories lies below `path`. A tree of empty directories holds no work,
+   * and no `svn status` can judge one whose `.svn` is gone (run 098 left only an empty held directory).
+   * A link, a junction or any other entry counts as content and is never followed.
+   */
+  async removalHoldsFiles(path: string): Promise<boolean> {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const below = join(path, entry.name)
+      if (!entry.isDirectory() || !(await lstat(below)).isDirectory() || await this.removalHoldsFiles(below)) return true
+    }
+    return false
+  }
+
   /** Every local change, externals included: content, add, delete, unversioned, missing, properties. Ignored entries are excluded. */
   async changes(worktreePath: string): Promise<SvnResult<SvnStatusRow[]>> {
     const rows = await this.statusOf(worktreePath)
@@ -1371,24 +1384,36 @@ export class SvnWorktreeManager {
     return this.attempt(() => this.historyAfter(root, bound))
   }
 
-  /** Per root its repository and BASE, per repository its youngest revision. */
+  /**
+   * Per root its repository and BASE, per repository its youngest revision. One `svn info` from the
+   * root that holds the others names every root, and one names every repository: a review of a
+   * Mirabia worktree read 30 mounts and their repositories one process each. A root whose name svn
+   * cannot take as an argument is read from inside itself.
+   */
   async lowerBounds(roots: readonly SvnRoot[]): Promise<SvnResult<SvnBounds>> {
-    const youngest = new Map<string, number>()
-    const bounds: Record<string, SvnRootBounds> = {}
-    for (const root of roots) {
-      const info = await this.infoOf(root.path, '.')
-      if (!info.ok) return info
-      const { repository, base, revision } = info.value
-      let since = youngest.get(repository)
-      if (since === undefined) {
-        const head = await this.headOf(root.path, repository)
-        if (!head.ok) return head
-        since = head.value
-        youngest.set(repository, since)
+    return this.attempt(async () => {
+      const top = roots.find((root) => roots.every((other) => PathCompare.isInside(root.path, other.path)))
+      const named = top === undefined ? new Map<string, SvnInfoEntry>() : await this.landingInfo(top.path, roots
+        .map((root) => SvnWorktreeEvidence.relativeTo(top.path, root.path)).filter((path) => SvnWorktreeEvidence.takesArgument(path)), [])
+      const infos: SvnInfoEntry[] = []
+      for (const root of roots)
+        infos.push(named.get(top === undefined ? '' : SvnWorktreeEvidence.relativeTo(top.path, root.path)) ?? SvnWorktreeManager.must(await this.infoOf(root.path, '.')))
+      const repositories = [...new Set(infos.map((info) => info.repository))]
+      const refused = repositories.find((repository) => !SvnWorktreeEvidence.takesArgument(repository))
+      if (refused !== undefined) throw new SvnRunFailure('refused', `svn cannot take the URL ${refused} as an argument`)
+      const youngest = new Map<string, number>()
+      if (repositories.length > 0)
+        for (const entry of SvnWorktreeEvidence.infoEntries(SvnWorktreeManager.must(await this.run((top ?? roots[0]).path, ['info', '--xml', '--', ...repositories])).stdout))
+          youngest.set(entry.repository, entry.revision)
+      const bounds: Record<string, SvnRootBounds> = {}
+      for (const [position, root] of roots.entries()) {
+        const { repository, base, revision } = infos[position]
+        const since = youngest.get(repository)
+        if (since === undefined) throw new SvnRunFailure('svn-failed', `svn info gave no entry for ${repository}`)
+        bounds[root.own] = { repository, base, rootBase: revision, since }
       }
-      bounds[root.own] = { repository, base, rootBase: revision, since }
-    }
-    return { ok: true, value: bounds }
+      return bounds
+    })
   }
 
   /** Without a review receipt, what this root's changed paths committed, proven by the worktree's BASE. */

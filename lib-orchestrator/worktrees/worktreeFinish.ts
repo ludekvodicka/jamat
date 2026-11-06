@@ -1,4 +1,5 @@
 export * from './finish/finalizeSteps'
+export { CommitPrefix, type CommitPrefixOfRoot } from './finish/commitPrefix'
 export { CommitStep } from './finish/commitStep'
 export { PreparationStep } from './finish/preparationStep'
 export * from './finish/finishDriver'

@@ -434,7 +434,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
       listing([runtime('s', { alive: false, exitCode: 0, exitedAt: 9_000 })]),
     )
     expect(forSession(changes, 'p'))
-      .toEqual([{ kind: 'script-failed', sessionId: 'p', gate: 'before', reason: 'its setup was stopped' }])
+      .toEqual([{ kind: 'script-failed', sessionId: 'p', gate: 'before', reason: 'its setup was stopped', stopped: true }])
   })
 
   // Which record the store happens to list first must not change the verdict: the setup's own
@@ -760,6 +760,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/reconciler', () => {
         sessionId: 'm',
         gate: 'merge',
         reason: 'its resolver was stopped',
+        stopped: true,
       })
     })
 

@@ -16,6 +16,14 @@ describe('WorkerIdle', () => {
     expect(WorkerIdle.of('working', 999, 0, 1000)).toBe(false)
   })
 
+  // I38: a reading of the hidden window's 15 s poll is not one the rule trusts, so a press takes a new one.
+  it('trusts a reading for under 10 seconds, and none from the future or never taken', () => {
+    expect(WorkerIdle.fresh(1000, 10_999)).toBe(true)
+    expect(WorkerIdle.fresh(1000, 11_000)).toBe(false)
+    expect(WorkerIdle.fresh(2000, 1000)).toBe(false)
+    expect(WorkerIdle.fresh(null, 1000)).toBe(false)
+  })
+
   it('names why the worker does not count as idle', () => {
     expect(WorkerIdle.busyOf('idle', 999, 0, 1000)).toBeNull()
     expect(WorkerIdle.busyOf('working', 999, 0, 1000)).toBe('the worker is working')

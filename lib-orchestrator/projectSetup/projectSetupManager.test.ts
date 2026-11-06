@@ -10,6 +10,7 @@ import { SetupFamilies } from './setupFamilies'
 import { WorktreeConfig } from './worktreeConfig'
 
 describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
+  const pnpmInstall = SetupFamilies.pnpmInstallCommandConst
   const created: string[] = []
 
   afterEach(() => {
@@ -129,7 +130,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
   it('installs pnpm plainly until this machine says otherwise', async () => {
     const root = repository({ 'package.json': '{}', 'pnpm-lock.yaml': '' })
     expect(await resolved(harness().manager, root, root)).toMatchObject({
-      steps: [{ command: 'pnpm install' }],
+      steps: [{ command: pnpmInstall }],
     })
   })
 
@@ -140,7 +141,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     expect(await resolved(manager, root, root)).toEqual({
       kind: 'setup',
       origin: 'machine',
-      steps: [{ command: 'pnpm install', cwd: '' }],
+      steps: [{ command: pnpmInstall, cwd: '' }],
       variables: { pnpm_config_enable_global_virtual_store: 'true' },
     })
     expect(manager.machineVariables()).toEqual({ pnpm_config_enable_global_virtual_store: 'true' })
@@ -204,8 +205,8 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
         variables: {},
         origin: 'machine',
         steps: [
-          { command: 'pnpm install', cwd: 'A' },
-          { command: 'pnpm install', cwd: 'B' },
+          { command: pnpmInstall, cwd: 'A' },
+          { command: pnpmInstall, cwd: 'B' },
         ],
       })
     })
@@ -213,7 +214,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
     it('keeps the group directory in each member path when the group sits below the repository root', async () => {
       const root = repository({ 'Group/.appgroup': '{"kind":"product"}', 'Group/A/package.json': '{}', 'Group/A/pnpm-lock.yaml': '' })
       expect(await resolved(harness().manager, join(root, 'Group'), root)).toMatchObject({
-        steps: [{ command: 'pnpm install', cwd: 'Group/A' }],
+        steps: [{ command: pnpmInstall, cwd: 'Group/A' }],
       })
     })
 
@@ -223,7 +224,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
         kind: 'setup',
         variables: {},
         origin: 'machine',
-        steps: [{ command: 'pnpm install', cwd: '' }],
+        steps: [{ command: pnpmInstall, cwd: '' }],
       })
     })
 
@@ -258,7 +259,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
         A: pnpmMember,
       })
       expect(await resolved(harness().manager, root, root)).toMatchObject({
-        steps: [{ command: 'pnpm install', cwd: 'A' }],
+        steps: [{ command: pnpmInstall, cwd: 'A' }],
       })
     })
 
@@ -271,8 +272,8 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
         variables: {},
         origin: 'machine',
         steps: [
-          { command: 'pnpm install', cwd: 'AppDevelopmentUi' },
-          { command: 'pnpm install', cwd: 'components' },
+          { command: pnpmInstall, cwd: 'AppDevelopmentUi' },
+          { command: pnpmInstall, cwd: 'components' },
         ],
       })
     })
@@ -291,7 +292,7 @@ describe('lib-orchestrator/projectSetup/projectSetupManager', () => {
         kind: 'setup',
         variables: {},
         origin: 'machine',
-        steps: [{ command: 'pnpm install', cwd: '' }],
+        steps: [{ command: pnpmInstall, cwd: '' }],
       })
     })
   })

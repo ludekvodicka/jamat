@@ -28,7 +28,7 @@ export class CheckExecution {
       if (this.deps.now() - started < CheckExecution.timeoutMillisecondsConst) return false
       if (!await this.deps.stopRun(execution.runId) || !await this.deps.awaitExit(execution.runId)) return false
       await this.state.write(sessionId, (current) => ({ ...current, execution: { ...current.execution!,
-        verdict: { kind: 'failed', reason: 'The declared check exceeded twenty minutes and was stopped' } } }))
+        verdict: { kind: 'failed', reason: 'The declared check exceeded twenty minutes and was stopped', stopped: true } } }))
       return true
     }
     if (execution.refresh !== undefined && execution.refresh.endedAt === undefined) return this.refresh(sessionId)
@@ -53,6 +53,8 @@ export class CheckExecution {
       await this.state.write(sessionId, (current) => ({ ...current, execution: { ...current.execution!, checkBefore: before } }))
     }
     if (execution.verdict !== undefined && execution.runId !== undefined) {
+      // From the verdict, judged before the gate confirmed the stop; the record may be gone by now.
+      const stopped = execution.verdict.kind === 'failed' && execution.verdict.stopped === true
       const logPath = await this.state.keepAttempt(sessionId, { runId: execution.runId, title: execution.checks[execution.checkCursor].name })
       // A check whose record and log are gone leaves no evidence to judge, so it runs again.
       if (logPath === null) {
@@ -63,8 +65,8 @@ export class CheckExecution {
       await this.checks.recordChanges(sessionId, current.execution!.checkBefore!, await this.state.changedHashes(root))
       await this.deps.commands.accept(root)
       if (execution.verdict.kind === 'failed') {
-        await this.checks.complete(sessionId, { passed: false, logPath, at: this.deps.now() })
-        await this.state.write(sessionId, (latest) => ({ ...latest, execution: { ...latest.execution!, runId: undefined, verdict: undefined, checkBefore: undefined, checkCursor: 0 } }))
+        await this.checks.complete(sessionId, { passed: false, logPath, at: this.deps.now() },
+          { check: execution.checks[execution.checkCursor].name, reason: execution.verdict.reason, stopped })
         return false
       }
       await this.state.write(sessionId, (latest) => ({ ...latest, execution: { ...latest.execution!, checkCursor: execution.checkCursor + 1, runId: undefined, verdict: undefined, checkLogPath: logPath } }))

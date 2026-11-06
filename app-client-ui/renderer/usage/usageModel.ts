@@ -1,5 +1,5 @@
 import type { RateWindow } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
-import type { UsageAccount } from '../../../lib-orchestrator/rateMonitor/usageApi.types'
+import type { PoolSeries, UsageAccount } from '../../../lib-orchestrator/rateMonitor/usageApi.types'
 
 export type PoolRangePreset = 'forecast' | 'week' | 'month' | 'custom'
 export type TokenPeriodPreset = 'today' | 'week' | 'month' | 'custom'
@@ -8,6 +8,8 @@ export class UsageModel {
   static readonly agentLabels = { claude: 'Claude', codex: 'Codex' }
   static readonly sessionMinutesConst = 300
   static readonly weeklyMinutesConst = 10080
+  /** The server projects at most 31 days ahead (`usage.history`). */
+  static readonly projectionDaysConst = 31
   static readonly poolRangesConst: readonly { value: PoolRangePreset; label: string }[] = [
     { value: 'forecast', label: 'Forecast' }, { value: 'week', label: '7 days' },
     { value: 'month', label: '30 days' }, { value: 'custom', label: 'Custom' },
@@ -17,16 +19,35 @@ export class UsageModel {
     { value: 'month', label: '30 days' }, { value: 'custom', label: 'Custom' },
   ]
 
-  /** Forecast is a day back and a week ahead: the recent burn and when it runs out. */
+  /**
+   * The range read from `usage.history`. Forecast is a day back and a week ahead. The 7 and 30 day
+   * ranges read the whole projection horizon, so `poolView` can stretch them to the empty pool.
+   */
   static poolRange(preset: Exclude<PoolRangePreset, 'custom'>, now: number): { from: number; to: number } {
     if (preset === 'forecast')
       return { from: now - 86_400_000, to: now + 7 * 86_400_000 }
     else if (preset === 'week')
-      return { from: now - 7 * 86_400_000, to: now }
+      return { from: now - 7 * 86_400_000, to: now + UsageModel.projectionDaysConst * 86_400_000 }
     else if (preset === 'month')
-      return { from: now - 30 * 86_400_000, to: now }
+      return { from: now - 30 * 86_400_000, to: now + UsageModel.projectionDaysConst * 86_400_000 }
     else
       throw new Error(`Unknown pool range: ${JSON.stringify(preset)}`)
+  }
+
+  /**
+   * The drawn bounds. Forecast and Custom draw what they read. The 7 and 30 day ranges add a few days
+   * of projection, and more when that is what it takes to show the pool running empty.
+   */
+  static poolView(preset: PoolRangePreset, series: PoolSeries): { from: number; to: number } | undefined {
+    const range = series.displayRange
+    if (preset === 'forecast' || preset === 'custom' || !range)
+      return range
+    const ahead = preset === 'week' ? 2 * 86_400_000 : preset === 'month' ? 7 * 86_400_000 : null
+    if (ahead === null)
+      throw new Error(`Unknown pool range: ${JSON.stringify(preset)}`)
+    const empty = series.poolEmptyAt
+    const end = empty === null ? series.now + ahead : Math.max(series.now + ahead, empty + (empty - range.from) / 20)
+    return { from: range.from, to: Math.min(series.until, end) }
   }
 
   /** Whole local days, today included. */

@@ -77,7 +77,8 @@ export class FinishCompletion {
     return true
   }
 
-  async remove(sessionId: string): Promise<void> {
+  /** `retried`: Jamat tries a blocked removal again by itself; a removal still blocked continues the same wait. */
+  async remove(sessionId: string, retried = false): Promise<void> {
     if (!await this.stopHelpers(sessionId)) return
     await this.observeRemaining(sessionId)
     const record = this.deps.records.get(sessionId)!
@@ -91,8 +92,9 @@ export class FinishCompletion {
         : await this.deps.removal.remove(sessionId, SvnWorktreeRemoval.locationOf(record.worktree), WorktreePublication.retain(state).publication!.revisions.map(SvnRevisionLabels.textOf), state.removalPermit)
     } finally { if (this.deps.steps.clear(sessionId)) this.deps.changed() }
     await this.state.write(sessionId, (current) => ({ ...current, execution: { ...current.execution!, removal: removed.state, removalLines: removed.lines } }))
-    if (removed.state !== 'removed') { await this.state.wait(sessionId, 'removal-blocked', removed.lines.join('\n')); await this.recordResult(sessionId, undefined, true); return }
-    await this.state.write(sessionId, (current) => ({ ...current, step: 'recording' }))
+    if (removed.state !== 'removed') { await this.state.wait(sessionId, 'removal-blocked', removed.lines.join('\n'), retried); await this.recordResult(sessionId, undefined, true); return }
+    // A retry starts from the removal wait; the Finish goes on with recording either way.
+    await this.state.write(sessionId, (current) => ({ ...current, phase: 'finishing', wait: undefined, step: 'recording' }))
   }
 
   async recordResult(sessionId: string, explicit?: 'kept', waiting = false): Promise<void> {

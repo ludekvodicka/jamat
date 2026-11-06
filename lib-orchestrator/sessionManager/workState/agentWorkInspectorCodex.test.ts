@@ -66,7 +66,31 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
       `Previous status: ${queued}`,
       queued.replace('1 question', '1 question was answered'),
     ])
-      expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail }).hint).toBe('idle')
+      // The wide window shows what the screen shows: a header cut from the screen is cut from both.
+      expect(AgentWorkInspectorCodex.inspect({ ...frame, screenTail, wideScreenTail: screenTail }).hint).toBe('idle')
+  })
+
+  // F14: Mirabia 137's async question reached nobody for 37 min while the watch printed WORKING.
+  // Codex 0.166 answers it with shift+← and its three-row footer pushes the header above eight rows.
+  it('reads a question request_user_input_async raised in a running turn as waiting, from the wide window above the current box (F14)', () => {
+    const frame = recorded('codex-live-async-question.json').frame
+    expect(ScreenTail.stripAnsiLower(frame.screenTail)).not.toContain('queued follow-up inputs')
+    expect(AgentWorkInspectorCodex.inspect(frame)).toEqual({ hint: 'waiting', evidence: [{ source: 'wide-screen', signal: 'questionPrompt',
+      match: expect.stringMatching(/^• queued follow-up inputs\s+\? 1 question\s+shift\+← to answer$/) }] })
+    for (const cols of [120, 160])
+      expect(AgentWorkInspectorCodex.inspect(ScreenTail.frameOf({ raw: '', screen: frame.wideScreenTail.replaceAll(' ', '\x1b[1C'), cols })).hint).toBe('waiting')
+
+    // Anything but blank rows between the block and the current box is history, and so is a block
+    // whose box has moved on below a newer status.
+    const wide = frame.wideScreenTail.replace(/[[0-9;?]*[A-Za-z]/g, '')
+    for (const wideScreenTail of [
+      wide.replace('shift+← to answer', 'shift+← to answer\n• Ran Get-Date'),
+      wide.replace('? 1 question', '? 0 questions'),
+      wide.replace('shift+← to answer', 'shift+← to open the menu'),
+      `${wide}\n• Working (9s • esc to interrupt)\n\n› Ask Codex to do anything`,
+    ])
+      expect(AgentWorkInspectorCodex.inspect({ ...frame, wideScreenTail, screenTail: wideScreenTail.split('\n').slice(-8).join('\n') }).hint,
+        JSON.stringify(wideScreenTail.slice(-160))).not.toBe('waiting')
   })
 
   it('stops waiting once the question survives only in history', () => {
@@ -451,6 +475,8 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     const inspection = AgentWorkInspectorCodex.inspect({
       ...background,
       screenTail: idle.screenTail,
+      // The recorded tail still animates the title; a turn that ended sets it without the spinner.
+      rawTail: `${background.rawTail}\x1b]0;codex\x07`,
     })
 
     expect(inspection.hint).toBe('idle')
@@ -496,15 +522,55 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
   // and a screen with neither the working row nor the empty prompt is still an absence of evidence:
   // calling THAT idle would be reading a fact out of one.
   it('reads the empty prompt as finished, and an unrecognised screen as unknown', () => {
-    const finished = AgentWorkInspectorCodex.inspect(recorded('codex-live-idle.json').frame)
-    expect(finished.hint).toBe('idle')
-    expect(finished.evidence.map((item) => item.signal)).toEqual(['emptyPrompt'])
+    for (const [file, signal] of [
+      ['codex-live-idle.json', 'turnEnded'],
+      ['codex-live-turn-ended-0166.json', 'turnEnded'],
+      ['codex-live-composer-empty.json', 'emptyPrompt'],
+    ] as const) {
+      const finished = AgentWorkInspectorCodex.inspect(recorded(file).frame)
+      expect(finished.hint, file).toBe('idle')
+      expect(finished.evidence.map((item) => item.signal), file).toEqual([signal])
+    }
 
     for (const file of ['codex-unknown-prompt.json', 'codex-unknown-prose-collision.json']) {
       const inspection = AgentWorkInspectorCodex.inspect(recorded(file).frame)
       expect(inspection.hint, file).toBe('unknown')
       expect(inspection.evidence, file).toHaveLength(0)
     }
+  })
+
+  // Codex 0.166 hides the Working row while a turn streams a message (Mirabia 137 read IDLE five
+  // times inside one turn). With terminals running, their bare count is left on its own row. The count
+  // is not read: no recorded frame shows what it means after a turn ended, and a dev server would then
+  // hold the worker busy for good. The spinner title carries the running turn instead.
+  it('reads a streaming turn with terminals running by its spinner title, never by the bare terminal count (I57)', () => {
+    const frame = recorded('codex-live-streaming-background-count.json').frame
+    expect(AgentWorkInspectorCodex.inspect(frame)).toEqual({ hint: 'working',
+      evidence: [expect.objectContaining({ source: 'raw', signal: 'titleSpinner' })] })
+    const ended = `${frame.rawTail}\x1b]0;Run background sleep commands | PROJECT\x07`
+    expect(AgentWorkInspectorCodex.inspect({ ...frame, rawTail: ended }).hint).toBe('idle')
+    // Recorded: after the turn ended Codex leaves the same bare row while its terminal runs on.
+    const finished = recorded('codex-live-ended-background-count.json').frame
+    expect(ScreenTail.stripAnsiLower(finished.screenTail)).toContain('1 background terminal running · /ps to view · /stop to close')
+    expect(AgentWorkInspectorCodex.inspect(finished).hint).toBe('idle')
+  })
+
+  // Without terminals the streaming turn leaves no status at all: the screen alone is the empty box.
+  // The title Codex animates while a turn runs is the evidence, and only the last title counts.
+  it('reads the spinner title of a turn streaming a message as working, and only the last title (I57)', () => {
+    const frame = recorded('codex-live-streaming-message.json').frame
+    const inspection = AgentWorkInspectorCodex.inspect(frame)
+    expect(inspection.hint).toBe('working')
+    expect(inspection.evidence).toEqual([expect.objectContaining({ source: 'raw', signal: 'titleSpinner', match: expect.stringMatching(/^[⠀-⣿] Run terminal emulator steps/) })])
+
+    // The turn ended: Codex sets the title without the spinner. A person typing, a paste or a redraw
+    // writes no title, and a tail that holds none reads the screen alone.
+    for (const rawTail of [`${frame.rawTail}\x1b]0;Run terminal emulator steps | PROJECT\x07typed by a person`,
+      `${frame.rawTail}\x1b]2;Run terminal emulator steps | PROJECT\x1b\\\x1b[?2026h\x1b[42;3Hhello`, 'hello, typed into the box'])
+      expect(AgentWorkInspectorCodex.inspect({ ...frame, rawTail }).hint, JSON.stringify(rawTail.slice(-60))).toBe('idle')
+    // The closing line on screen outranks a spinner title the tail still holds.
+    const ended = recorded('codex-live-turn-ended-0166.json').frame
+    expect(AgentWorkInspectorCodex.inspect({ ...ended, rawTail: frame.rawTail }).evidence.map((item) => item.signal)).toEqual(['turnEnded'])
   })
 
   // The placeholder is on screen while Codex works too, drawn under the row it is working on, so

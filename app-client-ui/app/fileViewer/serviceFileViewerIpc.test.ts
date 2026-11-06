@@ -43,6 +43,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   const isDestroyed = vi.fn(() => false)
   const sender = { startDrag, isDestroyed } as unknown as WebContents
   const imageDragPath = vi.fn<FileViewer['imageDragPath']>()
+  const exported = vi.fn(async (source: string, format: 'html' | 'pdf', _html: string) => source.replace(/\.ts$/, `.${format}`))
   const icon = { isEmpty: () => false }
   const rejected = {} as WebContents
   const document = {
@@ -72,6 +73,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   }
 
   beforeEach(() => {
+    exported.mockClear()
     electronMock.handlers.clear()
     electronMock.copied = []
     electronMock.opened = []
@@ -132,7 +134,8 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
         return { ok: false, code: 'not-found', detail: 'fixture' }
       },
     }), (value) => callerSource(value) === sender ? 'window-1' : null)).initialize()
-    bindService(new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, value => value === sender ? 'window-1' : null)).initialize()
+    bindService(new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, value => value === sender ? 'window-1' : null,
+      { write: exported })).initialize()
   })
 
   afterEach(async () => {
@@ -383,7 +386,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it('rejects every capability operation from an unknown workspace', async () => {
     const channels = Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst }) as
       (keyof AppClientUiIpcInvokeMap)[]
-    expect(channels.length).toBe(19)
+    expect(channels.length).toBe(20)
 
     for (const channel of channels)
       expect(await invoke(channel, rejected, 'https://example.test/a', 'second', true), channel)
@@ -395,6 +398,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     expect(electronMock.copied).toEqual([])
     expect(imageDragPath).not.toHaveBeenCalled()
     expect(startDrag).not.toHaveBeenCalled()
+    expect(exported).not.toHaveBeenCalled()
   })
 
   it('starts a native file drag with the granted image and OS file icon', async () => {
@@ -460,5 +464,17 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     expect(await invoke('fileViewer:open-external', sender, 'file:///C:/work/a.ts'))
       .toEqual({ ok: true, value: false })
     expect(electronMock.opened).toEqual(['https://example.test/a'])
+  })
+
+  it('writes an export beside the granted path and copies where it went', async () => {
+    expect(await invoke('fileViewer:export', sender, 'document-1', 'pdf', '<p>page</p>'))
+      .toEqual({ ok: true, value: { ok: true, path: 'C:/work/a.pdf', pathCopied: true } })
+    expect(exported).toHaveBeenCalledWith('C:/work/a.ts', 'pdf', '<p>page</p>')
+    expect(electronMock.copied.at(-1)).toBe('C:/work/a.pdf')
+    exported.mockRejectedValueOnce(new Error('disk full'))
+    expect(await invoke('fileViewer:export', sender, 'document-1', 'html', '<p>page</p>'))
+      .toEqual({ ok: true, value: { ok: false, detail: 'disk full' } })
+    expect(await invoke('fileViewer:export', sender, 'document-1', 'docx', '<p>page</p>'))
+      .toEqual({ ok: false, error: 'Unknown export format: "docx"' })
   })
 })

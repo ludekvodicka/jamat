@@ -36,6 +36,7 @@ import type {
   SessionWorktreeState,
   SessionConflictList,
   SessionConflictResolved,
+  SessionConflictsResolved,
   TerminalComposerState,
   TerminalFrame,
   WorktreeResultDto,
@@ -779,6 +780,24 @@ export interface RemoteControlOperationMap {
     response: SessionConflictResolved
   }
   /**
+   * One option for several conflicted paths in one call: `paths` as `sessions conflicts` lists them,
+   * or `all` open paths no Jamat rule covers. Every path is checked before the first is settled; an
+   * unknown or settled path, a path holding two open conflicts without `kind`, or (with `all`) a path
+   * that does not admit the option answers `operation-failed` (`invalid-spec`) and settles nothing.
+   * Each path is then settled as `sessions.resolveConflict` settles it; the first refusal stops the
+   * call with that refusal, its detail naming the paths settled before it. No `confirm`: an option
+   * that loses incoming work stays the window's. Local only, mutating.
+   */
+  'sessions.resolveConflicts': {
+    request: {
+      session: RemoteControlSessionSelector
+      paths: string[] | 'all'
+      kind?: SvnConflictKind
+      option: SvnConflictOption
+    }
+    response: SessionConflictsResolved
+  }
+  /**
    * An interactive agent session in the worktree of an SVN Finish or Discard that waits for the
    * person, briefed on why it waits and asked to fix what it can and to say how the Finish could
    * avoid the wait; its tab opens. The action keeps waiting. A running action, an UPDATE, or a Finish
@@ -830,11 +849,13 @@ export interface RemoteControlOperationMap {
    * A worker's commit message, stored for its worktree root (or the working copy of its directory)
    * under its session; nothing opens and nothing is committed. The review of that worktree starts
    * with it. A message a person already wrote there is refused with `conflict` (source code
-   * `message-edited`). `jamat-v3 commit propose --self` is its caller. Local only.
+   * `message-edited`). A worktree root's message under another prefix than it publishes under is
+   * refused with `message-unchecked`, before and after its Finish built the review. `findings` are
+   * the review's hints on the stored text. `jamat-v3 commit propose --self` is its caller. Local only.
    */
   'sessions.proposeCommit': {
     request: { session: RemoteControlSessionSelector; message: string; directory?: string }
-    response: { scopeRoot: string }
+    response: { scopeRoot: string; findings?: string[] }
   }
   /**
    * The row's Retry setup after a failed install. An unacknowledged setup is refused with its

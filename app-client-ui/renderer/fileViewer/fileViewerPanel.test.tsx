@@ -332,7 +332,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     expect(await screen.findByText('export const answer = 42')).toBeInTheDocument()
     expect(fileViewer.restore).toHaveBeenCalledTimes(1)
 
-    fireEvent.click(screen.getByText('Reload'))
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
 
     await waitFor(() => expect(fileViewer.restore).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(fileViewer.release).toHaveBeenCalledWith('document-1'))

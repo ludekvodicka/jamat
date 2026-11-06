@@ -1,0 +1,25 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "working"
+  },
+  "provenance": {
+    "origin": "captured from an isolated AppJamatV3 Host by a disposable probe (.aidocs/temp/2026-11-05-9de2a70e/probeCodexWait.ts), the same runtime.inspect view the work-state monitor reads",
+    "case": "a turn streaming an intermediate message while two background terminals run: Codex 0.166 hides the Working row and leaves the bare terminal count above the empty box (I57, Mirabia 137)",
+    "capture": "captured 13 s into a 28 s AgentMessage stream (rollout: task_started 13:58:44.9, AgentMessage 13:59:46.8-14:00:14.6, task_complete 14:01:17.3 UTC); the Working row came back when the message ended. Sanitized: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact. Expected working by the spinner title the tail last set; the bare count row itself is not read (review 2026-11-05)",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.166.0",
+    "capturedAt": "2026-11-05",
+    "cols": 160,
+    "rows": 45
+  },
+  "frame": {
+    "rawTail": "eep commands | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[28;2H\u001b[K\n\u001b[K\n\u001b[K\n\u001b[K\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[28;3HThere\u001b[1Care\u001b[1Cseveral\u001b[1Cways\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[28;2H\u001b[K\u001b[29;3HThe\u001b[1Cword\u001b[1C“background”\u001b[1Cdescribes\u001b[1Chow\u001b[1Cthe\u001b[1Csession\u001b[1Cis\u001b[1Cmanaged.\u001b[1CIt\u001b[1Cdoes\u001b[1Cnot\u001b[1Cmean\u001b[1Cthe\u001b[1Ccommand\u001b[1Cruns\u001b[1Cfaster,\u001b[1Creceives\u001b[1Cextra\u001b[1Ccomputing\u001b[1Cresources,\u001b[1Cor\u001b[1Cstops\u001b[1Cneeding\u001b[30;3HThere\u001b[1Care\u001b[1Cseveral\u001b[1Cways\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[30;3Hsupervision. A background\u001b[1Ccommand\u001b[1Ccan\u001b[1Cperform\u001b[1Cuseful\u001b[1Cwork,\u001b[1Cwait\u001b[1Cfor\u001b[1Can\u001b[1Cevent,\u001b[1Cproduce\u001b[1Coutput,\u001b[1Cor\u001b[1Cencounter\u001b[1Can\u001b[1Cerror.\u001b[1CIn\u001b[1Cthis\u001b[1Cexample,\u001b[38;2;166;227;161m\u001b[1CStart-Sleep\u001b[m\u001b[1Csimply\u001b[31;3HThere\u001b[1Care\u001b[1Cseveral\u001b[1Cways\u001b[42;3H\u001b]0;⠹ Run background sleep commands | PROJECT\u0007\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[31;3Hpaus\u001b[1Cs execution for the\u001b[1Crequested\u001b[1Cduration.\u001b[1CIt\u001b[1Cordinarily\u001b[1Cproduces\u001b[1Cno\u001b[1Ctext\u001b[1Cwhile\u001b[1Cwaiting,\u001b[1Cso\u001b[1Can\u001b[1Cempty\u001b[1Coutput\u001b[1Carea\u001b[1Cis\u001b[1Cexpected\u001b[1Cand\u001b[1Cdoes\u001b[1Cnot\u001b[1Cestablish\u001b[1Cwhether\u001b[32;3HThere\u001b[1Care\u001b[1Cseveral\u001b[1Cways\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[32;3Ht\u001b[2C command has finished.\u001b[33;3HThere\u001b[1Care\u001b[1Cseveral\u001b[1Cways\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b]0;⠸ Run background sleep commands | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;26Hto\u001b[1Carrange\u001b[1Cbackground\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;48Hexecution\u001b[42;3H\u001b[?25h\u001b]0;⠼ Run background sleep commands | PROJECT\u0007\u001b]0;⠴ Run background sleep commands | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;57H.\u001b[1CA\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;61Hshell\u001b[1Ccan\u001b[42;3H\u001b[?25h\u001b]0;⠦ Run background sleep commands | PROJECT\u0007\u001b]0;⠧ Run background sleep commands | PROJECT\u0007\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;71Hprovide\u001b[1Cits\u001b[1Cown\u001b[42;3H\u001b[?25h\u001b[?2026h\u001b[?2026l\u001b[?25l\u001b[33;87Hjob\u001b[42;3H\u001b[?25h\u001b]0;⠇ Run background sleep commands | PROJECT\u0007",
+    "screenTail": "\n\u001b[2m  2 background terminals running · /ps to view · /stop to close\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run background sleep commands\n  ← for agents · ? for shortcuts",
+    "wideScreenTail": "  supervision. A background command can perform useful work, wait for an event, produce output, or encounter an error. In this example, Start-Sleep simply\n  pauses execution for the requested duration. It ordinarily produces no text while waiting, so an empty output area is expected and does not establish whether\n  the command has finished.\n  There are several ways to arrange background execution. A shell can provide its own job\n\n\n\n\n\n\u001b[2m  2 background terminals running · /ps to view · /stop to close\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run background sleep commands\n  ← for agents · ? for shortcuts",
+    "screenStyled": true
+  }
+}

@@ -29,6 +29,8 @@ import type {
   FileViewerDirectoryResult,
   FileViewerDocument,
   FileViewerDocumentSource,
+  FileViewerExportFormat,
+  FileViewerExportResult,
   FileViewerOpenResult,
   FileViewerResourceResult,
   FileViewerTextResult,
@@ -214,6 +216,11 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
    * gives; putting text INTO the clipboard gives a page nothing it did not already hand over.
    */
   'clipboard:write-text': (text: string) => void
+  /**
+   * The same text with an HTML version beside it, so a mail editor pastes the formatting and a
+   * plain field pastes the text. false = another process held the clipboard throughout.
+   */
+  'clipboard:write-rich': (text: string, html: string) => boolean
   'remote:start-image-drag': (endpointId: string, viewId: string, documentId: string) => boolean
   'remote:export-file': (endpointId: string, viewId: string, documentId: string, name: string) => boolean
   'remote:media-resource': (endpointId: string, viewId: string, documentId: string, reference: string | null) => FileViewerResourceResult
@@ -422,6 +429,11 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
     reference: string,
   ) => FileViewerResourceResult
   'fileViewer:copy-path': (documentId: string) => boolean
+  /**
+   * Writes `<document name>.html` or `.pdf` beside the granted document, replacing an earlier one, and
+   * puts the written path on the clipboard. The target comes from the grant, never from the renderer.
+   */
+  'fileViewer:export': (documentId: string, format: FileViewerExportFormat, html: string) => FileViewerExportResult
   'fileViewer:start-image-drag': (documentId: string) => boolean
   'fileViewer:open-external': (url: string) => boolean
   'fileViewer:release': (documentId: string) => void
@@ -609,6 +621,7 @@ export const AppClientUiBridgeCallsConst = {
   },
   clipboard: {
     writeText: 'clipboard:write-text',
+    writeRich: 'clipboard:write-rich',
   },
   remote: {
     startImageDrag: 'remote:start-image-drag',
@@ -747,6 +760,7 @@ export const AppClientUiBridgeCallsConst = {
     mediaResource: 'fileViewer:media-resource',
     relativeResource: 'fileViewer:relative-resource',
     copyPath: 'fileViewer:copy-path',
+    exportDocument: 'fileViewer:export',
     startImageDrag: 'fileViewer:start-image-drag',
     openExternal: 'fileViewer:open-external',
     release: 'fileViewer:release',
@@ -1057,6 +1071,7 @@ export const AppClientUiChannelOwnersConst = {
   'dialog:pick-directory': 'main',
   'dialog:confirm': 'main',
   'clipboard:write-text': 'main',
+  'clipboard:write-rich': 'main',
   'remote:start-image-drag': 'main',
   'remote:export-file': 'main',
   'remote:media-resource': 'main',
@@ -1140,6 +1155,7 @@ export const AppClientUiChannelOwnersConst = {
   'fileViewer:media-resource': 'orchestrator',
   'fileViewer:relative-resource': 'orchestrator',
   'fileViewer:copy-path': 'main',
+  'fileViewer:export': 'main',
   'fileViewer:start-image-drag': 'main',
   'fileViewer:open-external': 'main',
   'fileViewer:release': 'orchestrator',

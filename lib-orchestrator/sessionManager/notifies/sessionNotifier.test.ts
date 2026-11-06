@@ -19,7 +19,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     for (const directory of created.splice(0)) rmSync(directory, { recursive: true, force: true })
   })
 
-  type Answer = 'delivered' | 'retry' | 'gone'
+  type Answer = 'delivered' | 'typed' | 'retry' | 'gone'
 
   function harness(): {
     store: WorktreeResultsStore
@@ -27,6 +27,10 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     clock: { now: number }
     typed: { sessionId: string; text: string }[]
     answers: Answer[]
+    takes: boolean[]
+    checked: { sessionId: string; text: string; since: number }[]
+    holds: string[]
+    reports: string[]
     put: (actionId: string, notify?: { sessionId: string; text: string }) => Promise<void>
     stateOf: (actionId: string) => WorktreeResultRecord['notify']
     notifies: SessionNotifyStore
@@ -41,6 +45,10 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     })
     const typed: { sessionId: string; text: string }[] = []
     const answers: Answer[] = []
+    const takes: boolean[] = []
+    const checked: { sessionId: string; text: string; since: number }[] = []
+    const holds: string[] = []
+    const reports: string[] = []
     const reloadNotifies = () => new SessionNotifyStore(join(root, 'notifies'), { now: () => clock.now, report: () => undefined })
     const notifies = reloadNotifies()
     const snapshot = { sessions: [] as SessionInfo[], groups: new Map<string, string | null>() }
@@ -54,12 +62,17 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
           typed.push({ sessionId, text })
           return answers.shift() ?? 'delivered'
         },
+        taken: async (sessionId, text, since) => {
+          checked.push({ sessionId, text, since })
+          return takes.shift() ?? false
+        },
+        holding: (sessionId, held) => { holds.push(`${held ? 'hold' : 'release'} ${sessionId}`) },
       },
       now: () => clock.now,
-      report: () => undefined,
+      report: (message) => { reports.push(message) },
     })
     return {
-      store, notifier, clock, typed, answers, notifies, reloadNotifies, snapshot,
+      store, notifier, clock, typed, answers, takes, checked, holds, reports, notifies, reloadNotifies, snapshot,
       put: async (actionId, notify = { sessionId: 'coordinator', text: 'wake' }) => {
         await store.put(WorktreeResultsStore.recordOf({
           actionId, action: 'finish', result: 'committed', sessionId: 'worker', title: 'worker', worktreePath: 'W', mainCopy: 'M',
@@ -140,7 +153,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
       watch: { watched: () => [], observe: async () => undefined },
       sessions: () => [],
       groups: () => new Map(),
-      port: { deliver: async (sessionId, text) => { it_.typed.push({ sessionId, text }); return 'delivered' } },
+      port: { deliver: async (sessionId, text) => { it_.typed.push({ sessionId, text }); return 'delivered' }, taken: async () => true, holding: () => undefined },
       now: () => it_.clock.now,
       report: () => undefined,
     })
@@ -150,6 +163,55 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     expect(it_.typed).toEqual([{ sessionId: 'coordinator', text: 'wake' }])
     expect(noted).toEqual(['n1 delivered'])
     expect(it_.stateOf('a1')?.state).toBe('delivered')
+  })
+
+  // Mirabia 133: a handoff marked delivered on typing sat 83 s before its turn while Jamat counted the
+  // worker idle. A typed line is delivered on record at once, so neither a pass nor a restart types it
+  // again, and holds the idle gate until its turn shows, for at most the hold.
+  it('records a typed line delivered at once and holds the idle gate until its turn shows, never typing it again (Mirabia 133)', async () => {
+    const it_ = harness()
+    await it_.put('a1')
+    it_.answers.push('typed')
+
+    await it_.notifier.tick()
+    expect(it_.stateOf('a1')).toMatchObject({ state: 'delivered' })
+    expect(it_.holds).toEqual(['hold coordinator'])
+    for (let pass = 0; pass < 8; pass += 1) {
+      it_.clock.now += 10_000
+      await it_.notifier.tick()
+    }
+    expect(it_.holds).toEqual(['hold coordinator'])
+    it_.takes.push(true)
+    it_.clock.now += 10_000
+    await it_.notifier.tick()
+
+    expect(it_.typed).toHaveLength(1)
+    expect(it_.holds).toEqual(['hold coordinator', 'release coordinator'])
+    expect(it_.checked.every((check) => check.since === 1_000 && check.text === 'wake')).toBe(true)
+    await it_.notifier.tick()
+    expect(it_.checked).toHaveLength(10)
+  })
+
+  it('releases a typed line whose turn never shows after the hold, which covers twice the measured 83 s, and on stop', async () => {
+    expect(SessionNotifier.holdMillisecondsConst).toBeGreaterThanOrEqual(2 * 83_000)
+    const it_ = harness()
+    await it_.put('a1')
+    it_.answers.push('typed')
+    await it_.notifier.tick()
+    it_.clock.now += SessionNotifier.holdMillisecondsConst - 1
+    await it_.notifier.tick()
+    expect(it_.holds).toEqual(['hold coordinator'])
+    it_.clock.now += 1
+    await it_.notifier.tick()
+    expect(it_.holds).toEqual(['hold coordinator', 'release coordinator'])
+    expect(it_.typed).toHaveLength(1)
+
+    const stopped = harness()
+    await stopped.put('a2')
+    stopped.answers.push('typed')
+    await stopped.notifier.tick()
+    stopped.notifier.stop()
+    expect(stopped.holds).toEqual(['hold coordinator', 'release coordinator'])
   })
 
   it('expires the line at once when the target session no longer exists', async () => {
@@ -174,7 +236,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
       watch: { watched: () => [], observe: async () => undefined },
       sessions: () => [],
       groups: () => new Map(),
-      port: { deliver: () => Promise.reject(new Error('socket closed')) },
+      port: { deliver: () => Promise.reject(new Error('socket closed')), taken: async () => true, holding: () => undefined },
       now: () => it_.clock.now,
       report: () => undefined,
     })
@@ -294,7 +356,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
       sources: [reloaded], watch: reloaded,
       sessions: () => life === 'missing' ? [] : [{ sessionId: 'child', life } as SessionInfo],
       groups: () => new Map(),
-      port: { deliver: async (sessionId, text) => { it_.typed.push({ sessionId, text }); return 'delivered' } },
+      port: { deliver: async (sessionId, text) => { it_.typed.push({ sessionId, text }); return 'delivered' }, taken: async () => true, holding: () => undefined },
       now: () => it_.clock.now, report: () => undefined,
     })
 
@@ -331,7 +393,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     const delivering = new Promise<void>((resolve) => { reached = resolve })
     const notifier = new SessionNotifier({
       sources: [it_.notifies], watch: it_.notifies, sessions: () => [], groups: () => new Map(),
-      port: { deliver: async () => { reached(); return delivered } }, now: () => it_.clock.now, report: () => undefined,
+      port: { deliver: async () => { reached(); return delivered }, taken: async () => true, holding: () => undefined }, now: () => it_.clock.now, report: () => undefined,
     })
     const first = notifier.tick()
     await delivering
@@ -348,7 +410,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     const snapshot = vi.fn(() => [])
     const notifier = new SessionNotifier({
       sources: [], watch: it_.notifies, sessions: snapshot, groups: () => new Map(),
-      port: { deliver: async () => 'delivered' }, now: () => it_.clock.now, report: () => undefined,
+      port: { deliver: async () => 'delivered', taken: async () => true, holding: () => undefined }, now: () => it_.clock.now, report: () => undefined,
     })
     notifier.start()
     notifier.start()

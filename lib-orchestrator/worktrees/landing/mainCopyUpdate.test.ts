@@ -205,18 +205,34 @@ describe('MainCopyUpdate', () => {
     expect(told).toEqual([{ sessionId: 'worker', title: 'Worker', mainCopy: h.root, revision: 2, by: 'person', log: result.logs[0].path }])
   })
 
-  it('tells nothing for a row that keeps its worktree, and still keeps the UPDATE log with the result', async () => {
+  it('tells nothing for a row that kept its worktree, and still keeps the UPDATE log with the result', async () => {
     const h = await harness()
     const clock = { now: 30 }
     await landedRow(h, clock)
     await h.records.update('worker', (record) => ({ ...record, life: 'live', worktree: { kind: 'svn', repositoryRoot: h.root, worktreePath: h.treeRoot, branch: 'url', baseCommit: 'r1' },
-      retiredWorktree: undefined }))
+      retiredWorktree: undefined, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'kept', step: undefined, wait: undefined } }))
     const told: unknown[] = []
     const update = new MainCopyUpdate({ ...h.deps, now: () => clock.now, mainCopyUpdated: (notice) => { told.push(notice) } })
     expect(await update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
     await h.settled()
     expect(h.results.list({ sessionId: 'worker' })[0].logs.map((log) => log.runId)).toEqual(['main-run'])
     expect(told).toEqual([])
+  })
+
+  it('tells a Finish whose removal Windows refused that its main copy was updated, before the worktree goes (J8)', async () => {
+    const h = await harness()
+    const clock = { now: 30 }
+    await landedRow(h, clock)
+    await h.records.update('worker', (record) => ({ ...record, worktree: { kind: 'svn', repositoryRoot: h.root, worktreePath: h.treeRoot, branch: 'url', baseCommit: 'r1' },
+      retiredWorktree: undefined }))
+    expect(h.records.get('worker')!.worktreeLifecycle!.wait?.kind).toBe('removal-blocked')
+    const told: unknown[] = []
+    const update = new MainCopyUpdate({ ...h.deps, now: () => clock.now, mainCopyUpdated: (notice) => { told.push(notice) } })
+    expect(await update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
+    await h.settled()
+    const result = h.results.list({ sessionId: 'worker' })[0]
+    expect(told).toEqual([{ sessionId: 'worker', title: 'Worker', mainCopy: h.root, revision: 2, by: 'person', log: result.logs[0].path }])
+    expect(h.records.get('worker')?.completed).toBeUndefined()
   })
 
   it('gives only newly created conflicts to the resolver and leaves old conflicts for the person', async () => {
@@ -386,12 +402,17 @@ describe('MainCopyUpdate', () => {
   it('launches again an UPDATE the client stopped in before its svn update started (Mirabia 118)', async () => {
     const h = await harness()
     await h.update.startUpdate('worker', h.root, 'window', true)
-    await h.records.update('worker', (record) => ({ ...record, svnAction: { ...record.svnAction!, stage: 'updating',
+    await h.records.update('worker', (record) => ({ ...record, svnAction: { ...record.svnAction!, stage: 'updating', stageAt: 1,
       runId: undefined, verdict: undefined, retryAt: undefined, baseRevision: 1, updateProtection: { before: [], overlaps: [], saved: [] } } }))
     const stranded = h.records.get('worker')!
     expect(WorktreeDue.of([stranded], 60_000, 1, new Set())).toContainEqual({ kind: 'svn-action-due', sessionId: 'worker' })
     expect(WorktreeDue.of([stranded], 60_000, 1, new Set(['worker']))).not.toContainEqual({ kind: 'svn-action-due', sessionId: 'worker' })
+    // I41: the step the relaunch runs starts at the relaunch (the harness clock reads 10), not at the stopped client's 1.
+    const run = vi.mocked(h.deps.runner.run).getMockImplementation()!
+    let stageAt: number | undefined
+    vi.mocked(h.deps.runner.run).mockImplementationOnce(async (...args) => { stageAt = h.records.get('worker')!.svnAction?.stageAt; return run(...args) })
     await h.update.drive('worker')
+    expect(stageAt).toBe(10)
     expect(h.deps.runner.run).toHaveBeenCalledOnce()
     expect(h.records.get('worker')!.svnAction).toBeUndefined()
     expect(h.results.list({})[0].main).toMatchObject({ revision: 2 })

@@ -35,6 +35,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
     throw new Error(`${name} is not part of planning the before chain`)
   }
 
+  /** An owner without a seed: every checkout of these cases is a plain checkout, and none is slow enough to make one. */
+  const noSeed = { interrupted: async () => false, copyInto: async () => ({ ok: false as const, code: 'refused' as const, detail: 'there is no seed' }),
+    proof: () => unexpected('seed proof'), adopt: () => unexpected('seed adoption'), refreshLater: () => unexpected('seed refresh') }
+  const purgeReserved = () => unexpected('purge')
+
   /** Keys are paths relative to the returned root; a file whose content does not matter is empty. */
   function directory(files: Record<string, string>): string {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-setup-flow-'))
@@ -125,13 +130,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
     const launched: string[] = []
     const detached: Promise<unknown>[] = []
     const flow = await flowOf(root, { records, scripts, newId: () => `id-${++id}`, detach: (work) => { detached.push(work) },
-      localBefore: new SvnCheckoutStep({ records, runner, now: () => 5000, svn: { status: async () => ({ ok: true, value: { textConflicts: mode === 'conflicts' ? ['a.txt'] : [], otherConflicts: [], changed: [] } }),
+      localBefore: new SvnCheckoutStep({ records, runner, now: () => 5000, seed: noSeed, svn: { purgeReserved, status: async () => ({ ok: true, value: { textConflicts: mode === 'conflicts' ? ['a.txt'] : [], otherConflicts: [], changed: [] } }),
         revisionOf: async () => ({ ok: true, value: 42 }), reservedCheck: async (wanted) => {
         expect(wanted).toEqual({ worktreePath: root, directoryId: 'reserved', url: 'url' })
         return mode === 'identity' ? { ok: false, code: 'refused', detail: 'Reservation identity changed' }
           : { ok: true, value: { workingCopy: mode !== 'fresh' } }
       } } }), runs: { launch: async (record) => {
-        expect(record.commands).toEqual([{ command: 'pnpm install', cwd: join(root, 'Svc') }])
+        expect(record.commands).toEqual([{ command: SetupFamilies.pnpmInstallCommandConst, cwd: join(root, 'Svc') }])
         launched.push(record.scriptOf!.scriptId); return { ok: true, value: undefined }
       } } })
     if (mode === 'fresh') {
@@ -176,7 +181,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
       life: 'starting', createdAt: 1, pendingOperationId: 'launch', pendingOperationKind: 'create', worktree,
       pendingSetup: { local: true, setupSessionId: 'agreed', steps: [step], cursor: 0 } }
     await records.put({ ...parent, worktreeLifecycle: WorktreeLifecycleMigration.fromOld(parent)! })
-    const checkout = new SvnCheckoutStep({ records, runner, now: () => 5000, svn: {
+    const checkout = new SvnCheckoutStep({ records, runner, now: () => 5000, seed: noSeed, svn: { purgeReserved,
       status: async () => ({ ok: true, value: { textConflicts: [], otherConflicts: [], changed: [] } }),
       revisionOf: async () => ({ ok: true, value: 42 }), reservedCheck: async () => ({ ok: true, value: { workingCopy: false } }) } })
     expect(await checkout.run('parent', true)).toBe('agreed')
@@ -272,8 +277,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/setupFlow', () => {
       steps: [{
         scriptId: 'setup',
         commands: [
-          { command: 'pnpm install', cwd: join(worktreePath, 'SrvBackend') },
-          { command: 'pnpm install', cwd: join(worktreePath, 'WebAdmin') },
+          { command: SetupFamilies.pnpmInstallCommandConst, cwd: join(worktreePath, 'SrvBackend') },
+          { command: SetupFamilies.pnpmInstallCommandConst, cwd: join(worktreePath, 'WebAdmin') },
         ],
       }],
     })

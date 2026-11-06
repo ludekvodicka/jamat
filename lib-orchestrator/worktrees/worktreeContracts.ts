@@ -180,7 +180,8 @@ export interface SvnActionFixed {
 /** How the run a run stage waited on ended, written by the gate verdict and judged by the next client step. */
 export type SvnActionVerdict =
   | { kind: 'succeeded'; exitCode?: number }
-  | { kind: 'failed'; reason: string; exitCode?: number }
+  /** `stopped`: somebody asked the run to end (Stop check, the 20-minute limit); its own failure has none. */
+  | { kind: 'failed'; reason: string; exitCode?: number; stopped?: true }
 
 export interface WorkerHandoff {
   id: string

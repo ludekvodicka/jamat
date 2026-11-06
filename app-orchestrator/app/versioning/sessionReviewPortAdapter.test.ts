@@ -25,6 +25,12 @@ describe('app-client-ui/app/versioning/sessionReviewPortAdapter', () => {
     expect(calls).toEqual([['propose', 's1', scopeConst, 'Fix login'], ['forget', 's1', scopeConst], ['read', 's1', scopeConst]])
   })
 
+  it('hands the hints on a stored proposal to its proposer', async () => {
+    const { adapter } = adapterOf({ ok: true, scopeRoot: scopeConst, findings: ['No [Project] prefix'] })
+    expect(await adapter.propose({ sessionId: 's1', directory: scopeConst, message: 'Fix login' }))
+      .toEqual({ ok: true, value: { scopeRoot: scopeConst, findings: ['No [Project] prefix'] } })
+  })
+
   it.each([
     ['message-empty', 'invalid-spec'], ['message-too-long', 'invalid-spec'], ['no-working-copy', 'not-a-repo'],
     ['message-edited', 'message-edited'], ['message-prefix', 'message-unchecked'], ['busy', 'already-running'],

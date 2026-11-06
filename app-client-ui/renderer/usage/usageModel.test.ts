@@ -48,10 +48,23 @@ describe('UsageModel', () => {
 
   it('derives the pool ranges and whole-day token periods from now', () => {
     expect(UsageModel.poolRange('forecast', 10 * 86_400_000)).toEqual({ from: 9 * 86_400_000, to: 17 * 86_400_000 })
-    expect(UsageModel.poolRange('week', 10 * 86_400_000)).toEqual({ from: 3 * 86_400_000, to: 10 * 86_400_000 })
+    expect(UsageModel.poolRange('week', 10 * 86_400_000)).toEqual({ from: 3 * 86_400_000, to: 41 * 86_400_000 })
+    expect(UsageModel.poolRange('month', 40 * 86_400_000)).toEqual({ from: 10 * 86_400_000, to: 71 * 86_400_000 })
     expect(UsageModel.tokenPeriod('today', new Date(2026, 10, 4, 19))).toEqual({ from: '2026-11-04', to: '2026-11-04' })
     expect(UsageModel.tokenPeriod('week', new Date(2026, 10, 4, 19))).toEqual({ from: '2026-10-29', to: '2026-11-04' })
     expect(UsageModel.day(new Date(2026, 9, 26, 23, 59))).toBe('2026-10-26')
+  })
+
+  it('draws a few projected days after 7 and 30 days, and enough to show the pool running empty', () => {
+    const day = 86_400_000
+    const series = { recorded: [], projected: [], burnPerHour: 1, poolEmptyAt: null, firstEmpty: null, nextReset: null,
+      now: 10 * day, until: 41 * day, knownAccounts: 1, totalAccounts: 1, displayRange: { from: 3 * day, to: 41 * day } }
+    expect(UsageModel.poolView('week', series)).toEqual({ from: 3 * day, to: 12 * day })
+    expect(UsageModel.poolView('month', { ...series, displayRange: { from: -20 * day, to: 41 * day } })).toEqual({ from: -20 * day, to: 17 * day })
+    expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 11 * day })).toEqual({ from: 3 * day, to: 12 * day })
+    expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 23 * day })).toEqual({ from: 3 * day, to: 24 * day })
+    expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 40 * day })).toEqual({ from: 3 * day, to: 41 * day })
+    expect(UsageModel.poolView('forecast', series)).toEqual({ from: 3 * day, to: 41 * day })
   })
 
   it('grades a remaining quota and averages only the accounts with a reading', () => {

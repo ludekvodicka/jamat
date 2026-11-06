@@ -25,6 +25,7 @@ describe('WorkerHandoffs', () => {
     expect(source.pending()[0].text).toContain('2 conflicts wait for the worker')
     expect(source.pending()[0].text).toContain("'sessions' 'resolve-conflict' '--self' '--path' 'b' '--option' 'merged'")
     expect(source.pending()[0].text).toContain('/saved/a')
+    expect(source.pending()[0].text).toContain("settle them all in one call: 'node' '/custom/cli.mjs' 'sessions' 'resolve-conflict' '--self' '--all' '--option' 'merged'")
     const reloaded = new WorkerHandoffs(() => null, call)
     expect(reloaded.pending()).toEqual([])
     const loaded = await h.reload()
@@ -67,9 +68,13 @@ describe('WorkerHandoffs', () => {
     await source.conflicts('worker')
     const first = source.pending()[0]
     await source.note([first.id], 'delivered', 10)
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      handoff: { ...record.worktreeLifecycle!.handoff!, at: 1 } } }))
     await source.redeliver('worker')
     expect(h.records.get('worker')?.worktreeLifecycle?.handoff?.key).toBe('conflicts:finish:5')
     expect(source.pending()[0].id).not.toBe(first.id)
+    // The resumed conversation holds the first turn; delivery looks for one written since `at`.
+    expect(source.pending()[0].at).toBeGreaterThan(1)
     await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, step: 'reviewing' } }))
     await source.redeliver('worker')
     expect(source.pending()).toEqual([])

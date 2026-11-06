@@ -47,35 +47,46 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     const insertPrompt = vi.fn(() => ({ ok: true as const }))
     const view = render(checklist(ports, { insertPrompt,
       text: textOf('---\njamat: interactive\n---\n# Checks\n- [x] First\n- [ ] Second\n- [ ] Third') }))
-    expect(view.getByText('Checklist 1/3')).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Send to agent 1/3' })).toBeInTheDocument()
     fireEvent.click(view.getAllByRole('checkbox')[1]!)
-    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ }))
     expect(insertPrompt).not.toHaveBeenCalled()
     await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2', line: 6, checked: true } } }))
-    expect(view.getByText('Checklist 2/3')).toBeInTheDocument()
+    expect(view.getByRole('button', { name: 'Send to agent 2/3' })).toBeInTheDocument()
     expect(insertPrompt).toHaveBeenCalledExactlyOnceWith('Výsledky testu C:/work/guide.md: potvrzeno 2/3.\n'
       + 'Nepotvrzeno (neprošlo, nebo nezkoušeno):\n\n## Checks\n- L7: Third', 'submit')
   })
 
-  it('inserts results without sending through the Insert to terminal menu item', async () => {
+  it('puts the checklist button into the toolbar slot it is given, and nowhere until that slot exists', () => {
+    const ports = { toggleTask: vi.fn() } as unknown as SessionFilePorts['viewer']
+    const slot = document.createElement('span')
+    document.body.append(slot)
+    const view = render(checklist(ports, { toolbarSlot: null }))
+    expect(view.queryByRole('button', { name: /^Send to agent \d+\/\d+$/ })).toBeNull()
+    view.rerender(checklist(ports, { toolbarSlot: slot }))
+    expect(slot.querySelector('button')?.textContent).toBe('Send to agent 0/1')
+    slot.remove()
+  })
+
+  it('inserts results without sending through the Insert into terminal menu item', async () => {
     const ports = { toggleTask: vi.fn() } as unknown as SessionFilePorts['viewer']
     const insertPrompt = vi.fn(() => ({ ok: true as const }))
     const view = render(checklist(ports, { insertPrompt }))
-    fireEvent.click(view.getByRole('button', { name: 'More send options' }))
-    await act(async () => fireEvent.click(view.getByRole('menuitem', { name: 'Insert to terminal' })))
+    fireEvent.click(view.getByRole('button', { name: 'More checklist options' }))
+    await act(async () => fireEvent.click(view.getByRole('menuitem', { name: 'Insert into terminal (no Enter)' })))
     expect(insertPrompt).toHaveBeenCalledExactlyOnceWith(
       expect.stringMatching(/^Výsledky testu C:\/work\/guide\.md: potvrzeno 0\/1\./), 'insert')
-    expect(view.queryByRole('menuitem', { name: 'Insert to terminal' })).toBeNull()
+    expect(view.queryByRole('menuitem', { name: 'Insert into terminal (no Enter)' })).toBeNull()
   })
 
   it('omits empty or ordinary checklists and disables sending without a target or current grant text', () => {
     const ports = { toggleTask: vi.fn() } as unknown as SessionFilePorts['viewer']
     const view = render(checklist(ports))
-    expect(view.getByRole('button', { name: 'Send results' })).toBeDisabled()
-    expect(view.getByRole('button', { name: 'Send results' })).toHaveAttribute('title', 'Session session-1 has no local terminal in this window.')
+    expect(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ })).toBeDisabled()
+    expect(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ })).toHaveAttribute('title', 'Session session-1 has no local terminal in this window.')
     const insertPrompt = vi.fn(() => ({ ok: true as const }))
     view.rerender(checklist(ports, { insertPrompt, textReady: false }))
-    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ }))
     expect(insertPrompt).not.toHaveBeenCalled()
     view.rerender(checklist(ports, { text: textOf('---\njamat: interactive\n---\n# Empty') }))
     expect(view.queryByRole('group', { name: 'Checklist results' })).toBeNull()
@@ -91,7 +102,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     const insertPrompt = vi.fn(() => ({ ok: true as const }))
     const view = render(checklist(ports, { insertPrompt }))
     fireEvent.click(view.getByRole('checkbox'))
-    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ }))
     view.rerender(checklist(ports, { insertPrompt, document: { ...documentOf({ kind: 'markdown', flavor: 'markdown' }), documentId: 'next' } }))
     await act(async () => finish({ ok: true, value: { ok: true, value: { contentVersion: '100:2' } } }))
     expect(insertPrompt).not.toHaveBeenCalled()
@@ -105,7 +116,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     const text = textOf('---\njamat: interactive\n---\n- [ ] Test')
     const view = render(checklist(ports, { insertPrompt: original, text }))
     fireEvent.click(view.getByRole('checkbox'))
-    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ }))
     switch (change) {
       case 'waiting': view.rerender(checklist(ports, { insertPrompt: waiting, text })); break
       case 'removed': view.rerender(checklist(ports, { text })); break
@@ -129,10 +140,10 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     const onReload = vi.fn()
     const view = render(checklist(ports, { insertPrompt, onReload }))
     fireEvent.click(view.getByRole('checkbox'))
-    fireEvent.click(view.getByRole('button', { name: 'Send results' }))
+    fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ }))
     await waitFor(() => expect(onReload).toHaveBeenCalledOnce())
     expect(insertPrompt).not.toHaveBeenCalled()
-    await act(async () => fireEvent.click(view.getByRole('button', { name: 'Send results' })))
+    await act(async () => fireEvent.click(view.getByRole('button', { name: /^Send to agent \d+\/\d+$/ })))
     expect(view.getByRole('alert')).toHaveTextContent('session session-1: the agent is waiting for a choice or permission')
   })
 

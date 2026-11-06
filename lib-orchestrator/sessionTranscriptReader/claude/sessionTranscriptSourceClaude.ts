@@ -78,6 +78,15 @@ export class SessionTranscriptSourceClaude extends SessionTranscriptSource {
       const record = JsonShape.record(raw)
       if (record === null) continue
       if (record['isMeta'] === true || record['isSidechain'] === true) continue
+      // A line Claude takes in the middle of a turn has no user record: it is an attachment of a
+      // queued command, written when the turn absorbs it (queue-operation remove, `absorbed_mid_turn`).
+      const queued = record['type'] === 'attachment' ? JsonShape.record(record['attachment']) : null
+      if (queued?.['type'] === 'queued_command') {
+        const text = SessionTranscriptSourceClaude.userTextOf(queued['prompt'])
+        if (text !== null)
+          messages.push({ role: 'user', text, at: SessionTranscriptSource.writtenAt(record['timestamp']), textTruncated: false })
+        continue
+      }
       const role = SessionTranscriptSource.role(record['type'])
       if (role === null) continue
       const body = JsonShape.record(record['message'])?.['content']

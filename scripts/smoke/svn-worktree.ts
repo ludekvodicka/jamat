@@ -8,6 +8,7 @@ import { WorkerHandoffs } from '../../lib-orchestrator/sessionManager/notifies/w
 import { WorkerReady } from '../../lib-orchestrator/worktrees/worktreeFinish.js'
 import { SvnWriterCrash } from './svnWriterCrash.js'
 import { SvnUpdateScenarios } from './svnUpdateScenarios.js'
+import { SvnSeedScenarios } from './svnSeedScenarios.js'
 import { SvnPreparationScenarios } from './svnPreparationScenarios.js'
 import { SetupInputs } from '../../lib-orchestrator/projectSetup/setupInputs.js'
 import { SvnBranchConflicts } from './svnBranchConflicts.js'
@@ -218,10 +219,10 @@ class SmokeSvnActions {
       savedDirectoryOf: (id) => this.results.savedDirectoryOf(id), withMarkers: deps.resolver.withMarkers, unavailable: deps.resolver.unavailable, cli: deps.resolver.cli, now: deps.now })
     const handoffs = new WorkerHandoffs(() => records, (_record, args) => WorkerHandoffs.lineOf('jamat-v3', [], args, 'posix'))
     const sync = new SyncStep({ records, svn: manager, runner: deps.runner, commands, conflicts, handoffs, ready: { current: async () => true },
-      busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
+      busyReason: () => null, reading: async () => {}, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
     this.flow = new FinishDriver({ ...deps, commands, sync, update: new MainCopyUpdate({ ...deps, lease, commands }),
       handoffs,
-      idle: () => true, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, awaitExit: async () => true, liveness: async () => {} })
+      idle: () => true, busyReason: () => null, reading: async () => {}, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, awaitExit: async () => true, liveness: async () => {} })
     // A press answers before its steps run (2026-10-30); the scenarios judge what the steps left behind.
     const press = this.flow.start.bind(this.flow)
     this.flow.start = async (sessionId, finishPress) => {
@@ -676,9 +677,85 @@ class SmokeSvnWorktree extends SmokeHarness {
       && (await repository.run(owner, ['propget', 'svn:eol-style', `${repository.url}/new/nested/added.ts@HEAD`])).trim() === 'native')
   }
 
+  /**
+   * Plan 002e R1 and R6, timed through the composed Finish: an owner with 30 mounts and no declared
+   * checks, one changed file, and a commit that moved only the owner. The sync must end under 15 s
+   * (R1) and the preparation reach review under 20 s after it (R6, 44 to 105 s and a 289 s "Check"
+   * before U7). file:// repositories answer faster than the LAN server, so both are lower bounds.
+   */
+  private async checkFinishTimings(): Promise<void> {
+    const syncTargetMilliseconds = 15_000, preparationTargetMilliseconds = 20_000, processBound = 80
+    const repository = await SvnFixtureRepository.create(join(this.root, 'timing-repo'), this.svn)
+    const library = await SvnFixtureRepository.create(join(this.root, 'timing-lib'), this.svn)
+    const owner = join(this.root, 'timing-owner'), seed = join(this.root, 'timing-lib-seed')
+    const message = join(this.root, 'timing-message.txt')
+    const commit = async (cwd: string, text: string) => {
+      await writeFile(message, `[Fixture] ${text}`)
+      await repository.run(cwd, ['commit', '-F', message])
+      await repository.run(cwd, ['update'])
+    }
+    const mounts = Array.from({ length: 30 }, (_, index) => `m${String(index).padStart(2, '0')}`)
+    await library.run(this.root, ['checkout', library.url, seed])
+    for (const name of mounts) {
+      await mkdir(join(seed, name))
+      await writeFile(join(seed, name, 'library.txt'), `${name}\n`)
+    }
+    await library.run(seed, ['add', ...mounts])
+    await commit(seed, 'Seed thirty libraries')
+    await repository.run(this.root, ['checkout', repository.url, owner])
+    await writeFile(join(owner, 'app.txt'), 'original app\n')
+    await writeFile(join(owner, 'other.txt'), 'original other\n')
+    await repository.run(owner, ['add', 'app.txt', 'other.txt'])
+    await repository.run(owner, ['propset', 'svn:global-ignores', '.worktrees', '.'])
+    await repository.run(owner, ['propset', 'svn:externals', mounts.map((name) => `${library.url}/${name} lib/${name}`).join('\n'), '.'])
+    await commit(owner, 'Seed an owner with thirty mounts')
+    const manager = new SvnWorktreeManager(this.svn)
+    const records = await SessionRecordsStore.load(join(this.root, 'timing-records.json'), { snapshotsDirectory: join(this.root, 'timing-snapshots') })
+    const actions = new SmokeSvnActions(records, manager, this.svn, join(this.root, 'timing-logs'))
+    const made = await manager.create({ ownerDir: owner, folder: '001-timing' })
+    assert(made.ok, JSON.stringify(made))
+    const tree = made.value.worktreePath, id = 'timing'
+    await records.put({ sessionId: id, kind: 'agent', title: id, createdAt: Date.now(), life: 'ended', binding: null,
+      agent: { agentId: 'claude', launchMode: 'new' }, directory: { mode: 'adHoc', path: owner },
+      worktree: { kind: 'svn', worktreePath: tree, repositoryRoot: owner, branch: made.value.url, baseCommit: `r${made.value.baseRevision}`,
+        agentStartedAt: Date.now(), ...(made.value.directoryId === null ? {} : { directoryId: made.value.directoryId }) } })
+    await writeFile(join(tree, 'app.txt'), 'worktree app\n')
+    await writeFile(join(owner, 'other.txt'), 'owner moved elsewhere\n')
+    await commit(owner, 'Only the owner moves')
+    // The step the press is in, read every 5 ms: the sync ends where the record last leaves `syncing`.
+    let syncing = false, syncEnded: number | null = null, reviewing: number | null = null
+    const sampler = setInterval(() => {
+      const step = records.get(id)?.worktreeLifecycle?.step
+      if (step === 'syncing') { syncing = true; syncEnded = null }
+      else if (syncing && syncEnded === null) syncEnded = performance.now()
+      if (step === 'reviewing' && reviewing === null) reviewing = performance.now()
+    }, 5)
+    this.counts.clear()
+    const pressed = performance.now()
+    try {
+      const answer = await actions.flow.start(id, { choice: 'commit', requestedBy: 'window' })
+      assert(answer.ok, JSON.stringify(answer))
+      await actions.settled()
+    } finally { clearInterval(sampler) }
+    const settled = performance.now()
+    const processes = [...this.counts.values()].reduce((sum, count) => sum + count, 0)
+    const state = records.get(id)?.worktreeLifecycle
+    assert.equal(state?.step, 'reviewing', JSON.stringify(state?.wait))
+    assert(syncing && syncEnded !== null, 'The sampler saw the press sync')
+    const syncMilliseconds = Math.round(syncEnded! - pressed), preparationMilliseconds = Math.round((reviewing ?? settled) - syncEnded!)
+    console.log(`  timing ${mounts.length} mounts, no checks: sync ${syncMilliseconds} ms, sync end to review ${preparationMilliseconds} ms, press to settled ${Math.round(settled - pressed)} ms; SVN calls ${JSON.stringify(Object.fromEntries(this.counts))}`)
+    this.check(`R1 the Finish sync after only the owner moved ends in ${syncMilliseconds} ms with ${mounts.length} mounts (target under ${syncTargetMilliseconds} ms)`,
+      syncMilliseconds < syncTargetMilliseconds && (await repository.run(tree, ['info', '--show-item', 'revision', '.'])).trim() === (await repository.run(owner, ['info', '--show-item', 'revision', '.'])).trim())
+    this.check(`R6 a no-check owner goes from the sync end to review in ${preparationMilliseconds} ms (target under ${preparationTargetMilliseconds} ms) with no check run and nothing published`,
+      preparationMilliseconds < preparationTargetMilliseconds && actions.checkRuns === 0 && actions.opened.length === 0 && state?.review !== undefined)
+    // 66 on 2026-11-05, none of them per mount (184 before the batched assembly and lowerBounds reads):
+    // any read that returns to one process per mount adds 30 and fails.
+    this.check(`One press of an owner with ${mounts.length} mounts runs ${processes} svn processes (at most ${processBound})`, processes <= processBound)
+  }
+
   private async execute(): Promise<void> {
     if (process.argv.includes('--matrix-audit')) { await SvnAuditScenarios.run(this.root); return }
-    if (process.argv.includes('--matrix-preparation')) { await SvnPreparationScenarios.run(this.root); await this.checkPreparationFlow(); return }
+    if (process.argv.includes('--matrix-preparation')) { await SvnPreparationScenarios.run(this.root); await this.checkPreparationFlow(); await this.checkFinishTimings(); return }
     if (process.argv.includes('--matrix-update')) { await SvnUpdateScenarios.run(this.root); return }
     if (process.argv.includes('--matrix-branches')) { await SvnBranchConflicts.run(this.root, this.svn); return }
     if (process.argv.includes('--matrix-changes')) { await this.checkChangeMatrix(); return }
@@ -691,6 +768,7 @@ class SmokeSvnWorktree extends SmokeHarness {
       return
     }
     if (process.argv.includes('--matrix-scope')) { await this.checkCreateOwners(); return }
+    if (process.argv.includes('--matrix-seed')) { await SvnSeedScenarios.run(this.root); return }
     if (process.argv.includes('--matrix-recovery')) { await this.checkNewFlow(['E07', 'E08']); return }
     if (process.argv.includes('--matrix-incident')) { await this.checkIncident072(); return }
     if (process.argv.includes('--incident-rule')) { await this.checkIncidentRule(); await this.checkIncidentSameName(); return }
@@ -727,7 +805,9 @@ class SmokeSvnWorktree extends SmokeHarness {
       await SvnAuditScenarios.run(this.root)
       await SvnPreparationScenarios.run(this.root)
       await this.checkPreparationFlow()
+      await this.checkFinishTimings()
       await SvnUpdateScenarios.run(this.root)
+      await SvnSeedScenarios.run(this.root)
       await this.checkNewFlow()
       await SvnWriterCrash.run(this.root)
       await SvnFinishContractCases.run(undefined, this.root)

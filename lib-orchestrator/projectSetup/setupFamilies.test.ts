@@ -33,11 +33,16 @@ describe('lib-orchestrator/projectSetup/setupFamilies', () => {
   it('gives pnpm the store variable with the setting on, and gives nothing else any', () => {
     const on = { node: { pnpm: { globalVirtualStore: true } } }
     const off = SetupFamilies.defaultPlatformSettings()
-    expect(SetupFamilies.commandOf('node-pnpm')).toBe('pnpm install')
     expect(SetupFamilies.variablesOf('node-pnpm', on)).toEqual({ pnpm_config_enable_global_virtual_store: 'true' })
     expect(SetupFamilies.variablesOf('node-pnpm', off)).toEqual({})
     for (const toolId of everyToolConst.filter((id) => id !== 'node-pnpm'))
       expect(SetupFamilies.variablesOf(toolId, on), toolId).toEqual({})
+  })
+
+  /* Worktree 103 (J17): pnpm asked (Y/n) to purge node_modules in an unwatched PTY and the Finish
+     stopped. pnpm 11.15.1 reads no environment variable for this setting, so the flag is on the line. */
+  it('installs pnpm without asking before it purges node_modules', () => {
+    expect(SetupFamilies.commandOf('node-pnpm')).toBe('pnpm install --config.confirm-modules-purge=false')
   })
 
   /* A shared object would let one caller edit the default out from under the next. */

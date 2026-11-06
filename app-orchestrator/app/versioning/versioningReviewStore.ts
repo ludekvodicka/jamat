@@ -14,7 +14,7 @@ const recordSchema = z.object({
   dto: versioningReviewSchema.omit({ epoch: true }), cwd: literal, lockRoot: literal,
   targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean() }).strict()).max(2_000).optional(),
   committedPaths: z.array(literal).optional(), externalReview: z.enum(['running', 'closed']).optional(),
-  rejectedSnapshotId: literal.optional(), closedAt: z.number().optional(),
+  rejectedSnapshotId: literal.optional(), closedAt: z.number().optional(), failure: z.string().max(8_388_608).optional(),
   wake: z.union([z.object({ state: z.literal('watching') }).strict(), z.object({
     state: z.enum(['pending', 'delivered', 'expired']), text: literal, at: z.number(), attempts: z.number().int().min(0),
   }).strict()]).optional(),
@@ -39,6 +39,8 @@ export interface VersioningReviewRecord {
   rejectedSnapshotId?: string
   closedAt?: number
   wake?: VersioningReviewWake
+  /** Why a Finish approval failed on this computer, kept beside the Finish's own summary. */
+  failure?: string
 }
 
 interface ReviewDocument { version: 1; reviews: VersioningReviewRecord[] }

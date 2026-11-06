@@ -2594,6 +2594,99 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
   })
 
   /*
+   * I14 (research 032/033, fixed in r843): an idle client with landed rows, a live SVN worktree and a
+   * pp `worktree-results` watcher spawned 3.5 to 7.7 svn.exe a second (a landing proof per results
+   * call, a 30 s facts pass, a periodic `behind`). Once the first proof and the server distance are
+   * read, nothing writes the working copies, so the stamp holds and no source may start svn: neither
+   * the 2 s poll, its 10 s landed pass nor a watcher asking every second (40 times the real ~40 s).
+   * The bound is zero because any periodic source of 10 s or less starts at least one svn in the
+   * 12 s window. Real svn on a disposable repository; skipped where svnadmin is missing.
+   */
+  it('spawns no svn while idle with landed rows, a live SVN worktree and a results watcher polling', { timeout: 90_000 }, async (runner) => {
+    const idleSpawnBound = 0
+    const windowMilliseconds = 12_000
+    const watcherMilliseconds = 1_000
+    expect(windowMilliseconds).toBeGreaterThan(LandedRows.holdsRefreshMillisecondsConst)
+    const context = await world()
+    const repository = join(context.root, 'repository')
+    const created = await new CommandInvoker().run({ command: 'svnadmin', args: ['create', repository], cwd: context.root, env: process.env })
+    if (created.failure !== null || created.code !== 0) return runner.skip()
+    const svn = new SvnInvoker()
+    const run = async (cwd: string, args: string[]): Promise<string> => {
+      const outcome = await svn.run(cwd, [args[0], '--non-interactive', ...args.slice(1)])
+      expect(outcome.code, outcome.stderr).toBe(0)
+      return outcome.stdout
+    }
+    const owner = join(context.root, 'owner')
+    const other = join(context.root, 'other')
+    const url = pathToFileURL(repository).href
+    await run(context.root, ['checkout', url, owner])
+    await run(owner, ['propset', 'svn:global-ignores', '.worktrees', '--', '.'])
+    await run(owner, ['commit', '--username', 'fixture', '-m', 'ignore worktrees', '--', '.'])
+    await run(context.root, ['checkout', url, other])
+    writeFileSync(join(other, 'a.txt'), 'landed\n')
+    await run(other, ['add', '--', 'a.txt'])
+    await run(other, ['commit', '--username', 'fixture', '-m', 'landed', '--', '.'])
+    const live = join(owner, '.worktrees', '015-live')
+    await run(context.root, ['checkout', url, live])
+    const root = (await run(owner, ['info', '--show-item', 'repos-root-url', '--', '.'])).trim()
+    // The main copy stays at r1, so the landing of r2 is never held: the row stays and every pass asks again.
+    const landed = [{ repository: root, revision: 2, label: 'receipt' as const }]
+    seedRecords(context, [
+      recordOf(context, 'landed', { directory: { mode: 'adHoc', path: owner }, retiredWorktree: {
+        worktreePath: join(owner, '.worktrees', '014-fix'), kind: 'svn', revisions: [`${root}:r2`], removedAt: 2_000, ownerDir: owner, landed } }),
+      recordOf(context, 'live', { life: 'live', directory: { mode: 'adHoc', path: owner },
+        worktree: { worktreePath: live, branch: url, baseCommit: 'r2', repositoryRoot: owner, kind: 'svn' } }),
+    ])
+    context.runtimes.set('live', runtime('live'))
+    context.publishDescriptor()
+    const client = clientOf(context)
+    const result: WorktreeResultRecord = {
+      actionId: 'unheld', action: 'finish', result: 'committed', sessionId: 'gone', title: 'gone', tag: 'idle',
+      worktreePath: join(owner, '.worktrees', '013-gone'), mainCopy: owner, directoryId: null, removal: 'removed',
+      revisions: landed, lines: [], logs: [], notify: null, at: Date.now(), acknowledgedAt: null,
+    }
+    await client.manager.worktreeResultsStore().put(result)
+    await client.manager.worktreeResultsStore().put({ ...result, actionId: 'partial', result: 'partial' })
+    // A landing proven once is kept and never proven again; its own revision, so it answers for no other result.
+    await client.manager.worktreeResultsStore().put({ ...result, actionId: 'frozen', landedAt: 3_000, revisions: [{ ...landed[0], revision: 1 }] })
+    const spawns = vi.spyOn(SvnInvoker.prototype, 'run')
+    onTestFinished(() => spawns.mockRestore())
+    const spawnedSince = (from: number) => spawns.mock.calls.slice(from).map(([cwd, args]) => `${args[0]} in ${cwd}`)
+    const watch = async () => valueOf(await client.manager.worktreeResults({ tag: 'idle' })).results
+      .map((row) => `${row.actionId}:${String(row.holdsLanded)}`).sort()
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+
+    // Warm-up: the first `behind`, the first proofs and the stamp they are kept under.
+    await vi.waitFor(() => expect(sessionOf(client, 'landed')?.retiredWorktree?.landing?.behind).toBe(1), { timeout: 15_000 })
+    let warm = false
+    for (let read = 0; read < 10 && !warm; read++) {
+      const before = spawns.mock.calls.length
+      expect(await watch()).toEqual(['frozen:true', 'partial:false', 'unheld:false'])
+      warm = spawns.mock.calls.length === before
+    }
+    expect(warm, `results reads still spawn svn after warm-up: ${spawnedSince(0).join('; ')}`).toBe(true)
+    const warmUp = spawns.mock.calls.length
+    // The counting seam sees the owner's svn at all: the warm-up proofs and `behind` went through it.
+    expect(warmUp).toBeGreaterThan(0)
+
+    const windowStart = Date.now()
+    const reads = windowMilliseconds / watcherMilliseconds
+    for (let read = 0; read < reads; read++) {
+      expect(await watch()).toEqual(['frozen:true', 'partial:false', 'unheld:false'])
+      await new Promise((done) => setTimeout(done, watcherMilliseconds))
+    }
+    const elapsed = Date.now() - windowStart
+    const idle = spawnedSince(warmUp)
+    expect(idle.length, `${idle.length} svn in ${elapsed} ms idle (${(idle.length * 1_000 / elapsed).toFixed(2)}/s; ${reads} results reads, `
+      + `${warmUp} svn in warm-up), bound ${idleSpawnBound}: ${idle.join('; ')}`).toBeLessThanOrEqual(idleSpawnBound)
+    expect(sessionOf(client, 'landed')?.retiredWorktree?.landing?.behind).toBe(1)
+    expect(sessionOf(client, 'live')?.life).toBe('live')
+  })
+
+  /*
    * The record is the only thing that names a worktree, so a Remove takes a clean one with the
    * session, keeps a changed one with its session, and takes a session whose worktree is already
    * gone. Real svn on a disposable repository; skipped where svnadmin is missing.

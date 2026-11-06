@@ -1,8 +1,8 @@
-import { basename, resolve, posix } from 'node:path'
+import { resolve, posix } from 'node:path'
 import { SvnCommitMessageCheck } from '../../svn/svnCommitMessageCheck'
 import { PathPresence } from '../../shared/pathPresence'
-import { ProductGroup } from '../../shared/productGroup'
 import { PathCompare } from '../../shared/pathCompare'
+import { CommitPrefix } from './commitPrefix'
 import { SvnCommitGate } from '../../svn/svnCommitGate'
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
 import { WorktreeWords } from '../view/worktreeWords'
@@ -62,7 +62,7 @@ export class ReviewCandidates {
         const proposal = changedRepository ? undefined : this.deps.proposalOf?.(sessionId, candidate.path)
         const initial = state.review?.repositories === undefined
         return { root: candidate.path, repository, repositoryName,
-          expectedPrefix: `[${ReviewCandidates.ownerOf(candidate.own, bounds.value[candidate.own].base, record.worktree!.repositoryRoot, repositoryName)}]`,
+          expectedPrefix: CommitPrefix.of(candidate.own, bounds.value[candidate.own].base, record.worktree!.repositoryRoot, repositoryName),
           paths: paths.filter((path) => PathCompare.isInside(candidate.path, resolve(root, path))
             && !roots.value.some((other) => other.path !== candidate.path && PathCompare.isInside(candidate.path, other.path) && PathCompare.isInside(other.path, resolve(root, path)))),
           message: prior !== undefined && (prior.message.trim() || prior.source === 'person-local' || prior.source === 'person-remote') ? prior.message : proposal ?? (initial ? message : ''),
@@ -134,17 +134,6 @@ export class ReviewCandidates {
       })) return ReviewCandidates.stale([])
       return changed.length > 0 ? ReviewCandidates.stale(changed) : { ok: true, review }
     })
-  }
-
-  /**
-   * The project a mount publishes, as its history and the commit helper name it: an external, a product
-   * group (a coordinated commit) and a checkout of a whole repository use the repository name; a project
-   * inside a larger repository uses its folder, so a Jamat worktree in `applications` expects [Jamat].
-   */
-  private static ownerOf(own: string, base: string, ownerDir: string, repositoryName: string): string {
-    if (own !== '' || /^\/?(trunk\/?)?$/.test(base)) return repositoryName
-    const group = ProductGroup.readAt(ownerDir)
-    return group.ok && group.kind === 'product' ? repositoryName : basename(ownerDir)
   }
 
   /**

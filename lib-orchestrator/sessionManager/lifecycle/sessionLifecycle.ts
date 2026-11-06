@@ -205,7 +205,7 @@ export type ReopenRoute =
  */
 type ScriptGateHandlers = Record<SessionScriptGate, {
   succeeded(parentId: string): Promise<ReconcileChange | null>
-  failed(parentId: string, reason: string): Promise<boolean>
+  failed(parentId: string, reason: string, stopped: boolean): Promise<boolean>
 }>
 
 /**
@@ -378,7 +378,8 @@ export class SessionLifecycle {
         succeeded: async (parentId) => await WorktreeLifecycle.onRunVerdict(this.svnActions, parentId, { kind: 'succeeded' })
           ? { kind: 'script-succeeded', sessionId: parentId, gate: 'action' }
           : null,
-        failed: (parentId, reason) => WorktreeLifecycle.onRunVerdict(this.svnActions, parentId, { kind: 'failed', reason }),
+        failed: (parentId, reason, stopped) => WorktreeLifecycle.onRunVerdict(this.svnActions, parentId,
+          { kind: 'failed', reason, ...stopped ? { stopped: true as const } : {} }),
       },
     }
   }
@@ -1760,7 +1761,7 @@ export class SessionLifecycle {
         if (landed) applied.push(landed)
       }
       else if (change.kind === 'script-failed') {
-        if (await this.gateHandlers[change.gate].failed(change.sessionId, change.reason)) applied.push(change)
+        if (await this.gateHandlers[change.gate].failed(change.sessionId, change.reason, change.stopped === true)) applied.push(change)
       }
       else if (change.kind === 'name-conversation') {
         if (await this.applyConfirmedName(change.sessionId)) applied.push(change)
@@ -1775,6 +1776,10 @@ export class SessionLifecycle {
       else if (change.kind === 'svn-action-due') {
         // Driven off this loop, like a cleanup: its client steps read svn.
         this.svnActions.due(change.sessionId)
+        applied.push(change)
+      }
+      else if (change.kind === 'retry-removal') {
+        this.svnActions.retryRemovalDue(change.sessionId)
         applied.push(change)
       }
       else if (change.kind === 'stop-script-run') {

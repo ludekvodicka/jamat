@@ -1343,7 +1343,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       const mount = join(worktree, 'mount')
       const { manager, calls } = scripted((cwd, args) => {
         if (args[0] === 'info' && args.at(-1) === repository) return { stdout: infoXml({ revision: 5, entryUrl: repository }) }
-        if (args[0] === 'info') return { stdout: infoXml({ revision: 5 }) }
+        if (args[0] === 'info') return { stdout: infoListXml(args.slice(args.indexOf('--') + 1).map((target) => ({ path: target.replace(/@$/, ''), revision: 5 }))) }
         if (args[0] === 'log') return { stdout: logXml(6, [{ action: 'M', path: '/Project/src/a.txt' }]) }
         if (args[0] === 'status' && cwd === worktree)
           return { stdout: statusXml([{ path: 'src/a.txt', item: 'normal', revision: 6, changed: 6 }, { path: 'src', item: 'normal', revision: 5, changed: 4 }]) }
@@ -1355,7 +1355,9 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
         mount: { repository, base: '/Project', rootBase: 5, since: 5 },
         '': { repository, base: '/Project', rootBase: 5, since: 5 },
       } })
-      expect(calls.filter((call) => call.args.at(-1) === repository)).toHaveLength(1)
+      // One process names both roots from the worktree, one names their repository.
+      expect(calls.filter((call) => call.args[0] === 'info').map((call) => [call.cwd, call.args.slice(call.args.indexOf('--') + 1)]))
+        .toEqual([[worktree, ['mount@', '.@']], [worktree, [repository]]])
       if (!bounds.ok) return
       expect(await manager.reviewed(roots[1], bounds.value, 6)).toEqual({ ok: true, value: [{ revision: 6, action: 'M', path: 'src/a.txt' }] })
       expect(await manager.reviewed(roots[1], bounds.value, 5)).toMatchObject({ ok: false, detail: expect.stringMatching(/pre-review/) })
@@ -1398,6 +1400,37 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       expect(await manager.renameAside({ ...location, directoryId: '1:2:3' }))
         .toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/another directory/) })
       expect(existsSync(location.worktreePath)).toBe(true)
+    })
+
+    it('proves a worktree without .svn by its directory identity alone, as run 098 left it (I67)', async () => {
+      const location = await worktree()
+      if (location.directoryId === undefined) return
+      await rm(join(location.worktreePath, '.svn'), { recursive: true })
+      await rm(join(location.worktreePath, 'a.txt'))
+      await mkdir(join(location.worktreePath, 'lib-orchestrator', 'empty'), { recursive: true })
+      const { manager, calls } = scripted(noSvn)
+      expect(await manager.removalHoldsFiles(location.worktreePath)).toBe(false)
+      expect(await manager.removalSource({ ...location, url: '' })).toMatchObject({ ok: true, value: { aside: false, present: true } })
+      expect(await manager.renameAside({ ...location, directoryId: '1:2:3' })).toMatchObject({ ok: false, code: 'refused' })
+      expect(await manager.renameAside(location)).toEqual({ ok: true, value: 'renamed' })
+      expect(calls).toEqual([])
+    })
+
+    it('counts a file or a link anywhere below as content, and never follows the link', async () => {
+      const location = await worktree()
+      const { manager } = scripted(noSvn)
+      expect(await manager.removalHoldsFiles(location.worktreePath)).toBe(true)
+      const empty = join(temporary, 'empty')
+      await mkdir(join(empty, 'a', 'b'), { recursive: true })
+      expect(await manager.removalHoldsFiles(empty)).toBe(false)
+      const target = join(temporary, 'target')
+      await mkdir(target)
+      await symlink(target, join(empty, 'a', 'link'), 'junction')
+      expect(await manager.removalHoldsFiles(empty)).toBe(true)
+      await writeFile(join(target, 'outside.txt'), 'x')
+      await rm(join(empty, 'a', 'link'))
+      await writeFile(join(empty, 'a', 'b', 'deep.txt'), 'x')
+      expect(await manager.removalHoldsFiles(empty)).toBe(true)
     })
 
     it('selects a surviving removal remainder only when its directory identity matches', async () => {

@@ -30,6 +30,7 @@ import { CommandAgreement } from '../scripts/commandAgreement'
 import { CommandTrustStore } from '../scripts/commandTrustStore'
 import { DeclaredScripts } from '../scripts/declaredScripts'
 import { ScriptLogStore } from '../scripts/scriptLogStore'
+import { ScriptRunOutcome } from '../scripts/scriptRunOutcome'
 import { WorktreeResultsStore } from '../../worktrees/worktreeResults'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { type ScriptCollapsed, SessionScriptsManager } from '../scripts/sessionScriptsManager'
@@ -630,7 +631,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         scripts,
         finish: { commands: { lease, accept: async () => {}, verify: async () => {}, acceptInterrupted: async () => {} },
           sync: { recover: async () => false, withControl: async (_id, work) => work(), run: async (id) => { svnAction.syncs.push(id); await store.update(id, (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, version: record.worktreeLifecycle!.version + 1, step: 'checking', phase: 'finishing', wait: undefined } })); return { ok: true, value: { revision: 1, conflicts: [] } } }, resolve: async () => ({ ok: false, code: 'invalid-spec', detail: 'No conflict' }) },
-          handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} }, idle: () => true, busyReason: () => null,
+          handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} }, idle: () => true, busyReason: () => null, reading: async () => {},
           terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, awaitExit: async () => true, liveness: async () => {} },
 
 
@@ -3388,6 +3389,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       sessionId: 'p1',
       gate: 'before',
       reason: 'its setup was stopped',
+      stopped: true,
     })
   })
 
@@ -6470,7 +6472,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const applied = await context.lifecycle.reconcile(context.host.listing())
       await context.lifecycle.reconcile(context.host.listing())
 
-      expect(applied).toContainEqual({ kind: 'script-failed', sessionId: 'm1', gate: 'merge', reason: 'its resolver was stopped' })
+      expect(applied).toContainEqual({ kind: 'script-failed', sessionId: 'm1', gate: 'merge', reason: 'its resolver was stopped', stopped: true })
       expect(context.resumed).toEqual([])
       expect(context.store.get('m1')?.worktreeMerge?.failure).toBe('its resolver was stopped')
       expect(context.store.get('m1')?.scriptRuns?.map((entry) => [entry.runId, entry.outcome])).toEqual([['r1', 'stopped']])
@@ -6999,6 +7001,46 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(FinishProjection.action(context.store.get('s1')!)).toMatchObject({ stage: 'changes' })
       expect(context.store.get('s1')?.worktreeLifecycle?.review?.selection).toEqual(['a.txt'])
       expect(callsNamed(context.host, 'runtime.create')).toEqual([])
+    })
+
+    // J17 review: the gate's stop confirmation marks every ended check stopRequested, so only the
+    // judgement before it may say a person stopped the check; an unattended worker must get its log.
+    it.each([
+      ['a check of an agent Finish that failed by itself goes back to the worker', false, 'active'],
+      ['a check the Stop check press stopped waits for the person', true, 'waiting'],
+    ] as const)('%s', async (_name, pressed, phase) => {
+      const context = await harness()
+      const worktree = join(context.workDirectory, '.worktrees', 'checking')
+      mkdirSync(worktree, { recursive: true })
+      const check = { key: 'k', scriptId: 'checks' as const, name: 'tests', commands: [{ command: 'pnpm test', cwd: worktree }] }
+      await context.store.put({ ...withWorktree(context, 'checking'), worktreeLifecycle: { version: 1, actionId: 'action-1', phase: 'finishing', step: 'checking',
+        outOfDate: 0, journal: [], owner: 'agent', facts: { worker: { liveness: 'alive', resumeFailures: 0 } },
+        execution: { root: worktree, checks: [check], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'cli', startedAt: 5, runId: 'check-run', checkBefore: {} },
+        preparation: { format: 1, manifest: 'fixture', content: 'a'.repeat(64), metadata: 'b'.repeat(64), commands: 'c'.repeat(64), checks: 'pending', attempt: 0 } } })
+      await context.logs.write('s1', 'check-run', 'Complete retained check output')
+      await context.store.update('s1', (current) => ({ ...current, scriptRuns: [{ runId: 'check-run', title: 'tests', phase: 'after', scriptId: 'checks', name: 'tests',
+        commands: check.commands.map((command) => command.command), startedAt: 1, endedAt: 4_000, exitCode: 1, outcome: pressed ? 'stopped' : 'failed',
+        log: { state: 'saved', bytes: 30, truncated: false } }] }))
+      await context.store.put(record('check-run', {
+        life: 'ended', binding: { hostInstanceId: 'host-1', generation: 1 }, exitCode: 1, exitReason: pressed ? 'stopped' : 'process-exit', endedAt: 4_000,
+        ...pressed ? { stopRequested: true as const } : {}, commands: check.commands,
+        scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'checks', name: 'tests', stepKey: 'k' },
+      }))
+      context.host.runtimes.set('check-run', runtime('check-run', { alive: false, exitCode: 1, exitedAt: 4_000 }))
+
+      const applied = await context.lifecycle.reconcile(context.host.listing())
+      expect(applied).toContainEqual({ kind: 'script-failed', sessionId: 's1', gate: 'action', reason: pressed ? 'its tests check was stopped' : 'the tests check exited with 1',
+        ...pressed ? { stopped: true } : {} })
+      await Promise.all(context.svnAction.detached.splice(0))
+
+      // The gate confirmed the stop of an ended run; only the press marks it, so a second judgement agrees with the first.
+      expect(context.store.get('check-run')?.stopRequested).toBe(pressed ? true : undefined)
+      // A pass whose verdict write lost the lease judges the run again: the same outcome, not "stopped" (review 4).
+      expect(ScriptRunOutcome.judge('check-run', context.store.list(), new Map(),
+        SessionScriptDefinitions.wordsOf(context.store.get('check-run')!.scriptOf!))).toMatchObject({ outcome: pressed ? 'stopped' : 'failed' })
+      expect(context.store.get('s1')?.worktreeLifecycle).toMatchObject({ phase, checks: { passed: false } })
+      if (pressed) expect(context.store.get('s1')?.worktreeLifecycle?.wait).toMatchObject({ kind: 'checks-failed' })
+      else expect(context.store.get('s1')?.worktreeLifecycle?.wait).toBeUndefined()
     })
 
     it.each(['E155011', 'E160028', 'E170004', 'success', 'no-exit'])('waits for the saved commit log of a fast run before handling %s', async (result) => {

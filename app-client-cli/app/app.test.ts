@@ -303,6 +303,8 @@ class FakeCliClient implements AppClientCliClientPort {
       return { sessionId: 'session-001', actionId: 'action-1', stage: 'updating', summary: '3 conflicts need you', entries: [], more: 3 }
     if (operation === 'sessions.sync') return { revision: 42, conflicts: [{ path: 'a', kind: 'text' }] }
     if (operation === 'sessions.resolveConflict') return { sessionId: 'session-001', path: '.aidocs/engines', state: 'settled', left: 2 }
+    if (operation === 'sessions.resolveConflicts')
+      return { sessionId: 'session-001', settled: [{ path: 'src/a.ts', kind: 'text', state: 'settled' }, { path: 'src/b.ts', kind: 'text', state: 'settled' }], left: 0 }
     if (operation === 'sessions.children') return { children: [] }
     if (operation === 'sessions.acknowledgeWorktreeResult') return { actionId: 'action-1' }
     if (operation === 'sessions.proposeCommit') return { scopeRoot: 'Q:/Apps/One/.worktrees/i42-orders' }
@@ -1855,6 +1857,44 @@ describe('app-client-cli/app/app', () => {
     const old = new CliHarness()
     old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.resolveConflict')
     expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--path', 'a', '--option', 'merged'], old.deps()).run()).toBe(6)
+  })
+
+  it('settles every open path or a list of paths with one option in one call (F13: twelve calls for twelve paths)', async () => {
+    const all = new CliHarness()
+    all.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--self', '--all', '--option', 'merged'], all.deps()).run()).toBe(0)
+    expect(all.client.requests.filter((request) => request.operation.startsWith('sessions.resolveConflict'))).toEqual([expect.objectContaining({
+      operation: 'sessions.resolveConflicts', body: { session: { kind: 'sessionId', sessionId: 'session-001' }, paths: 'all', option: 'merged' } })])
+    expect(all.parsedOutput()).toMatchObject({ ok: true, value: { settled: [{ path: 'src/a.ts' }, { path: 'src/b.ts' }], left: 0 } })
+
+    const listed = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--paths-file', 'paths.json', '--kind', 'text', '--option', 'take-incoming'],
+      { ...listed.deps(), readJson: () => ['src/a.ts', 'src/b.ts'] }).run()).toBe(0)
+    expect(listed.client.requests.at(-1)).toMatchObject({ operation: 'sessions.resolveConflicts',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, paths: ['src/a.ts', 'src/b.ts'], kind: 'text', option: 'take-incoming' } })
+
+    const refused = new CliHarness()
+    refused.client.operationErrors.set('sessions.resolveConflicts', { code: 'conflict', detail: 'Settled "src/a.ts", then stopped at "src/b.ts": only you can choose it', data: { sourceCode: 'person-only' } })
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--all', '--option', 'keep-mine'], refused.deps()).run()).toBe(4)
+
+    for (const [args, json] of [
+      [['--all', '--path', 'a', '--option', 'merged'], null],
+      [['--all', '--paths-file', 'p.json', '--option', 'merged'], ['a']],
+      [['--all', '--kind', 'text', '--option', 'merged'], null],
+      [['--all', '--computer', 'laptop', '--option', 'merged'], null],
+      [['--paths-file', 'p.json', '--option', 'merged'], []],
+      [['--paths-file', 'p.json', '--option', 'merged'], ['a', '']],
+      [['--paths-file', 'p.json', '--option', 'merged'], 'a'],
+      [['--all', '--option', 'squash'], null],
+    ] as const) {
+      const wrong = new CliHarness()
+      expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', ...args], { ...wrong.deps(), readJson: () => json }).run()).toBe(2)
+      expect(wrong.client.requests.filter((request) => request.operation.startsWith('sessions.resolveConflict'))).toEqual([])
+    }
+
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.resolveConflicts')
+    expect(await new AppClientCli(['sessions', 'resolve-conflict', '--number', '001', '--all', '--option', 'merged'], old.deps()).run()).toBe(6)
   })
 
   it('reads notifies with an optional session id without resolving a live session', async () => {

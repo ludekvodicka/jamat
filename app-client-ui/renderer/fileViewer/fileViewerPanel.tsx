@@ -15,6 +15,7 @@ import { usePanelParameters } from '../widgets/tabs/panelParameters'
 import { FileToolsSidebar } from './fileToolsSidebar'
 import {
   FileViewerDiffControl,
+  FileViewerFindButton,
   FileViewerPathControl,
   FileViewerReloadControl,
   FileViewerViewControl,
@@ -27,6 +28,7 @@ import type {
   FileViewerPanelParams,
 } from './fileViewerPanel.types'
 import { FileViewerContent } from './fileViewerContent'
+import { FileViewerGetDocumentControl } from './fileViewerGetDocument'
 import type { TerminalInputRegistry } from '../shell/terminalInputRegistry'
 import { FileViewerSourceShape } from './fileViewerSourceShape'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
@@ -130,6 +132,7 @@ function FileViewerPanelBody(
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
   // Held and written the way the zoom above is, for the same reason.
   const [wrapLines, setWrapLines] = useState(params.wrapLines)
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
   useEffect(() => { setWrapLines(params.wrapLines) }, [params.wrapLines])
   const changeWrap = useCallback((wrap: boolean): void => {
     setWrapLines(wrap)
@@ -197,7 +200,7 @@ function FileViewerPanelBody(
                 value={model.mode}
                 onChange={model.setMode}
               />
-              {model.document.modes.includes('diff') && (
+              {model.mode === 'diff' && (
                 <FileViewerDiffControl
                   targets={model.targets}
                   value={model.diffTarget}
@@ -212,8 +215,10 @@ function FileViewerPanelBody(
               )}
               <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
               <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
-              <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
+              <FileViewerFindButton onFind={search.show} />
               <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
+              <FileViewerGetDocumentControl document={model.document} text={model.text} />
+              <span className="file-viewer-toolbar-slot" ref={setToolbarSlot} />
             </div>
             <FileViewerPathControl
               document={model.document}
@@ -230,6 +235,7 @@ function FileViewerPanelBody(
           {model.document && (
               <FileViewerContent ports={ports.viewer}
                 insertPrompt={insertPrompt}
+                toolbarSlot={toolbarSlot}
                 document={model.document}
                 mode={model.mode}
                 baselines={model.baselines}

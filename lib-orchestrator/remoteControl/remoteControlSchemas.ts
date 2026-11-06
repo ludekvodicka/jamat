@@ -339,6 +339,16 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
       { error: 'option must be merged, take-incoming, keep-mine, keep-both or union' }),
     confirm: z.literal(true, { error: 'confirm must be true' }).optional(),
   }),
+  'sessions.resolveConflicts': z.strictObject({
+    session: RemoteControlZod.sessionSelector,
+    paths: z.union([
+      z.literal('all'),
+      z.array(RemoteControlZod.text(4096)).min(1, { error: 'paths names at least one path' }).max(2_000, { error: 'paths names at most 2000 paths' }),
+    ], { error: 'paths must be "all" or a list of paths' }),
+    kind: z.enum(['text', 'property', 'tree', 'diverged'], { error: 'kind must be text, property, tree or diverged' }).optional(),
+    option: z.enum(['merged', 'take-incoming', 'keep-mine', 'keep-both', 'union'],
+      { error: 'option must be merged, take-incoming, keep-mine, keep-both or union' }),
+  }),
   'sessions.solveWithAgent': RemoteControlZod.sessionBody(),
   'sessions.backToWork': z.strictObject({ session: RemoteControlZod.sessionSelector, confirmStoppedRunId: RemoteControlZod.text().optional() }),
   'sessions.children': z.strictObject({ sessionId: RemoteControlZod.text() }),

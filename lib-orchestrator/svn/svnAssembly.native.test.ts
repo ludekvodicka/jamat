@@ -10,7 +10,7 @@ import { SvnInvoker } from './svnInvoker'
 
 const testRoot = 'Q:/UnitTestFiles/NodeJs/Applications/Jamat/worktrees'
 
-/** A worktree of 120 files with an external of 40 files, a translated file and one local change of each kind. */
+/** A worktree of 120 files with two externals of 40 files, a translated file and one local change of each kind. */
 async function fixture(name: string) {
   const root = await mkdtemp(join(testRoot, `${name}-`)), svn = new SvnInvoker()
   const run = async (cwd: string, args: string[]) => {
@@ -34,7 +34,7 @@ async function fixture(name: string) {
   await writeFile(join(wc, 'app', 'eol.txt'), 'one\ntwo\n')
   await run(wc, ['add', '--force', '.'])
   await run(wc, ['propset', 'svn:eol-style', 'CRLF', 'app/eol.txt'])
-  await run(wc, ['propset', 'svn:externals', '^/shared/lib lib', 'app'])
+  await run(wc, ['propset', 'svn:externals', '^/shared/lib lib\n^/shared/lib lib2', 'app'])
   await run(wc, ['commit', '-m', 'Fixture application'])
   await run(wc, ['update'])
   await writeFile(join(wc, 'app', 'file1.txt'), 'changed\n')
@@ -52,7 +52,9 @@ describe.skipIf(process.platform !== 'win32' || !existsSync(testRoot))('SvnAssem
     const { root, wc, svn } = await fixture('native-assembly-read')
     try {
       let running = 0, peak = 0
+      const spawned: string[] = []
       const counted: CommandRunner = { run: async (cwd, args, options) => {
+        spawned.push(args[0])
         peak = Math.max(peak, ++running)
         try { return await svn.run(cwd, args, options) } finally { running-- }
       } }
@@ -60,9 +62,12 @@ describe.skipIf(process.platform !== 'win32' || !existsSync(testRoot))('SvnAssem
       const second = await new SvnAssemblyReader(svn).read(wc)
       expect(second).toEqual(first)
       const paths = first.nodes.map((node) => node.path)
-      expect(paths).toEqual(expect.arrayContaining(['@mount/.', '@mount/app/lib', 'app/eol.txt', 'app/deep/file59.txt', 'app/file2.txt',
+      expect(paths).toEqual(expect.arrayContaining(['@mount/.', '@mount/app/lib', '@mount/app/lib2', 'app/lib2/lib39.txt', 'app/eol.txt', 'app/deep/file59.txt', 'app/file2.txt',
         'app/new.txt', 'app/lib/lib39.txt', 'loose', 'loose/u.txt']))
       expect(first.nodes.find((node) => node.path === 'app/file2.txt')?.content).toBe('')
+      // The root, then both externals in one read of each kind, and the `info` of the carrier `app` that
+      // resolves their `^/` URLs: reads per mount would make 4, 3 and 3.
+      expect(['info', 'status', 'proplist'].map((command) => spawned.filter((name) => name === command).length)).toEqual([3, 2, 2])
       expect(peak).toBeGreaterThan(1)
       expect(peak).toBeLessThanOrEqual(SvnAssemblyReader.svnProcessesConst)
     } finally { await rm(root, { recursive: true, force: true }) }

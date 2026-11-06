@@ -501,6 +501,80 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.changes()).toBe(2)
   })
 
+  // Codex 0.166 hides its Working row while a turn streams a message: Mirabia 137 read IDLE five
+  // times inside one turn. The spinner title is the evidence, aged by output because it is read from
+  // the ring; a person typing, Jamat's paste or a redraw sets no spinner title and moves nothing.
+  it('keeps a Codex turn working by its spinner title while it streams a message, and settles once output stops (I57)', async () => {
+    const streaming = frameOf('codex-live-streaming-message.json')
+    const context = harness()
+    context.add({ runtimeSessionId: 'c', agent: 'codex', screen: codexWorkingScreenConst })
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('working')
+
+    for (let second = 0; second < 40; second += 2) {
+      await vi.advanceTimersByTimeAsync(2_000)
+      context.emit('c', streaming.wideScreenTail, streaming.rawTail)
+      await context.observe()
+      expect(context.monitor.activity('c'), `${second + 2} s into the stream`).toBe('working')
+    }
+    expect(context.monitor.inspection('c')?.evidence.map((item) => item.signal)).toEqual(['titleSpinner'])
+    await vi.advanceTimersByTimeAsync(15_000)
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('idle')
+  })
+
+  it.each([
+    ['a person typing into the box', '\x1b]0;Run tests | PROJECT\x07h', 'he'],
+    ["Jamat's own paste of a delivery", '\x1b]0;Run tests | PROJECT\x07\x1b[200~wake\x1b[201~', '\x1b[200~wake up\x1b[201~'],
+    ['a resize redraw', '\x1b]0;Run tests | PROJECT\x07\x1b[?2026h\x1b[2J\x1b[42;3H', '\x1b[?2026h\x1b[2J\x1b[41;3H'],
+  ])('leaves an idle Codex idle through %s after a turn with no closing line on screen (I57 review)', async (_case, first, more) => {
+    const box = frameOf('codex-live-composer-empty.json').wideScreenTail
+    const context = harness()
+    context.add({ runtimeSessionId: 'c', agent: 'codex', screen: codexWorkingScreenConst })
+    await context.observe()
+    let raw = first
+    for (let second = 0; second < 60; second += 2) {
+      await vi.advanceTimersByTimeAsync(2_000)
+      context.emit('c', box, raw)
+      raw += more
+      await context.observe()
+      if (second >= 16) expect(context.monitor.activity('c'), `${second + 2} s after the turn`).toBe('idle')
+    }
+    expect(context.changes()).toBe(2)
+  })
+
+  // `terminalComposer` hands this hint to a delivery: an idle agent read as busy there gets Tab instead
+  // of Enter (Codex) and its line is waited on. Evidence that ages in `apply` ages here the same way.
+  it('ages the composer hint as apply ages it: a stale spinner title or dead Claude row reads idle, a sighted row does not (I57 review)', () => {
+    const now = 1_000_000
+    const streaming = frameOf('codex-live-streaming-message.json')
+    const codexRow = frameOf('codex-working-seconds.json')
+    const claudeRow = frameOf('claude-working-spinner.json')
+    const background = frameOf('codex-live-background-terminal.json')
+    expect(WorkStateMonitor.agedHint('codex', streaming, now - 1_000, now)).toBe('working')
+    expect(WorkStateMonitor.agedHint('codex', streaming, now - 15_000, now)).toBe('idle')
+    expect(WorkStateMonitor.agedHint('codex', codexRow, now - 60_000, now)).toBe('working')
+    expect(WorkStateMonitor.agedHint('claude', claudeRow, now - 1_000, now)).toBe('working')
+    expect(WorkStateMonitor.agedHint('claude', claudeRow, now - 15_000, now)).toBe('idle')
+    expect(WorkStateMonitor.agedHint('codex', background, now - 60_000, now)).toBe('background')
+    expect(WorkStateMonitor.agedHint('codex', streaming, null, now)).toBe('working')
+  })
+
+  // F14: the person, and a coordinator watching the session, must see the async question.
+  it('reads a Codex turn with an open async question as waiting, then working once the block is gone (F14)', async () => {
+    const question = frameOf('codex-live-async-question.json')
+    const context = harness()
+    context.add({ runtimeSessionId: 'c', agent: 'codex', screen: question.wideScreenTail, raw: question.rawTail })
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('waiting')
+    await vi.advanceTimersByTimeAsync(30_000)
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('waiting')
+    context.emit('c', codexWorkingScreenConst)
+    await context.observe()
+    expect(context.monitor.activity('c')).toBe('working')
+  })
+
   it('keeps Codex working with deferred messages through silence until the status clears', async () => {
     const context = harness()
     const queued = frameOf('codex-working-deferred-messages.json')
@@ -694,6 +768,43 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     release()
     await inFlight
     expect(context.monitor.activity('a')).toBe('working')
+  })
+
+  // I38: a Finish press that needs a fresh reading waits for the pass in flight instead of the next poll.
+  it('settles passed() with the pass in flight, and at once when none runs', async () => {
+    const context = harness()
+    context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
+    await context.monitor.passed()
+    const release = context.blockInspect()
+    const inFlight = context.observe()
+    await Promise.resolve()
+    let settled = false
+    const waiting = context.monitor.passed().then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    release()
+    await inFlight
+    await waiting
+    expect(context.monitor.activity('a')).toBe('working')
+  })
+
+  // I38 review: a pass a poll started between the caller's look and its listing must not swallow the
+  // caller's own pass; observeOwn waits it out and then classifies its own listing.
+  it('runs its own pass for observeOwn after the pass in flight, never dropping the listing', async () => {
+    const context = harness()
+    context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
+    const release = context.blockInspect()
+    const inFlight = context.observe()
+    await Promise.resolve()
+    expect(context.calls.inspect).toHaveLength(1)
+    context.emit('a')
+    const own = context.monitor.observeOwn(context.listing())
+    await Promise.resolve()
+    expect(context.calls.inspect).toHaveLength(1)
+    release()
+    await inFlight
+    await own
+    expect(context.calls.inspect).toHaveLength(2)
   })
 
   it('drops what it learned when it is stopped', async () => {

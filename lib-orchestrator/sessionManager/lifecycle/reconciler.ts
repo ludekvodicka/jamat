@@ -46,8 +46,9 @@ export type ReconcileChange =
    * with this reason; its worktree, its branch and its link to the run all stay. `finish`: the Finish
    * stops and the chain keeps the reason. `merge`: the phase stays, so the manual path is still open.
    * `action`: the SVN action writes the verdict and its next client step reads the disk.
+   * `stopped`: somebody asked the run to end, judged before the gate's own stop confirmation marks it.
    */
-  | { kind: 'script-failed'; sessionId: string; gate: SessionScriptGate; reason: string }
+  | { kind: 'script-failed'; sessionId: string; gate: SessionScriptGate; reason: string; stopped?: true }
   /**
    * An SVN action has a client step to take that no drive of this process holds: a client stage, a
    * verdict to judge, a relaunch whose wait is over, or a resolver past its time limit to stop. After
@@ -58,6 +59,8 @@ export type ReconcileChange =
   | { kind: 'name-conversation'; sessionId: string }
   /** The process of an SVN worktree session is gone and its cleanup is due: judge and remove it off this loop. */
   | { kind: 'clean-worktree'; sessionId: string }
+  /** A Finish waits only because Windows refused its removal; the next attempt is due (`BlockedRemovalRetry`). */
+  | { kind: 'retry-removal'; sessionId: string }
   /** A run that is over: its log and history entry are written, or its record goes. See `ScriptRunPlanning`. */
   | ScriptRunChange
 
@@ -93,7 +96,8 @@ export class Reconciler {
         else if (judged.kind === 'succeeded')
           changes.push({ kind: 'script-succeeded', sessionId: record.sessionId, gate })
         else if (judged.kind === 'failed')
-          changes.push({ kind: 'script-failed', sessionId: record.sessionId, gate, reason: judged.reason })
+          changes.push({ kind: 'script-failed', sessionId: record.sessionId, gate, reason: judged.reason,
+            ...judged.outcome === 'stopped' ? { stopped: true as const } : {} })
         else
           throw new Error(`Unknown run judgement: ${JSON.stringify(judged satisfies never)}`)
       }

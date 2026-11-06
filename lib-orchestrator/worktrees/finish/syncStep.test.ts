@@ -45,7 +45,7 @@ async function harness() {
     conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 2, paths: [] } } }),
       remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }),
       fix: async (action) => ({ kind: 'settled', action }) },
-    ready: { current: async () => ready }, busyReason: () => idle ? null : 'the worker is working', terminals: { inhibit: async () => { held++; return { release: () => { held-- } } }, pendingInput: async () => 0 }, changed: () => {},
+    ready: { current: async () => ready }, busyReason: () => idle ? null : 'the worker is working', reading: async () => {}, terminals: { inhibit: async () => { held++; return { release: () => { held-- } } }, pendingInput: async () => 0 }, changed: () => {},
   }
   return { step: new SyncStep(deps), deps, records, runner, path, set, held: () => held,
     idle: (value: boolean) => { idle = value }, ready: (value: boolean) => { ready = value }, facts: (value: SvnConflictFact[]) => { facts = value } }

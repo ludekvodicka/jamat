@@ -9,6 +9,7 @@ import { setTimeout as pause } from 'node:timers/promises'
 import { CommandInvoker } from '../../lib-orchestrator/shared/commandInvoker.js'
 import { SvnInvoker } from '../../lib-orchestrator/svn/svnInvoker.js'
 import { SvnWorktreeManager } from '../../lib-orchestrator/svn/svnWorktreeManager.js'
+import { SvnWorktreeSeed } from '../../lib-orchestrator/svn/svnWorktreeSeed.js'
 import { SessionRecordsStore, type SessionRecordSvnAction } from '../../lib-orchestrator/sessionManager/worktreeSessionRecords.js'
 import { SessionScriptsManager, ScriptLogStore } from '../../lib-orchestrator/sessionManager/worktreeSessionScripts.js'
 import { WorktreeLease } from '../../lib-orchestrator/worktrees/worktreeLease.js'
@@ -166,7 +167,7 @@ export class SvnAuditScenarios {
     const resolver = { briefs: logs, unavailable: () => 'No agent in this fixture', withMarkers: SvnResolverLauncher.markersIn, cli: () => ({ ok: false as const, detail: 'No agent in this fixture' }),
       instance: { configIdentity: 'audit', channel: 'development' as const } }
     const operations = new WorktreeOperations({ records, scripts, now: Date.now, newId: randomUUID, changed: () => {}, commands,
-      svn: manager, results, resolver, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} } })
+      svn: manager, seed: new SvnWorktreeSeed(svn), results, resolver, busyReason: () => null, reading: async () => {}, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, handoffs: { checksFailed: async () => {}, conflicts: async () => {}, notifyCaller: async () => {}, messageWanted: async () => {} } })
     const flow = new SvnConflictFlow({ svn: manager, briefs: logs, handover: results, resolutions: operations.resolutions,
       savedDirectoryOf: (id) => results.savedDirectoryOf(id), withMarkers: resolver.withMarkers, unavailable: resolver.unavailable, cli: resolver.cli, now: Date.now })
     let action: SessionRecordSvnAction = { actionId: 'audit', kind: 'finish', stage: 'fixing', root: tree, checks: [], checkCursor: 0, rootCursor: 0,

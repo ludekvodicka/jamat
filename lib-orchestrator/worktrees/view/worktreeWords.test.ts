@@ -81,6 +81,25 @@ describe('WorktreeWords', () => {
     expect(override.confirm).toBeTruthy()
     expect(WorktreeWords.command(override)).toEqual({ operation: 'sessions.finishWorktree', body: { choice: 'commit', overrideChecks: true } })
   })
+  // Worktree 103 (J17): Stop checks and return to work ended the Finish; a stopped check now waits with the failed-check answers.
+  it('stops a running check or install without leaving the Finish, and answers a failed check with Retry and Solve with agent', () => {
+    const execution = { root: 'Q:/wt', checks: [{ key: 'tests', scriptId: 'checks' as const, name: 'tests', commands: [] }], checkCursor: 0, rootCursor: 0,
+      evidence: [], requestedBy: 'window' as const, startedAt: 1, runId: 'r1' }
+    const checking = { ...state, phase: 'finishing' as const, step: 'checking' as const, execution }
+    const stop = WorktreeWords.actions(checking)
+    expect(stop).toEqual([{ id: 'stop-run', label: 'Stop check', primary: false, place: 'step', runId: 'r1' }])
+    expect(WorktreeWords.command(stop[0])).toEqual({ operation: 'sessions.finalize', sessionId: 'r1', body: { expect: 'stop' } })
+    const install = { ...checking, execution: { ...execution, refresh: { steps: [{ key: 'install', scriptId: 'setup' as const, name: 'setup', commands: [] }], cursor: 0, paths: [] } } }
+    expect(WorktreeWords.actions(install)[0]).toMatchObject({ id: 'stop-run', label: 'Stop install', runId: 'r1' })
+    const failed = { ...checking, phase: 'waiting' as const, execution: { ...execution, runId: undefined },
+      wait: { kind: 'checks-failed' as const, reason: 'The check tests did not pass', at: 2 } }
+    const answers = WorktreeWords.actions(failed)
+    expect(answers.map((row) => row.id)).toEqual(['finish-again', 'override-checks', 'back-to-work', 'solve-with-agent', 'open-in-vscode', 'keep', 'discard'])
+    expect(answers[0]).toMatchObject({ label: 'Retry checks', primary: true, place: 'step' })
+    expect(answers.find((row) => row.id === 'back-to-work')?.note).toBe('Sends the check log to the worker')
+    expect(WorktreeWords.presentation(failed)).toMatchObject({ title: 'Checks failed', tone: 'error' })
+  })
+
   it('UA1-J10-5: offers Resolve with agent on a person conflict wait while a path an agent may settle is open and no merger runs', () => {
     const entry = { path: 'a.txt', kind: 'text' as const, shape: 'text-overlap' as const, state: 'person' as const, options: ['merged' as const], facts: {} }
     const set = { readAt: 1, baseRevision: 1, revision: 2, entries: [entry], more: 0, waited: true as const }

@@ -87,6 +87,28 @@ describe('lib-orchestrator/sessionTranscriptReader/claude/sessionTranscriptSourc
     ]))
   })
 
+  // Shaped like the records Claude Code wrote in this project's own transcripts (2026-10-12): a line
+  // taken mid-turn is a queue operation, then an attachment of a queued command, never a user record.
+  it('retells a line Claude absorbed in the middle of a turn as the user said it, and no task notification', async () => {
+    const timestamp = '2026-08-17T10:00:00.000Z'
+    const record = (value: object): string => `${JSON.stringify({ timestamp, isSidechain: false, ...value })}\n`
+    const ref = world(
+      ClaudeTranscriptTailFixtures.userTurn('run the tests')
+      + record({ type: 'queue-operation', operation: 'enqueue', content: '12 conflicts wait for the worker' })
+      + record({ type: 'queue-operation', operation: 'remove', content: '12 conflicts wait for the worker' })
+      + record({ type: 'attachment', attachment: { type: 'queued_command', prompt: '12 conflicts wait for the worker', commandMode: 'prompt' } })
+      + record({ type: 'attachment', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'and then commit' }] } })
+      + record({ type: 'attachment', attachment: { type: 'queued_command', prompt: '<task-notification>done</task-notification>' } })
+      + record({ type: 'attachment', attachment: { type: 'total_tokens_reminder', text: '<total_tokens>1</total_tokens>' } })
+      + record({ type: 'attachment', isSidechain: true, attachment: { type: 'queued_command', prompt: 'a sub-agent queue' } }),
+    )
+    expect(await new SessionTranscriptSourceClaude().read(ref, limits)).toEqual(reading(ref, [
+      { role: 'user', text: 'run the tests', at, textTruncated: false },
+      { role: 'user', text: '12 conflicts wait for the worker', at, textTruncated: false },
+      { role: 'user', text: 'and then commit', at, textTruncated: false },
+    ]))
+  })
+
   it('keeps the last messages the limits allow, each cut to the length they allow', async () => {
     const ref = world(
       ClaudeTranscriptTailFixtures.assistantTurn('one')

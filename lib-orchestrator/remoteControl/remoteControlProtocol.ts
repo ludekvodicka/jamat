@@ -88,6 +88,7 @@ export class RemoteControlConst {
     'sessions.conflicts',
     'sessions.sync',
     'sessions.resolveConflict',
+    'sessions.resolveConflicts',
     'sessions.solveWithAgent',
     'sessions.backToWork',
   ] as const
@@ -136,6 +137,7 @@ export class RemoteControlConst {
     'sessions.proposeCommit',
     'sessions.sync',
     'sessions.resolveConflict',
+    'sessions.resolveConflicts',
     'sessions.solveWithAgent',
     'sessions.backToWork',
   ] as const

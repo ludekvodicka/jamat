@@ -256,6 +256,10 @@ function world(options?: {
         worktreeCalls.push({ method: `resolveConflict ${request.path} ${request.option}${request.confirm ? ' confirmed' : ''} by ${request.requestedBy}`, sessionId })
         return options?.resolved ?? { ok: true, value: { sessionId, path: request.path, state: 'settled', left: 2 } }
       },
+      resolveConflicts: async (sessionId, request) => {
+        worktreeCalls.push({ method: `resolveConflicts ${JSON.stringify(request.paths)}${request.kind === undefined ? '' : ` ${request.kind}`} ${request.option} by ${request.requestedBy}`, sessionId })
+        return { ok: true, value: { sessionId, settled: [{ path: 'a', kind: 'text', state: 'settled' }], left: 0 } }
+      },
       solveWithAgent: async (sessionId) => {
         worktreeCalls.push({ method: 'solveWithAgent', sessionId })
         return { ok: true, value: { sessionId: 'helper-1', tabTitle: 'Solve wt' } }
@@ -664,6 +668,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.sync', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-sync'),
       request('sessions.conflicts', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
       request('sessions.resolveConflict', { session: { kind: 'sessionId', sessionId: 'session-1' }, path: '.aidocs/engines', option: 'keep-both' }, 'op-resolve'),
+      request('sessions.resolveConflicts', { session: { kind: 'sessionId', sessionId: 'session-1' }, paths: 'all', option: 'merged' }, 'op-resolve-all'),
       request('sessions.solveWithAgent', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-solve'),
       request('sessions.backToWork', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-back'),
       request('sessions.discardWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-discard'),
@@ -1143,6 +1148,28 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const peer = { ...context(RemoteControlPeerConst.controlOperations), callerKind: 'remote-peer' as const }
     expect(await found.control.execute(request('sessions.resolveConflict', { ...one, path: 'a', option: 'merged' }, 'resolve-7'), peer))
       .toMatchObject({ ok: true })
+  })
+
+  it('settles several conflicted paths with one option for a local caller only (F13)', async () => {
+    const found = world()
+    const one = { session: { kind: 'number', number: '001' } } as const
+    expect(await found.control.execute(request('sessions.resolveConflicts', { ...one, paths: 'all', option: 'merged' }, 'resolve-all-1'), context()))
+      .toMatchObject({ ok: true, value: { sessionId: 'session-1', settled: [{ path: 'a', kind: 'text', state: 'settled' }], left: 0 } })
+    await found.control.execute(request('sessions.resolveConflicts', { ...one, paths: ['a', 'b'], kind: 'text', option: 'take-incoming' }, 'resolve-all-2'), context())
+    expect(found.worktreeCalls).toEqual([
+      { method: 'resolveConflicts "all" merged by cli', sessionId: 'session-1' },
+      { method: 'resolveConflicts ["a","b"] text take-incoming by cli', sessionId: 'session-1' },
+    ])
+    for (const body of [{ paths: [], option: 'merged' }, { paths: 'some', option: 'merged' }, { paths: ['a'], option: 'merged', confirm: true }, { paths: ['a'], option: 'squash' }])
+      expect(await found.control.execute(request('sessions.resolveConflicts', { ...one, ...body } as never, 'resolve-all-3'), context()))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    expect(RemoteControlConst.optionalOperations).toContain('sessions.resolveConflicts')
+    expect(RemoteControlConst.mutatingOperations).toContain('sessions.resolveConflicts')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.resolveConflicts')
+    const peer = { ...context([...RemoteControlPeerConst.controlOperations, 'sessions.resolveConflicts']), callerKind: 'remote-peer' as const }
+    expect(await found.control.execute(request('sessions.resolveConflicts', { ...one, paths: 'all', option: 'merged' }, 'resolve-all-4'), peer))
+      .toMatchObject({ ok: false, error: { code: 'forbidden' } })
   })
 
   it('ends a worktree the way the Finish overlay and the row do, with source ownership', async () => {

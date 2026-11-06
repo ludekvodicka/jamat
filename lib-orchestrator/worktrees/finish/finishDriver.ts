@@ -24,6 +24,7 @@ import type { SessionCreateSpec, SessionFinishPress, SessionsOpResult, SvnFinish
 import { SvnConflictFlow } from '../conflicts/svnConflictFlow'
 import { SvnConflictWords } from '../conflicts/svnConflictWords'
 import { SvnWorktreeRemoval } from '../removal/svnWorktreeRemoval'
+import { BlockedRemovalRetry } from '../removal/blockedRemovalRetry'
 import { WorktreeLifecycleMigration } from '../worktreeLifecycleMigration'
 import { WorktreeRecovery } from '../worktreeRecovery'
 import type { WorktreeLifecycle, SvnStepJournalEntry, WorktreeEvent } from '../worktreeState'
@@ -59,6 +60,8 @@ export class FinishDriver {
   private readonly conflictStep: ConflictStep
   private readonly preparation: PreparationStep
   private readonly driving = new Map<string, Promise<void>>()
+  /** Sessions whose automatic main-copy UPDATE waits for the drive to end; one at a time per session. */
+  private readonly updatesQueued = new Set<string>()
 
   constructor(deps: FinishDriverDeps) {
     this.deps = deps
@@ -98,7 +101,11 @@ export class FinishDriver {
         return true
       },
       'stopping-worker': (id) => this.completion.stop(id),
-      removing: async (id) => { await this.completion.remove(id); return true },
+      removing: async (id) => {
+        await this.completion.remove(id)
+        this.updateAfterLanding(id)
+        return true
+      },
       recording: async (id) => {
         await this.completion.recordResult(id)
         this.updateAfterLanding(id)
@@ -329,6 +336,8 @@ export class FinishDriver {
         return next.ok ? { ...latest, worktreeLifecycle: next.state, ...latest.svnAction?.kind === 'update-main' ? {} : { svnAction: undefined } } : null
       })) return { ok: false, code: 'review-stale', detail: 'The Finish changed; read it again' }
       this.deps.changed()
+      if (state.wait?.kind === 'checks-failed' && state.checks?.passed === false)
+        await this.deps.handoffs.checksFailed(sessionId, state.checks.at, state.checks.logPath)
       return { ok: true, value: { actionId: state.actionId } }
     })
   }
@@ -421,7 +430,9 @@ export class FinishDriver {
     const record = this.deps.records.get(sessionId)
     if (record?.svnAction?.kind === 'update-main') {
       await this.deps.update.drive(sessionId)
-      if (this.deps.records.get(sessionId)?.svnAction?.kind === 'update-main') return false
+      const now = this.deps.records.get(sessionId)
+      // The UPDATE a blocked removal started may wait for a press; the removal and the result go on beside it (J8).
+      if (now?.svnAction?.kind === 'update-main' && !FinishDriver.removingAfterPublication(now.worktreeLifecycle)) return false
     }
     if (record?.svnAction !== undefined && record.worktree?.kind === 'svn')
       await this.deps.commands.lease.within(record.worktree.worktreePath, 'finish', () => this.activate(sessionId))
@@ -462,25 +473,102 @@ export class FinishDriver {
 
   due(sessionId: string): void { this.deps.detach(this.drive(sessionId), `Finishing worktree ${sessionId}`) }
 
+  retryRemovalDue(sessionId: string): void { this.deps.detach(this.retryRemoval(sessionId), `Removing the worktree of ${sessionId} again`) }
+
+  /**
+   * A removal Windows refused goes on by itself once the holder lets go (I67, Jamat#50): no person has
+   * to press Try again. `BlockedRemovalRetry` paces the attempts and decides which Finish qualifies;
+   * this re-reads that under the lease, and the removal proves the directory identity and the permit
+   * again as on Try again. A removal still blocked keeps its wait and its first time, and its caller is
+   * not told again.
+   */
+  retryRemoval(sessionId: string): Promise<void> {
+    const pending = this.driving.get(sessionId)
+    if (pending !== undefined) return pending
+    let removed = false
+    const work = this.deps.sync.withControl(sessionId, async () => { removed = await this.retryRemovalCurrent(sessionId) })
+      .finally(() => {
+        this.driving.delete(sessionId)
+        this.deps.changed()
+        if (removed) this.due(sessionId)
+      })
+    this.driving.set(sessionId, work)
+    return work
+  }
+
+  private async retryRemovalCurrent(sessionId: string): Promise<boolean> {
+    const root = this.deps.records.get(sessionId)?.worktreeLifecycle?.execution?.root
+    if (root === undefined) return false
+    try {
+      return await this.deps.commands.lease.within(root, 'finish', async () => {
+        const record = this.deps.records.get(sessionId)
+        if (record === null || !BlockedRemovalRetry.waiting(record, this.deps.records.list())) return false
+        // The attempt counts before its first read, so a read that throws waits for the next due time too.
+        await this.state.write(sessionId, (current) => ({ ...current, execution: { ...current.execution!, removalAt: this.deps.now() } }))
+        await this.completion.remove(sessionId, true)
+        this.updateAfterLanding(sessionId)
+        return this.deps.records.get(sessionId)?.worktreeLifecycle?.step === 'recording'
+      })
+    } catch (error) {
+      // Another client holds the worktree, or a read failed; the wait stays. The attempt counts either way,
+      // so a lease held for long is asked at the retry pace, not on every reconcile pass.
+      await this.deps.records.update(sessionId, (record) => {
+        const state = record.worktreeLifecycle
+        return state?.execution === undefined ? null
+          : { ...record, worktreeLifecycle: { ...state, version: state.version + 1, execution: { ...state.execution, removalAt: this.deps.now() } } }
+      })
+      this.deps.report(`Session ${sessionId}: the worktree removal was not tried again: ${ErrorText.of(error)}`)
+      return false
+    }
+  }
+
+  /** The Finish published and now only stops its worker, removes the worktree or records the result. */
+  private static removingAfterPublication(state: WorktreeLifecycle | undefined): boolean {
+    const step = state?.step
+    switch (step) {
+      case 'stopping-worker': case 'removing': case 'recording': return true
+      case undefined: case 'syncing': case 'worker-resolving': case 'checking': case 'reviewing': case 'awaiting-idle':
+      case 'committing': case 'verifying': case 'disposing': return false
+      default: throw new Error(`Unknown Finish step: ${JSON.stringify(step satisfies never)}`)
+    }
+  }
+
   /**
    * A Finish that published updates its main copy at once, with no press and no list of the sessions
    * working there: the person already asked for the change to land (Finish 072). Overlap protection
    * keeps the copies a running session's files need; a refused start leaves the UPDATE offer.
    */
   private updateAfterLanding(sessionId: string): void {
-    const record = this.deps.records.get(sessionId)
-    const outcome = record?.worktreeOutcome?.result
-    if (record?.worktreeLifecycle?.phase !== 'landed' || outcome !== 'committed' && outcome !== 'partial') return
-    const mainCopy = LandedRows.landingOf(record)?.mainCopy
-    if (mainCopy === undefined) return
-    const requestedBy = record.worktreeLifecycle.execution?.requestedBy ?? 'window'
+    if (this.updatesQueued.has(sessionId) || this.landingUpdateOf(sessionId) === null) return
+    this.updatesQueued.add(sessionId)
     // Outside this drive's lease scope, after the drive: an svn write in the main copy checks every lease
     // its scope holds under it, and the worktree that lease names is gone.
     this.deps.detach(this.deps.commands.lease.outside(async () => {
-      await this.settled(sessionId)
-      const started = await this.deps.update.startUpdate(sessionId, mainCopy, requestedBy, false, false)
-      if (!started.ok) this.deps.report(`Session ${sessionId}: UPDATE of ${mainCopy} did not start after the Finish (${started.detail})`)
+      try {
+        await this.settled(sessionId)
+        // The drive that ended may have started or recorded an UPDATE of this landing meanwhile.
+        const due = this.landingUpdateOf(sessionId)
+        if (due === null) return
+        const started = await this.deps.update.startUpdate(sessionId, due.mainCopy, due.requestedBy, false, false)
+        if (!started.ok) this.deps.report(`Session ${sessionId}: UPDATE of ${due.mainCopy} did not start after the Finish (${started.detail})`)
+      } finally { this.updatesQueued.delete(sessionId) }
     }), `Updating the main copy of ${sessionId}`)
+  }
+
+  /** The main copy the automatic UPDATE of this landing goes to, or null when none is due. */
+  private landingUpdateOf(sessionId: string): { mainCopy: string; requestedBy: SessionFinishPress['requestedBy'] } | null {
+    const record = this.deps.records.get(sessionId)
+    const state = record?.worktreeLifecycle
+    const outcome = record?.worktreeOutcome?.result
+    // A removal Windows refused no longer holds the UPDATE back: run 098's r980 reached its main copy only
+    // with another run's UPDATE 49 minutes later (J8). The UPDATE needs no worktree, only the publication.
+    const ended = state?.phase === 'landed'
+      || state?.phase === 'waiting' && state.wait?.kind === 'removal-blocked' && state.step === 'removing' && state.purpose !== 'discard'
+    if (record === null || state === undefined || !ended || outcome !== 'committed' && outcome !== 'partial') return null
+    // An UPDATE of this landing runs or waits for a press already, or one recorded what it proved.
+    if (record.svnAction?.kind === 'update-main' || state.actionId !== null && this.deps.results.updateRecorded(state.actionId)) return null
+    const mainCopy = LandedRows.landingOf(record)?.mainCopy
+    return mainCopy === undefined ? null : { mainCopy, requestedBy: state.execution?.requestedBy ?? 'window' }
   }
   held(): ReadonlySet<string> { return new Set([...this.driving.keys(), ...this.deps.update.held()]) }
   async settled(sessionId: string): Promise<SvnFinishWorktreeResult | null> {

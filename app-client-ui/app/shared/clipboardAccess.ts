@@ -67,4 +67,14 @@ export class ClipboardAccess {
     }
     return false
   }
+
+  /** Text and HTML as one clipboard entry, checked by its text the way `writeText` checks. */
+  static async writeRich(text: string, html: string): Promise<boolean> {
+    for (let attempt = 0; attempt < ClipboardAccess.attemptsConst; attempt++) {
+      clipboard.write({ text, html })
+      if (clipboard.readText() === text) return true
+      await new Promise((resolve) => setTimeout(resolve, ClipboardAccess.backoffMillisecondsConst))
+    }
+    return false
+  }
 }

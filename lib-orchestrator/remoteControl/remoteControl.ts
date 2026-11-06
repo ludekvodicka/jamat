@@ -38,7 +38,9 @@ import type {
   SessionWorktreeState,
   SessionConflictList,
   SessionConflictResolved,
+  SessionConflictsResolved,
   SvnConflictResolveRequest,
+  SvnConflictsResolveRequest,
   WorktreeResultDto,
   WorktreeResultsFilter,
 } from '../sessionManager/sessionManagerApi.types'
@@ -116,7 +118,7 @@ export interface RemoteControlSessionsPort {
   worktreeResults(filter: WorktreeResultsFilter): Promise<SessionsOpResult<{ results: WorktreeResultDto[] }>>
   acknowledgeWorktreeResult(actionId: string): Promise<SessionsOpResult<{ actionId: string }>>
   /** A worker's commit message, kept for its review; nothing opens. */
-  proposeCommit(sessionId: string, message: string, directory?: string): Promise<SessionsOpResult<{ scopeRoot: string }>>
+  proposeCommit(sessionId: string, message: string, directory?: string): Promise<SessionsOpResult<{ scopeRoot: string; findings?: string[] }>>
   retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<SessionsOpResult>
   requestWorktreeCleanup(sessionId: string): Promise<SessionsOpResult>
   forkSession(sessionId: string, options?: { name?: string }): Promise<SessionsOpResult<{ sessionId: string; tabTitle: string }>>
@@ -134,6 +136,8 @@ export interface RemoteControlSessionsPort {
   syncWorktreeSession?(sessionId: string): Promise<SessionsOpResult<import('../sessionManager/sessionManagerApi.types').SessionWorktreeSyncResult>>
   conflictsOf(sessionId: string): Promise<SessionsOpResult<SessionConflictList>>
   resolveConflict(sessionId: string, request: SvnConflictResolveRequest): Promise<SessionsOpResult<SessionConflictResolved>>
+  /** One option for several paths; absent where the composition predates it. */
+  resolveConflicts?(sessionId: string, request: SvnConflictsResolveRequest): Promise<SessionsOpResult<SessionConflictsResolved>>
   /** An agent session in the worktree of a waiting SVN action, briefed on why it waits. */
   solveWithAgent(sessionId: string): Promise<SessionsOpResult<SessionCreated>>
   /** Ends a Finish that has published nothing yet; the worktree and its worker go on. */
@@ -460,6 +464,18 @@ export class RemoteControl {
         ...body.kind === undefined ? {} : { kind: body.kind },
         option: body.option,
         confirm: body.confirm === true,
+        requestedBy: RemoteControl.requestedByOf(context),
+      })
+      if (!result.ok) return RemoteControl.worktreeRefusal(result)
+      return RemoteControl.success(result.value)
+    })
+    bySession('sessions.resolveConflicts', 'Settle several conflicted paths of a waiting SVN Finish or main-copy UPDATE with one option, or every open path; each is checked first, then settled as sessions.resolveConflict settles it.', async (session, body, context) => {
+      if (context.callerKind === 'remote-peer') return RemoteControl.error('forbidden', 'Settling several conflicts at once is local only')
+      if (this.deps.sessions.resolveConflicts === undefined) return RemoteControl.error('unavailable', 'Settling several conflicts at once is unavailable')
+      const result = await this.deps.sessions.resolveConflicts(session.sessionId, {
+        paths: body.paths,
+        ...body.kind === undefined ? {} : { kind: body.kind },
+        option: body.option,
         requestedBy: RemoteControl.requestedByOf(context),
       })
       if (!result.ok) return RemoteControl.worktreeRefusal(result)

@@ -15,6 +15,7 @@ import { SvnAssemblyReader } from '../../svn/svnAssembly'
 import { SessionSteps, SessionWorkflows } from '../../sessionManager/worktreeSessionRuntime'
 import { WorktreeWords } from '../view/worktreeWords'
 import { WorktreeLease, WorktreeLeaseHeld } from '../worktreeLease'
+import { BlockedRemovalRetry } from '../removal/blockedRemovalRetry'
 import { WorktreeRecovery } from '../worktreeRecovery'
 import { ScriptLogStore } from '../../sessionManager/worktreeSessionScripts'
 import { SessionScriptsManager } from '../../sessionManager/worktreeSessionScripts'
@@ -92,7 +93,7 @@ async function harness() {
     }) },
     stop: async () => { events.push('stop'); await h.records.update('worker', (record) => ({ ...record, life: 'ended' })); return { ok: true, value: undefined } },
     stopRun: async () => true, awaitExit: async () => true, idle: () => true, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 },
-    busyReason: (id: string) => deps.idle(id) ? null : 'the worker is working',
+    busyReason: (id: string) => deps.idle(id) ? null : 'the worker is working', reading: async () => {},
     liveness: async () => {}, landedDue: () => {}, ended: () => {}, proposalsSpent: () => {},
     changed: () => {}, detach: (promise: Promise<unknown>) => { promise.catch((error) => failures.push(String(error))) }, report: (line: string) => failures.push(line),
     now: () => Date.now(), newId: () => `id-${++nextId}`,
@@ -249,7 +250,8 @@ describe('FinishDriver', () => {
   it('reopens the action failed checks closed, so its live steps are not hidden behind the closed copy', async () => {
     const h = await harness()
     h.setChecks([{ key: 'tests', scriptId: 'checks', name: 'tests', commands: [{ cwd: h.root, command: 'node check.js' }] }])
-    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    // An agent's Finish hands its failed checks to the worker; the person's waits for the person (J17).
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'cli' })
     await completeCheck(h, false)
     expect(h.state().phase).toBe('active')
     expect(h.records.get('worker')!.actionHistory?.map((entry) => entry.key)).toContain(h.state().actionId)
@@ -459,6 +461,159 @@ describe('FinishDriver', () => {
     expect(existsSync(aside)).toBe(false)
     expect(h.state().phase).toBe('landed')
     expect(h.events.filter((event) => event === 'commit')).toHaveLength(1)
+  })
+
+  it('updates the main copy when Windows refuses the removal, and not a second time once the removal goes (J8)', async () => {
+    const h = await harness()
+    const remove = h.deps.removal.remove
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'removing', wait: { kind: 'removal-blocked' } })
+    const mainCopy = h.records.get('worker')!.worktree!.repositoryRoot
+    await vi.waitFor(() => expect(h.deps.update.startUpdate).toHaveBeenCalledWith('worker', mainCopy, 'window', false, false))
+    // That UPDATE proved the landing into the result the blocked removal wrote.
+    await h.results.mainUpdated(mainCopy, { revision: 2, by: 'person', at: Date.now() }, async () => ({ holds: true }))
+
+    h.deps.removal.remove = remove
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    expect(h.state().phase).toBe('landed')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(h.deps.update.startUpdate).toHaveBeenCalledTimes(1)
+    expect(h.events.filter((event) => event === 'commit')).toHaveLength(1)
+  })
+
+  it('goes on removing and records the result while the UPDATE a blocked removal started waits for a press (J8)', async () => {
+    const h = await harness()
+    const remove = h.deps.removal.remove
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    await vi.waitFor(() => expect(h.deps.update.startUpdate).toHaveBeenCalledTimes(1))
+    const mainCopy = h.records.get('worker')!.worktree!.repositoryRoot
+    await h.records.update('worker', (record) => ({ ...record, svnAction: { kind: 'update-main', actionId: 'update', stage: 'fixing', root: mainCopy,
+      checks: [], checkCursor: 0, rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 }, evidence: [], requestedBy: 'window', startedAt: 1,
+      needs: { kind: 'conflict', reason: 'a.txt is in conflict', at: 1 } } }))
+
+    h.deps.removal.remove = remove
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+
+    expect(h.state().phase).toBe('landed')
+    expect(h.records.get('worker')?.retiredWorktree).toBeDefined()
+    expect(h.records.get('worker')?.svnAction).toMatchObject({ kind: 'update-main', needs: { kind: 'conflict' } })
+    expect(h.deps.update.startUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  it('tries a refused removal again by itself, keeps the wait and its first time, and tells the caller once (I67)', async () => {
+    const h = await harness()
+    let clock = 100_000
+    h.deps.now = () => clock
+    const remove = h.deps.removal.remove
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: [`REMOVAL BLOCKED (EPERM) at ${clock}`] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    const first = h.state().wait!
+    expect(first).toMatchObject({ kind: 'removal-blocked', at: 100_000 })
+    const told = vi.mocked(h.deps.handoffs.notifyCaller).mock.calls.length
+
+    clock = 200_000
+    await h.driver.retryRemoval('worker')
+    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'removing', wait: { kind: 'removal-blocked', at: 100_000, reason: 'REMOVAL BLOCKED (EPERM) at 200000' } })
+    expect(h.state().execution?.removalAt).toBe(200_000)
+    expect(h.deps.handoffs.notifyCaller).toHaveBeenCalledTimes(told)
+    expect((await h.results.list({ sessionId: 'worker' }))[0]).toMatchObject({ result: 'committed', removal: 'pending' })
+
+    clock = 300_000
+    h.deps.removal.remove = remove
+    await h.driver.retryRemoval('worker')
+    await h.driver.settled('worker')
+    expect(h.state()).toMatchObject({ phase: 'landed', wait: undefined })
+    expect(h.records.get('worker')?.retiredWorktree).toBeDefined()
+    expect((await h.results.list({ sessionId: 'worker' }))[0]).toMatchObject({ result: 'committed', removal: 'removed' })
+    expect(h.events.filter((event) => event === 'commit')).toHaveLength(1)
+  })
+
+  it('finishes the removal of a Discard after a commit by itself, as run 098 needed (I67)', async () => {
+    const h = await harness()
+    const remove = h.deps.removal.remove
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    await h.driver.start('worker', { choice: 'discard', requestedBy: 'window' })
+    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'removing', purpose: 'discard', wait: { kind: 'removal-blocked' } })
+    h.deps.removal.remove = remove
+    await h.driver.retryRemoval('worker')
+    await h.driver.settled('worker')
+    expect(h.state().phase).toBe('removed')
+    expect((await h.results.list({ sessionId: 'worker' }))[0]).toMatchObject({ action: 'discard', result: 'committed', removal: 'removed' })
+  })
+
+  it('does not try the removal again while a helper still works inside the worktree (I67)', async () => {
+    const h = await harness()
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    await h.records.put({ sessionId: 'solve', kind: 'agent', title: 'Solve', binding: null, life: 'live', createdAt: 2, agent: { agentId: 'claude', launchMode: 'new' },
+      directory: { mode: 'adHoc', path: h.root }, parent: { sessionId: 'worker', kind: 'worker' } })
+    const attempts = vi.mocked(h.deps.removal.remove).mock.calls.length
+    await h.driver.retryRemoval('worker')
+    expect(h.deps.removal.remove).toHaveBeenCalledTimes(attempts)
+    expect(h.records.get('solve')?.life).toBe('live')
+  })
+
+  it('counts a retry another client refused through the lease, so the next one waits for the pace (I67)', async () => {
+    const h = await harness()
+    let clock = 100_000
+    h.deps.now = () => clock
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    const attempts = vi.mocked(h.deps.removal.remove).mock.calls.length
+    const within = h.deps.commands.lease.within
+    h.deps.commands.lease.within = async () => { throw new WorktreeLeaseHeld('Another owner is using this working copy') }
+    clock = 500_000
+    await h.driver.retryRemoval('worker')
+    h.deps.commands.lease.within = within
+    expect(h.deps.removal.remove).toHaveBeenCalledTimes(attempts)
+    expect(h.state().execution?.removalAt).toBe(500_000)
+    expect(h.failures).toEqual(expect.arrayContaining([expect.stringContaining('the worktree removal was not tried again: Another owner')]))
+    const record = h.records.get('worker')!
+    expect(BlockedRemovalRetry.due(record, h.records.list(), 500_001, 400_000)).toBe(false)
+  })
+
+  it('starts one automatic UPDATE however often the landing asks during one drive, and re-checks it when the drive ends (J8)', async () => {
+    const h = await harness()
+    h.deps.removal.remove = vi.fn(async () => ({ state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] }))
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    await vi.waitFor(() => expect(h.deps.update.startUpdate).toHaveBeenCalledTimes(1))
+    vi.mocked(h.deps.update.startUpdate).mockClear()
+    const landing = h.driver as unknown as { updateAfterLanding(sessionId: string): void }
+
+    const held = async (during: () => Promise<void>): Promise<void> => {
+      let open!: () => void
+      const gate = new Promise<void>((resolve) => { open = resolve })
+      h.deps.removal.remove = vi.fn(async () => { await gate; return { state: 'in-use' as const, lines: ['REMOVAL BLOCKED (EPERM)'] } })
+      const retry = h.driver.retryRemoval('worker')
+      await vi.waitFor(() => expect(h.deps.removal.remove).toHaveBeenCalled())
+      await during()
+      open()
+      await retry
+      await h.driver.settled('worker')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+
+    await held(async () => { landing.updateAfterLanding('worker'); landing.updateAfterLanding('worker') })
+    expect(h.deps.update.startUpdate).toHaveBeenCalledTimes(1)
+    expect(h.failures.filter((line) => line.includes('did not start'))).toEqual([])
+
+    vi.mocked(h.deps.update.startUpdate).mockClear()
+    await held(async () => {
+      landing.updateAfterLanding('worker')
+      // The UPDATE recorded what it proved while the drive still ran.
+      await h.results.mainUpdated(h.records.get('worker')!.worktree!.repositoryRoot, { revision: 2, by: 'person', at: 1 }, async () => ({ holds: true }))
+    })
+    expect(h.deps.update.startUpdate).not.toHaveBeenCalled()
   })
 
   it.each(['keep', 'discard'] as const)('retains an unverified published revision as partial after %s', async (choice) => {
@@ -806,7 +961,7 @@ describe('FinishDriver', () => {
       runner: { run: async () => { entered(); await gate; return { ok: true, output: '', exitCode: 0, runId: 'sync' } }, note: async () => 'note' },
       conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 1, paths: [] } } }),
         remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }), fix: async (action) => ({ kind: 'settled', action }) },
-      ready: { current: async () => true }, busyReason: () => null, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
+      ready: { current: async () => true }, busyReason: () => null, reading: async () => {}, terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
     h.deps.sync = sync
     if (operation === 'drive')
       await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'syncing',
@@ -825,6 +980,38 @@ describe('FinishDriver', () => {
     const lease = await h.deps.commands.lease.take(h.root, 'finish')
     expect(lease.ok).toBe(true)
     if (lease.ok) await lease.release()
+  })
+
+  // I38 (Mirabia 122, 2026-10-30): "The worker is not idle" 2.7 s after the press, then the Finish went on
+  // by itself. The idle rule trusts a reading for 10 s and the hidden window looks every 15 s.
+  it.each([
+    ['takes a new reading of an idle worker before the sync and never flashes the busy wait', 'idle', 'reviewing'],
+    ['still waits for a worker the new reading shows working', 'working', 'syncing'],
+  ] as const)('%s', async (_name, after, step) => {
+    const h = await harness()
+    const set = { entries: [], readAt: 1, revision: 1, baseRevision: 1, more: 0 }
+    let read: 'stale' | 'idle' | 'working' = 'stale'
+    const reasons = { stale: 'the activity of the worker was not read in the last 10 seconds', idle: null, working: 'the worker is working' }
+    const waits: string[] = []
+    const record = h.records.update.bind(h.records)
+    h.records.update = async (id, update) => record(id, (current) => {
+      const next = update(current)
+      if (next?.worktreeLifecycle?.wait?.kind === 'worker-busy') waits.push(next.worktreeLifecycle.wait.reason)
+      return next
+    })
+    h.deps.sync = new SyncStep({ records: h.records, commands: h.deps.commands,
+      svn: { updateTargets: emptyUpdateTargets, revisionOf: async () => ({ ok: true, value: 1 }), headRevisionOf: async () => ({ ok: true, value: 1 }),
+        scheduleMissing: async () => ({ ok: true, value: undefined }), conflictSet: async () => ({ ok: true, value: { revision: 1, facts: [], rows: [] } }),
+        unmoved: async () => ({ ok: true, value: true }), mountStates: async () => ({ ok: true, value: new Map() }) },
+      runner: { run: async () => ({ ok: true, output: '', exitCode: 0, runId: 'sync' }), note: async () => 'note' },
+      conflicts: { remember: async () => ({ ok: true, value: { set, memory: { actionId: 'sync', readAt: 1, paths: [] } } }),
+        remembered: async (_action, memory) => ({ ok: true, value: { set, memory, reasons: [] } }), fix: async (action) => ({ kind: 'settled', action }) },
+      ready: { current: async () => false }, busyReason: () => reasons[read], reading: async () => { read = after },
+      terminals: { inhibit: async () => ({ release: () => {} }), pendingInput: async () => 0 }, changed: () => {} })
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'cli' })
+    expect(waits.some((reason) => reason.includes(reasons.stale))).toBe(false)
+    expect(h.state().step).toBe(step)
+    if (after === 'working') expect(h.state().wait).toMatchObject({ kind: 'worker-busy', reason: WorktreeWords.syncBusyOf('the worker is working') })
   })
 
   it('retries a refused merger launch once and starts its wall-clock limit at the actual launch', async () => {
@@ -1270,7 +1457,9 @@ describe('FinishDriver', () => {
     await h.records.update('worker', (record) => ({ ...record, scriptRuns: [...record.scriptRuns ?? [], { runId, title: scriptId, phase: 'after', scriptId, name: scriptId, commands: [], startedAt: 1, log: { state: 'saved', bytes: 22, truncated: false }, endedAt: Date.now(), exitCode: passed ? 0 : 1, outcome: passed ? 'succeeded' : 'failed' }] }))
     const changes = Reconciler.plan(h.records.list(), { hostInstanceId: 'host', throughRevision: 1, sessions: [] })
     expect(changes).toContainEqual(expect.objectContaining({ kind: passed ? 'script-succeeded' : 'script-failed', sessionId: 'worker', gate: 'action' }))
-    expect(await h.driver.noteVerdict('worker', passed ? { kind: 'succeeded' } : { kind: 'failed', reason: 'check failed' })).toBe(true)
+    // The stop is the judgement's word, carried as the action gate carries it (`SessionLifecycle`).
+    const stopped = changes.some((change) => change.kind === 'script-failed' && change.sessionId === 'worker' && change.stopped === true)
+    expect(await h.driver.noteVerdict('worker', passed ? { kind: 'succeeded' } : { kind: 'failed', reason: 'check failed', ...stopped ? { stopped: true } : {} })).toBe(true)
     await h.driver.drive('worker')
   }
 
@@ -1459,14 +1648,39 @@ describe('FinishDriver', () => {
     await completeCheck(h, true)
     expect(h.state().execution?.checkCursor).toBe(1)
     await completeCheck(h, false)
-    expect(h.state().phase).toBe('active')
+    // The person's Finish waits at the failed check; Back to work is what sends its log to the worker (J17).
+    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'checking', wait: { kind: 'checks-failed' } })
+    expect(WorktreeWords.actions(h.state()).map((action) => action.id)).toEqual(expect.arrayContaining(['finish-again', 'override-checks', 'solve-with-agent', 'back-to-work']))
     const path = h.state().checks!.logPath
+    expect(h.state().wait?.reason).toContain(`The check second did not pass: check failed. Log: ${path}.`)
     expect(await readFile(path, 'utf8')).toBe('complete check output\n')
+    expect(h.deps.handoffs.checksFailed).not.toHaveBeenCalled()
+    expect(await h.driver.backToWork('worker', 'person')).toMatchObject({ ok: true })
+    expect(h.state().phase).toBe('active')
     expect(h.deps.handoffs.checksFailed).toHaveBeenCalledWith('worker', expect.any(Number), path)
     h.setHash('repaired')
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
     expect(h.state().execution?.checkCursor).toBe(0)
     expect(h.records.get(h.state().execution!.runId!)?.scriptOf?.name).toBe('first')
+  })
+
+  // Worktree 103 (J17): a check the person stopped ended the Finish (`checks-stopped`) with nothing to press.
+  it('keeps a stopped check of an agent Finish waiting with Retry checks, and Retry runs it again', async () => {
+    const h = await harness()
+    h.setChecks([{ key: 'check', scriptId: 'checks', name: 'check', commands: [{ cwd: h.root, command: 'check' }] }])
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'cli' })
+    const stopped = h.state().execution!.runId!
+    expect(WorktreeWords.actions(h.state())[0]).toMatchObject({ id: 'stop-run', label: 'Stop check', runId: stopped })
+    await h.records.update(stopped, (run) => ({ ...run, stopRequested: true }))
+    await completeCheck(h, false)
+    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'checking', wait: { kind: 'checks-failed' } })
+    expect(h.deps.handoffs.checksFailed).not.toHaveBeenCalled()
+    expect(WorktreeWords.actions(h.state())[0]).toMatchObject({ id: 'finish-again', label: 'Retry checks' })
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    await h.driver.settled('worker')
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'checking' })
+    expect(h.state().execution!.runId).not.toBe(stopped)
+    expect(h.records.get(h.state().execution!.runId!)?.scriptOf?.name).toBe('check')
   })
 
   it('preserves the failed copy and check verdict until the log can be retained', async () => {

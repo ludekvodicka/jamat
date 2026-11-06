@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { PoolSeries, UsageAccount, UsagePool } from '../../../lib-orchestrator/rateMonitor/usageApi.types'
 import { AppControl } from '../ipc/appControl'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
-import { poolGraphSpec } from './poolGraphSpec'
+import { poolGraphSpec, poolReadout } from './poolGraphSpec'
 import { UsageChart, usageChartTheme } from './usageChart'
 import { type PoolRangePreset, UsageModel } from './usageModel'
 import { Meter, Segmented, Tile } from './usageParts'
@@ -34,7 +34,7 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
       subscribe: changed => window.appClient.onUsageChanged(changed), reportError: message => console.error(message),
     }, setSeries, setError).start()
   }, [agentId, range, burnHours])
-  const spec = useMemo(() => series ? poolGraphSpec(series, usageChartTheme()) : null, [series])
+  const spec = useMemo(() => series ? poolGraphSpec(series, usageChartTheme(), UsageModel.poolView(preset, series)) : null, [series, preset])
   const historical = series !== null && (series.displayRange?.to ?? series.until) < series.now
   const label = (id: string): string => accounts.find(account => account.key.accountId === id)?.label ?? id
   const several = accounts.length > 1
@@ -84,7 +84,8 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
         <Segmented label="Burn range" options={burnOptionsConst} value={burnHours} onChange={setBurnHours} /></span>
     </div>
     {error && <p role="alert" className="jamat-usage__alert">{error}</p>}
-    {spec ? <UsageChart spec={spec} label={`${UsageModel.agentLabels[agentId]} ${historical ? 'recorded weekly pool' : 'recorded and projected weekly pool; projection begins at Now'}`} />
+    {spec && series ? <UsageChart spec={spec} label={`${UsageModel.agentLabels[agentId]} ${historical ? 'recorded weekly pool' : 'recorded and projected weekly pool; projection begins at Now'}`}
+      readout={at => poolReadout(series, Number(at))} />
       : !error && <p role="status" className="jamat-usage__empty">{series ? 'No recorded quota in this range' : 'Reading pool history…'}</p>}
   </section>
 }

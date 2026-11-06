@@ -555,6 +555,8 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     context.failure.value = null
     context.clock.now += 60_000
     expect(await context.manager.confirmStopped('ended')).toBe(true)
+    // It ended by itself; a judgement read after this confirmation must not call it stopped (J17 review).
+    expect(context.store.get('ended')?.stopRequested).toBeUndefined()
   })
 
   it('records human confirmation for a lost check, but cannot cancel a launch whose result is unknown', async () => {

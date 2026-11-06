@@ -2,11 +2,25 @@ import { ErrorText } from '../../shared/errorText'
 import type { SessionInfo } from '../sessionManagerApi.types'
 
 /**
- * Types one line into a session. `delivered`: the text reached its composer. `retry`: not now (a
- * draft, a dialog, a session that does not run). `gone`: the session no longer exists.
+ * Types one line into a session. `delivered`: the agent took it (a proven submit, or its transcript
+ * already holds the line as a user turn written since `since`). `typed`: the text reached the agent,
+ * but nothing proves it took it. `retry`: not now (a draft, a dialog, a session that does not run).
+ * `gone`: the session no longer exists.
  */
 export interface SessionNotifyPort {
-  deliver(sessionId: string, text: string): Promise<'delivered' | 'retry' | 'gone'>
+  deliver(sessionId: string, text: string, since: number): Promise<'delivered' | 'typed' | 'retry' | 'gone'>
+  /** Whether the agent's transcript holds the line as a user turn written since `since`. */
+  taken(sessionId: string, text: string, since: number): Promise<boolean>
+  /** Holds the session's idle gate for a typed line not yet taken, or releases it. */
+  holding(sessionId: string, held: boolean): void
+}
+
+/** A line typed without proof that the agent took it: already delivered on record, still held at the gate. */
+interface TypedLine {
+  sessionId: string
+  text: string
+  since: number
+  typedAt: number
 }
 
 export interface PendingNotify {
@@ -65,6 +79,11 @@ export class SessionNotifier {
   static readonly paceMillisecondsConst: readonly number[] = [0, 60_000, 300_000, 900_000, 1_800_000]
   static readonly repeatMillisecondsConst = 1_800_000
   private static readonly tickMillisecondsConst = 10_000
+  /**
+   * How long a typed line holds the idle gate while its turn does not show: twice the 83 s a Mirabia
+   * 133 handoff took from typing to its turn.
+   */
+  static readonly holdMillisecondsConst = 180_000
   private readonly sources: SessionNotifierDeps['sources']
   private readonly watch: SessionNotifierDeps['watch']
   private readonly sessions: SessionNotifierDeps['sessions']
@@ -75,6 +94,12 @@ export class SessionNotifier {
   private timer: ReturnType<typeof setTimeout> | null
   private running: Promise<void> | null
   private started: boolean
+  /**
+   * Lines typed without proof that the agent took them. Each is delivered on record at once, so it is
+   * never typed twice, also across a restart, and holds the session's idle gate until its turn shows
+   * or the hold ends. A restart drops the hold: the line then counts as delivered a little early.
+   */
+  private readonly typed: TypedLine[]
 
   constructor(deps: SessionNotifierDeps) {
     this.sources = deps.sources
@@ -87,6 +112,7 @@ export class SessionNotifier {
     this.timer = null
     this.running = null
     this.started = false
+    this.typed = []
   }
 
   /** Owns its timer; started and stopped by the client. */
@@ -100,6 +126,7 @@ export class SessionNotifier {
     this.started = false
     if (this.timer !== null) clearTimeout(this.timer)
     this.timer = null
+    for (const line of this.typed.splice(0)) this.port.holding(line.sessionId, false)
   }
 
   /** One pass; a pass still in flight is joined, so a line is never typed twice at once. */
@@ -129,18 +156,44 @@ export class SessionNotifier {
     await SessionNotifier.note(old, 'expired', now)
     for (const group of SessionNotifier.groups(pending.filter((record) => !old.includes(record)), now)) {
       if (!group.due) continue
-      let answer: 'delivered' | 'retry' | 'gone'
+      const since = Math.min(...group.items.map(({ item }) => item.at))
+      let answer: 'delivered' | 'typed' | 'retry' | 'gone'
       try {
-        answer = await this.port.deliver(group.sessionId, group.text)
+        answer = await this.port.deliver(group.sessionId, group.text, since)
       } catch (error) {
         this.report(`The wake-up line could not be typed into session ${group.sessionId}: ${ErrorText.of(error)}`)
         answer = 'retry'
       }
       const at = this.now()
       if (answer === 'delivered') await SessionNotifier.note(group.items, 'delivered', at)
-      else if (answer === 'retry') await SessionNotifier.note(group.items, 'attempted', at)
+      else if (answer === 'typed') {
+        await SessionNotifier.note(group.items, 'delivered', at)
+        this.typed.push({ sessionId: group.sessionId, text: group.text, since, typedAt: at })
+        this.port.holding(group.sessionId, true)
+      } else if (answer === 'retry') await SessionNotifier.note(group.items, 'attempted', at)
       else if (answer === 'gone') await SessionNotifier.note(group.items, 'expired', at)
       else throw new Error(`Unknown notify answer: ${JSON.stringify(answer satisfies never)}`)
+    }
+    await this.release()
+  }
+
+  /**
+   * A typed line holds the idle gate until the agent's transcript shows its turn, at most the hold:
+   * in Mirabia 133 (2026-11-01) a conflict handoff marked delivered on typing sat 83 s before its turn
+   * while Jamat counted the worker idle. It is never typed again: a lost submit costs the hold, not a
+   * second line in a working agent.
+   */
+  private async release(): Promise<void> {
+    for (const line of [...this.typed]) {
+      let taken = false
+      try {
+        taken = await this.port.taken(line.sessionId, line.text, line.since)
+      } catch (error) {
+        this.report(`The wake-up line typed into session ${line.sessionId} could not be checked: ${ErrorText.of(error)}`)
+      }
+      if (!taken && this.now() - line.typedAt < SessionNotifier.holdMillisecondsConst) continue
+      this.typed.splice(this.typed.indexOf(line), 1)
+      this.port.holding(line.sessionId, false)
     }
   }
 

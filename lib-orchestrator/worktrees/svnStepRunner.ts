@@ -11,6 +11,15 @@ export type SvnStepIntent = Omit<SvnStepJournalEntry, 'kind' | 'cwd' | 'args' | 
 export type SvnStepResult = { output: string; exitCode: number; runId: string }
   & ({ ok: true } | { ok: false; failure: SvnFailureClass })
 
+export type SvnStepOptions = Pick<CommandRunOptions, 'signal' | 'timeoutMs'> & {
+  beforeRun?: (runId: string) => Promise<void | string>
+  runId?: string
+  phase?: 'before' | 'after'
+  title?: string
+  /** Text the run's log starts with, before svn's own output: what led to this command. */
+  preface?: string
+}
+
 export interface SvnStepRunnerDeps {
   lease?: Pick<WorktreeLease, 'within'>
   records: SessionRecordsStore
@@ -34,7 +43,7 @@ export class SvnStepRunner {
   }
 
   async run(sessionId: string, kind: SvnStepKind, cwd: string, args: string[], intent: SvnStepIntent,
-    options: Pick<CommandRunOptions, 'signal' | 'timeoutMs'> & { beforeRun?: (runId: string) => Promise<void | string>; runId?: string; phase?: 'before' | 'after'; title?: string } = {}): Promise<SvnStepResult> {
+    options: SvnStepOptions = {}): Promise<SvnStepResult> {
     const root = this.leaseRoot(sessionId)
     if (this.deps.lease !== undefined && root !== undefined)
       return this.deps.lease.within(root, kind, () => this.execute(sessionId, kind, cwd, args, intent, options))
@@ -42,7 +51,7 @@ export class SvnStepRunner {
   }
 
   private async execute(sessionId: string, kind: SvnStepKind, cwd: string, args: string[], intent: SvnStepIntent,
-    options: Pick<CommandRunOptions, 'signal' | 'timeoutMs'> & { beforeRun?: (runId: string) => Promise<void | string>; runId?: string; phase?: 'before' | 'after'; title?: string }): Promise<SvnStepResult> {
+    options: SvnStepOptions): Promise<SvnStepResult> {
     const lifecycle = this.deps.records.get(sessionId)?.worktreeLifecycle
     const previous = lifecycle?.journal.slice(lifecycle.retryFrom ?? 0) ?? []
     const stopped = SvnStepRunner.repeated(previous)
@@ -60,6 +69,7 @@ export class SvnStepRunner {
         }
       }
       catch (error) { output(`svn ${kind} preparation failed: ${ErrorText.of(error)}\n`); throw error }
+      if (options.preface !== undefined) output(options.preface)
       // The command adapter owns the writer marker after its read-only preflight; this runner owns the journal and root lease.
       const outcome = await this.deps.svn.run(cwd, args, { trackClose: true, signal: options.signal, timeoutMs: options.timeoutMs,
         retain: { tailBytes: 1024 * 1024 }, onStdout: output, onStderr: output, onSpawn: () => { spawned = true } }).catch((error: unknown) => {

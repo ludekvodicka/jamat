@@ -40,12 +40,22 @@ export class SetupFamilies {
    */
   static readonly pnpmGlobalVirtualStoreVariableConst = 'pnpm_config_enable_global_virtual_store'
 
+  /**
+   * The install runs in a PTY nobody watches, so pnpm must not ask `(Y/n)` before it purges a
+   * `node_modules` another layout made (worktree 103, 2026-11-04: `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR`
+   * stopped the Finish). A flag and not `pnpm_config_confirm_modules_purge`: pnpm 11.15.1 reads from
+   * the environment only the settings of its config table, and this one is not in it; measured
+   * 2026-11-05, both `pnpm_config_` and `npm_config_` spellings still refused, the flag purged, and
+   * pnpm 12.8.1 accepts the same flag. `CI=true` would also answer it, but turns on a frozen lockfile.
+   */
+  static readonly pnpmInstallCommandConst = 'pnpm install --config.confirm-modules-purge=false'
+
   static readonly catalogConst: readonly SetupFamily[] = [
     {
       familyId: 'node',
       title: 'node',
       tools: [
-        { toolId: 'node-pnpm', marker: 'pnpm-lock.yaml', command: 'pnpm install' },
+        { toolId: 'node-pnpm', marker: 'pnpm-lock.yaml', command: SetupFamilies.pnpmInstallCommandConst },
         { toolId: 'node-npm', marker: 'package-lock.json', command: 'npm install' },
         { toolId: 'node-yarn', marker: 'yarn.lock', command: 'yarn install' },
       ],

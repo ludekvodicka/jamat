@@ -32,6 +32,7 @@ export class SyncStep {
     ready: Pick<WorkerReady, 'current'>
     /** Why the worker does not count as idle, as a person reads it; null when it does. */
     busyReason: (sessionId: string) => string | null
+    reading: (sessionId: string) => Promise<void>
     terminals: TerminalInputControl
     changed: () => void
   }
@@ -98,6 +99,9 @@ export class SyncStep {
           || locked.svnAction !== undefined && locked.svnAction.stage !== 'changes' && locked.svnAction.needs === undefined)
           return { ok: false, code: 'merge-pending', detail: 'The worktree changed before sync acquired its lease' }
         const ready = trigger === 'ready' ? await this.deps.ready.current(sessionId) : false
+        // A press comes between two looks; with the window hidden they are 15 s apart and the idle rule
+        // trusts 10 s, so the press read "The worker is not idle" until the next look (I38).
+        if (trigger === 'finish') await this.deps.reading(sessionId)
         const pending = await this.deps.terminals.pendingInput(sessionId)
         const busyReason = pending > 0 ? 'input typed for the worker has not reached it yet' : this.deps.busyReason(sessionId)
         if (trigger === 'ready') {

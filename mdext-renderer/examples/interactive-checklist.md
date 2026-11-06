@@ -11,8 +11,8 @@ only after observing its result. An unchecked item can mean failed or not tried.
 
 :::warning[This example saves your ticks]
 Checkbox clicks update this file immediately. After trying the example, clear its ticks to restore
-the example. Ask and Insert to terminal prepare text in your agent prompt without sending it;
-Send results sends its summary to the agent.
+the example. Ask and Insert into terminal (no Enter) prepare text in your agent prompt without
+sending it; Send to agent N/M sends its summary to the agent.
 :::
 
 ## Save a check
@@ -39,8 +39,8 @@ unsent draft.
 
 ## Prepare results
 
-Leave at least one item unchecked. Open the arrow beside Send results above the document and choose
-Insert to terminal. Inspect and clear the unsent draft.
+Leave at least one item unchecked. Open the arrow beside Send to agent N/M in the toolbar
+and choose Insert into terminal (no Enter). Inspect and clear the unsent draft.
 
 - [ ] The results draft groups unconfirmed items by heading.
 - [ ] The terminal has the keyboard, so typing continues the draft.

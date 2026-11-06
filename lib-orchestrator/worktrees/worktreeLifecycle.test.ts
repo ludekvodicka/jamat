@@ -75,6 +75,44 @@ describe('WorktreeLifecycle', () => {
     expect(resolveConflict).toHaveBeenLastCalledWith('parent', expect.objectContaining({ by: 'merger' }))
   })
 
+  it('settles several paths with one option after checking them all, and stops at the first refusal naming what it settled (F13)', async () => {
+    const entry = (path: string, state: 'agent' | 'rule' | 'settled', options: ('merged' | 'take-incoming')[] = ['merged'], kind: 'text' | 'property' = 'text') =>
+      ({ path, kind, shape: 'text-overlap' as const, state, options, facts: {} })
+    const current = record({ worktreeLifecycle: { version: 1, actionId: 'finish', phase: 'finishing', step: 'worker-resolving', outOfDate: 0, journal: [],
+      syncConflictSet: { readAt: 1, revision: 2, baseRevision: 1, more: 0, entries: [entry('a', 'agent'), entry('b', 'agent', ['merged', 'take-incoming']),
+        entry('b', 'agent', ['take-incoming'], 'property'), entry('ruled', 'rule'), entry('done', 'settled')] },
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } } } })
+    const h = harness(current)
+    const actions = await h.deps.actions()
+    let left = 4
+    const resolveConflict = vi.fn<typeof actions.resolveConflict>(async (_id, request) =>
+      ({ ok: true, value: { sessionId: 'worker', path: request.path, state: 'settled', left: --left } }))
+    h.deps.actions = async () => ({ ...actions, resolveConflict })
+    const facade = new WorktreeLifecycle(h.deps)
+
+    expect(await facade.resolveConflicts('worker', { paths: 'all', option: 'merged', requestedBy: 'cli' }))
+      .toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringContaining('"b"') })
+    expect(await facade.resolveConflicts('worker', { paths: ['a', 'done'], option: 'merged', requestedBy: 'cli' }))
+      .toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringContaining('"done"') })
+    expect(await facade.resolveConflicts('worker', { paths: ['a', 'b'], option: 'merged', requestedBy: 'cli' }))
+      .toMatchObject({ ok: false, code: 'invalid-spec', detail: expect.stringContaining('two open conflicts') })
+    expect(await facade.resolveConflicts('worker', { paths: ['a', 'a'], option: 'merged', requestedBy: 'cli' })).toMatchObject({ ok: false, code: 'invalid-spec' })
+    expect(resolveConflict).not.toHaveBeenCalled()
+
+    expect(await facade.resolveConflicts('worker', { paths: ['a', 'b'], kind: 'text', option: 'merged', requestedBy: 'cli' })).toEqual({ ok: true,
+      value: { sessionId: 'worker', settled: [{ path: 'a', kind: 'text', state: 'settled' }, { path: 'b', kind: 'text', state: 'settled' }], left: 2 } })
+    expect(resolveConflict.mock.calls.map(([id, request]) => [id, request.path, request.kind, request.option, request.by]))
+      .toEqual([['worker', 'a', 'text', 'merged', 'agent'], ['worker', 'b', 'text', 'merged', 'agent']])
+
+    resolveConflict.mockClear()
+    current.worktreeLifecycle!.syncConflictSet!.entries = [entry('a', 'agent'), entry('c', 'agent'), entry('ruled', 'rule')]
+    resolveConflict.mockImplementationOnce(async (_id, request) => ({ ok: true, value: { sessionId: 'worker', path: request.path, state: 'settled', left: 1 } }))
+      .mockImplementationOnce(async () => ({ ok: false, code: 'person-only', detail: 'only the person can choose it' }))
+    expect(await facade.resolveConflicts('worker', { paths: 'all', option: 'merged', requestedBy: 'cli' })).toEqual({ ok: false, code: 'person-only',
+      detail: 'Settled "a", then stopped at "c": only the person can choose it' })
+    expect(resolveConflict.mock.calls.map(([, request]) => request.path)).toEqual(['a', 'c'])
+  })
+
   it.each(['keep', 'discard'] as const)('routes migrated Git %s once without SVN control reads', async (choice) => {
     const current = record()
     current.worktree!.kind = 'git'

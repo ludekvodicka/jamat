@@ -80,6 +80,8 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
   // the next mounts and the file reads of one mount overlap within these bounds (2026-10-30).
   static readonly svnProcessesConst = 6
   static readonly fileReadsConst = 32
+  /** The targets of one batched read stay well under the 32,767 characters of a Windows command line. */
+  static readonly batchCharactersConst = 24_000
 
   constructor(svn: CommandRunner) { this.svn = svn }
 
@@ -90,11 +92,11 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
       proven: new Set(), started: [] }
     const pending: PendingMount[] = []
     const reads: MountReads[] = []
-    const enqueue = (mount: PendingMount): void => {
-      pending.push(mount)
-      reads.push(this.readsOf(scope, mount, freshness))
+    const enqueue = (mounts: readonly PendingMount[]): void => {
+      pending.push(...mounts)
+      reads.push(...this.readsOf(scope, mounts, freshness))
     }
-    enqueue({ path: root, pinned: false })
+    enqueue([{ path: root, pinned: false }])
     const visited = new Set<string>()
     try {
       for (let index = 0; index < pending.length; index++) {
@@ -105,7 +107,6 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
         if (visited.has(key)) throw new Error(`Repeated external mount: ${mount.path}`)
         visited.add(key)
         const disk = await read.disk
-        const cwd = disk.isDirectory() ? mount.path : dirname(mount.path)
         const info = await read.info
         const entry = SvnWorktreeEvidence.infoEntries(info)[0]
         if (entry === undefined) throw new Error(`No SVN identity: ${mount.path}`)
@@ -127,7 +128,8 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
         const properties = new Map<string, Array<[string, string, string]>>()
         const carriers: { path: string; externals: string }[] = []
         for (const carrier of SvnAssemblyReader.parser.parse(await read.props).properties?.target ?? []) {
-          const path = resolve(cwd, carrier['@_path'])
+          // Every read runs from the root, so each path in an answer is relative to the root.
+          const path = resolve(root, carrier['@_path'])
           const values = (carrier.property ?? []).map((property: Record<string, string>) =>
             [property['@_name'], property['@_encoding'] ?? '', property['#text'] ?? ''] as [string, string, string]).sort(([a]: [string], [b]: [string]) => a.localeCompare(b))
           properties.set(PathCompare.comparable(path), values)
@@ -135,25 +137,27 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
           if (externals !== undefined) carriers.push({ path, externals })
         }
         const carrierInfos = carriers.map((carrier) => carrier.path === mount.path ? null
-          : SvnAssemblyReader.started(scope, this.run(scope.svn, cwd, ['info', '--xml', '--', `${relative(cwd, carrier.path).replace(/\\/g, '/')}@`])))
+          : SvnAssemblyReader.started(scope, this.run(scope.svn, root, ['info', '--xml', '--', `${relative(root, carrier.path).replace(/\\/g, '/')}@`])))
+        const children: PendingMount[] = []
         for (const [position, carrier] of carriers.entries()) {
           const carrierInfo = carrierInfos[position] === null ? entry : SvnWorktreeEvidence.infoEntries(await carrierInfos[position]!)[0]
           for (const definition of SvnExternalDefinitions.parse(carrier.path, carrier.externals)) {
             const url = SvnExternalDefinitions.url(definition.url, carrierInfo.url, carrierInfo.repository)
             const peg = SvnExternalDefinitions.peg(url)
-            enqueue({ path: definition.path, expected: peg === undefined ? url.replace(/@$/, '') : url.slice(0, url.lastIndexOf('@')),
+            children.push({ path: definition.path, expected: peg === undefined ? url.replace(/@$/, '') : url.slice(0, url.lastIndexOf('@')),
               pinned: definition.revision !== undefined && definition.revision !== 'HEAD' || peg !== undefined && peg !== 'HEAD',
               revision: definition.revision ?? peg, url })
           }
         }
+        enqueue(children)
         const externalKeys = pending.slice(index + 1).map((child) => PathCompare.comparable(child.path))
-        const absentDeletions = await PathPresence.missing(cwd, entries.filter((row) => row['wc-status']?.['@_item'] === 'deleted').map((row) => row['@_path']))
+        const absentDeletions = await PathPresence.missing(root, entries.filter((row) => row['wc-status']?.['@_item'] === 'deleted').map((row) => row['@_path']))
         const listed = new Set(entries.some((row) => row['wc-status']?.['@_item'] === 'deleted')
-          ? entries.flatMap((row) => typeof row['@_path'] === 'string' ? [PathCompare.comparable(resolve(cwd, row['@_path']))] : []) : [])
+          ? entries.flatMap((row) => typeof row['@_path'] === 'string' ? [PathCompare.comparable(resolve(root, row['@_path']))] : []) : [])
         const rootKey = PathCompare.comparable(root)
         let reported = nodes.length
         const failure = await SvnAssemblyReader.inOrder(entries, SvnAssemblyReader.fileReadsConst, async (row) => {
-          const found = await this.nodesOf(scope, { row, cwd, rootKey, externalKeys, properties, listed, absentDeletions, pinnedRevision })
+          const found = await this.nodesOf(scope, { row, rootKey, externalKeys, properties, listed, absentDeletions, pinnedRevision })
           if (found.incoming !== undefined) incoming.push(found.incoming)
           nodes.push(...found.nodes)
           if (nodes.length - reported >= 128) { reported = nodes.length; progress?.(own, nodes.length) }
@@ -203,25 +207,89 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
     return promise
   }
 
-  private readsOf(scope: ReadScope, mount: PendingMount, freshness: boolean): MountReads {
-    const safe = SvnAssemblyReader.started(scope, this.safePath(scope, mount.path))
-    const disk = SvnAssemblyReader.started(scope, safe.then(() => lstat(mount.path)))
-    const where = disk.then((stat) => stat.isDirectory() ? { cwd: mount.path, target: '.' }
-      : { cwd: dirname(mount.path), target: relative(dirname(mount.path), mount.path).replace(/\\/g, '/') })
-    const run = (args: (target: string) => string[]) => SvnAssemblyReader.started(scope, where.then(({ cwd, target }) => this.run(scope.svn, cwd, args(target))))
-    return { safe, disk,
-      info: run((target) => ['info', '--xml', '--', `${target}@`]),
-      pinnedInfo: mount.pinned && !/^\d+$/.test(mount.revision!) ? run(() => ['info', '--xml', '-r', mount.revision!, '--', mount.url!]) : undefined,
-      status: run((target) => ['status', '--xml', '--verbose', '--ignore-externals', ...(freshness && !mount.pinned ? ['--show-updates'] : []), '--', `${target}@`]),
-      props: run((target) => ['proplist', '--xml', '--verbose', '--depth', 'infinity', '--', `${target}@`]) }
+  /**
+   * The reads of the mounts one pass found together. One `info`, one `status` for the floating and one
+   * for the pinned mounts and one `proplist` name all of them, run from the root, instead of three
+   * processes per mount: a Mirabia owner has 30. Each mount gets its own part of each answer, the
+   * part a read of that mount alone returns.
+   */
+  private readsOf(scope: ReadScope, mounts: readonly PendingMount[], freshness: boolean): MountReads[] {
+    if (mounts.length === 0) return []
+    const safe = mounts.map((mount) => SvnAssemblyReader.started(scope, this.safePath(scope, mount.path)))
+    // A mount whose path failed its check stays out of the batch and fails at its own turn, with its own error.
+    const checked = Promise.allSettled(safe)
+    const batched = (list: readonly PendingMount[], args: string[]): Promise<string[]> => SvnAssemblyReader.started(scope, checked.then((states) => {
+      const usable = list.filter((mount) => states[mounts.indexOf(mount)].status === 'fulfilled')
+      return usable.length === 0 ? [] : Promise.all(SvnAssemblyReader.batches(usable.map((mount) => `${SvnWorktreeEvidence.relativeTo(scope.root, mount.path)}@`))
+        .map((targets) => this.run(scope.svn, scope.root, [...args, '--', ...targets])))
+    }))
+    const info = batched(mounts, ['info', '--xml'])
+    const floating = batched(mounts.filter((mount) => !mount.pinned), ['status', '--xml', '--verbose', '--ignore-externals', ...(freshness ? ['--show-updates'] : [])])
+    const pinned = batched(mounts.filter((mount) => mount.pinned), ['status', '--xml', '--verbose', '--ignore-externals'])
+    const props = batched(mounts, ['proplist', '--xml', '--verbose', '--depth', 'infinity'])
+    const part = (answers: Promise<string[]>, mount: PendingMount, element: 'entry' | 'target', document: 'info' | 'status') =>
+      SvnAssemblyReader.started(scope, answers.then((xml) => SvnAssemblyReader.partOf(scope.root, xml, element, document, mount.path)))
+    return mounts.map((mount, position) => ({ safe: safe[position],
+      disk: SvnAssemblyReader.started(scope, safe[position].then(() => lstat(mount.path))),
+      info: part(info, mount, 'entry', 'info'),
+      pinnedInfo: mount.pinned && !/^\d+$/.test(mount.revision!)
+        ? SvnAssemblyReader.started(scope, safe[position].then(() => this.run(scope.svn, scope.root, ['info', '--xml', '-r', mount.revision!, '--', mount.url!])))
+        : undefined,
+      status: part(mount.pinned ? pinned : floating, mount, 'target', 'status'),
+      props: SvnAssemblyReader.started(scope, props.then((xml) => SvnAssemblyReader.propsOf(scope.root, xml, mounts, mount.path))) }))
   }
 
-  private async nodesOf(scope: ReadScope, input: { row: StatusEntry; cwd: string; rootKey: string; externalKeys: readonly string[];
+  /** The targets in argument batches under `batchCharactersConst`. */
+  private static batches(targets: readonly string[]): string[][] {
+    const batches: string[][] = [[]]
+    let characters = 0
+    for (const target of targets) {
+      if (characters + target.length + 1 > SvnAssemblyReader.batchCharactersConst && batches.at(-1)!.length > 0) {
+        batches.push([])
+        characters = 0
+      }
+      batches.at(-1)!.push(target)
+      characters += target.length + 1
+    }
+    return batches
+  }
+
+  /** Each `<element>` of the answers with the absolute path it names. */
+  private static blocksOf(root: string, answers: readonly string[], element: 'entry' | 'target', document: 'info' | 'status' | 'properties')
+    : { path: string; block: string }[] {
+    return answers.flatMap((xml) => [...xml.matchAll(new RegExp(`<${element}\\b[\\s\\S]*?</${element}>`, 'g'))].map(([block]) => {
+      const named = SvnAssemblyReader.parser.parse(`<${document}>${block}</${document}>`)[document]?.[element]?.[0]?.['@_path']
+      if (typeof named !== 'string') throw new Error(`SVN ${document} names no path`)
+      return { path: resolve(root, named), block }
+    }))
+  }
+
+  /** The part of a batched `info` or `status` answer about one mount, wrapped as a read of that mount alone. */
+  private static partOf(root: string, answers: readonly string[], element: 'entry' | 'target', document: 'info' | 'status', mount: string): string {
+    const found = SvnAssemblyReader.blocksOf(root, answers, element, document).find(({ path }) => PathCompare.comparable(path) === PathCompare.comparable(mount))
+    if (found === undefined) throw new Error(`No SVN ${document} of ${mount}`)
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<${document}>\n${found.block}\n</${document}>\n`
+  }
+
+  /**
+   * The properties of one mount's nodes from a batched `proplist`: a node belongs to the deepest mount
+   * of the batch it lies in, as `proplist --depth infinity` stops at every external.
+   */
+  private static propsOf(root: string, answers: readonly string[], mounts: readonly PendingMount[], mount: string): string {
+    const own = SvnAssemblyReader.blocksOf(root, answers, 'target', 'properties').filter(({ path }) => {
+      const deepest = mounts.filter((candidate) => PathCompare.isInside(candidate.path, path))
+        .reduce<PendingMount | undefined>((best, candidate) => best === undefined || candidate.path.length > best.path.length ? candidate : best, undefined)
+      return deepest !== undefined && PathCompare.comparable(deepest.path) === PathCompare.comparable(mount)
+    })
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<properties>\n${own.map(({ block }) => block).join('\n')}\n</properties>\n`
+  }
+
+  private async nodesOf(scope: ReadScope, input: { row: StatusEntry; rootKey: string; externalKeys: readonly string[];
     properties: ReadonlyMap<string, Array<[string, string, string]>>; listed: ReadonlySet<string>; absentDeletions: ReadonlySet<string>;
     pinnedRevision: number | undefined }): Promise<{ nodes: SvnAssemblyNode[]; incoming?: string }> {
-    const { row, cwd, rootKey } = input, root = scope.root
+    const { row, rootKey } = input, root = scope.root
     if (typeof row['@_path'] !== 'string') throw new Error('SVN returned a node without a path')
-    const path = resolve(cwd, row['@_path']), status = row['wc-status'], key = PathCompare.comparable(path)
+    const path = resolve(root, row['@_path']), status = row['wc-status'], key = PathCompare.comparable(path)
     if (key !== rootKey && !key.startsWith(`${rootKey}/`)) throw new Error('SVN returned a path outside the worktree')
     const name = SvnWorktreeEvidence.relativeTo(root, path)
     if (name.split('/').some((part) => SvnAssemblyReader.privateNames.has(part))) return { nodes: [] }
@@ -245,7 +313,7 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
         await this.safePath(scope, path)
         if (!leftover.isFile()) throw new Error(`Scheduled deletion still has a linked or special node: ${name}`)
         content = await SvnNodeContent.hash(path)
-        const base = await SvnNodeContent.exported(scope.svn, cwd, `${relative(cwd, path).replace(/\\/g, '/')}@`, 'BASE', true)
+        const base = await SvnNodeContent.exported(scope.svn, root, `${relative(root, path).replace(/\\/g, '/')}@`, 'BASE', true)
         if (content !== base) throw new Error(`Scheduled deletion ${name} contains new working bytes. Preserve this file and replace the deletion with an add/replace, or move the local file outside the tested application before preparing again.`)
       }
       if (leftover?.isDirectory())
@@ -260,7 +328,7 @@ export class SvnAssemblyReader implements SvnAssemblyExecutor {
     const properties = input.properties.get(key)
     const translated = properties?.some(([name]) => name === 'svn:keywords' || name === 'svn:eol-style')
     const content = node.isDirectory() ? 'directory' : translated
-      ? await SvnNodeContent.exported(scope.svn, cwd, `${relative(cwd, path).replace(/\\/g, '/')}@`) : await SvnNodeContent.hash(path)
+      ? await SvnNodeContent.exported(scope.svn, root, `${relative(root, path).replace(/\\/g, '/')}@`) : await SvnNodeContent.hash(path)
     const nodes: SvnAssemblyNode[] = [{ path: name, content: SvnAssemblyReader.hash([content, properties ?? []]), metadata }]
     if (status['@_item'] === 'unversioned' && node.isDirectory()) await this.untracked(root, path, nodes)
     return found(nodes)

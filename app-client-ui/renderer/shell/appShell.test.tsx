@@ -442,6 +442,7 @@ class AppClientStub {
         mediaResource: () => { throw new Error('No test of the shell opens media') },
         relativeResource: () => { throw new Error('No test of the shell opens Markdown media') },
         copyPath: () => { throw new Error('No test of the shell copies a file path') },
+        exportDocument: () => { throw new Error('No test of the shell exports a document') },
         startImageDrag: () => { throw new Error('No test of the shell drags an image') },
         openExternal: () => { throw new Error('No test of the shell opens an external URL') },
         release: () => { throw new Error('No test of the shell releases a file') },
@@ -631,6 +632,10 @@ class AppClientStub {
         writeText: (text: string) => {
           this.copied.push(text)
           return Promise.resolve({ ok: true as const, value: undefined })
+        },
+        writeRich: (text: string) => {
+          this.copied.push(text)
+          return Promise.resolve({ ok: true as const, value: true })
         },
       },
       onTerminalFrame: () => () => undefined,

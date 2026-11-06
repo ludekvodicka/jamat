@@ -1,6 +1,7 @@
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { MarkdownTaskLines } from '../../../lib-orchestrator/fileViewer/markdownTaskLines'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import type { FileDiffResult } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import type {
@@ -49,6 +50,11 @@ export function FileViewerContent(props: {
   onOpenSource(source: FileViewerDocumentSource): void
   onReload?(): void
   insertPrompt?: PromptInsertTarget
+  /**
+   * Where the checklist's send button goes: the viewer's toolbar. Null while that toolbar is not
+   * mounted yet; absent where the content stands alone, which draws it above the document instead.
+   */
+  toolbarSlot?: HTMLElement | null
 }): React.JSX.Element {
   const [exportError, setExportError] = useState<string | null>(null)
   const [promptError, setPromptError] = useState<string | null>(null)
@@ -81,6 +87,11 @@ export function FileViewerContent(props: {
         insert(FileViewerPrompts.results(props.document.path, MarkdownTaskLines.parse(confirmedText)), mode)
     })
   }
+  const checklist = props.mode === 'rendered' && tasks.interaction && items.length > 0 ? <FileViewerChecklistStrip
+    done={items.filter((item) => item.checked).length} total={items.length}
+    onSend={insertPrompt && props.textReady !== false ? sendResults : undefined}
+    unavailable={!insertPrompt ? FileViewerPrompts.unavailable(sessionId)
+      : props.textReady === false ? 'Waiting for the current document to load.' : undefined} /> : null
   let content: React.JSX.Element
   if (props.mode === 'hex') content = <FileHexView ports={props.ports} documentId={props.document.documentId} />
   else if (props.mode === 'preview') content = <FileMediaPreview ports={props.ports} document={props.document} />
@@ -112,11 +123,7 @@ export function FileViewerContent(props: {
   }}>Save copy…</button>}{exportError && <p role="alert">{exportError}</p>}
     {tasks.error && <p className="file-viewer-error" role="alert">{tasks.error}</p>}
     {promptError && <p className="file-viewer-error" role="alert">{promptError}</p>}
-    {props.mode === 'rendered' && tasks.interaction && items.length > 0 && <FileViewerChecklistStrip
-      done={items.filter((item) => item.checked).length} total={items.length}
-      onSend={insertPrompt && props.textReady !== false ? sendResults : undefined}
-      unavailable={!insertPrompt ? FileViewerPrompts.unavailable(sessionId)
-        : props.textReady === false ? 'Waiting for the current document to load.' : undefined} />}
+    {checklist && (props.toolbarSlot === undefined ? checklist : props.toolbarSlot && createPortal(checklist, props.toolbarSlot))}
     <FileImageSurface key={props.document.documentId} name={props.document.name} onAskSelection={onAskSelection}>
       {displayed}
     </FileImageSurface></>

@@ -6,7 +6,7 @@ import { WorktreeDue } from './worktreeDue'
 import { WorktreeTransitions } from './worktreeTransitions'
 import { PathCompare } from '../shared/pathCompare'
 import type { SessionRecord, SessionRecordWorktree, SvnActionVerdict } from '../sessionManager/worktreeSessionRecords'
-import type { SessionConflictList, SessionConflictResolved, SessionCreated, SessionFinishChoice, SessionFinishPress, SessionsOpResult, SessionWorktreeInfo, SessionWorktreePlace, SessionWorktreeState, SvnConflictResolveRequest } from '../sessionManager/sessionManagerApi.types'
+import type { SessionConflictList, SessionConflictResolved, SessionConflictsResolved, SessionCreated, SessionFinishChoice, SessionFinishPress, SessionsOpResult, SessionSvnConflictInfo, SessionWorktreeInfo, SessionWorktreePlace, SessionWorktreeState, SvnConflictResolveRequest, SvnConflictsResolveRequest } from '../sessionManager/sessionManagerApi.types'
 import { SessionScriptDefinitions } from '../sessionManager/worktreeSessionScripts'
 import { SvnActionStages } from './finish/svnActionStages'
 import { SvnConflictWords } from './conflicts/svnConflictWords'
@@ -180,6 +180,49 @@ export class WorktreeLifecycle {
     const resolved = await actions.resolveConflict(parentId, { ...request, by })
     this.changedPort()
     return resolved
+  }
+
+  /**
+   * One option for several paths, settled one after another as `resolveConflict` settles each, so an
+   * agent does not pay one CLI round trip per path (Mirabia 133: 12 calls, 47 s of gaps). Every path
+   * is checked first, so a wrong list settles nothing; a refusal later stops the call with the paths
+   * before it settled and names them.
+   */
+  async resolveConflicts(sessionId: string, request: SvnConflictsResolveRequest): Promise<SessionsOpResult<SessionConflictsResolved>> {
+    const list = await this.conflictsOf(sessionId)
+    if (!list.ok) return list
+    const open = list.value.entries.filter((entry) => entry.state !== 'settled')
+    const twice = (path: string): boolean => open.filter((entry) => entry.path === path).length > 1
+    let targets: { path: string; kind?: SessionSvnConflictInfo['kind'] }[]
+    if (request.paths === 'all') {
+      const listed = open.filter((entry) => entry.state !== 'rule')
+      if (listed.length === 0) return { ok: false, code: 'invalid-spec', detail: 'No open conflict is left to settle; Jamat\'s rules settle the rest' }
+      const refusing = listed.filter((entry) => !entry.options.some((option) => option.id === request.option))
+      if (refusing.length > 0) return { ok: false, code: 'invalid-spec',
+        detail: `${request.option} is not an option of ${refusing.map((entry) => JSON.stringify(entry.path)).join(', ')}; settle those paths one by one` }
+      targets = listed.map((entry) => ({ path: entry.path, ...twice(entry.path) ? { kind: entry.kind } : {} }))
+    } else {
+      if (request.paths.length === 0) return { ok: false, code: 'invalid-spec', detail: 'Name at least one conflicted path' }
+      if (new Set(request.paths).size !== request.paths.length) return { ok: false, code: 'invalid-spec', detail: 'A path is named twice' }
+      const unknown = request.paths.filter((path) => !open.some((entry) => entry.path === path && (request.kind === undefined || entry.kind === request.kind)))
+      if (unknown.length > 0) return { ok: false, code: 'invalid-spec',
+        detail: `${unknown.map((path) => JSON.stringify(path)).join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not an open conflict of this action; read sessions conflicts` }
+      const ambiguous = request.kind === undefined ? request.paths.filter(twice) : []
+      if (ambiguous.length > 0) return { ok: false, code: 'invalid-spec',
+        detail: `${ambiguous.map((path) => JSON.stringify(path)).join(', ')} ${ambiguous.length === 1 ? 'holds' : 'hold'} two open conflicts; name the kind` }
+      targets = request.paths.map((path) => ({ path, ...request.kind === undefined ? {} : { kind: request.kind } }))
+    }
+    const settled: SessionConflictsResolved['settled'] = []
+    let left = open.length
+    for (const target of targets) {
+      const resolved = await this.resolveConflict(sessionId, { path: target.path, ...target.kind === undefined ? {} : { kind: target.kind },
+        option: request.option, confirm: false, requestedBy: request.requestedBy })
+      if (!resolved.ok) return settled.length === 0 ? resolved : { ...resolved,
+        detail: `Settled ${settled.map((entry) => JSON.stringify(entry.path)).join(', ')}, then stopped at ${JSON.stringify(target.path)}: ${resolved.detail}` }
+      settled.push({ path: resolved.value.path, kind: target.kind ?? open.find((entry) => entry.path === target.path)!.kind, state: resolved.value.state })
+      left = resolved.value.left
+    }
+    return { ok: true, value: { sessionId: list.value.sessionId, settled, left } }
   }
 
   async solveWithAgent(sessionId: string): Promise<SessionsOpResult<SessionCreated>> {

@@ -5,6 +5,7 @@ import type { SessionWorkflowInfo } from '../../sessionManager/sessionManagerApi
 import { SessionWorkflows } from '../../sessionManager/worktreeSessionRuntime'
 import { SvnActionWorkflow } from './svnActionWorkflow'
 import { FinishProjection } from '../finish/finishProjection'
+import { SvnActionStages } from '../finish/svnActionStages'
 import { SessionActionHistory } from '../../sessionManager/records/sessionActionHistory'
 import { WorktreeWords } from './worktreeWords'
 
@@ -49,6 +50,16 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
       { id: 'later', label: 'Later', primary: false, place: 'step', deferred: 'Main copy update left for later. It still waits on this step.' },
     ])
     expect(SvnActionWorkflow.of(record(current), current, runs({})).actions[0].confirmLive).toEqual([])
+  })
+
+  // I41 (Mirabia 118): the UPDATE the restarted client launched again still showed the stopped client's 19:44.
+  it('starts the running UPDATE step when its lost launch began again, and a stale copy never moves it back', () => {
+    const stranded = action({ kind: 'update-main', root: 'Q:/Work/App', stage: 'updating', runId: undefined, startedAt: 100, stageAt: 300 })
+    const relaunched = SvnActionStages.passedOf(stranded, { ...stranded, stageAt: 900 }, 900)
+    expect(relaunched.passes).toBeUndefined()
+    const step = SvnActionWorkflow.of(record(relaunched), relaunched, runs({})).rounds.flatMap((round) => round.steps).at(-1)!
+    expect(step).toMatchObject({ title: 'svn update', state: 'running', startedAt: 900, endedAt: null })
+    expect(SvnActionStages.passedOf(relaunched, { ...relaunched, stageAt: 300 }, 950).stageAt).toBe(900)
   })
 
   it('names the tree menu in the Later line while the row is a landed row the tree can update', () => {

@@ -1,5 +1,6 @@
 import { JournaledConflictResolutions } from './conflicts/journaledConflictResolutions'
 import type { SvnWorktreeManager } from '../svn/svnWorktreeManager'
+import type { SvnWorktreeSeed } from '../svn/svnWorktreeSeed'
 import { SvnConflictFlow } from './conflicts/svnConflictFlow'
 import { SvnResolverLauncher } from './conflicts/svnResolverLauncher'
 import { FinishDriver } from './finish/finishDriver'
@@ -13,8 +14,10 @@ import { SvnStepRunner, type SvnStepRunnerDeps } from './svnStepRunner'
 import type { WorktreeSvnCommands } from './worktreeSvnCommands'
 
 export interface WorktreeOperationsDeps extends Pick<SvnStepRunnerDeps, 'records' | 'scripts' | 'now' | 'newId' | 'changed'>,
-  Pick<FinishDriverDeps, 'results' | 'handoffs' | 'busyReason' | 'terminals' | 'perf'> {
+  Pick<FinishDriverDeps, 'results' | 'handoffs' | 'busyReason' | 'reading' | 'terminals' | 'perf'> {
   svn: SvnWorktreeManager
+  /** Runs its svn commands outside the worktree leases, so it never takes `commands`. */
+  seed: SvnWorktreeSeed
   commands: WorktreeSvnCommands
   resolver: SvnActionFlowDeps['resolver']
 }
@@ -35,7 +38,7 @@ export class WorktreeOperations {
       savedDirectoryOf: (id) => deps.results.savedDirectoryOf(id), resolutions: this.resolutions,
       withMarkers: deps.resolver.withMarkers, unavailable: deps.resolver.unavailable, cli: deps.resolver.cli, now: deps.now })
     this.sync = new SyncStep({ ...deps, runner: this.runner, ready: this.ready, conflicts })
-    this.checkout = new SvnCheckoutStep({ records: deps.records, runner: this.runner, svn: deps.svn, now: deps.now })
+    this.checkout = new SvnCheckoutStep({ records: deps.records, runner: this.runner, svn: deps.svn, seed: deps.seed, now: deps.now })
   }
 
   static finish(actions: SvnActionFlowDeps, ports: FinishDriverPorts): FinishDriver {

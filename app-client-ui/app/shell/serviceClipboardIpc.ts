@@ -1,5 +1,6 @@
 import { clipboard } from 'electron'
 
+import { ClipboardAccess } from '../shared/clipboardAccess'
 import { ServiceIpcBase } from '../shared/serviceIpcBase'
 
 /**
@@ -16,10 +17,12 @@ import { ServiceIpcBase } from '../shared/serviceIpcBase'
 export class ServiceClipboardIpc extends ServiceIpcBase<typeof ServiceClipboardIpc.channelsConst> {
   static readonly channelsConst = {
     'clipboard:write-text': true,
+    'clipboard:write-rich': true,
   } as const
 
   initialize(): void {
     this.register('clipboard:write-text', (_event, text) => { clipboard.writeText(text) })
+    this.register('clipboard:write-rich', (_event, text, html) => ClipboardAccess.writeRich(text, html))
     this.assertComplete(ServiceClipboardIpc.channelsConst)
   }
 }

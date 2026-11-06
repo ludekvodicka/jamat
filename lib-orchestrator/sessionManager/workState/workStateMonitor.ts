@@ -82,7 +82,7 @@ export class WorkStateMonitor {
   }
 
   private readonly states = new Map<string, SessionWorkState>()
-  private observing = false
+  private pass: Promise<void> | null = null
   private stopped = false
 
   constructor(private readonly deps: WorkStateMonitorDeps) {}
@@ -93,13 +93,24 @@ export class WorkStateMonitor {
    * output sequences than anything queued behind an inspect would.
    */
   async observe(listing: RuntimeListResult): Promise<void> {
-    if (this.stopped || this.observing) return
-    this.observing = true
-    try {
-      await this.classifyListing(listing)
-    } finally {
-      this.observing = false
-    }
+    if (this.stopped || this.pass !== null) return
+    this.pass = this.classifyListing(listing).finally(() => { this.pass = null })
+    return this.pass
+  }
+
+  /** Settles with the pass in flight, at once when none runs; its failure is its caller's. */
+  async passed(): Promise<void> {
+    await this.pass?.catch(() => undefined)
+  }
+
+  /**
+   * One listing, classified by a pass of its own: it waits out every pass in flight instead of being
+   * dropped, so a caller that needs a fresh reading gets one even when a poll started a pass between
+   * its look and its listing (I38).
+   */
+  async observeOwn(listing: RuntimeListResult): Promise<void> {
+    while (this.pass !== null) await this.passed()
+    return this.observe(listing)
   }
 
   /**
@@ -231,7 +242,9 @@ export class WorkStateMonitor {
     if (inspection.hint === 'background' || inspection.hint === 'compacting') state.workingEvidenceAt = now
     else if (mapped === 'working') {
       if (agentId === 'claude') state.workingEvidenceAt = session.lastOutputAt ?? now
-      else if (agentId === 'codex') state.workingEvidenceAt = now
+      // Codex's spinner title is read from the ring, which can outlive the turn: it ages by output.
+      else if (agentId === 'codex')
+        state.workingEvidenceAt = inspection.evidence.every((item) => item.source === 'raw') ? session.lastOutputAt ?? now : now
       else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
     }
     else if (mapped === 'waiting') state.workingEvidenceAt = null
@@ -283,6 +296,23 @@ export class WorkStateMonitor {
     else if (hint === 'unknown') return 'unknown'
     else
       throw new Error(`Unknown work hint: ${JSON.stringify(hint)}`)
+  }
+
+  /**
+   * The hint of one frame aged as `apply` ages it, for `SessionManager.terminalComposer`: a delivery
+   * that decides on it must not take an idle agent for busy because its tail still holds Codex's
+   * spinner title or its screen a dead Claude busy row. Such evidence reads `idle` once its output is
+   * older than the silence window.
+   */
+  static agedHint(agentId: SessionRecordAgent['agentId'], frame: AgentWorkFrame, lastOutputAt: number | null, now: number): AgentWorkHint {
+    const inspection = WorkStateMonitor.inspect(agentId, frame)
+    if (inspection.hint === 'background' || inspection.hint === 'compacting' || WorkStateMonitor.activityOf(inspection.hint) !== 'working')
+      return inspection.hint
+    let ages: boolean
+    if (agentId === 'claude') ages = true
+    else if (agentId === 'codex') ages = inspection.evidence.every((item) => item.source === 'raw')
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+    return ages && now - (lastOutputAt ?? now) >= WorkStateMonitor.silenceMillisecondsConst ? 'idle' : inspection.hint
   }
 
   /** Public for `SessionManager.terminalComposer`, which reads the hint off its own projection. */

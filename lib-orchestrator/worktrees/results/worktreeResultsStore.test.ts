@@ -257,6 +257,50 @@ describe('lib-orchestrator/sessionManager/results/worktreeResultsStore', () => {
     expect(existsSync(join(it_.directory, 'old.json'))).toBe(false)
   })
 
+  it('keeps an acknowledged result whose removal is pending for 30 days, so its folder can still be removed (I67)', async () => {
+    const it_ = harness()
+    const store = it_.store()
+    await store.put(result('pending', { removal: 'pending' }))
+    await store.acknowledge('pending')
+    it_.clock.now += 2 * dayConst
+    const later = it_.store()
+    await later.load()
+    expect(later.list({}).map((record) => record.actionId)).toEqual(['pending'])
+    it_.clock.now += 29 * dayConst
+    const last = it_.store()
+    await last.load()
+    expect(last.list({})).toEqual([])
+  })
+
+  it('keeps what an early UPDATE added and the first time while the Finish writes its blocked result again (J8)', async () => {
+    const it_ = harness()
+    const store = it_.store()
+    await it_.logs.write('s1', 'run-u', 'update output')
+    await store.put(result('blocked', { removal: 'pending', lines: ['Published: app r51', 'REMOVAL BLOCKED (EPERM)'] }))
+    await store.mainUpdated('Q:/Work/App', { revision: 52, by: 'agent', at: 1 }, async () => ({ holds: true }),
+      { parentId: 's1', runs: [{ runId: 'run-u', title: 'Update main copy: svn update' }], lines: [`${WorktreeResultsStore.updateLinePrefixConst}1 of your changes overlaps what lands; saved before the update in Q:/saved`] })
+    it_.clock.now += 60_000
+    await store.put(result('blocked', { removal: 'pending', lines: ['Published: app r51', 'REMOVAL BLOCKED (EPERM) again'], at: it_.clock.now }))
+    const again = store.list({})[0]
+    expect(again.at).toBe(10 * dayConst)
+    expect(again.lines).toEqual(['Published: app r51', 'REMOVAL BLOCKED (EPERM) again', '   main copy update: 1 of your changes overlaps what lands; saved before the update in Q:/saved'])
+    expect(again.logs.map((log) => log.runId)).toEqual(['run-u'])
+    expect(again.main).toMatchObject({ revision: 52 })
+
+    it_.clock.now += 60_000
+    await store.put(result('blocked', { removal: 'removed', lines: ['Published: app r51', '   worktree removed'], at: it_.clock.now }))
+    expect(store.list({})[0]).toMatchObject({ at: it_.clock.now, removal: 'removed' })
+    expect(store.list({})[0].lines).toContain('   main copy update: 1 of your changes overlaps what lands; saved before the update in Q:/saved')
+  })
+
+  it('says whether an UPDATE already wrote what it proved into a result, landed or unproven (J8)', async () => {
+    const store = harness().store()
+    await store.put(result('plain'))
+    await store.put(result('landed', { main: { revision: 52, by: 'agent', at: 1 } }))
+    await store.put(result('unproven', { mainUnproven: { revision: 52, by: 'agent', at: 1, reason: 'a.txt is not landed' } }))
+    expect(['plain', 'landed', 'unproven', 'missing'].map((id) => store.updateRecorded(id))).toEqual([false, true, true, false])
+  })
+
   it.each(['saved', 'ignored', 'discarded', 'setup'])('keeps acknowledged %s copies for 30 days and longer while memory holds the action', async (bucket) => {
     const it_ = harness()
     const store = it_.store()

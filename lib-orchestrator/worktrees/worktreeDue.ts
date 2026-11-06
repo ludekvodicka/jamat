@@ -3,6 +3,7 @@ import type { SessionRecord } from '../sessionManager/worktreeSessionRecords'
 import { SessionScriptDefinitions } from '../sessionManager/worktreeSessionScripts'
 import { SvnActionStages } from './finish/svnActionStages'
 import { WorktreeCleanupPacing } from './removal/worktreeCleanupPacing'
+import { BlockedRemovalRetry } from './removal/blockedRemovalRetry'
 import { CheckExecution } from './finish/checkExecution'
 import { FinishStepPolicy } from './finish/finishStepPolicy'
 import type { WorktreeDueChange } from './worktreeLifecycle.types'
@@ -14,6 +15,8 @@ export class WorktreeDue {
       if (record.worktreeLifecycle?.unreadable !== undefined) continue
       if (WorktreeDue.cleanupDue(record, records, now, clientStartedAt))
         changes.push({ kind: 'clean-worktree', sessionId: record.sessionId })
+      if (!held.has(record.sessionId) && BlockedRemovalRetry.due(record, records, now, clientStartedAt))
+        changes.push({ kind: 'retry-removal', sessionId: record.sessionId })
       const state = record.worktreeLifecycle
       if (state?.execution !== undefined && !held.has(record.sessionId)
         && (state.phase === 'finishing' && state.step !== undefined && FinishStepPolicy.steps[state.step].background

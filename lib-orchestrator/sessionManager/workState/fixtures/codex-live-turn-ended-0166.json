@@ -1,0 +1,25 @@
+{
+  "agent": "codex",
+  "expected": {
+    "hint": "idle"
+  },
+  "provenance": {
+    "origin": "captured from an isolated AppJamatV3 Host by a disposable probe (.aidocs/temp/2026-11-05-9de2a70e/probeCodexWait.ts), the same runtime.inspect view the work-state monitor reads",
+    "case": "a finished 0.166 turn: `Worked for 2m 32s • 15:01` above the empty box, no output since task_complete",
+    "capture": "captured 60 s after task_complete; outputSeq did not move in the last six captures. Sanitized: the scratch directory is replaced by Q:\\PROJECT. ANSI is left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "codex-cli 0.166.0",
+    "capturedAt": "2026-11-05",
+    "cols": 160,
+    "rows": 45
+  },
+  "frame": {
+    "rawTail": "e to finish before\u001b[1Cits\u001b[1Cown\u001b[1Ctimer\u001b[1Cadvances,\u001b[1Cbecause\u001b[1Ceach\u001b[1Cruns\u001b[1Cindependently.\u001b[23;3HTheir\u001b[1Cdurations\u001b[1Calone\u001b[1Cdo\u001b[1Cnot\u001b[1Cdetermine\u001b[1Cthe\u001b[1Cexact\u001b[1Corder\u001b[1Cof\u001b[1Ccompletion;\u001b[1Ctheir\u001b[1Cdifferent\u001b[1Cstart\u001b[1Ctimes\u001b[1Calso\u001b[1Cmatter.\u001b[1CNext\u001b[1CI\u001b[1Cwill\u001b[1Crun\u001b[38;2;166;227;161m\u001b[1CGet-Date\u001b[m,\u001b[1Cthen\u001b[1Cwait\u001b[1Con\u001b[1Cthe\u001b[1Ctwo\u001b[24;3Hexis\u001b[1Cing sessions until\u001b[1Cboth\u001b[1Creport completion. This messag\u001b[1C is \u001b[1Che requested intermediate updat\u001b[1C.                                                            \u001b[25;2H                                                                                                                                                               \u001b[38;5;2m\u001b[1m•\u001b[m\u001b[1m\u001b[1CRan\u001b[22m \u001b[38;2;137;180;250mGet-Date                                                                                                                                                  \u001b[m\u001b[2m  └\r\n    Thursday, November 5, 2026 3:00:20 PM\u001b[22m\r\n                                                                                                                                                                \r\n\u001b[K\u001b[38;5;2m\u001b[1m\r\n•\u001b[m\u001b[1m\u001b[1CRan\u001b[38;2;137;180;250m\u001b[22m\u001b[1CStart-Sleep \u001b[38;2;147;153;178m-\u001b[38;2;235;160;172mSeconds \u001b[38;2;205;214;244m120\u001b[m\u001b[2m\r\n  └ (no output)\u001b[22m\r\n\u001b[K\u001b[38;5;2m\u001b[1m\r\n•\u001b[m \u001b[1mRan\u001b[22m \u001b[38;2;137;180;250mStart-Sleep \u001b[38;2;147;153;178m-\u001b[38;2;235;160;172mSeconds \u001b[38;2;205;214;244m110\u001b[m\u001b[2m\r\n  └ (no output)\u001b[22m\r\n                                                                                                                                                                \u001b[2m•\u001b[22m\u001b[1Cfinished                                                                                                                                                      \u001b[2m\u001b[39;1H \u001b[1CWorked for 2m 32s • 15:01                                                                                                                                     \u001b[42;3H\u001b[?25h",
+    "screenTail": "\n\u001b[2m  Worked for 2m 32s • 15:01\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run background sleep commands\n  ← for agents · ? for shortcuts",
+    "wideScreenTail": "\n• Ran Start-Sleep -Seconds 120\n\u001b[2m  └ (no output)\u001b[22m\n\n• Ran Start-Sleep -Seconds 110\n\u001b[2m  └ (no output)\u001b[22m\n\n\u001b[2m• \u001b[22mfinished\n\n\u001b[2m  Worked for 2m 32s • 15:01\u001b[22m\n\n\n› \u001b[2mAsk Codex to do anything\u001b[22m\n\n  GPT-6-Astra xhigh · Q:\\PROJECT · Run background sleep commands\n  ← for agents · ? for shortcuts",
+    "screenStyled": true
+  }
+}

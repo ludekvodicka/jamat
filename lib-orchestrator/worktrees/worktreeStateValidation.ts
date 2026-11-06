@@ -70,7 +70,7 @@ const execution = z.strictObject({ root: z.string().min(1), requestedBy: z.enum(
   notice: z.strictObject({ id: z.string(), at: time, attempts: count, state: z.enum(['pending', 'delivered', 'expired']), settledAt: time.optional() }).optional(),
   checksPassed: z.strictObject({ fingerprint: z.string(), at: time }).optional(),
   verdict: z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('succeeded'), exitCode: z.number().optional() }),
-    z.strictObject({ kind: z.literal('failed'), reason: z.string(), exitCode: z.number().optional() })]).optional(),
+    z.strictObject({ kind: z.literal('failed'), reason: z.string(), exitCode: z.number().optional(), stopped: z.literal(true).optional() })]).optional(),
   commit: z.strictObject({ selection: z.array(z.string()), message: z.string(), hashes,
     messageSource: z.enum(['agent-proposal', 'person-local', 'person-remote', 'restored-draft', 'kept-attempt', 'unknown']).optional(),
     acknowledgedFindings: z.array(z.enum(['empty', 'no-prefix', 'long-first-line', 'chat-opening', 'markdown', 'reused-after-keep'])).optional(),

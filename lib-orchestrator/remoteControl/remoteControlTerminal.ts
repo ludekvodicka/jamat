@@ -726,6 +726,16 @@ export class RemoteControlTerminal implements RemoteControlTerminalPort {
       .slice(0, RemoteControlTerminal.transcriptHeadCharactersConst).startsWith(head))
   }
 
+  /** A user turn written after `since` whose head matches the head of `text`: the agent took the line. */
+  static userTurnSince(reading: SessionTranscriptReading, text: string, since: number): boolean {
+    if (reading.kind === 'none') return false
+    else if (reading.kind !== 'messages')
+      throw new Error(`Unknown transcript reading: ${JSON.stringify(reading)}`)
+    const head = RemoteControlTerminal.normalized(text).slice(0, RemoteControlTerminal.transcriptHeadCharactersConst)
+    return reading.messages.some((message) => message.role === 'user' && message.at !== null && message.at >= since
+      && RemoteControlTerminal.normalized(message.text).slice(0, RemoteControlTerminal.transcriptHeadCharactersConst).startsWith(head))
+  }
+
   private static reasonOf(
     code: RemoteControlError['code'],
     state: DeliverState,

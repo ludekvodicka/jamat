@@ -62,6 +62,7 @@ import { ProductGroup } from '../shared/productGroup'
 import type { TreeRemove } from '../shared/treeRemoval'
 import { SvnInvoker } from '../svn/svnInvoker'
 import { SvnWorktreeManager } from '../svn/svnWorktreeManager'
+import { SvnWorktreeSeed } from '../svn/svnWorktreeSeed'
 import type { SvnAssemblyExecutor } from '../svn/svnAssemblyExecutor'
 import { HostMemoryWatch } from './hostMemory/hostMemoryWatch'
 import { AgentPresets } from './launch/agentPresets'
@@ -78,6 +79,7 @@ import { SvnResolverLauncher } from '../worktrees/worktreeConflicts'
 import { SvnRevisionLabels } from '../worktrees/worktreeFinish'
 import { SvnWorktreeFinishFlow } from '../worktrees/worktreeFinish'
 import { SvnWorktreeRemoval } from '../worktrees/worktreeRemoval'
+import { ResultRemovals } from '../worktrees/worktreeRemoval'
 import type {
   WorktreeChoicesInput,
 } from '../worktrees/worktreeFinish'
@@ -150,14 +152,16 @@ import type {
   SessionWorktreeState,
   SessionConflictList,
   SessionConflictResolved,
+  SessionConflictsResolved,
   SvnConflictResolveRequest,
+  SvnConflictsResolveRequest,
   SvnLabelledRevision,
   TerminalComposerContentResult,
   TerminalComposerResult,
   WorktreeResultDto,
   WorktreeResultsFilter,
 } from './sessionManagerApi.types'
-import type { SessionReviewPort } from './sessionReviewPort.types'
+import type { SessionProposal, SessionReviewPort } from './sessionReviewPort.types'
 import { SessionReference } from './sessionReference'
 import { SessionWorkingDirectory } from './sessionWorkingDirectory'
 import type { TerminalRefResolution, TerminalPort, TerminalSessionsFeed, TerminalRefChange, TerminalActivitySink } from './terminalPort'
@@ -430,6 +434,8 @@ export class SessionManager {
   private svnFinishFlowValue: SvnWorktreeFinishFlow | null = null
   /** Built with the records, which it writes; an SVN action and the cleanup share it. */
   private svnRemoval: SvnWorktreeRemoval | null = null
+  /** Finishes the pending removal of a result whose session is gone; built with the records. */
+  private resultRemovals: ResultRemovals | null = null
   /** Bound late: the client builds its commit dialog after the sessions. */
   private reviewPort: SessionReviewPort | null = null
   private readonly worktreeLifecycle: WorktreeLifecycle
@@ -842,10 +848,11 @@ export class SessionManager {
     return this.scripts.scriptsOf(parentId, runId)
   }
 
-  async worktreeAt(path: string): Promise<{ sessionId: string; kind: 'svn' | 'git'; path: string } | null> {
+  async worktreeAt(path: string): Promise<{ sessionId: string; kind: 'svn' | 'git'; path: string; repositoryRoot: string } | null> {
     await this.lifecycle()
     const owner = this.records?.list().find((record) => record.worktree !== undefined && PathCompare.isInside(record.worktree.worktreePath, path))
-    return owner?.worktree === undefined ? null : { sessionId: owner.sessionId, kind: owner.worktree.kind ?? 'git', path: owner.worktree.worktreePath }
+    return owner?.worktree === undefined ? null
+      : { sessionId: owner.sessionId, kind: owner.worktree.kind ?? 'git', path: owner.worktree.worktreePath, repositoryRoot: owner.worktree.repositoryRoot }
   }
 
   async withinSvnWrite<T>(scope: string, paths: readonly string[], work: () => Promise<T>): Promise<T> {
@@ -1140,6 +1147,12 @@ export class SessionManager {
     return this.worktreeLifecycle.resolveConflict(sessionId, request)
   }
 
+  /** One option for several conflicted paths, each settled as `resolveConflict` settles it. */
+  async resolveConflicts(sessionId: string, request: SvnConflictsResolveRequest): Promise<SessionsOpResult<SessionConflictsResolved>> {
+    await this.lifecycle()
+    return this.worktreeLifecycle.resolveConflicts(sessionId, request)
+  }
+
   /**
    * Solve with agent: an interactive agent session in the worktree of a waiting SVN action, briefed
    * on why it waits. The action keeps waiting; the person presses on once the agent is done.
@@ -1185,7 +1198,7 @@ export class SessionManager {
    * A worker's commit message, stored for its worktree root, or for the working copy of its directory
    * when it has no worktree. Nothing opens and nothing is committed: the review uses it later.
    */
-  async proposeCommit(sessionId: string, message: string, scope?: string): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+  async proposeCommit(sessionId: string, message: string, scope?: string): Promise<SessionsOpResult<SessionProposal>> {
     await this.lifecycle()
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
@@ -1992,7 +2005,7 @@ export class SessionManager {
       reading: {
         agentId,
         alive: inspected.value.session.alive,
-        hint: WorkStateMonitor.inspect(agentId, frame).hint,
+        hint: WorkStateMonitor.agedHint(agentId, frame, inspected.value.projection.lastOutputAt, Date.now()),
         ...AgentComposerReader.read(agentId, frame),
       },
     }
@@ -2178,6 +2191,9 @@ export class SessionManager {
       // wait behind. It reports its own verdicts through `onChanged`.
       this.detach(this.monitor.observe(listing).then(() => { this.resumeIdleWorkers(); return this.syncReadyWorkers() }), 'The work-state monitor')
       this.detach(this.runLines.observe(listing), 'The output lines of running scripts')
+      // Paced inside; it needs the listing's live sessions, which may hold a folder it would remove.
+      const removals = this.resultRemovals
+      if (removals !== null) this.detach(this.results.load().then(() => removals.due()), 'Removing worktrees left by removed sessions')
     }
   }
 
@@ -2245,6 +2261,7 @@ export class SessionManager {
       steps: this.steps,
     })
     this.svnRemoval = removal
+    this.resultRemovals = new ResultRemovals({ results: this.results, records, svn: this.svnWorktrees, report: this.deps.onError, now: () => Date.now() })
     const resolver = {
       unavailable: () => SvnResolverLauncher.claudeProblem(process.platform, process.env),
       briefs: logs,
@@ -2253,8 +2270,9 @@ export class SessionManager {
       instance: { configIdentity: this.deps.configIdentity, channel: this.deps.channel },
     }
     const operations = new WorktreeOperations({ records, scripts, perf: this.deps.perf, svn: this.svnWorktrees, commands: this.svnCommands,
+      seed: new SvnWorktreeSeed(new SvnInvoker({ perf: this.deps.perf }), undefined, this.deps.removeTree),
       results: this.results, handoffs: this.handoffs, resolver, now: () => Date.now(), newId: () => randomUUID(),
-      busyReason: (id) => this.workerBusy(id), terminals: this.terminals, changed: () => this.changed() })
+      busyReason: (id) => this.workerBusy(id), reading: (id) => this.workerReading(id), terminals: this.terminals, changed: () => this.changed() })
     this.ready = operations.ready
     this.syncStep = operations.sync
     const lifecycle = new SessionLifecycle({
@@ -2296,7 +2314,7 @@ export class SessionManager {
       }),
       scripts,
       finish: { perf: this.deps.perf, commands: this.svnCommands, sync: this.syncStep, handoffs: this.handoffs,
-        idle: (id) => this.workerIdle(id), busyReason: (id) => this.workerBusy(id), terminals: this.terminals,
+        idle: (id) => this.workerIdle(id), busyReason: (id) => this.workerBusy(id), reading: (id) => this.workerReading(id), terminals: this.terminals,
         awaitExit: (id) => this.awaitRuntimeExit(id), liveness: (id, step) => this.workerLiveness?.run(id, step) ?? Promise.resolve() },
       activityOf: (sessionId) => { const record = records.get(sessionId); return record === null ? null : this.activityOf(record) },
       svnActions: {
@@ -2930,6 +2948,19 @@ export class SessionManager {
 
   workerIdle(sessionId: string): boolean {
     return this.workerBusy(sessionId) === null
+  }
+
+  /**
+   * A reading of the worker the idle rule trusts, taken now when the last one is older: the poll looks
+   * every 15 s while the window is hidden, the rule trusts 10 s, and a Finish press read the worker
+   * as not idle until the next look (I38, 2026-10-30). A pass already in flight is waited for first.
+   */
+  private async workerReading(sessionId: string): Promise<void> {
+    if (this.agentOf(sessionId) === null || WorkerIdle.fresh(this.monitor.polledAt(sessionId))) return
+    await this.monitor.passed()
+    if (WorkerIdle.fresh(this.monitor.polledAt(sessionId))) return
+    const listed = await this.client.runtimeList()
+    if (listed.ok) await this.monitor.observeOwn(listed.value)
   }
 
   /** Why the worker does not count as idle, as a person reads it; null when it does. */

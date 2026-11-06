@@ -26,12 +26,16 @@ export class FinishState {
     this.deps.changed()
   }
 
-  async wait(sessionId: string, kind: NonNullable<WorktreeLifecycle['wait']>['kind'], reason: string): Promise<void> {
+  /**
+   * `continued`: the same wait goes on with new words, such as a removal Jamat retried by itself; it
+   * keeps its first time, and the caller, who heard of it then, is not told again.
+   */
+  async wait(sessionId: string, kind: NonNullable<WorktreeLifecycle['wait']>['kind'], reason: string, continued = false): Promise<void> {
     const before = this.deps.records.get(sessionId)?.worktreeLifecycle
     const prior = before?.wait
     if (prior?.kind === 'worker-lost') return
     const at = kind === 'waiting-for-review' && before?.execution?.reviewWaitAt !== undefined ? before.execution.reviewWaitAt
-      : prior?.kind === kind && prior.reason === reason ? prior.at : this.deps.now()
+      : prior?.kind === kind && (continued || prior.reason === reason) ? prior.at : this.deps.now()
     // A liveness poll can replace the wait while this Finish write is queued.
     await this.write(sessionId, (state) => state.wait?.kind === 'worker-lost' ? state : ({ ...state, phase: 'waiting', wait: { kind, reason, at },
       ...(kind === 'waiting-for-review' ? { execution: { ...state.execution!, reviewWaitAt: at } } : {}),

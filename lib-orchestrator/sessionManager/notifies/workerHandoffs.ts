@@ -102,7 +102,8 @@ export class WorkerHandoffs implements NotifySource {
       const state = latest.worktreeLifecycle
       const handoff = state?.handoff
       if (state === undefined || handoff === undefined || !WorkerHandoffs.applies(latest)) return null
-      return { ...latest, worktreeLifecycle: { ...state, handoff: { ...handoff, id: randomUUID(), state: 'pending', attempts: 0, settledAt: undefined } } }
+      // A new `at`: the resumed conversation still holds the first turn, which delivery would take as this one.
+      return { ...latest, worktreeLifecycle: { ...state, handoff: { ...handoff, id: randomUUID(), at: Date.now(), state: 'pending', attempts: 0, settledAt: undefined } } }
     })
   }
 
@@ -145,6 +146,11 @@ export class WorkerHandoffs implements NotifySource {
               set?.entries.some((other) => other !== entry && other.path === entry.path) ? entry.kind : undefined)))]
       }),
       ...(set?.more ? [`The retained list is incomplete; read it before proceeding: ${listing}`] : []),
+      // One call for the whole set: 12 calls cost Mirabia 133 47 s of gaps (F13).
+      ...entries.length > 1 && entries.every((entry) => entry.options.includes('merged')
+        && SvnConflictShapes.agentOption(entry.shape, entry.kind, 'merged', entry.facts.properties))
+        ? [`Once every file holds both sides, settle them all in one call: ${this.cli(record, [...WorkerHandoffs.commandsConst.settle, '--all', '--option', 'merged'])}`]
+        : [],
     ].join('\n')
   }
 

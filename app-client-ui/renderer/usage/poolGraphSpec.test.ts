@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { poolGraphSpec } from './poolGraphSpec'
+import { poolGraphSpec, poolReadout } from './poolGraphSpec'
 
 const dateTime = (at: number) => {
   const date = new Date(at)
@@ -43,5 +43,19 @@ describe('poolGraphSpec', () => {
     const spec = poolGraphSpec({ ...series, displayRange: { from: 0, to: 2 },
       recorded: [{ at: 1, remaining: 90 }], projected: [{ at: 1, remaining: 90 }, { at: 2, remaining: 80 }] }, theme)
     expect(spec).toMatchObject({ layer: [{}, {}, { data: { values: [{ at: 1 }] }, mark: { type: 'rule', clip: true } }] })
+  })
+  it('draws to the edge of narrower bounds through the first projected point beyond them', () => {
+    const spec = poolGraphSpec({ ...series, now: 1, displayRange: { from: 0, to: 100 },
+      recorded: [{ at: 0, remaining: 100 }], projected: [{ at: 1, remaining: 90 }, { at: 5, remaining: 0 }, { at: 50, remaining: 0 }, { at: 50, remaining: 100 }] },
+    theme, { from: 0, to: 10 })
+    expect(spec).toMatchObject({ layer: [{}, { data: { values: [{ at: 1, remaining: 90 }, { at: 5, remaining: 0 }, { at: 50, remaining: 0 }] } }, {}] })
+    expect(spec && 'layer' in spec ? spec.layer[0] : null).toMatchObject({ encoding: { x: { scale: { domain: [dateTime(0), dateTime(10)] } } } })
+  })
+  it('reads both lines at a moment by interpolating between their points', () => {
+    const readout = poolReadout({ ...series, now: 2 * 3_600_000, recorded: [{ at: 0, remaining: 100 }, { at: 2 * 3_600_000, remaining: 80 }],
+      projected: [{ at: 2 * 3_600_000, remaining: 80 }, { at: 12 * 3_600_000, remaining: 0 }] }, 3_600_000)
+    expect(readout).toMatchObject({ detail: '1h ago', rows: [{ label: 'Recorded', value: '90.0%' }] })
+    expect(poolReadout({ ...series, now: 0, projected: [{ at: 0, remaining: 80 }, { at: 10, remaining: 0 }] }, 5).rows)
+      .toEqual([{ label: 'Projected', value: '40.0%' }])
   })
 })

@@ -179,3 +179,9 @@ export type FileViewerResourceResult =
 export type FileViewerPathResult =
   | { ok: true; path: string }
   | { ok: false; code: 'document-expired' | 'wrong-owner'; detail: string }
+
+/** A file written next to an open document: the HTML the renderer made, or that HTML printed to PDF. */
+export type FileViewerExportFormat = 'html' | 'pdf'
+export type FileViewerExportResult =
+  | { ok: true; path: string; pathCopied: boolean }
+  | { ok: false; detail: string }

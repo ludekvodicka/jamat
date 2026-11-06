@@ -8,6 +8,10 @@ import type {
   FileViewerDocument,
   FileViewerViewMode,
 } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
+import { useState } from 'react'
+
+import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
+import { FileViewerIcon } from './fileViewerIcons'
 import type { FileViewerBaselineHint } from './fileViewerPanel.types'
 import { FileViewerPath } from './fileViewerPath'
 import { FileViewerZoom } from './fileViewerZoom'
@@ -19,24 +23,47 @@ export interface FileViewerDiffTarget {
   hint: FileViewerBaselineHint
 }
 
+/**
+ * One button that names the current view and opens the others. Absent where the document has only
+ * one view, because there is nothing to choose.
+ */
 export function FileViewerViewControl(props: {
   modes: readonly FileViewerViewMode[]
   value: FileViewerViewMode
   onChange(mode: FileViewerViewMode): void
-}): React.JSX.Element {
+}): React.JSX.Element | null {
+  const [menu, setMenu] = useState<ContextMenuPosition | null>(null)
+  if (props.modes.length < 2) return null
   return (
-    <div className="file-viewer-view-control" aria-label="File view mode">
-      {props.modes.map((mode) => (
-        <button
-          type="button"
-          key={mode}
-          aria-pressed={props.value === mode}
-          onClick={() => props.onChange(mode)}
-        >
-          {FileViewerControls.label(mode)}
-        </button>
-      ))}
-    </div>
+    <>
+      <button
+        type="button"
+        className="file-viewer-view-control"
+        aria-label={`View as ${FileViewerControls.label(props.value)}`}
+        aria-haspopup="menu"
+        aria-expanded={menu !== null}
+        title="Choose how the file is shown"
+        onClick={(event) => {
+          const box = event.currentTarget.getBoundingClientRect()
+          setMenu({ x: box.left, y: box.bottom })
+        }}
+      >
+        <span className="file-viewer-view-control__prefix">View as</span> {FileViewerControls.label(props.value)} ▾
+      </button>
+      {menu && (
+        <ContextMenu
+          ariaLabel="View as"
+          position={menu}
+          onClose={() => setMenu(null)}
+          items={props.modes.map((mode) => ({
+            key: mode,
+            label: FileViewerControls.label(mode),
+            checked: mode === props.value,
+            onSelect: () => props.onChange(mode),
+          }))}
+        />
+      )}
+    </>
   )
 }
 
@@ -48,9 +75,10 @@ export function FileViewerDiffControl(props: {
   if (props.targets.length === 0)
     return <span className="file-viewer-diff-empty">No recorded baseline</span>
   return (
-    <label className="file-viewer-diff-control">
-      <span>Diff against</span>
+    <label className="file-viewer-diff-control" title="Diff against">
+      <span>vs</span>
       <select
+        aria-label="Diff against"
         value={props.value === null ? '' : FileViewerDiffTargets.identityOf(props.value.hint)}
         onChange={(event) => {
           const target = props.targets.find((item) =>
@@ -124,12 +152,13 @@ export function FileViewerWrapControl(props: {
   return (
     <button
       type="button"
-      className="file-viewer-wrap"
+      className="file-viewer-wrap file-viewer-icon-button"
+      aria-label="Wrap"
       aria-pressed={props.wrap}
       title={props.wrap ? 'Long lines wrap; press to scroll them instead' : 'Wrap long lines'}
       onClick={() => props.onChange(!props.wrap)}
     >
-      Wrap
+      <FileViewerIcon kind="wrap" />
     </button>
   )
 }
@@ -148,13 +177,22 @@ export function FileViewerReloadControl(props: {
       {props.missing && <FileViewerGoneNote />}
       <button
         type="button"
-        className="file-viewer-reload"
+        className="file-viewer-reload file-viewer-icon-button"
+        aria-label="Reload"
         title="Read the file from disk again"
         onClick={props.onReload}
       >
-        Reload
+        <FileViewerIcon kind="reload" />
       </button>
     </>
+  )
+}
+
+export function FileViewerFindButton(props: { onFind(): void }): React.JSX.Element {
+  return (
+    <button type="button" className="file-viewer-icon-button" aria-label="Find" title="Find in file (Ctrl+F)" onClick={props.onFind}>
+      <FileViewerIcon kind="find" />
+    </button>
   )
 }
 

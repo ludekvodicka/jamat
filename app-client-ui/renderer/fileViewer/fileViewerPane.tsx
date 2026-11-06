@@ -1,13 +1,15 @@
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
+import { FileViewerGetDocumentControl } from './fileViewerGetDocument'
 import type { PromptInsertTarget } from '../shell/terminalInputRegistry'
 import {
   FileViewerDiffControl,
-  FileViewerGoneNote,
+  FileViewerFindButton,
+  FileViewerReloadControl,
   FileViewerViewControl,
   FileViewerWrapControl,
   FileViewerZoomControl,
@@ -38,6 +40,7 @@ export function FileViewerPane(props: {
   onRefused(reason: string): void
   insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
   const model = useFileViewerDocument(
     props.item.source,
     props.item.baselineHint,
@@ -119,7 +122,7 @@ export function FileViewerPane(props: {
               value={model.mode}
               onChange={model.setMode}
             />
-            {model.document.modes.includes('diff') && (
+            {model.mode === 'diff' && (
               <FileViewerDiffControl
                 targets={model.targets}
                 value={model.diffTarget}
@@ -136,8 +139,10 @@ export function FileViewerPane(props: {
             )}
             <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
             <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
-            <button type="button" title="Find in file (Ctrl+F)" onClick={search.show}>Find</button>
-            {freshness.missing && <FileViewerGoneNote />}
+            <FileViewerFindButton onFind={search.show} />
+            <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
+            <FileViewerGetDocumentControl document={model.document} text={model.text} />
+            <span className="file-viewer-toolbar-slot" ref={setToolbarSlot} />
           </>
         )}
       </div>
@@ -148,6 +153,7 @@ export function FileViewerPane(props: {
         {model.document && (
             <FileViewerContent ports={props.ports.viewer}
               insertPrompt={props.insertPrompt}
+              toolbarSlot={toolbarSlot}
               document={model.document}
               mode={model.mode}
               baselines={model.baselines}

@@ -15,6 +15,8 @@ export interface FinishDriverPorts {
   idle(sessionId: string): boolean
   /** Why the worker does not count as idle, as a person reads it; null when it does. */
   busyReason(sessionId: string): string | null
+  /** Takes a new reading of the worker's activity when the last one is too old for `busyReason` to trust. */
+  reading(sessionId: string): Promise<void>
   terminals: TerminalInputControl
   awaitExit(sessionId: string): Promise<boolean>
   liveness(sessionId: string, completedStep?: WorktreeLifecycle['step']): Promise<void>

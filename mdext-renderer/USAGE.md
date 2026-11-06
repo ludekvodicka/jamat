@@ -193,9 +193,9 @@ Open Settings, change the display name, then click Save.
 - **The `?` button prepares a question** with the absolute file path, source line, nearest heading
   and item text. Selecting text and choosing **Ask** in its context menu also works in local
   rendered Markdown without the opt-in.
-- **`Checklist N/M` counts confirmed items.** Above an opted-in document with tasks, **Send results**
-  sends the confirmed count and unconfirmed items grouped by heading to the agent. Its arrow menu
-  holds **Insert to terminal**, which prepares the same text without Enter so the person can add
+- **`Send to agent N/M` counts confirmed items.** In the viewer's toolbar of an opted-in
+  document with tasks, that button sends the confirmed count and unconfirmed items grouped by heading to the agent. Its arrow menu
+  holds **Insert into terminal (no Enter)**, which prepares the same text without Enter so the person can add
   failure details first. Both wait for a pending checkbox save; long summaries point to the file for
   remaining items.
 - **Ask inserts without Enter** into the owning session's Claude or Codex prompt, activates that

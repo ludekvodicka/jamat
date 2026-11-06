@@ -8,7 +8,7 @@ import { SessionWorkingDirectory } from '../../sessionManager/sessionWorkingDire
 import type { WorktreeRemovalPermit } from './worktreeRemovalPermit'
 import { type WorktreeHolderLookup, WorktreeFileHolders } from './worktreeFileHolders'
 import type { TreeRemovalHeld, TreeRemovalProgress } from '../../shared/treeRemoval'
-import type { SvnWorktreeLocation } from '../../svn/svn.types'
+import type { SvnRemovalRow, SvnWorktreeLocation } from '../../svn/svn.types'
 import type { SvnWorktreeManager } from '../../svn/svnWorktreeManager'
 import type { SessionRecord, SessionRecordWorktree } from '../../sessionManager/worktreeSessionRecords'
 import type { SessionRecordsStore } from '../../sessionManager/worktreeSessionRecords'
@@ -96,11 +96,7 @@ export class SvnWorktreeRemoval {
         else if (permit.kind === 'clean') {
           const status = await this.svn.removalStatus(source.value.path)
           if (!status.ok) { blocked = [status.detail]; return null }
-          // A reverted setup path must still be clean; an allowlist is no proof of its latest bytes.
-          blocked = status.value.filter((row) => !row.ignored
-            && !(row.unversioned && SvnWorktreeRemoval.waste(row.path))
-            && (row.conflict || row.kind !== 'clean' && row.kind !== 'external'))
-            .map((row) => `changed after the check: ${row.path}`)
+          blocked = SvnWorktreeRemoval.leftOf(status.value).map((path) => `changed after the check: ${path}`)
           if (blocked.length > 0) return null
         }
         else if (permit.kind !== 'discard') throw new Error(`Unknown removal permit: ${JSON.stringify(permit satisfies never)}`)
@@ -183,6 +179,17 @@ export class SvnWorktreeRemoval {
     }))
     this.changed()
     return { state: 'removed', lines: ['   worktree removed', ...recreated] }
+  }
+
+  /**
+   * The paths a fresh status still holds, which a clean permit cannot delete. A reverted setup path must
+   * still be clean; an allowlist is no proof of its latest bytes.
+   */
+  static leftOf(rows: readonly SvnRemovalRow[]): string[] {
+    return rows.filter((row) => !row.ignored
+      && !(row.unversioned && SvnWorktreeRemoval.waste(row.path))
+      && (row.conflict || row.kind !== 'clean' && row.kind !== 'external'))
+      .map((row) => row.path)
   }
 
   /** Dependency and build output that a clean removal deletes with the worktree. */

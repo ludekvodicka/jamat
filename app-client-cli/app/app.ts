@@ -519,9 +519,24 @@ export class AppClientCli {
       const kind = args.option('--kind')
       if (kind !== null && kind !== 'text' && kind !== 'property' && kind !== 'tree' && kind !== 'diverged')
         throw new AppClientCliError('invalid-request', '--kind must be text, property, tree or diverged')
+      const path = args.option('--path')
+      const pathsFile = args.option('--paths-file')
+      if ([path !== null, pathsFile !== null, args.has('--all')].filter((named) => named).length !== 1)
+        throw new AppClientCliError('invalid-request', 'Name the paths with exactly one of --path, --paths-file or --all')
+      if (path !== null)
+        return this.requestPlan(args, this.request(
+            'sessions.resolveConflict',
+            { session: this.selfOrSelector(args), path, ...kind === null ? {} : { kind }, option },
+            requestId,
+            this.operationId(args),
+          ))
+      if (args.option('--computer') !== null)
+        throw new AppClientCliError('invalid-request', '--paths-file and --all are local only; settle a path of another computer with --path')
+      if (kind !== null && args.has('--all'))
+        throw new AppClientCliError('invalid-request', '--kind cannot be combined with --all; each path keeps its own kind')
       return this.requestPlan(args, this.request(
-          'sessions.resolveConflict',
-          { session: this.selfOrSelector(args), path: args.required('--path'), ...kind === null ? {} : { kind }, option },
+          'sessions.resolveConflicts',
+          { session: this.selfOrSelector(args), paths: pathsFile === null ? 'all' : this.conflictPaths(pathsFile), ...kind === null ? {} : { kind }, option },
           requestId,
           this.operationId(args),
         ))
@@ -822,6 +837,15 @@ export class AppClientCli {
       ...(paths === undefined ? {} : { paths }),
       wait: args.has('--wait'), timeoutMs: this.commitTimeout(args),
       requestId: this.deps.requestId(), operationId: this.operationId(args) }
+  }
+
+  /** Paths as `sessions conflicts` lists them, relative to the action's root: never resolved against this directory. */
+  private conflictPaths(file: string): string[] {
+    const input = this.deps.readJson(file)
+    if (!Array.isArray(input) || input.length === 0 || input.length > 2_000
+      || input.some((path: unknown) => typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path)))
+      throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 2000 conflicted paths as sessions conflicts lists them')
+    return input as string[]
   }
 
   private commitId(args: CliArguments): string {
@@ -1223,6 +1247,7 @@ export class AppClientCli {
       || request.operation === 'sessions.sync'
       || request.operation === 'sessions.conflicts'
       || request.operation === 'sessions.resolveConflict'
+      || request.operation === 'sessions.resolveConflicts'
       || request.operation === 'sessions.solveWithAgent'
       || request.operation === 'sessions.backToWork'
       || request.operation === 'sessions.remove'
@@ -1509,6 +1534,7 @@ export class AppClientCli {
     'sessions.sync',
     'sessions.conflicts',
     'sessions.resolveConflict',
+    'sessions.resolveConflicts',
     'sessions.solveWithAgent',
     'sessions.backToWork',
   ]

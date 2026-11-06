@@ -2,9 +2,12 @@ import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewe
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 
+/** `screen` follows the workspace theme; `paper` is light, for a saved page, a PDF or a mail. */
+export type MdExtDiagramSurface = 'screen' | 'paper'
+
 interface MdExtDiagramEngineEntry {
   languages: readonly string[]
-  render(source: string, signal: AbortSignal | undefined): Promise<string>
+  render(source: string, signal: AbortSignal | undefined, surface: MdExtDiagramSurface): Promise<string>
 }
 
 export class MdExtDiagramEngine {
@@ -21,13 +24,21 @@ export class MdExtDiagramEngine {
   private static viz: Promise<{ renderString(source: string, options: { format: string }): string }>
     | null = null
   private static mermaidQueue: Promise<unknown> = Promise.resolve()
+  /** The light theme's colours for the tokens a Vega-Lite chart reads on `paper`. */
+  private static readonly paperTokensConst: Readonly<Record<string, string>> = {
+    '--color-text-1': '#1f2328',
+    '--color-text-2': '#57606a',
+    '--color-text-3': '#6e7781',
+    '--color-border-hairline': '#d0d7de',
+    '--color-border-frame': '#afb8c1',
+  }
   private static readonly engines: readonly MdExtDiagramEngineEntry[] = [
     {
       languages: ['mermaid'],
-      render: (source, signal) => MdExtDiagramEngine.mermaid(source, signal),
+      render: (source, signal, surface) => MdExtDiagramEngine.mermaid(source, signal, surface),
     },
     { languages: ['dot', 'gv', 'graphviz'], render: (source) => MdExtDiagramEngine.dot(source) },
-    { languages: ['vega-lite', 'vegalite'], render: (source) => MdExtDiagramEngine.vegaLite(source) },
+    { languages: ['vega-lite', 'vegalite'], render: (source, _signal, surface) => MdExtDiagramEngine.vegaLite(source, surface) },
     { languages: ['archify'], render: (source) => MdExtDiagramEngine.archify(source) },
     { languages: ['svg'], render: (source) => MdExtDiagramEngine.rawSvg(source) },
   ]
@@ -40,10 +51,10 @@ export class MdExtDiagramEngine {
    * `signal` is what a closed tab has to say. A diagram whose panel is gone used to keep its place
    * in the queue and render anyway, because the component only stopped LISTENING to the answer.
    */
-  static render(language: string, source: string, signal?: AbortSignal): Promise<string> {
+  static render(language: string, source: string, signal?: AbortSignal, surface: MdExtDiagramSurface = 'screen'): Promise<string> {
     const engine = MdExtDiagramEngine.engines.find((item) => item.languages.includes(language))
     if (!engine) throw new Error(`Unknown diagram engine: ${language}`)
-    return engine.render(source, signal)
+    return engine.render(source, signal, surface)
   }
 
   /**
@@ -54,7 +65,7 @@ export class MdExtDiagramEngine {
    *
    * The chain now waits on the BOUNDED promise, so the deadline frees it whatever the render does.
    */
-  private static mermaid(source: string, signal: AbortSignal | undefined): Promise<string> {
+  private static mermaid(source: string, signal: AbortSignal | undefined, surface: MdExtDiagramSurface): Promise<string> {
     const run = MdExtDiagramEngine.mermaidQueue.then(async () => {
       // Asked after the wait, not before it: a tab can be closed while this sits in the queue, and
       // the whole point is not to render for a panel that is gone.
@@ -64,7 +75,7 @@ export class MdExtDiagramEngine {
         startOnLoad: false,
         securityLevel: 'strict',
         suppressErrorRendering: true,
-        theme: 'dark',
+        theme: surface === 'paper' ? 'default' : 'dark',
         // Mermaid's default label is HTML inside a foreignObject, and the sanitizer forbids that
         // tag, so every label arrived empty. Native `text` is what survives the boundary.
         htmlLabels: false,
@@ -104,7 +115,10 @@ export class MdExtDiagramEngine {
     return (await MdExtDiagramEngine.viz).renderString(source, { format: 'svg' })
   }
 
-  private static async vegaLite(source: string): Promise<string> {
+  private static async vegaLite(source: string, surface: MdExtDiagramSurface): Promise<string> {
+    const token = (name: string): string => surface === 'paper'
+      ? MdExtDiagramEngine.paperTokensConst[name] ?? MdExtDiagramEngine.token(name)
+      : MdExtDiagramEngine.token(name)
     let parsed: unknown
     try { parsed = JSON.parse(source) }
     catch { throw new Error('Invalid Vega-Lite JSON spec') }
@@ -118,22 +132,22 @@ export class MdExtDiagramEngine {
         background: 'transparent',
         ...userConfig,
         title: MdExtDiagramEngine.vegaSection(userConfig, 'title', {
-          color: MdExtDiagramEngine.token('--color-text-1'),
-          subtitleColor: MdExtDiagramEngine.token('--color-text-3'),
+          color: token('--color-text-1'),
+          subtitleColor: token('--color-text-3'),
         }),
         axis: MdExtDiagramEngine.vegaSection(userConfig, 'axis', {
-          labelColor: MdExtDiagramEngine.token('--color-text-2'),
-          titleColor: MdExtDiagramEngine.token('--color-text-1'),
-          gridColor: MdExtDiagramEngine.token('--color-border-hairline'),
-          domainColor: MdExtDiagramEngine.token('--color-border-frame'),
-          tickColor: MdExtDiagramEngine.token('--color-border-frame'),
+          labelColor: token('--color-text-2'),
+          titleColor: token('--color-text-1'),
+          gridColor: token('--color-border-hairline'),
+          domainColor: token('--color-border-frame'),
+          tickColor: token('--color-border-frame'),
         }),
         legend: MdExtDiagramEngine.vegaSection(userConfig, 'legend', {
-          labelColor: MdExtDiagramEngine.token('--color-text-2'),
-          titleColor: MdExtDiagramEngine.token('--color-text-1'),
+          labelColor: token('--color-text-2'),
+          titleColor: token('--color-text-1'),
         }),
         view: MdExtDiagramEngine.vegaSection(userConfig, 'view', {
-          stroke: MdExtDiagramEngine.token('--color-border-frame'),
+          stroke: token('--color-border-frame'),
         }),
       },
     }

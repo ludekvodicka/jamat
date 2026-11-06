@@ -76,7 +76,7 @@ describe('CommitStep', () => {
     let held = false
     const control: Parameters<CommitStep['publish']>[2] = { commands: { lease: new WorktreeLease('test', () => []), verify: async () => { expect(held).toBe(true) } },
       svn: { assembly: async () => ({ ok: true, value: testAssembly() }), commitHashes: async () => ({ ok: true, value: { 'a.txt': hash } }), unprepareCommit: async () => ({ ok: true, value: undefined }) },
-      busyReason: () => idle ? null : 'the worker is working', terminals: { inhibit: async () => { held = true; return { release: () => { held = false } } }, pendingInput: async () => 0 } }
+      busyReason: () => idle ? null : 'the worker is working', reading: async () => {}, terminals: { inhibit: async () => { held = true; return { release: () => { held = false } } }, pendingInput: async () => 0 } }
     return { ...h, action: FinishProjection.action(h.store.get('parent')!)!, control, idle: () => { idle = true }, edit: () => { hash = 'edited' }, held: () => held }
   }
 

@@ -62,7 +62,7 @@ export interface WorktreeResultRecord {
 
 /** What an ending writes and what the cleanup finishes, as the flows reach the store. */
 export type WorktreeResultsPort = Pick<WorktreeResultsStore, 'put' | 'keepLogs' | 'keepAttempt' | 'pendingRemovalsOf' | 'keptRemovalsOf' | 'removalDone' | 'landedOf' | 'savedDirectoryOf'
-  | 'writeHandover' | 'readHandover' | 'mainUpdated'>
+  | 'writeHandover' | 'readHandover' | 'mainUpdated' | 'updateRecorded'>
 
 export interface WorktreeResultsStoreDeps {
   now: () => number
@@ -84,6 +84,8 @@ export class WorktreeResultsStore {
   private readonly unreadableResults = new Set<string>()
   private sweptAt = 0
   static readonly keepMillisecondsConst = 30 * 86_400_000
+  /** The lines a main-copy UPDATE adds to the results it lands. */
+  static readonly updateLinePrefixConst = '   main copy update: '
   static readonly keepAcknowledgedMillisecondsConst = 86_400_000
   /** Ids name files: anything else could name a path outside the folder. */
   private static readonly plainIdConst = /^[A-Za-z0-9_-]{1,128}$/
@@ -143,8 +145,16 @@ export class WorktreeResultsStore {
       const sameLanding = known !== undefined && PathCompare.comparable(known.mainCopy) === PathCompare.comparable(record.mainCopy)
         && JSON.stringify(known.revisions) === JSON.stringify(record.revisions)
       const landedAt = record.landedAt ?? (sameLanding ? known.landedAt : undefined)
+      // An UPDATE can land a result before its Finish records it again (a removal Windows refused, J8):
+      // what that UPDATE added stays, and a removal still pending keeps the time the result was first written.
+      const updateLines = (known?.lines ?? []).filter((line) => line.startsWith(WorktreeResultsStore.updateLinePrefixConst) && !record.lines.includes(line))
+      const keptLogs = (known?.logs ?? []).filter((log) => !record.logs.some((row) => row.runId === log.runId))
+      const stillPending = known?.removal === 'pending' && record.removal === 'pending'
       const next: WorktreeResultRecord = {
         ...fields,
+        ...stillPending ? { at: known.at } : {},
+        lines: [...record.lines, ...updateLines],
+        logs: [...record.logs, ...keptLogs],
         main,
         ...mainUnproven === undefined ? {} : { mainUnproven },
         ...landedAt === undefined ? {} : { landedAt },
@@ -322,6 +332,12 @@ export class WorktreeResultsStore {
     return this.list({ sessionId }).filter((record) => record.removal === 'pending').map((record) => record.actionId)
   }
 
+  /** Whether an UPDATE of the main copy already wrote what it proved into this result, landed or not. */
+  updateRecorded(actionId: string): boolean {
+    const record = this.results.get(actionId)
+    return record?.main !== undefined || record?.mainUnproven !== undefined
+  }
+
   /**
    * The results of a session that kept its worktree. A later removal of that worktree finishes them too,
    * so a result does not say `kept` for a worktree that is gone (UA1-J11-3).
@@ -388,7 +404,8 @@ export class WorktreeResultsStore {
         if (ErrnoCode.of(error) === 'ENOENT') return []
         throw error
       })).some((name) => ['saved', 'ignored', 'discarded', 'setup'].includes(name))
-      const keep = record.acknowledgedAt === null || retained
+      // A pending removal is finished from its result once its session is gone (`ResultRemovals`), so the result outlives the acknowledgement.
+      const keep = record.acknowledgedAt === null || retained || record.removal === 'pending'
         ? record.at + WorktreeResultsStore.keepMillisecondsConst
         : record.acknowledgedAt + WorktreeResultsStore.keepAcknowledgedMillisecondsConst
       if (now < keep || this.heldActionIds().has(record.actionId)) continue

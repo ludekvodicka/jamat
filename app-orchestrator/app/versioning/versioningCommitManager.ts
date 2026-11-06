@@ -27,6 +27,7 @@ import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCo
 import type { VersioningReviewStore, VersioningReviewRecord, VersioningReviewWake } from './versioningReviewStore'
 import type { NotifySource, PendingNotify } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import { SessionLimits } from '../../../lib-orchestrator/sessionManager/sessionLimits'
+import { CommitPrefix, type CommitPrefixOfRoot } from '../../../lib-orchestrator/worktrees/worktreeFinish'
 import type { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 
 export interface VersioningCommitManagerDeps {
@@ -72,6 +73,11 @@ interface Draft {
   wake?: VersioningReviewWake
   /** The paths the last listing showed, so a later listing can tell which rows are new. */
   listed?: ReadonlySet<string>
+  /**
+   * Why a Finish approval failed here. The waiting Finish only knows its own summary, and a refresh
+   * that showed that alone hid the real refusal of run 072.
+   */
+  failure?: string
 }
 
 interface CommitTarget {
@@ -84,7 +90,8 @@ interface CommitTarget {
 type CancelResult = RemoteControlStepResult<RemoteControlCommitStatusDto>
 
 export type VersioningCommitProposeResult =
-  | { ok: true; scopeRoot: string }
+  /** `findings` are the review's hints on the stored text; none of them stops the proposal. */
+  | { ok: true; scopeRoot: string; findings?: string[] }
   | { ok: false; code: 'message-empty' | 'message-too-long' | 'no-working-copy' | 'message-edited' | 'message-prefix' | 'busy'; detail: string }
 
 export class VersioningCommitManager {
@@ -251,9 +258,11 @@ export class VersioningCommitManager {
       return { ok: false, code: 'message-edited', detail: `A person already wrote the commit message for ${scopeRoot}; the proposal was not stored` }
     if (open?.dto.phase.kind === 'running' || finish?.dto.phase.kind === 'running')
       return { ok: false, code: 'busy', detail: `A commit of ${scopeRoot} is running; propose again after it` }
-    // The same rule Publish applies, answered while the worker can still correct it.
-    if (row !== undefined && !SvnCommitMessageCheck.prefixed(proposed, row.expectedPrefix))
-      return { ok: false, code: 'message-prefix', detail: `${row.repositoryName}: message must start with ${row.expectedPrefix}; the proposal was not stored` }
+    // The same rule Publish applies, answered while the worker can still correct it. Before the
+    // Finish built its rows, the worktree root's own prefix stands in for its row (research 039 A3).
+    const expected = row ?? await this.unreviewedPrefixOf(scopeRoot, workingCopy.detection)
+    if (expected !== null && !SvnCommitMessageCheck.prefixed(proposed, expected.expectedPrefix))
+      return { ok: false, code: 'message-prefix', detail: `${expected.repositoryName}: message must start with ${expected.expectedPrefix}; the proposal was not stored` }
     if (open === undefined) {
       if (!this.deps.messages.save({ ...scope, message: proposed, editedByPerson: false, proposedByAgent: true, messageSource: 'agent-proposal', messageAt: this.now() }))
         throw new Error('The commit message could not be saved')
@@ -271,7 +280,18 @@ export class VersioningCommitManager {
     if (open !== undefined) this.bump(open)
     if (finish !== undefined && finish !== open) this.bump(finish)
     await this.deps.sessions.proposeWorktreeReady?.(sessionId)
-    return { ok: true, scopeRoot }
+    const findings = SvnCommitMessageCheck.info(proposed, 'agent-proposal').map((finding) => finding.text)
+    return { ok: true, scopeRoot, ...(findings.length === 0 ? {} : { findings }) }
+  }
+
+  /** The prefix an SVN worktree root publishes under; null outside a worktree or below one of its roots. */
+  private async unreviewedPrefixOf(scopeRoot: string, detection: FileChangesVcsDetection): Promise<CommitPrefixOfRoot | null> {
+    if (detection.scopeUrl === null || detection.repositoryPathPrefix === null
+      || PathCompare.comparable(detection.root) !== PathCompare.comparable(scopeRoot)) return null
+    const worktree = await this.deps.sessions.worktreeAt(scopeRoot)
+    if (worktree?.kind !== 'svn') return null
+    return CommitPrefix.ofRoot({ worktreePath: worktree.path, repositoryRoot: worktree.repositoryRoot }, scopeRoot,
+      { url: detection.scopeUrl, relativeUrl: detection.repositoryPathPrefix })
   }
 
   /** The message kept for the session's whole working copy at `scopeRoot`, or null when there is none to use. */
@@ -863,6 +883,7 @@ export class VersioningCommitManager {
       if (message !== draft.dto.message && !this.setMessage(ownerId, request.draftId, message))
         return fail('The commit message could not be saved')
       draft.dto.phase = { kind: 'running', startedAt }
+      delete draft.failure
       if (draft.dto.vcs === 'svn') draft.committedPaths ??= []
       delete draft.externalReview
       this.bump(draft)
@@ -1274,6 +1295,7 @@ export class VersioningCommitManager {
 
   private failed(draft: Draft, detail: string, reloadRequired = false): Extract<VersioningCommitRunResult, { ok: false }> {
     draft.dto.phase = { kind: 'failed', detail, failedAt: this.now() }
+    if (draft.dto.workflow) draft.failure = detail
     this.bump(draft)
     return { ok: false, code: 'vcs-failed', detail, ...(reloadRequired ? { reloadRequired: true } : {}) }
   }
@@ -1290,8 +1312,8 @@ export class VersioningCommitManager {
   private now(): number { return this.deps.now?.() ?? Date.now() }
   private persist(): void {
     const reviews: VersioningReviewRecord[] = [...this.drafts.values(), ...[...this.closed.values()].map(({ draft }) => draft)]
-      .map(({ dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake }) => ({
-        dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake,
+      .map(({ dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake, failure }) => ({
+        dto, cwd, lockRoot, targets, committedPaths, externalReview, rejectedSnapshotId, decisions, wake, failure,
         ...(this.closed.has(dto.draftId) ? { closedAt: this.closed.get(dto.draftId)!.closedAt } : {}),
       }))
     if (this.deps.reviews?.save(reviews) === false) throw new Error('The commit review could not be saved')
@@ -1345,17 +1367,21 @@ export class VersioningCommitManager {
     if (receiptChanged) this.persist()
     if (state.kind === 'running') {
       if (current.kind === 'running') return
+      delete draft.failure
       draft.dto.phase = { kind: 'running', startedAt: draft.dto.workflow.acceptedAt, detail: 'Finish continues on the source computer' }
     } else if (state.kind === 'waiting' || state.kind === 'uncertain') {
-      if (current.kind === 'failed' && current.detail === state.detail) return
-      draft.dto.phase = { kind: 'failed', detail: state.detail, failedAt: this.now() }
+      const detail = draft.failure === undefined ? state.detail : `${draft.failure}\n\n${state.detail}`
+      if (current.kind === 'failed' && current.detail === detail) return
+      draft.dto.phase = { kind: 'failed', detail, failedAt: this.now() }
     } else if (state.kind === 'replaced') {
       // The draft serves the later Finish's review of the same scope, with the person's text kept;
       // only its next approval binds it again.
       delete draft.dto.workflow
+      delete draft.failure
       draft.dto.phase = { kind: 'editing' }
     } else if (state.kind === 'done') {
       if (current.kind === 'done' && current.revision === state.revision && current.output === state.output) return
+      delete draft.failure
       draft.dto.phase = { kind: 'done', revision: state.revision, output: state.output, finishedAt: this.now() }
     } else throw new Error(`Unknown workflow state: ${JSON.stringify(state satisfies never)}`)
     this.bump(draft)

@@ -260,12 +260,16 @@ export class WorktreeWords {
       { id: 'refresh-preparation', label: WorktreeWords.recheckConst, primary: false, place: 'step', note: 'Only after you edit files in the worktree' },
       { id: 'prepare-worktree', label: WorktreeWords.prepareAgainConst, primary: state.knownIncoming !== undefined, place: 'step',
         ...state.knownIncoming === undefined ? { note: 'Only to take newer repository changes first' } : {} }, ...back, keep, discard]
+    // A stopped check or install waits with Retry and Solve with agent; Back to work ended the Finish
+    // with nothing to press (worktree 103, J17).
     if (state.step === 'checking' && state.execution?.runId !== undefined && state.execution.verdict === undefined)
-      return [{ id: 'back-to-work', label: 'Stop checks and return to work', primary: false, place: 'step' }, ...WorktreeWords.confirmStopped(state)]
+      return [{ id: 'stop-run', label: SvnActionStages.installOf(state.execution) === null ? 'Stop check' : 'Stop install', primary: false, place: 'step',
+        runId: state.execution.runId }, ...WorktreeWords.confirmStopped(state)]
     if (state.wait?.kind === 'published-with-differences') return [{ id: 'finish-again', label: 'Verify again', primary: true },
       { id: 'review-correction', label: 'Review corrective changes', primary: false, confirm: 'Sync and review a corrective publication while retaining the original revision?' }, ...alternate]
     if (state.wait?.kind === 'checks-failed') return [{ id: 'finish-again', label: 'Retry checks', primary: true, place: 'step' },
-      { id: 'override-checks', label: 'Accept failed checks', primary: false, overrideChecks: true, confirm: 'Continue despite the failed checks?' }, ...alternate]
+      { id: 'override-checks', label: 'Accept failed checks', primary: false, overrideChecks: true, confirm: 'Continue despite the failed checks?' },
+      ...alternate.map((action) => action.id === 'back-to-work' ? { ...action, note: 'Sends the check log to the worker' } : action)]
     if (state.wait?.kind === 'worker-busy') return [{ id: 'finish-again', label: 'Sync now', primary: true, place: 'step', confirmWorking: true,
       confirm: `Sync although ${WorktreeWords.busyOf(state.wait.reason) ?? 'the worker is not idle'}?` },
       ...alternate]

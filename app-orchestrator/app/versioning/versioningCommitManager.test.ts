@@ -20,7 +20,7 @@ import { VersioningCommitMessageStore } from './versioningCommitMessageStore'
 describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it('routes managed SVN split commits to Finish while allowing its review-only editor', async () => {
     const f = await fixture()
-    f.deps.sessions.worktreeAt = async () => ({ sessionId: 'worker', kind: 'svn', path: f.root })
+    f.deps.sessions.worktreeAt = async () => ({ sessionId: 'worker', kind: 'svn', path: f.root, repositoryRoot: f.root })
     expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'use-finish' })
     expect(await f.manager.prepare('session', 'svn', null, null, undefined, { reviewOnly: true })).toMatchObject({ ok: true })
     expect(await f.manager.run('window', f.request)).toMatchObject({ ok: false, code: 'use-finish' })
@@ -253,7 +253,8 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     // A person's edit of the other repository saves every row of the review in the draft.
     expect(f.manager.edit('window', { draftId: f.draftId, epoch: before.epoch!, expectedRevision: before.revision,
       repositoryMessage: { root: join(f.root, 'lib', 'ea'), message: '[j12] EA text' } }, 'person-local')).toMatchObject({ ok: true })
-    expect(await f.manager.propose('session', f.root, 'Here is the commit message for the change:\n[j12] Agent proposal B')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(await f.manager.propose('session', f.root, 'Here is the commit message for the change:\n[j12] Agent proposal B')).toEqual({ ok: true, scopeRoot: f.root,
+      findings: ['No [Project] prefix', 'Chat opening'] })
     const after = f.manager.read('window', f.draftId)!
     expect(after.repositories?.map(({ message, source }) => ({ message, source }))).toEqual([
       { message: 'Here is the commit message for the change:\n[j12] Agent proposal B', source: 'agent-proposal' },
@@ -289,7 +290,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     const f = await fixture()
     expect(f.deps.messages.save({ sessionId: 'worker', vcs: 'svn', scopeRoot: f.root, message: '', editedByPerson: true, proposedByAgent: false,
       messageSource: 'person-local', messageAt: 1 })).toBe(true)
-    expect(await f.manager.propose('worker', f.root, 'Fix orders')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(await f.manager.propose('worker', f.root, 'Fix orders')).toEqual({ ok: true, scopeRoot: f.root, findings: ['No [Project] prefix'] })
     expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders')
   })
 
@@ -302,7 +303,31 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.read('window', f.draftId)?.repositories?.[0]).toMatchObject({ message: '[j12] Agent proposal A', source: 'agent-proposal' })
     expect(f.manager.proposalOf('session', f.root)).toBe('proposal')
     expect(f.deps.sessions.proposeWorktreeReady).not.toHaveBeenCalled()
-    expect(await f.manager.propose('session', f.root, 'Refactor wave 1')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(await f.manager.propose('session', f.root, 'Refactor wave 1')).toEqual({ ok: true, scopeRoot: f.root, findings: ['No [Project] prefix'] })
+  })
+
+  // Research 039 A3: a proposal made before the Finish built its rows passed and failed at Publish.
+  it('checks a proposal made before the Finish built its rows against the prefix the worktree root publishes under, and reports its hints', async () => {
+    const f = await fixture()
+    const owner = join(f.root, 'main', 'Jamat')
+    await mkdir(owner, { recursive: true })
+    f.deps.sessions.worktreeAt = async () => ({ sessionId: 'worker', kind: 'svn', path: f.root, repositoryRoot: owner })
+    f.deps.vcsStatus.detect = async (cwd, id) => ({ id, root: f.root, cwd, scopeRelativePath: '.',
+      scopeUrl: 'https://svn/applications/ProductivityTools/Jamat', repositoryPathPrefix: '/ProductivityTools/Jamat' })
+    expect(await f.manager.propose('worker', f.root, '[applications] Fix orders')).toEqual({ ok: false, code: 'message-prefix',
+      detail: 'applications: message must start with [Jamat]; the proposal was not stored' })
+    expect(f.manager.proposalOf('worker', f.root)).toBeNull()
+    expect(await f.manager.propose('worker', f.root, `[Jamat] ${'Fix orders '.repeat(11)}`)).toEqual({ ok: true, scopeRoot: f.root,
+      findings: ['First line exceeds 100 characters'] })
+    expect(await f.manager.propose('worker', f.root, 'Fix orders')).toEqual({ ok: true, scopeRoot: f.root, findings: ['No [Project] prefix'] })
+    expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders')
+  })
+
+  it('leaves the prefix of a proposal outside any worktree to the review', async () => {
+    const f = await fixture()
+    f.deps.vcsStatus.detect = async (cwd, id) => ({ id, root: f.root, cwd, scopeRelativePath: '.',
+      scopeUrl: 'https://svn/applications/ProductivityTools/Jamat', repositoryPathPrefix: '/ProductivityTools/Jamat' })
+    expect(await f.manager.propose('worker', f.root, '[applications] Fix orders')).toEqual({ ok: true, scopeRoot: f.root })
   })
 
   it('keeps the message written for each repository while a review leaves that repository out and edits another', async () => {
@@ -551,6 +576,26 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(await restored.decide(f.interaction, f.decision)).toEqual({ ok: false, code: 'vcs-failed', detail: 'Resolve the incoming source conflict' })
     expect(restored.status(f.draftId)).toMatchObject({ state: 'failed' })
     expect(f.start).toHaveBeenCalledOnce()
+  })
+
+  it.each(['live', 'restarted'] as const)('keeps the reason of a failed Finish approval when a %s review refreshes from the waiting Finish (run 072)', async (client) => {
+    const f = await finishFixture()
+    f.start.mockRejectedValue(new Error('Jamat: message must start with [applications]'))
+    await f.manager.decide(f.interaction, f.decision)
+    f.state({ kind: 'waiting', detail: 'Ready for validation' })
+    const manager = client === 'live' ? f.manager : new VersioningCommitManager(f.deps)
+    manager.attach(f.draftId, 'window')
+    const failed = manager.read('window', f.draftId)!.phase
+    expect(failed).toMatchObject({ kind: 'failed', detail: expect.stringContaining('Jamat: message must start with [applications]') })
+    expect(failed).toMatchObject({ detail: expect.stringContaining('Ready for validation') })
+    f.state({ kind: 'waiting', detail: 'Checks failed' })
+    expect(manager.read('window', f.draftId)!.phase).toMatchObject({ kind: 'failed',
+      detail: expect.stringMatching(/Jamat: message must start with \[applications\][\s\S]*Checks failed/) })
+    expect(manager.read('window', f.draftId)!.phase).not.toMatchObject({ detail: expect.stringContaining('Ready for validation') })
+    f.state({ kind: 'running' })
+    expect(manager.read('window', f.draftId)!.phase).toMatchObject({ kind: 'running' })
+    f.state({ kind: 'waiting', detail: 'Publish failed: E155011' })
+    expect(manager.read('window', f.draftId)!.phase).toMatchObject({ kind: 'failed', detail: 'Publish failed: E155011' })
   })
 
   it.each(['live', 'restarted'] as const)('frees a %s review whose Finish a corrective review replaced, so the corrective review publishes', async (client) => {
@@ -1034,7 +1079,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it('keeps a proposal for the working copy of a session without opening a review, also across a restart', async () => {
     const f = await fixture()
     f.deps.sessions.proposeWorktreeReady = vi.fn(async () => {})
-    expect(await f.manager.propose('worker', f.root, 'Fix orders\r\n\r\nBody')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(await f.manager.propose('worker', f.root, 'Fix orders\r\n\r\nBody')).toEqual({ ok: true, scopeRoot: f.root, findings: ['No [Project] prefix'] })
     expect(f.deps.sessions.proposeWorktreeReady).toHaveBeenCalledWith('worker')
     expect(f.manager.openSessions().sessionIds).toEqual(['session'])
     expect(f.manager.proposalOf('worker', f.root)).toBe('Fix orders\n\nBody')
@@ -1054,7 +1099,7 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
   it('shows a proposal in the open review of its scope and never replaces what a person wrote', async () => {
     const f = await fixture()
     const before = f.manager.read('window', f.draftId)?.revision ?? 0
-    expect(await f.manager.propose('session', f.root, 'Agent text')).toEqual({ ok: true, scopeRoot: f.root })
+    expect(await f.manager.propose('session', f.root, 'Agent text')).toEqual({ ok: true, scopeRoot: f.root, findings: ['No [Project] prefix'] })
     expect(f.manager.read('window', f.draftId)).toMatchObject({ message: 'Agent text', proposedByAgent: true })
     expect(f.manager.read('window', f.draftId)?.revision).toBeGreaterThan(before)
 

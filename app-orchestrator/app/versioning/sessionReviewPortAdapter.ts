@@ -1,4 +1,4 @@
-import type { SessionReviewPort } from '../../../lib-orchestrator/sessionManager/sessionReviewPort.types'
+import type { SessionProposal, SessionReviewPort } from '../../../lib-orchestrator/sessionManager/sessionReviewPort.types'
 import type { SessionsOpErrorCode, SessionsOpResult } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { VersioningCommitManager, VersioningCommitProposeResult } from './versioningCommitManager'
 
@@ -10,9 +10,9 @@ export class SessionReviewPortAdapter implements SessionReviewPort {
     this.commits = commits
   }
 
-  async propose(input: { sessionId: string; directory: string; message: string }): Promise<SessionsOpResult<{ scopeRoot: string }>> {
+  async propose(input: { sessionId: string; directory: string; message: string }): Promise<SessionsOpResult<SessionProposal>> {
     const result = await this.commits.propose(input.sessionId, input.directory, input.message)
-    if (result.ok) return { ok: true, value: { scopeRoot: result.scopeRoot } }
+    if (result.ok) return { ok: true, value: { scopeRoot: result.scopeRoot, ...(result.findings === undefined ? {} : { findings: result.findings }) } }
     return { ok: false, code: SessionReviewPortAdapter.codeOf(result.code), detail: result.detail }
   }
 

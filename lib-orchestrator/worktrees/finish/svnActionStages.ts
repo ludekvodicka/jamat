@@ -138,6 +138,7 @@ export class SvnActionStages {
    * The action as it is written over `previous`: when it leaves a stage (a new stage, a new run of a
    * run stage, or a press that moves a waiting action on), one pass for the stage it left, and the
    * time the next one began. The passes are always `previous`'s, so a stale copy never drops one.
+   * Within a stage, only a later `stageAt` moves its start: a launch the client lost starts again.
    */
   static passedOf(previous: SessionRecordSvnAction, next: SessionRecordSvnAction, now: number): SessionRecordSvnAction {
     const left = previous.stage !== next.stage
@@ -146,7 +147,8 @@ export class SvnActionStages {
     // The notifier writes the notice beside the flow: only a new wait's notice replaces it.
     const notice = next.notice !== undefined && next.notice.id !== previous.notice?.id ? next.notice : previous.notice
     const noticed = notice === undefined ? {} : { notice }
-    if (!left) return { ...next, ...noticed, passes: previous.passes, stageAt: previous.stageAt }
+    if (!left) return { ...next, ...noticed, passes: previous.passes,
+      stageAt: next.stageAt !== undefined && (previous.stageAt === undefined || next.stageAt > previous.stageAt) ? next.stageAt : previous.stageAt }
     const pass: SvnActionPass = {
       stage: previous.stage,
       ...previous.runId === undefined || !SvnActionStages.isRun(previous.stage) ? {} : { runId: previous.runId },

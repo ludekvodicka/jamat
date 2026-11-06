@@ -271,5 +271,51 @@ export class SvnUpdateScenarios {
     assert.deepEqual([await revisionOf('b'), await revisionOf('c')], ['2', '2'])
     assert.equal(await readFile(join(mountCopy, 'c', 'local.txt'), 'utf8'), 'unversioned local file\n')
     console.log('  ok  D5 a conflict in one mount pauses after the clean later mount took its update; the mount with local files waits for the settlement')
+
+    // R1 (plan 002e): a sync round in which only the owner moved ends under 15 s with Mirabia's 30
+    // mounts; it took 90 to 130 s before U3/U4. file:// repositories answer faster than the LAN
+    // server, so the time here is a lower bound of a real round; the empty mount-update list pins
+    // the per-mount cost that the time alone could miss.
+    const syncTargetMilliseconds = 15_000
+    const shelf = await seed('shelf'), owner = await seed('owner')
+    const mountNames = Array.from({ length: 30 }, (_, index) => `m${String(index).padStart(2, '0')}`)
+    for (const name of mountNames) {
+      await mkdir(join(shelf.cwd, name))
+      await writeFile(join(shelf.cwd, name, 'file.txt'), `${name}\n`)
+    }
+    await run(shelf.cwd, ['add', ...mountNames])
+    await commit(shelf.cwd, 'Thirty mounted libraries')
+    await run(owner.cwd, ['propset', 'svn:global-ignores', '.worktrees', '.'])
+    await run(owner.cwd, ['propset', 'svn:externals', mountNames.map((name) => `${shelf.url}/${name} lib/${name}`).join('\n'), '.'])
+    await commit(owner.cwd, 'Mount thirty libraries')
+    const timed = await manager.create({ ownerDir: owner.cwd, folder: '001-r1-timing' })
+    assert(timed.ok, JSON.stringify(timed))
+    const unchanged = timed.value.worktreePath
+    await writeFile(join(owner.cwd, 'file.txt'), 'owner moved elsewhere\n')
+    await commit(owner.cwd, 'Only the owner moves')
+    const ownerHead = Number((await run(owner.cwd, ['info', '--show-item', 'revision', owner.url])).trim())
+    await records.put({ sessionId: 'r1', kind: 'shell', title: 'R1 timing', life: 'ended', binding: null, directory: { mode: 'adHoc', path: unchanged }, createdAt: 1,
+      worktree: { kind: 'svn', repositoryRoot: owner.cwd, worktreePath: unchanged, branch: owner.url, baseCommit: `r${timed.value.baseRevision}` },
+      worktreeLifecycle: { version: 0, actionId: 'r1', phase: 'finishing', step: 'syncing', outOfDate: 0, journal: [],
+        facts: { worker: { liveness: 'stopped', resumeFailures: 0 } } } })
+    const beforeRound = calls.length
+    const plain = svn.run.bind(svn)
+    let processes = 0
+    svn.run = (cwd, args, options) => { processes++; return plain(cwd, args, options) }
+    const started = performance.now()
+    let round: Awaited<ReturnType<WorktreeUpdate['run']>>
+    try { round = await update.run('r1', 'r1', unchanged, ownerHead) } finally { Reflect.deleteProperty(svn, 'run') }
+    const roundMilliseconds = Math.round(performance.now() - started)
+    assert.equal(round.complete, true)
+    assert.equal((await run(unchanged, ['info', '--show-item', 'revision', '.'])).trim(), String(ownerHead))
+    assert.equal(await readFile(join(unchanged, 'file.txt'), 'utf8'), 'owner moved elsewhere\n')
+    assert.deepEqual(calls.slice(beforeRound).filter((call) => call.cwd !== unchanged), [], 'No mount at its target runs svn update')
+    assert(records.get('r1')!.worktreeLifecycle!.journal.some((entry) => entry.stepId.endsWith('-skipped') && entry.paths?.length === mountNames.length))
+    // 17 on 2026-11-05, none of them per mount: a read that returns to one process per mount adds 30.
+    assert(processes <= 20, `R1: the round ran ${processes} svn processes for ${mountNames.length} mounts; at most 20, none per mount`)
+    assert(roundMilliseconds < syncTargetMilliseconds,
+      `R1: the sync round of an unchanged worktree with ${mountNames.length} mounts took ${roundMilliseconds} ms; the target is under ${syncTargetMilliseconds} ms`)
+    console.log(`  ok  R1 sync round of an unchanged worktree with ${mountNames.length} mounts after only the owner moved: ${roundMilliseconds} ms`
+      + ` (target under ${syncTargetMilliseconds} ms), ${processes} svn processes, ${calls.length - beforeRound} svn update`)
   }
 }

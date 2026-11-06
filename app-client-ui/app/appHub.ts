@@ -2,6 +2,8 @@
 import { ElectronShellPort } from './shell/electronShellPort'
 import { TabWindowRouter } from './shell/tabWindowRouter'
 import { ServiceFileViewerShellIpc } from './shell/serviceFileViewerShellIpc'
+import { DocumentExport } from './shell/documentExport'
+import { DocumentPdfPrinter } from './shell/documentPdfPrinter'
 import { FileViewerDragExport } from './fileViewer/fileViewerDragExport'
 import { FileViewerExport } from './fileViewer/fileViewerExport'
 import { LocalFileMediaSource } from './fileViewer/localFileMediaSource'
@@ -308,7 +310,8 @@ export class MainHub {
       this.workspaceWindows.acceptsRenderer(sender)
         ? this.workspaceWindows.windowIdOf(sender)
         : null
-    this.fileViewerShellIpc = new ServiceFileViewerShellIpc({ path: (...args) => this.orchestrator.viewerPath(...args), imageDragPath: (...args) => this.orchestrator.viewerImageDragPath(...args) }, workspaceOwnerIdOf)
+    this.fileViewerShellIpc = new ServiceFileViewerShellIpc({ path: (...args) => this.orchestrator.viewerPath(...args), imageDragPath: (...args) => this.orchestrator.viewerImageDragPath(...args) }, workspaceOwnerIdOf,
+      new DocumentExport(new DocumentPdfPrinter()))
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
       this.panelIndex,

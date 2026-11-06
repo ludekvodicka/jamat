@@ -189,7 +189,7 @@ command that starts with the words before it (`sessions --help`).
 | Session parent | Add `--parent-session ID --parent-kind worktree\|ticket\|worker` to `sessions create`; read with `sessions children --session-id ID`; see Session parent below |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]`; `finalize` also takes `--expect stop` and `--acknowledge-setup HASH` |
 | Read a session's worktree | `sessions worktree <session selector>\|--self [--working-directory PATH]` |
-| Conflicts of an SVN Finish | `sessions conflicts <session selector>\|--self`; `sessions resolve-conflict ... --path --option`; see Worktree sessions below |
+| Conflicts of an SVN Finish | `sessions conflicts <session selector>\|--self`; `sessions resolve-conflict ... --path\|--paths-file\|--all --option`; see Worktree sessions below |
 | Finish a worktree | `sessions finish-worktree <session selector>\|--self --choice commit\|discard\|keep [--acknowledge-setup HASH] [--confirm-working] [--agent] [--refresh-preparation]` |
 | End a Finish, go on working | `sessions back-to-work <session selector>\|--self`; see Worktree sessions below |
 | Update a main copy | `sessions update-main <session selector>\|--self [--confirm-live ID,ID]` |
@@ -465,7 +465,9 @@ session's worktree or ordinary working directory; outside paths and escaping lin
 A generated SVN message starts with `[<repository name>]` of the verified repository that owns the
 scope, for example `[team_tools]` for a worktree of `D:/Work/TeamTools/worker-agent`, never
 the project, mount or worktree folder name. `commit propose` refuses another prefix and its error
-names the expected one: correct the first line and propose again.
+names the expected one: correct the first line and propose again. A stored proposal answers with
+`findings`, the hints the review shows under the text (for example a first line over 100
+characters); they do not stop it, but fix them and propose again when you can.
 
 **SVN in a worktree.** A worker's `svn`, and the `svn` of a session started inside its worktree,
 runs through a Jamat shim. It passes reads (`status`, `info`, `log`, `diff`, `cat`, `list`, `blame`,
@@ -487,7 +489,9 @@ works instead: `commit` is `commit propose --self` and the person's Finish, `upd
 --self`. For anything else (`cleanup`, `merge`, `propset`, `mkdir`) ask the person.
 
 **Lines Jamat hands a worker** (conflicts, failed checks, the resume of an interrupted task) give the
-exact command to run, with this client's CLI and `--self`: after failed checks the retained log and
+exact command to run, with this client's CLI and `--self`: for conflicts one `sessions resolve-conflict
+--self` line per path, and when every path admits `merged` one `--all --option merged` line that
+settles them together once every file holds both sides; after failed checks the retained log and
 `commit propose --self --message-file MESSAGE_FILE`, after a resume `sessions worktree --self`. Run
 the line as given; a Claude worker is launched allowed to run exactly these Jamat lines. A worker
 resumed after an interruption must stay alive 30 seconds; one that ends sooner is a failed resume,
@@ -541,7 +545,11 @@ computer only (no `--computer`), and each answers `{ "sessionId" }`:
 There is no Finish CLI command that approves a selection: the person approves it in Changes. Follow an action
 with `sessions worktree` and its ending with `sessions worktree-results`. When an action waits on
 conflicts, `sessions worktree` answers `action.summary` ("3 conflicts need you"; while the worker resolves the conflicts Jamat handed it, "3 conflicts: the worker resolves them") and at most 50
-entries in `action.conflicts`; `sessions conflicts (<session selector> | --self)` answers the whole
+entries in `action.conflicts`. **Who settles them:** the worker, while Jamat has handed it a Finish's
+conflicts (it got the line listing them, no wait for the person stands and no merger runs); the person
+otherwise, which includes every main-copy UPDATE and every Finish that waits for the person. The worker
+settles its conflicts itself and asks nobody to press anything; the person settles theirs in Session
+actions or asks an agent to run `resolve-conflict`; `sessions conflicts (<session selector> | --self)` answers the whole
 list `{ sessionId, actionId, stage, summary, entries, more }`, each entry with `path`, `kind`,
 `state` (`rule`, `agent`, `person`, `settled`), `description` and its `options` (`id`, `label`,
 `note`, `loses`). A run of the action asking with `--self` reads its parent's list; a session without
@@ -553,8 +561,17 @@ one entry of each kind; while both are open, `--kind text` or `--kind property` 
 settle, and the other stays open until its own option settles it. Jamat saves what the option replaces first,
 runs it step by step and answers `{ sessionId, path, state, left }`. Conflicts Jamat handed the worker
 need no press: after the worker settles the last of them, the sync goes on by itself once the worker
-is idle, and Session actions names what it waits for. Check again and Try again exist only when a wait
-for the person shows them, and that wait's reason names the button shown. An option that loses incoming work (`loses: "incoming"`) is the person's
+is idle, and Session actions names what it waits for. Never tell the person to press Try again or
+Check again for them: those buttons exist only when a wait for the person shows them, and that wait's
+reason names the button shown.
+`--all` instead of `--path` settles every open path that no Jamat rule covers with one option, and
+`--paths-file <file>` (a JSON array of at most 2000 paths as `sessions conflicts` lists them; `--kind`
+applies to all) settles the listed ones, in one call each; both are local only (no `--computer`).
+Every path is checked first: an unknown or settled path, a path with two open conflicts and no
+`--kind`, or with `--all` an entry that does not list the option answers `operation-failed`
+(`invalid-spec`) and settles nothing. Each path is then settled as one `--path` call settles it; the
+first refusal stops the call with that refusal, its detail naming the paths settled before it. The
+answer is `{ sessionId, settled: [{ path, kind, state }], left }`. An option that loses incoming work (`loses: "incoming"`) is the person's
 alone, in the window: the CLI has no confirm flag and answers `conflict` (exit 4) with
 `data.sourceCode: "person-only"`. A path or option the set does not hold answers `operation-failed`
 (`invalid-spec`); an action that runs answers `conflict` (`merge-pending`); a failed svn step answers
@@ -593,7 +610,8 @@ and `--worktree-tag` and `--worktree-notify-*` need `sessions.worktreeResults`; 
 `sessions notifies` need `sessions.notifies`; `--parent-*` and `sessions children` need
 `sessions.children`; `--expect` and
 `sessions worktree` need `sessions.worktree`; `sessions conflicts` and `--agent` need `sessions.conflicts`;
-`sessions resolve-conflict` needs `sessions.resolveConflict`; `sessions solve-with-agent` needs
+`sessions resolve-conflict` needs `sessions.resolveConflict`, and with `--all` or `--paths-file`
+`sessions.resolveConflicts`; `sessions solve-with-agent` needs
 `sessions.solveWithAgent`; `sessions back-to-work` needs `sessions.backToWork`. Without it the CLI answers `unavailable` (exit 6)
 naming the operation and sends nothing. With `--computer`, the target computer may predate an option
 although the local controller has it; it then refuses the request as `invalid-request`.

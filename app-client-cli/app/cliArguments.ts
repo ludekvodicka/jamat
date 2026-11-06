@@ -146,8 +146,11 @@ export class CliArguments {
     'sessions notifies': { options: ['--session-id'], flags: [], mutation: false },
     'sessions sync': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: true },
     'sessions conflicts': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: false },
-    /* No confirm flag: an option that loses incoming work is the person's, in the window. */
-    'sessions resolve-conflict': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--path', '--kind', '--option'], flags: ['--self'], mutation: true },
+    /*
+     * No confirm flag: an option that loses incoming work is the person's, in the window. One of
+     * `--path`, `--paths-file` (a JSON array) or `--all` names the paths; the last two settle in one call.
+     */
+    'sessions resolve-conflict': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory', '--path', '--paths-file', '--kind', '--option'], flags: ['--self', '--all'], mutation: true },
     'sessions back-to-work': { options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'], flags: ['--self'], mutation: true },
     'sessions solve-with-agent': {
       options: ['--session-id', '--number', '--working-directory'],

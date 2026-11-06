@@ -125,13 +125,15 @@ export class SvnPreparationScenarios {
     const started = performance.now(), assembly = await measured.read(large, false, () => { progress++ })
     const localMs = Math.round(performance.now() - started), localCalls = calls
     assert.equal(assembly.nodes.filter((node) => node.path.startsWith('@mount/')).length, 19)
-    assert(localCalls <= 4 * 19, `Batched reads must not spawn SVN per file: ${localCalls}`)
+    // info, status and proplist of the root, then one of each for its 18 externals together.
+    assert(localCalls <= 2 * 3, `Batched reads must not spawn SVN per file or per mount: ${localCalls}`)
     assert(progress > 19, 'Long reads report progress inside large mounts')
     await writeFile(join(scale.cwd, 'unrelated', 'other.txt'), 'unrelated repository advance\n')
     await commit(scale.cwd, 'Advance an unrelated project')
     const freshStarted = performance.now(), fresh = await measured.read(large, true)
     assert.equal(fresh.content, assembly.content)
     assert.deepEqual(fresh.incoming, [], 'An unrelated project revision cannot invalidate the application')
+    assert(calls - localCalls <= 2 * 3, `A freshness read must not spawn SVN per mount: ${calls - localCalls}`)
     console.log(`Preparation scale: 500 changed + 500 clean files, 18 externals; local ${localMs} ms / ${localCalls} SVN calls; freshness ${Math.round(performance.now() - freshStarted)} ms / ${calls - localCalls} calls; ${progress} progress reports`)
   }
 }
