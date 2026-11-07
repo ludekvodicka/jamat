@@ -114,7 +114,7 @@ export class CliArguments {
     },
     'sessions remove': {
       options: [CliArguments.remoteComputerOptionConst, '--session-id', '--number', '--working-directory'],
-      flags: [],
+      flags: ['--erase'],
       mutation: true,
     },
     'sessions discard-worktree': {

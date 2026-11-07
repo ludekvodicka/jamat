@@ -548,7 +548,7 @@ export class AppClientCli {
     else if (args.command === 'sessions remove')
       return this.requestPlan(args, this.request(
           'sessions.remove',
-          { session: this.selector(args) },
+          { session: this.selector(args), ...args.has('--erase') ? { erase: true as const } : {} },
           requestId,
           this.operationId(args),
         ))

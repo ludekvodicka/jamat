@@ -40,7 +40,10 @@ it('hands the account choice to its persistent owner and closes the transient me
   const view = render(<SessionsTreeContextMenu sessionId="s" position={{ x: 0, y: 0 }} commands={new CommandRegistry()}
     facts={{ agentId: 'claude', accountId: 'main', live: true, ended: false, admits: ['restart'], color: null, directoryPath: null, finish: false }}
     actions={[]} onAction={() => {}} onSwitchAccount={choose} onClose={close} />)
-  fireEvent.click(await view.findByRole('menuitem', { name: 'Continue on another account…' }))
+  const item = await view.findByRole('menuitem', { name: 'Continue on another account…' })
+  const labels = view.getAllByRole('menuitem').map((entry) => entry.textContent)
+  expect(labels[labels.indexOf('Restart session') + 1]).toBe('Continue on another account…')
+  fireEvent.click(item)
   expect(choose).toHaveBeenCalledWith([account('b')])
   expect(close).toHaveBeenCalledTimes(1)
   expect(fixture.bodiesOf('accounts.list')).toEqual([{ excludeAccount: { agentId: 'claude', accountId: 'main' } }])

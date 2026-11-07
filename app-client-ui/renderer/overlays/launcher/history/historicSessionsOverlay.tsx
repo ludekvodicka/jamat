@@ -4,6 +4,8 @@ import type { SessionHistoryOpenSpec } from '../../../../../lib-orchestrator/ses
 import { ErrorText } from '../../../../shared/errorText'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import type { PanelOpenOutcome } from '../../../shell/appShell.types'
+import { ContextMenu, type ContextMenuPosition } from '../../../widgets/contextMenu'
+import { AgentMemoryDialog } from '../../agentMemory/agentMemoryDialog'
 import { HistoricSessionsEffects } from './historicSessionsEffects'
 import { HistoricSessionsModel, type HistoricSessionRow } from './historicSessionsModel'
 import './history.css'
@@ -24,6 +26,10 @@ export function HistoricSessionsOverlay(props: {
   const [errors, setErrors] = useState<string[]>([])
   const [failure, setFailure] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [menu, setMenu] = useState<{ row: HistoricSessionRow; position: ContextMenuPosition } | null>(null)
+  const [pruning, setPruning] = useState<HistoricSessionRow | null>(null)
+  const [memoryOf, setMemoryOf] = useState<HistoricSessionRow | null>(null)
+  const [notice, setNotice] = useState<string[]>([])
   const [effects] = useState(() => new HistoricSessionsEffects())
   const busyRef = useRef(false)
   const handedOff = useRef(false)
@@ -64,6 +70,26 @@ export function HistoricSessionsOverlay(props: {
   useEffect(() => { selectedElement.current?.scrollIntoView({ block: 'nearest' }) }, [selected?.key])
 
   const close = (): void => { if (!busyRef.current) props.onClose() }
+  const prune = async (row: HistoricSessionRow): Promise<void> => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setFailure(null)
+    setNotice([])
+    try {
+      const answer = await HistoricSessionsEffects.prune(row)
+      setRows((current) => current.filter((one) => one.agentId !== row.agentId || one.nativeSessionId !== row.nativeSessionId))
+      setNotice([`Pruned ${row.label}: ${answer.erased.length} item(s) deleted.`,
+        ...answer.leftovers.map((line) => `Left: ${line}`), ...answer.notes])
+      setPruning(null)
+    } catch (error) {
+      setFailure(ErrorText.of(error))
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+      filter.current?.focus()
+    }
+  }
   const open = async (row = selected): Promise<void> => {
     if (!row || busyRef.current || loading) return
     busyRef.current = true
@@ -87,7 +113,14 @@ export function HistoricSessionsOverlay(props: {
       <div className="jamat-launcher__card jamat-launcher__card--wide jamat-launcher-history" role="dialog"
         aria-modal="true" aria-label="Historic sessions" ref={card} onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
-          if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close() }
+          // The menu and the question are dismissed first; the card closes on the Escape after them.
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            event.stopPropagation()
+            if (menu !== null) setMenu(null)
+            else if (pruning !== null) { if (!busy) setPruning(null) }
+            else close()
+          }
           else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault()
             if (busy || effects.hasStarted()) return
@@ -150,7 +183,13 @@ export function HistoricSessionsOverlay(props: {
                 role="option" aria-selected={row === selected}
                 className={`jamat-launcher-history__row${row === selected ? ' jamat-launcher-history__row--selected' : ''}`}
                 onClick={() => { if (!busy && !effects.hasStarted()) setSelectedKey(row.key) }}
-                onDoubleClick={() => { if (!effects.hasStarted()) void open(row) }}>
+                onDoubleClick={() => { if (!effects.hasStarted()) void open(row) }}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  if (busy || effects.hasStarted()) return
+                  setSelectedKey(row.key)
+                  setMenu({ row, position: { x: event.clientX, y: event.clientY } })
+                }}>
                 <span title={row.root.path}>{row.root.label}</span>
                 <span title={row.project.path}>{row.project.name}</span>
                 {/* The id on the hover, because it is what a search by id was typed from: a row
@@ -166,6 +205,23 @@ export function HistoricSessionsOverlay(props: {
           </div>
         </div>
         {failure && <p className="jamat-launcher__error" role="alert">{failure}</p>}
+        {notice.length > 0 && <div className="jamat-launcher-history__notice" role="status">{notice.map((line, i) => <p key={i}>{line}</p>)}</div>}
+        {pruning !== null && <div className="jamat-launcher-history__prune" role="alertdialog" aria-label="Prune session">
+          <span>Prune <strong>{pruning.label}</strong>? Its transcript, prompt history and Jamat records are deleted from this computer for good.</span>
+          <button type="button" className="jamat-launcher-history__danger" disabled={busy} onClick={() => { void prune(pruning) }}>{busy ? 'Pruning…' : 'Prune'}</button>
+          <button type="button" disabled={busy} onClick={() => { setPruning(null); filter.current?.focus() }}>Cancel</button>
+        </div>}
+        {menu !== null && <ContextMenu position={menu.position} ariaLabel="Historic session actions" className="jamat-tab-menu"
+          items={[
+            { key: 'memory', label: 'Memory files…', onSelect: () => setMemoryOf(menu.row) },
+            { kind: 'separator', key: 'prune-separator' },
+            { key: 'prune', label: 'Prune session…', title: 'Deletes the transcript, prompt history and Jamat records of this conversation from this computer', onSelect: () => setPruning(menu.row) },
+          ]}
+          onClose={() => setMenu(null)} />}
+        {memoryOf !== null && <AgentMemoryDialog key={memoryOf.key} initialSession={memoryOf.key}
+          sessions={[{ key: memoryOf.key, label: memoryOf.label,
+            target: { agentId: memoryOf.agentId, projectPath: memoryOf.project.path, nativeSessionId: memoryOf.nativeSessionId } }]}
+          onClose={() => { setMemoryOf(null); filter.current?.focus() }} />}
         <footer className="jamat-launcher__foot">
           <span role="status">{loading ? progress.total > 0 ? `Loading history… (${progress.completed}/${progress.total} projects)` : 'Loading history…' : '↑ ↓ Select · Enter Open · Esc Close'}</span>
           <button type="button" className="jamat-launcher-history__submit" disabled={!canOpen} onClick={() => { void open() }}>

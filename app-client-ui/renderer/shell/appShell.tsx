@@ -58,6 +58,7 @@ import {
 } from '../overlays/launcher/launcherIntentStore'
 import { LauncherOverlay } from '../overlays/launcher/launcherOverlay'
 import { RemarkableOverlay } from '../overlays/remarkable/remarkableOverlay'
+import { AgentMemoryDialog, type AgentMemorySession } from '../overlays/agentMemory/agentMemoryDialog'
 import type { SessionDetailsOpenRequest } from '../overlays/sessionDetails/sessionDetailsModel'
 import { SessionDetailsOverlay } from '../overlays/sessionDetails/sessionDetailsOverlay'
 import { ProbePanel } from '../panels/probePanel'
@@ -130,6 +131,12 @@ interface RemarkableOpenRequest {
   target: { panelId: string; sessionId: string }
 }
 
+interface MemoryOpenRequest {
+  requestId: number
+  sessions: readonly AgentMemorySession[]
+  initialSession: string | null
+}
+
 export function MainShell(): React.JSX.Element {
   const [wiring] = useState<MainShellWiring>(() => AppShellComposition.wire('main'))
   const sidebars = useSidebars(wiring.sidebarViews, wiring.sidebarPorts)
@@ -161,6 +168,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const [detailsRequest, setDetailsRequest] = useState<SessionDetailsOpenRequest | null>(null)
   const [finalizeRequest, setFinalizeRequest] = useState<FinalizeOpenRequest | null>(null)
   const [remarkableRequest, setRemarkableRequest] = useState<RemarkableOpenRequest | null>(null)
+  const [memoryRequest, setMemoryRequest] = useState<MemoryOpenRequest | null>(null)
   const overlayOpen = useRef(false)
   const { wiring } = props
   // What both terminal widgets are about: the session of the tab in front, and whose agent it is.
@@ -269,7 +277,8 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       || detailsRequest !== null
       || finalizeRequest !== null
       || remarkableRequest !== null
-  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, remarkableRequest])
+      || memoryRequest !== null
+  }, [launcherOpen, settingsRequest, detailsRequest, finalizeRequest, remarkableRequest, memoryRequest])
   useEffect(() => wiring.launcherCommands.bind(() => {
     if (claimOverlay())
       setLauncherOpen(true)
@@ -301,6 +310,16 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       setRemarkableRequest((current) => ({
         requestId: (current?.requestId ?? 0) + 1,
         target: { panelId: local.panelId, sessionId: local.target.sessionId },
+      }))
+  }), [wiring, claimOverlay])
+  useEffect(() => wiring.memoryCommands.bind(() => {
+    const target = wiring.activeTerminal.current()
+    const active = target !== null && target.target.kind === 'local' ? target.target.sessionId : null
+    if (claimOverlay())
+      setMemoryRequest((current) => ({
+        requestId: (current?.requestId ?? 0) + 1,
+        sessions: AppShellComposition.memorySessionsOf(wiring.sessionsSnapshot.current().snapshot?.sessions ?? [], active),
+        initialSession: active,
       }))
   }), [wiring, claimOverlay])
   useEffect(() => WindowInfoStore.subscribe(() => setWindowInfo(WindowInfoStore.current())), [])
@@ -483,6 +502,14 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           onClose={() => setRemarkableRequest(null)}
         />
       )}
+      {memoryRequest !== null && (
+        <AgentMemoryDialog
+          key={memoryRequest.requestId}
+          sessions={memoryRequest.sessions}
+          initialSession={memoryRequest.initialSession}
+          onClose={() => setMemoryRequest(null)}
+        />
+      )}
     </div>
   )
 }
@@ -510,6 +537,23 @@ class AppShellComposition {
     default: (await import('../fileViewer/directoryViewerPanel')).DirectoryViewerPanel,
   }))
   /** What the tab shows; a plain count is what a person reads back in a screenshot. */
+
+  /**
+   * The local agent sessions whose memory Tools > Memory files offers: the active one first, then the
+   * running ones, then the rest, each by name.
+   */
+  static memorySessionsOf(sessions: readonly SessionInfo[], active: string | null): AgentMemorySession[] {
+    const rank = (session: SessionInfo): number =>
+      session.sessionId === active ? 0 : session.life === 'live' || session.life === 'starting' ? 1 : 2
+    return sessions
+      .filter((session) => session.kind === 'agent' && session.agent !== undefined)
+      .sort((one, other) => rank(one) - rank(other) || one.tabTitle.localeCompare(other.tabTitle))
+      .map((session) => ({
+        key: session.sessionId,
+        label: `${session.tabTitle} (${session.agent?.agentId === 'codex' ? 'Codex' : 'Claude'})`,
+        target: { sessionId: session.sessionId },
+      }))
+  }
 
   static wire(role: 'main'): MainShellWiring
   static wire(role: 'holder'): HolderShellWiring
@@ -770,6 +814,7 @@ class AppShellComposition {
     const finalizeCommands = new LateBoundCommand<FinalizeAsk>('finalize')
     const finishRequests = new SessionFinishRequests()
     const remarkableCommands = new LateBoundCommand('reMarkable')
+    const memoryCommands = new LateBoundCommand('memory files')
     const intents = new LauncherIntentStore()
     const worktreeSetupIntents = new WorktreeSetupIntentStore()
     controller = new TabsController({
@@ -829,6 +874,7 @@ class AppShellComposition {
         settingsCommands,
         detailsCommands,
         remarkableCommands,
+        memoryCommands,
         intents,
         worktreeSetupIntents,
         fileTools,
@@ -845,6 +891,7 @@ class AppShellComposition {
       detailsCommands,
       finalizeCommands,
       remarkableCommands,
+      memoryCommands,
       intents,
       worktreeSetupIntents,
       openTerminal: async (target, title, options) => {
@@ -866,6 +913,7 @@ class AppShellComposition {
       reportError: (message) => AppClientUiReport.error(`${message}`),
       finalize: (sessionId) => AppControl.sessionsDone('sessions.finalize', { session: AppControl.sessionOf(sessionId) }),
       remove: (sessionId) => AppControl.sessionsDone('sessions.remove', { session: AppControl.sessionOf(sessionId) }),
+      erase: (sessionId) => AppControl.sessionsDone('sessions.remove', { session: AppControl.sessionOf(sessionId), erase: true }),
       retrySetup: (sessionId, acknowledgeSetup) =>
         AppControl.sessionsDone('sessions.retrySetup', { session: AppControl.sessionOf(sessionId), ...(acknowledgeSetup === undefined ? {} : { acknowledgeSetup: acknowledgeSetup }) }),
       adoptOrphan: (runtimeSessionId) => AppControl.sessionsDone('sessions.adoptOrphan', { runtimeSessionId: runtimeSessionId }),
@@ -1091,6 +1139,7 @@ class AppShellComposition {
     settingsCommands: LateBoundCommand<ConfigurationTabId | null>,
     detailsCommands: LateBoundCommand<{ sessionId: string; remoteEndpointId?: string; session?: SessionInfo }>,
     remarkableCommands: LateBoundCommand,
+    memoryCommands: LateBoundCommand,
     intents: LauncherIntentStore,
     worktreeSetupIntents: WorktreeSetupIntentStore,
     fileTools: PanelFileToolsRegistry,
@@ -1139,6 +1188,7 @@ class AppShellComposition {
       settingsCommands.open('worktrees')
     })
     commands.register('tools.remarkable', () => remarkableCommands.open())
+    commands.register('tools.memory', () => memoryCommands.open())
     commands.register('tools.usage', () => WorkspacePanels.openSingle(controller, PanelKeysConst.usage, 'Usage'))
     commands.register('debug.open', () => WorkspacePanels.openSingle(controller, PanelKeysConst.debug, 'Debug'))
     if (role === 'main') {

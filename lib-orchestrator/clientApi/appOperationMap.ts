@@ -2,7 +2,8 @@ import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../rateMonitor
 import type { AccountAgentId } from '../agentAccounts/agentAccountsApi.types'
 import type { SnapinKindState, SnapinsSettings, SnapinsSettingsView, SnapinView } from '../snapins/snapinsApi.types'
 import type { RemoteControlOperationMap } from '../remoteControl/remoteControlApi.types'
-import type { SessionScriptOutput } from '../sessionManager/sessionManagerApi.types'
+import type { SessionErasure, SessionScriptOutput } from '../sessionManager/sessionManagerApi.types'
+import type { AgentMemoryListing, AgentMemoryLocation, AgentMemoryText } from '../agentMemory/agentMemoryApi.types'
 import type { SessionModelReading } from '../sessionModelReader/sessionModelReaderApi.types'
 import type {
   SessionShellOutput,
@@ -22,6 +23,9 @@ import type { TabControlTaskRef } from './tabControl'
 import type { UiSettingsValue } from './uiSettings'
 import type { VersioningSettingsField, VersioningSettingsValue } from '../versioning/versioningSettings'
 import type { WorktreeSettingsValue } from './worktreeSettings'
+
+/** Whose memory: a session of this client, or an agent and a project directory, as Historic sessions knows them. */
+export type AgentMemoryTarget = { sessionId: string } | AgentMemoryLocation
 
 /** A write that answers nothing but that it was done. */
 type Done = Record<string, never>
@@ -55,6 +59,15 @@ export interface AppOperationMap {
     request: { categoryId: string; projectName: string; lastUsedSince?: number | null }
     response: HistoricSession[]
   }
+  /** Prune: erase a conversation of the history, every Jamat record naming it included; local only. */
+  'historicSessions.prune': {
+    request: { agentId: 'claude' | 'codex'; nativeSessionId: string; projectPath: string; createdAt: number }
+    response: SessionErasure
+  }
+  'agentMemory.list': { request: { target: AgentMemoryTarget }; response: AgentMemoryListing }
+  'agentMemory.read': { request: { target: AgentMemoryTarget; name: string }; response: AgentMemoryText }
+  'agentMemory.write': { request: { target: AgentMemoryTarget; name: string; text: string; expectedModifiedAt: number }; response: { modifiedAt: number } }
+  'agentMemory.delete': { request: { target: AgentMemoryTarget; name: string }; response: { indexLinesRemoved: number } }
   'uiSettings.get': { request: Record<string, never>; response: UiSettingsValue }
   'uiSettings.save': { request: { value: UiSettingsValue }; response: Done }
   'sessionGroups.list': { request: Record<string, never>; response: readonly SessionGroupDefinition[] }

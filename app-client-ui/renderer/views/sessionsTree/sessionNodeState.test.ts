@@ -191,6 +191,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
    * was `has no runtime on the Host yet`. Neither started nor closable, on a screen, for as long as
    * the Host kept refusing.
    */
+  it('offers erase after remove where the library admits it, and labels it', () => {
+    expect(SessionNodeState.actionsOf({ life: 'ended', admits: ['restart', 'remove', 'erase'] }, false))
+      .toEqual(['reopen', 'remove', 'erase'])
+    expect(SessionNodeState.actionsOf({ life: 'starting', admits: ['remove', 'erase'] }, false))
+      .toEqual(['remove', 'erase'])
+    expect(SessionNodeState.actionLabelOf('erase')).toBe('Prune session')
+  })
+
   it('offers remove on a starting session the Host never took', () => {
     expect(SessionNodeState.actionsOf({ life: 'starting', admits: ['newBeside', 'remove'] }, false))
       .toEqual(['remove'])

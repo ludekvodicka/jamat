@@ -54,14 +54,16 @@ export function SessionsTreeContextMenu(props: {
       position={props.position}
       ariaLabel="Session actions"
       className="jamat-tab-menu"
-      items={[...SessionsTreeMenuItems.forNode(
+      items={SessionsTreeMenuItems.forNode(
         props.commands,
         props.sessionId,
         props.facts,
         props.actions,
         props.onAction,
-      ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined
-        ? [item, props.groupItem] : [item]), ...switchItems]}
+      ).flatMap((item) => item.key === 'session.setColor' && props.groupItem !== undefined ? [item, props.groupItem]
+        // Another account continues the conversation, so it stands with Restart and Resume.
+        : item.key === 'session.restart' || item.key === 'session.resume' ? [item, ...switchItems]
+          : [item])}
       onClose={props.onClose}
     />
   )
@@ -89,30 +91,78 @@ export class SessionsTreeMenuItems {
         setColor: (color) => commands.execute('session.setColor', { color, sessionId, ...(remoteEndpointId ? { remoteEndpointId } : {}) }),
       },
     )
-    const operations = SessionsTreeMenuItems.operations(actions, onAction)
-    if (operations.length === 0) return commandItems
+    // A running session's way out is its own section right below the block that holds Restart session.
+    const ending = facts.ended ? [] : SessionsTreeMenuItems.endings(actions, onAction)
+    const restart = commandItems.findIndex((item) => item.key === 'session.restart')
+    const blockEnd = restart === -1 ? -1 : commandItems.findIndex((item, index) => index > restart && 'kind' in item)
+    const commandsWithEnding = ending.length === 0 || restart === -1 ? commandItems
+      : blockEnd === -1 ? [...commandItems, SessionsTreeMenuItems.separator('tree-endings'), ...ending]
+        : [...commandItems.slice(0, blockEnd), SessionsTreeMenuItems.separator('tree-endings'), ...ending,
+            ...commandItems.slice(blockEnd)]
+    const tools = SessionsTreeMenuItems.operations(actions, onAction, facts.ended, 'tools')
+    const removals = SessionsTreeMenuItems.operations(actions, onAction, facts.ended, 'removals')
     return [
-      ...commandItems,
-      { kind: 'separator', key: 'tree-operations' },
-      ...operations,
-    ]
+      commandsWithEnding,
+      restart === -1 ? ending : [],
+      tools,
+      removals,
+    ].filter((section) => section.length > 0)
+      .flatMap((section, index) => index === 0 ? section
+        : [SessionsTreeMenuItems.separator(`tree-section-${index}`), ...section])
+  }
+
+  private static separator(key: string): ContextMenuEntry {
+    return { kind: 'separator', key }
+  }
+
+  /** Finish, and Finish and prune, of a running session. */
+  private static endings(
+    actions: readonly SessionAction[],
+    onAction: (action: SessionAction) => void,
+  ): readonly ContextMenuEntry[] {
+    const items: ContextMenuEntry[] = []
+    if (actions.includes('finalize'))
+      items.push({ key: 'tree-finalize', label: 'Finish session', onSelect: () => onAction('finalize') })
+    // Arms the row's own button: stopping and deleting the conversation for good takes a second click.
+    if (actions.includes('erase'))
+      items.push({
+        key: 'tree-erase',
+        label: 'Finish and prune session…',
+        title: 'Stops the session, then deletes its transcript and prompt history from this computer',
+        onSelect: () => onAction('erase'),
+      })
+    return items
   }
 
   private static operations(
     actions: readonly SessionAction[],
     onAction: (action: SessionAction) => void,
+    ended: boolean,
+    section: 'tools' | 'removals',
   ): readonly ContextMenuEntry[] {
     const items: ContextMenuEntry[] = []
     for (const action of actions) {
       // Finish and Close are the row's own buttons, and Rerun is `Resume session` in the block above
       // since 2026-09-10: the catalog item opens the card that says what it will bring back.
       if (action === 'finalize' || action === 'close' || action === 'reopen') continue
-      else if (action === 'retrySetup' || action === 'remove' || action === 'updateMain')
-        items.push({
-          key: `tree-${action}`,
-          label: action === 'remove' ? 'Remove…' : SessionNodeState.actionLabelOf(action),
-          onSelect: () => onAction(action),
-        })
+      else if (action === 'retrySetup' || action === 'updateMain') {
+        if (section === 'tools')
+          items.push({ key: `tree-${action}`, label: SessionNodeState.actionLabelOf(action), onSelect: () => onAction(action) })
+      }
+      else if (action === 'remove') {
+        if (section === 'removals')
+          items.push({ key: 'tree-remove', label: 'Remove…', onSelect: () => onAction(action) })
+      }
+      // A running session's Prune is drawn with its Finish; an ended one's beside Remove, which it extends.
+      else if (action === 'erase') {
+        if (ended && section === 'removals')
+          items.push({
+            key: 'tree-erase',
+            label: 'Prune session…',
+            title: 'Removes the session and deletes its transcript and prompt history from this computer',
+            onSelect: () => onAction(action),
+          })
+      }
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
     }

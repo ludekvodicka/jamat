@@ -172,6 +172,11 @@ export class ProviderTranscriptView {
       `${input.shellId}.output`)
   }
 
+  /** The folder under `<claude home>/projects` that holds a directory's transcripts and memory. */
+  static claudeProjectFolderOf(cwd: string): string {
+    return ClaudeProjectsLocator.encodeProjectDir(cwd)
+  }
+
   /** The projects-dir encoding, cut at 200 characters plus a base-36 hash of the cwd past that. */
   static claudeTempSlugOf(cwd: string): string {
     const encoded = ClaudeProjectsLocator.encodeProjectDir(cwd)

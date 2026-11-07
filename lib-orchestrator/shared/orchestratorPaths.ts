@@ -28,6 +28,7 @@ export class OrchestratorPaths {
   private static readonly claudeContextSnapshotsNameConst = 'claude-context'
   private static readonly claudeIdentitiesNameConst = 'claude-identity'
   private static readonly pastedFilesNameConst = 'pasted-files'
+  private static readonly codexSessionsNameConst = 'codex-sessions'
 
   // The override names the state ROOT, never one channel's directory: consuming it verbatim
   // collapses two channels into one state directory.
@@ -208,6 +209,11 @@ export class OrchestratorPaths {
   /** One receipt per Jamat session: the conversation its running Claude reported through the status line relay. */
   static claudeIdentitiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeIdentitiesNameConst)
+  }
+
+  /** `<Jamat session id>/`: the launch files and identity receipts of the Codex bridge. */
+  static codexSessionsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.codexSessionsNameConst)
   }
 
   static sessionNotifiesDirectory(configIdentity: string, channel: RuntimeChannel): string {

@@ -72,6 +72,18 @@ class MenuView {
       item.querySelector('.jamat-context-menu__label')?.textContent ?? '')
   }
 
+  /** The top level as section lists: each separator starts a new one. */
+  static sections(): string[][] {
+    const sections: string[][] = [[]]
+    for (const entry of document.querySelectorAll('.jamat-tab-menu > *'))
+      if (entry.getAttribute('role') === 'separator') sections.push([])
+      else {
+        const label = entry.querySelector(':scope > .jamat-context-menu__item .jamat-context-menu__label')?.textContent
+        if (label !== undefined && label !== null) sections.at(-1)!.push(label)
+      }
+    return sections
+  }
+
   static separators(): HTMLElement[] {
     return [...document.querySelectorAll('.jamat-tab-menu > [role="separator"]')]
       .filter((item): item is HTMLElement => item instanceof HTMLElement)
@@ -134,7 +146,13 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.titles()).not.toContain(titleOf('tab.closeOthers'))
     expect(MenuView.titles()).not.toContain(titleOf('tab.splitRight'))
     expect(MenuView.titles()).not.toContain(titleOf('tab.moveToNewWindow'))
-    expect(MenuView.separators()).toHaveLength(3)
+    expect(MenuView.sections()).toEqual([
+      ['Session Appearance', 'Session properties…'],
+      ['New session', 'New session in Codex', 'Fork session'],
+      ['Restart session', 'Compact session', 'Show session actions'],
+      ['Commit (SVN)…', 'Commit (Git)…'],
+      ['Open project folder', 'Open in VS Code', 'Copy project folder', 'Copy unique session id'],
+    ])
   })
 
   it('offers the other agent, whichever this one is', () => {
@@ -177,7 +195,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.titles()).not.toContain(titleOf('session.compact'))
   })
 
-  it('moves every secondary tree operation into a final menu group and keeps Finish on the row', () => {
+  it('moves the secondary tree operations into final sections and keeps Finish on the row', () => {
     const onAction = vi.fn()
     // A row that offers a rerun is a row whose session has stopped, which is the same fact the
     // catalog block reads to draw `Resume session` there instead of `Restart session`.
@@ -196,8 +214,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     // the catalog block above, and one operation under two names on one menu is what that block's
     // own rule already forbade.
     expect(MenuView.titles()).not.toContain('Rerun')
-    expect(MenuView.titles().slice(-2)).toEqual(['Retry setup', 'Remove…'])
-    expect(MenuView.separators()).toHaveLength(3)
+    expect(MenuView.sections().slice(-2)).toEqual([['Retry setup'], ['Remove…']])
 
     fireEvent.click(MenuView.itemTitled('Remove…'))
 
@@ -219,6 +236,43 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.titles()).toContain('Show session actions')
   })
 
+  it('puts Finish session and Finish and prune session in a section under Restart session of a running row', () => {
+    const onAction = vi.fn()
+    render(<MenuHost commands={new CommandRegistry()} actions={['finalize', 'erase']} onAction={onAction} />)
+
+    const sections = MenuView.sections()
+    const restart = sections.findIndex((section) => section.includes('Restart session'))
+    expect(sections[restart + 1]).toEqual(['Finish session', 'Finish and prune session…'])
+    expect(MenuView.titles()).not.toContain('Prune session…')
+    fireEvent.click(MenuView.itemTitled('Finish session'))
+
+    expect(onAction).toHaveBeenCalledWith('finalize')
+  })
+
+  // Memory files moved to Tools > Memory files on 2026-11-07: it is a project's and an agent's, not a row's.
+  it('leaves Memory files out of the row menu', () => {
+    render(<MenuHost commands={new CommandRegistry()} facts={{ ended: true }} actions={['remove']} />)
+
+    expect(MenuView.titles()).not.toContain('Memory files…')
+    expect(MenuView.sections().at(-1)).toEqual(['Remove…'])
+  })
+
+  it('offers Prune session after Remove on an ended row and arms it on the clicked row', () => {
+    const onAction = vi.fn()
+    render(<MenuHost
+      commands={new CommandRegistry()}
+      facts={{ ended: true }}
+      actions={['remove', 'erase']}
+      onAction={onAction}
+    />)
+
+    expect(MenuView.sections().at(-1)).toEqual(['Remove…', 'Prune session…'])
+    fireEvent.click(MenuView.itemTitled('Prune session…'))
+
+    expect(onAction).toHaveBeenCalledWith('erase')
+    expect(MenuView.isOpen()).toBe(false)
+  })
+
   it('offers Update main copy on a landed row beside Remove, and runs it on the clicked row', () => {
     const onAction = vi.fn()
     render(<MenuHost
@@ -228,7 +282,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       onAction={onAction}
     />)
 
-    expect(MenuView.titles().slice(-2)).toEqual(['Update main copy', 'Remove…'])
+    expect(MenuView.sections().slice(-2)).toEqual([['Update main copy'], ['Remove…']])
     fireEvent.click(MenuView.itemTitled('Update main copy'))
 
     expect(onAction).toHaveBeenCalledWith('updateMain')

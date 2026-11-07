@@ -54,6 +54,7 @@ export type CommandId =
   | 'view.maximizeToggle'
   | 'tools.usage'
   | 'tools.remarkable'
+  | 'tools.memory'
 
 export type CommandMenuSection = 'file' | 'tab' | 'view' | 'tools' | 'window' | 'debug'
 

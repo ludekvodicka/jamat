@@ -23,6 +23,8 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
     projectNames?: string[]
     openTerminal?: () => Promise<PanelOpenOutcome>
   }) {
+    const prune = vi.fn(async (_body: Record<string, unknown>) =>
+      ({ sessionId: 'old', erased: ['transcript', 'history line'], leftovers: [], notes: ['Memory file m.md was written by this conversation and stays; check what it holds'] }))
     const project = vi.fn(options?.project ?? (async () => ({ ok: true as const, value: { ok: true as const, value: options?.rows ?? [session('old', 2_000, 'Old task'), session('new', 3_000, 'New task', 'codex')] } })))
     const appJamat = vi.fn(options?.appJamat ?? (async () => ({ ok: true as const, value: [{
       root: { id: 'root', label: 'Applications', path: 'Q:/Apps' },
@@ -44,6 +46,8 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
               body.categoryId as string, body.projectName as string, body.lastUsedSince as number | null | undefined))
           else if (operation === 'historicSessions.appJamat')
             return ControlBridgeFixture.valueOf(operation, await appJamat(body.lastUsedSince as number | null | undefined))
+          else if (operation === 'historicSessions.prune')
+            return ControlBridgeFixture.valueOf(operation, { ok: true, value: await prune(body) })
           else if (operation === 'sessions.openHistory')
             return ControlBridgeFixture.answerOf(operation, await openHistory(body.spec as SessionHistoryOpenSpec))
           else
@@ -58,10 +62,27 @@ describe('app-client-ui/renderer/overlays/launcher/history/historicSessionsOverl
     const onClose = vi.fn()
     const onOpenTerminal = vi.fn(options?.openTerminal ?? (async () => ({ kind: 'opened' as const, panelId: 'tab' })))
     const view = render(<LauncherOverlay intents={intents} onClose={onClose} onOpenTerminal={onOpenTerminal} onOpenRemoteSettings={vi.fn()} />)
-    return { ...view, project, appJamat, openHistory, onClose, onOpenTerminal }
+    return { ...view, project, appJamat, openHistory, prune, onClose, onOpenTerminal }
   }
 
   afterEach(() => { cleanup(); vi.restoreAllMocks() })
+
+  it('prunes a row from its context menu after a confirmation, and says what went', async () => {
+    const view = mount()
+    const rows = await view.findAllByRole('option')
+    const old = rows.find((row) => row.textContent?.includes('Old task'))!
+    fireEvent.contextMenu(old, { clientX: 10, clientY: 10 })
+    fireEvent.click(await view.findByText('Prune session…'))
+    expect(view.prune).not.toHaveBeenCalled()
+
+    fireEvent.click(view.getByRole('button', { name: 'Prune' }))
+
+    await waitFor(() => expect(view.prune).toHaveBeenCalledWith({ agentId: 'claude', nativeSessionId: 'old', projectPath: 'Q:/Apps/App', createdAt: 1_000 }))
+    await waitFor(() => expect(view.getAllByRole('option').some((row) => row.textContent?.includes('Old task'))).toBe(false))
+    expect(view.getByText('Pruned Old task: 2 item(s) deleted.')).toBeTruthy()
+    expect(view.getByText(/Memory file m\.md/)).toBeTruthy()
+    expect(view.onClose).not.toHaveBeenCalled()
+  })
 
   it('shows an unknown last-use time without a fabricated date and sorts it after recorded input', async () => {
     const view = mount({ rows: [session('unknown', null, 'Unknown time'), session('known', 3_000, 'Known time')] })

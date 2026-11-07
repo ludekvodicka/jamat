@@ -276,6 +276,10 @@ function world(options?: {
         removed.push(sessionId)
         return options?.remove ?? { ok: true, value: undefined }
       },
+      eraseSession: async (sessionId) => {
+        removed.push(`erase:${sessionId}`)
+        return { ok: true, value: { sessionId, erased: ['transcript'], leftovers: [], notes: [] } }
+      },
       discardWorktree: async (sessionId) => {
         worktreeCalls.push({ method: 'discardWorktree', sessionId })
         return options?.worktreeEnding ?? { ok: true, value: undefined }
@@ -975,6 +979,24 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     }, 'remove-4'), peer)).resolves.toMatchObject({ ok: true })
     expect(RemoteControlPeerConst.controlOperations).toContain('sessions.remove')
     expect(ended.removed).toEqual(['session-1', 'session-1'])
+  })
+
+  it('erases through Remove with erase on this computer and refuses it to a paired peer', async () => {
+    const local = world()
+    await expect(local.control.execute(request('sessions.remove', {
+      session: { kind: 'sessionId', sessionId: 'session-1' }, erase: true,
+    }, 'erase-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', erasure: { erased: ['transcript'] } },
+    })
+    expect(local.removed).toEqual(['erase:session-1'])
+
+    const peer = context(RemoteControlPeerConst.controlOperations)
+    peer.callerKind = 'remote-peer'
+    await expect(local.control.execute(request('sessions.remove', {
+      session: { kind: 'sessionId', sessionId: 'session-1' }, erase: true,
+    }, 'erase-2'), peer)).resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    expect(local.removed).toEqual(['erase:session-1'])
   })
 
   /**

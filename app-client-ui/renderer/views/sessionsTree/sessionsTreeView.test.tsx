@@ -399,6 +399,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       return this.record(`remove:${sessionId}`)
     }
 
+    erase(sessionId: string): Promise<IpcResult<SessionsOpResult>> {
+      return this.record(`erase:${sessionId}`)
+    }
+
     retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<IpcResult<SessionsOpResult>> {
       // The hash is IN the call name: whether the answer was carried back is the whole test.
       return this.record(acknowledgeSetup === undefined
@@ -2239,6 +2243,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     ]])
     expect(ports.calls).toEqual([])
     expect(actionNamed(container, 's-ended', 'Remove?').textContent).toBe('Remove?')
+  })
+
+  it('arms Prune session from the menu and prunes on the second click', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const { ports, container } = await mount({
+      ...snapshot,
+      sessions: snapshot.sessions.map((session) => session.sessionId === 's-ended'
+        ? { ...session, admits: [...session.admits, 'erase'] } : session),
+    })
+    showAll(container)
+
+    chooseSessionMenuAction(container, 's-ended', 'Prune session…')
+    expect(ports.calls).toEqual([])
+    fireEvent.click(actionNamed(container, 's-ended', 'Prune?'))
+
+    await waitFor(() => expect(ports.calls).toEqual(['erase:s-ended']))
   })
 
   // Every action, not only the confirmed ones: one that acts at once loses nothing by first showing

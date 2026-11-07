@@ -108,7 +108,10 @@ import { WorktreeResultsStore } from '../worktrees/worktreeResults'
 import { SessionNotifyStore } from './notifies/sessionNotifyStore'
 import { SvnWaitNotices } from '../worktrees/worktreeResults'
 import { WorktreeWords } from '../worktrees/worktreeViews'
-import type { SessionChildInfo, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
+import type { SessionChildInfo, SessionErasure, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
+import type { AgentHistoryEraser } from './purge/agentHistoryEraser.types'
+import { SessionPurge } from './purge/sessionPurge'
+import { LaunchPlanner } from './launch/launchPlanner'
 import { RunOutputLines } from './scripts/runOutputLines'
 import { ScriptLogStore } from './scripts/scriptLogStore'
 import { type ScriptCollapsed, SessionScriptsManager } from './scripts/sessionScriptsManager'
@@ -234,6 +237,15 @@ export interface SessionManagerDeps {
    * the smokes get - and what a session with no agent would answer anyway.
    */
   transcripts?: Pick<ProviderTranscriptView, 'resolve'>
+  /**
+   * Remove with erase: how each agent's own store forgets a conversation, and the session's files
+   * kept outside this manager. Absent: an erase takes Jamat's own files and names the agent's store
+   * as left, which is what the tests and the smokes get.
+   */
+  erase?: {
+    agents: Partial<Record<SessionAgentId, AgentHistoryEraser>>
+    sessionFiles?: (sessionId: string) => Promise<readonly string[]>
+  }
   /** This machine's name, as the reference block says it. The tests name it so the block is fixed. */
   computerName?: () => string
   /**
@@ -1487,6 +1499,118 @@ export class SessionManager {
   }
 
   /**
+   * Remove, then erase what this machine keeps of the session: Jamat's files of it, the copies of its
+   * record in the recovery points, and the agent's conversation in the agent's own store. The Remove
+   * decides as it always does, so a refused one erases nothing; a landed row the Remove keeps is
+   * refused here, because its record would still name the conversation.
+   *
+   * The erase runs after the record is gone and reports what stayed rather than failing: by then
+   * there is no row to retry from, and a leftover named with its path is one the person can delete.
+   *
+   * A running session without a worktree is stopped first, which is the Finish such a session has;
+   * the erase continues once the Host lists its process as gone.
+   */
+  async eraseSession(sessionId: string): Promise<SessionsOpResult<SessionErasure>> {
+    await this.lifecycle()
+    const records = this.records
+    let record = records?.get(sessionId) ?? null
+    if (records === null || record === null) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    if (!this.admitsOf(record).includes('erase'))
+      return { ok: false, code: 'invalid-spec', detail: `Session ${sessionId} cannot be erased: only an agent session that is not a run can, and one with a worktree only after its Finish` }
+    if (record.life === 'live' || record.life === 'starting') {
+      const stopped = await this.stopSession(sessionId)
+      if (!stopped.ok) return stopped
+      if (!await this.awaitRuntimeExit(sessionId))
+        return { ok: false, code: 'live-refused', detail: `Session ${sessionId} was asked to stop and was still running ${SessionManager.exitBudgetMillisecondsConst / 1_000} s later; nothing was erased` }
+      await this.refresh('operation')
+      record = records.get(sessionId)
+      if (record === null) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+      if (record.life === 'live' || record.life === 'starting')
+        return { ok: false, code: 'live-refused', detail: `Session ${sessionId} stopped, but its record has not ended yet; erase it again in a moment` }
+    }
+    const runs = records.list().filter((one) => one.scriptOf?.sessionId === sessionId).map((one) => one.sessionId)
+    const conversations = SessionPurge.conversationIdsOf(record)
+    const forks = records.listAll().filter((one) => one.sessionId !== sessionId
+      && one.agent?.forkParentId !== undefined && conversations.includes(one.agent.forkParentId))
+    const removed = await this.removeSession(sessionId)
+    if (!removed.ok) return removed
+    if (records.get(sessionId) !== null)
+      return {
+        ok: false,
+        code: 'invalid-spec',
+        detail: `Session ${sessionId} stays as a landed row until its main copy is updated, so nothing was erased; update the main copy, then erase it`,
+      }
+    const erasure = await this.purge(records).erase(record, runs.filter((id) => records.get(id) === null), forks)
+    if (erasure.leftovers.length > 0 || erasure.notes.length > 0)
+      this.deps.onError([`Session ${record.title} was removed and erased; ${erasure.erased.length} item(s) went.`,
+        ...erasure.leftovers.map((line) => `Left: ${line}`), ...erasure.notes].join('\n'))
+    return { ok: true, value: erasure }
+  }
+
+  /**
+   * The erase of Historic sessions, which names a conversation rather than a session: every record
+   * naming it is erased as `eraseSession` erases one, an archived record moved back first, and a
+   * conversation no record names is erased from the agent's store alone. A running one is refused.
+   */
+  async eraseConversation(conversation: {
+    agentId: SessionAgentId
+    nativeSessionId: string
+    projectPath: string
+    /** The conversation's creation; no sub-agent of it started earlier. */
+    createdAt: number
+  }): Promise<SessionsOpResult<SessionErasure>> {
+    await this.lifecycle()
+    const records = this.records
+    if (records === null) return { ok: false, code: 'records-latched', detail: 'Session records are not readable' }
+    const named = records.listAll().filter((record) => record.agent?.agentId === conversation.agentId
+      && SessionPurge.conversationIdsOf(record).includes(conversation.nativeSessionId))
+    const running = named.find((record) => record.life === 'live' || record.life === 'starting')
+    if (running !== undefined)
+      return { ok: false, code: 'live-refused', detail: `The conversation runs in session ${running.title}; finish it in the sessions tree` }
+    if (named.length === 0) {
+      const erasure = await this.purge(records).eraseConversation(conversation.agentId, conversation.nativeSessionId,
+        conversation.projectPath, conversation.createdAt)
+      if (erasure.leftovers.length > 0 || erasure.notes.length > 0)
+        this.deps.onError([`Conversation ${conversation.nativeSessionId} was erased; ${erasure.erased.length} item(s) went.`,
+          ...erasure.leftovers.map((line) => `Left: ${line}`), ...erasure.notes].join('\n'))
+      return { ok: true, value: erasure }
+    }
+    const merged: SessionErasure = { sessionId: named[0].sessionId, erased: [], leftovers: [], notes: [] }
+    for (const record of named) {
+      if (!await records.restore(record.sessionId))
+        return { ok: false, code: 'records-latched', detail: `Session ${record.sessionId} is archived and could not be moved back to the records; nothing more was erased` }
+      const erased = await this.eraseSession(record.sessionId)
+      if (!erased.ok) return erased
+      merged.erased.push(...erased.value.erased)
+      merged.leftovers.push(...erased.value.leftovers)
+      merged.notes.push(...erased.value.notes)
+    }
+    return { ok: true, value: merged }
+  }
+
+  /** Whose memory a session's Memory files dialog shows: its agent, the directory its transcript is filed under, its conversation. */
+  memoryOf(sessionId: string): { agentId: SessionAgentId; projectPath: string; nativeSessionId?: string } | null {
+    const record = this.records?.getAny(sessionId) ?? null
+    if (record === null || record.agent === undefined) return null
+    return {
+      agentId: record.agent.agentId,
+      projectPath: record.transcriptCwd ?? LaunchPlanner.cwdOf(record),
+      ...(record.agent.nativeSessionId === undefined ? {} : { nativeSessionId: record.agent.nativeSessionId }),
+    }
+  }
+
+  private purge(records: SessionRecordsStore): SessionPurge {
+    return new SessionPurge({
+      instance: { configIdentity: this.deps.configIdentity, channel: this.deps.channel },
+      erasers: this.deps.erase?.agents ?? {},
+      scrubRecoveryPoints: (sessionIds) => records.scrubRecoveryPoints(sessionIds),
+      forgetNotifies: (sessionId) => this.notifyStore.forget(sessionId),
+      removeScriptLogs: (sessionId) => this.scriptLogs.removeParent(sessionId),
+      ...(this.deps.erase?.sessionFiles === undefined ? {} : { sessionFiles: this.deps.erase.sessionFiles }),
+    })
+  }
+
+  /**
    * Paint a session, or take its colour away with `null`.
    *
    * Deliberately not on `operate`, for the reason `number()` is not: this touches the records file
@@ -2294,7 +2418,7 @@ export class SessionManager {
           (await this.numbers()).highestIssued(projectPath, [...list, ...this.records?.archived() ?? []]),
       },
       codexSessions: new CodexSessionFiles({
-        directory: join(OrchestratorPaths.directory(this.deps.configIdentity, this.deps.channel), 'codex-sessions'),
+        directory: OrchestratorPaths.codexSessionsDirectory(this.deps.configIdentity, this.deps.channel),
         applicationRoot: this.deps.applicationRoot,
         resourcesRoot: this.deps.resourcesRoot,
         report: this.deps.onError,
@@ -2786,9 +2910,17 @@ export class SessionManager {
     // What `remove` refuses: a live session, and a `starting` one the Host has a runtime for.
     // A `starting` record with no binding names nothing on the Host and is removable.
     // A run row needs its parent too: `dismiss` refuses a run its gate still waits on.
-    if (record.life !== 'live' && !(record.life === 'starting' && record.binding !== null)
-      && !this.awaitedRun(record))
-      admits.push('remove')
+    const removable = record.life !== 'live' && !(record.life === 'starting' && record.binding !== null)
+      && !this.awaitedRun(record)
+    if (removable) admits.push('remove')
+    // A run's Remove keeps its log on the parent, so it has nothing of its own to erase. A running
+    // session is erased after the stop that is its whole Finish, so one whose Finish has more steps
+    // (a worktree, a landing, a flow holding the record) is erased only once that Finish is done.
+    if (record.kind === 'agent' && record.scriptOf === undefined && (removable
+      || ((record.life === 'live' || record.life === 'starting') && record.worktree === undefined
+        && record.retiredWorktree === undefined && record.pendingSetup === undefined
+        && record.worktreeMerge === undefined && record.svnAction === undefined)))
+      admits.push('erase')
     if (this.discardable(record)) admits.push('discardWorktree')
     // The one way out of a failed install: the wait is still on the record and the session it
     // was preparing has ended, which is what `setupInfoOf` reads as `failed`. A retired worktree

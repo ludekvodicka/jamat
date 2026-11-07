@@ -1587,9 +1587,9 @@ workspaceWindows: { beginQuit: () => order.push('windows') }})
   it('gives every transcript consumer the project manager\'s own view', async () => {
     const source = await readFile(new URL('../../app-orchestrator/app/appHub.ts', import.meta.url), 'utf8')
 
-    // The two polled readers, the file-changes manager, the session manager's reference block and
-    // the sub-agent listing, and no sixth way in.
-    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(5)
+    // The two polled readers, the file-changes manager, the session manager's reference block, the
+    // sub-agent listing and the Codex child threads an erase deletes, and no seventh way in.
+    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(6)
     expect(source).not.toContain('new ProviderTranscriptView(')
   })
 

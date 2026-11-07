@@ -544,6 +544,28 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(store.get('a')).toBeNull()
   })
 
+  it('drops an erased record from every recovery point and keeps the others in them', async () => {
+    const context = harness()
+    const store = await context.load()
+    await store.put(record('a'))
+    await store.put(record('b'))
+    await store.remove('a')
+    await store.remove('b')
+    writeFileSync(join(context.snapshotsDirectory, 'session-records-1-00000000-0000-4000-8000-000000000000.json'), '{"half', 'utf8')
+
+    const report = await store.scrubRecoveryPoints(['a'])
+
+    const points = readdirSync(context.snapshotsDirectory).filter((name) => !name.includes('00000000-0000'))
+    const ids = points.map((name) => (JSON.parse(readFileSync(join(context.snapshotsDirectory, name), 'utf8')) as {
+      records: SessionRecord[]
+    }).records.map((one) => one.sessionId))
+    expect(ids.flat()).not.toContain('a')
+    expect(ids.flat()).toContain('b')
+    expect(report.erased).toHaveLength(1)
+    expect(report.leftovers).toHaveLength(1)
+    expect(report.leftovers[0]).toContain('session-records-1-00000000-0000-4000-8000-000000000000.json')
+  })
+
   /**
    * The promise this class makes about a destructive write is that the previous file is kept FIRST,
    * and `adopt` calls that recovery point "how a mistaken adoption becomes undoable". The snapshot

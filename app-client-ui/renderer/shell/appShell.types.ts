@@ -142,6 +142,7 @@ export interface WorkspaceShellWiring {
   /** A tab's Finish, handed to the sessions tree row that owns what Finish does. */
   finishRequests: SessionFinishRequests
   remarkableCommands: LateBoundCommandPort<void>
+  memoryCommands: LateBoundCommandPort<void>
   intents: LauncherIntentStore
   worktreeSetupIntents: WorktreeSetupIntentStore
   openTerminal(

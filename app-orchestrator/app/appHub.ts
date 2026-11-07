@@ -27,7 +27,7 @@ import { CatalogSection } from '../../lib-orchestrator/projectManager/catalog/ca
 import { AppClientUiReport } from '../../lib-orchestrator/shared/appClientUiReport'
 import { DetectionRefusal } from '../../lib-orchestrator/terminalDetector/detectionRefusal'
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ConfigStore } from '../../lib-orchestrator/configStore/configStore'
 import { FileChangesManager } from '../../lib-orchestrator/fileChangesManager/fileChangesManager'
@@ -48,6 +48,7 @@ import { RemoteControl } from '../../lib-orchestrator/remoteControl/remoteContro
 import { RemoteControlInstanceRegistry } from '../../lib-orchestrator/remoteControl/remoteControlInstanceRegistry'
 import { RemoteControlTerminal } from '../../lib-orchestrator/remoteControl/remoteControlTerminal'
 import { SessionManager, SessionNotifier } from '../../lib-orchestrator/sessionManager/sessionManager'
+import { SessionEraseView } from '../../lib-orchestrator/sessionManager/sessionEraseView'
 import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
 import { SessionTasks } from '../../lib-orchestrator/sessionTasks/sessionTasks'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
@@ -148,6 +149,8 @@ import { SessionModelOperations } from './sessionModel/sessionModelOperations'
 import { SessionTasksOperations } from './sessionTasks/sessionTasksOperations'
 import { SessionTranscriptAccess } from './sessionTranscript/sessionTranscriptAccess'
 import { HistoricSessionsOperations } from './sessions/historicSessionsOperations'
+import { AgentMemoryOperations } from './agentMemory/agentMemoryOperations'
+import { AgentMemory } from '../../lib-orchestrator/agentMemory/agentMemory'
 import { HistoricSessions } from './sessions/history/historicSessions'
 import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import type { ScriptRunCollapsed } from '../../lib-orchestrator/clientApi/scriptRunHandOff.types'
@@ -447,6 +450,15 @@ export class OrchestratorHub {
       // The same view the two transcript readers below take, for the same reason: resolving a Codex
       // rollout is not free, and a view of one's own has no memo behind its index.
       transcripts: this.projects.transcripts,
+      erase: {
+        agents: SessionEraseView.agents({
+          claudeHomes: () => accounts.homesOf('claude'),
+          codexHome: accounts.homesOf('codex')[0],
+          temporaryRoot: process.env.CLAUDE_CODE_TMPDIR || tmpdir(),
+          transcripts: this.projects.transcripts,
+        }),
+        sessionFiles: (sessionId) => this.pastedFiles.removeSession(sessionId),
+      },
     })
     const modelReader = new SessionModelReader({
       transcripts: this.projects.transcripts,
@@ -707,7 +719,11 @@ export class OrchestratorHub {
     })
     this.remoteControl = remoteControl
     this.controlIpc = new ServiceControlIpc(remoteControl.registry)
-    HistoricSessionsOperations.register(remoteControl.registry, historicSessions)
+    HistoricSessionsOperations.register(remoteControl.registry, historicSessions, this.sessions)
+    AgentMemoryOperations.register(remoteControl.registry, new AgentMemory({
+      claudeHome: accounts.homesOf('claude')[0],
+      codexHome: accounts.homesOf('codex')[0],
+    }), this.sessions)
     for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
     new SnapinsOperations(this.snapins, configStore).register(remoteControl.registry)
     this.tokenUsage = new TokenUsageWorker(context.tokenUsageWorkerPath, async rescan => ({

@@ -74,6 +74,16 @@ export class SessionNotifyStore implements NotifySource {
     })
   }
 
+  /** An erased session's watch and history go now rather than after the sweep's month. */
+  async forget(sessionId: string): Promise<void> {
+    if (!SessionNotifyStore.plainIdConst.test(sessionId)) throw new Error(`Not a plain session id: ${JSON.stringify(sessionId)}`)
+    await this.load()
+    await this.serialized(async () => {
+      await rm(this.fileOf(sessionId), { force: true })
+      this.records.delete(sessionId)
+    })
+  }
+
   watched(): readonly SessionNotifyRecord[] {
     return [...this.records.values()].map((record) => structuredClone(record))
   }

@@ -22,6 +22,7 @@ import type {
   SessionCreated,
   SessionCreateSpec,
   SessionDetailsSaved,
+  SessionErasure,
   SessionDetailsUpdate,
   SessionGroup,
   SessionHistoryOpenSpec,
@@ -686,10 +687,14 @@ export interface RemoteControlOperationMap {
    * Delete an ended record from the list, the tree's Remove. A live runtime is refused with
    * `conflict` rather than stopped: ending work is a separate decision this operation never takes.
    * A worktree is left on disk, as the tree's Remove leaves it.
+   *
+   * `erase` also deletes what this computer keeps of an agent session's conversation: the agent's
+   * transcript and history, Jamat's files of the session and the copies of its record in the
+   * recovery points. Local only; `erasure` says what went and what stayed.
    */
   'sessions.remove': {
-    request: { session: RemoteControlSessionSelector }
-    response: { sessionId: string }
+    request: { session: RemoteControlSessionSelector; erase?: true }
+    response: { sessionId: string; erasure?: SessionErasure }
   }
   /**
    * The Finish overlay's Discard: the worktree goes and nothing is brought home, uncommitted work

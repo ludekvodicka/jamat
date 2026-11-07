@@ -76,6 +76,19 @@ export class PastedFileStore {
     return this.serialized(() => this.receiveNow(key, sessionId, chunk))
   }
 
+  /** An erased session's folder now, with any upload still arriving for it; answers the folder that went. */
+  removeSession(sessionId: string): Promise<readonly string[]> {
+    return this.serialized(async () => {
+      for (const [key, upload] of [...this.uploads])
+        if (upload.sessionId === sessionId) await this.drop(key)
+      const folder = join(this.directory, PastedFileStore.folderOf(sessionId))
+      try { await stat(folder) }
+      catch { return [] }
+      await rm(folder, { recursive: true, force: true })
+      return [folder]
+    })
+  }
+
   private serialized<T>(work: () => Promise<T>): Promise<T> {
     const done = this.queue.then(work)
     this.queue = done.catch(() => undefined)

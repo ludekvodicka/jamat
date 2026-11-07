@@ -128,6 +128,14 @@ export class CodexAppServerClient {
     return this.readWithRetry('configRequirements/read', null)
   }
 
+  /**
+   * Codex's own delete: the rollout and every row its databases hold for the thread, measured against
+   * codex-cli 0.167.0. A thread with no rollout answers `no rollout found for thread id ...`.
+   */
+  deleteThread(threadId: string): Promise<CodexAppServerAnswer> {
+    return this.readWithRetry('thread/delete', { threadId })
+  }
+
   /** Idempotent, and the only thing that ends the child. Nothing restarts a stopped client. */
   stop(): void {
     this.stopped = true

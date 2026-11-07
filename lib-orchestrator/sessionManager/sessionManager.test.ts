@@ -4,7 +4,7 @@ import { SyncStep } from '../worktrees/worktreeFinish'
 import { FinishDriver } from '../worktrees/finish/finishDriver'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { constants, getPriority, setPriority, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -247,6 +247,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       closeTerminals?: () => Promise<void>
       onRemovedItself?: SessionManagerDeps['onRemovedItself']
       onScriptCollapsed?: SessionManagerDeps['onScriptCollapsed']
+      erase?: SessionManagerDeps['erase']
     },
   ): Client {
     const errors: string[] = []
@@ -289,6 +290,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       processPriorityOf: options?.processPriorityOf,
       onRemovedItself: options?.onRemovedItself,
       onScriptCollapsed: options?.onScriptCollapsed,
+      erase: options?.erase,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
@@ -2160,16 +2162,16 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // Restart is the stop-and-reopen operation, so it applies while the session is live. A lost
     // screen still gets Reconnect because the terminal panel branches on `life` before `admits`.
     expect(sessionOf(client, 'claude-live')?.admits)
-      .toEqual(['newBeside', 'fork', 'compact', 'restart', 'finalize'])
+      .toEqual(['newBeside', 'fork', 'compact', 'restart', 'finalize', 'erase'])
     // Codex reports its id afterwards or not at all, and resuming "the most recent session on this
     // machine" would land on an unrelated one, so neither fork nor restart is offered.
-    expect(sessionOf(client, 'codex-nameless')?.admits).toEqual(['newBeside', 'remove'])
+    expect(sessionOf(client, 'codex-nameless')?.admits).toEqual(['newBeside', 'remove', 'erase'])
     // A fork names its own conversation now, so it forks and restarts like anything else.
     expect(sessionOf(client, 'claude-forked')?.admits)
-      .toEqual(['newBeside', 'fork', 'restart', 'remove'])
+      .toEqual(['newBeside', 'fork', 'restart', 'remove', 'erase'])
     // A fork taken before forks were given ids stays refused: nothing can name its conversation
     // after the fact, so the way on is to remove the row and fork the parent again.
-    expect(sessionOf(client, 'claude-forked-legacy')?.admits).toEqual(['newBeside', 'remove'])
+    expect(sessionOf(client, 'claude-forked-legacy')?.admits).toEqual(['newBeside', 'remove', 'erase'])
     // A resolver carries an id like any other fork, and is still not forkable: the worktree it
     // stands in goes when the merge it is settling is done.
     expect(sessionOf(client, 'claude-resolver')?.admits).toEqual(['newBeside', 'remove'])
@@ -2181,7 +2183,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     // And the session waiting on a failed install: no finish, because there is nothing to bring
     // home from a worktree the install never finished, and the retry that is the way out of it.
     expect(sessionOf(client, 'claude-waiting')?.admits)
-      .toEqual(['newBeside', 'fork', 'remove', 'retrySetup'])
+      .toEqual(['newBeside', 'fork', 'remove', 'erase', 'retrySetup'])
     expect(client.errors).toEqual([])
   }, 20_000)
 
@@ -2684,6 +2686,121 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       + `${warmUp} svn in warm-up), bound ${idleSpawnBound}: ${idle.join('; ')}`).toBeLessThanOrEqual(idleSpawnBound)
     expect(sessionOf(client, 'landed')?.retiredWorktree?.landing?.behind).toBe(1)
     expect(sessionOf(client, 'live')?.life).toBe('live')
+  })
+
+  it('erases an ended agent session: its record, recovery points, Jamat files and conversation', async () => {
+    const context = await world()
+    const native = '00a3124e-a257-411c-8d8e-3f4cb8ab223b'
+    seedRecords(context, [
+      recordOf(context, 'private', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: native } }),
+      recordOf(context, 'forked', { kind: 'agent', title: 'Forked', agent: {
+        agentId: 'claude', launchMode: 'fork', nativeSessionId: '116b42ca-ecae-46e3-a3cd-50d8f914f756', forkParentId: native,
+      } }),
+      recordOf(context, 'shell', {}),
+    ])
+    const state = OrchestratorPaths.directory(context.configIdentity, 'development')
+    const identity = join(state, 'claude-identity', 'private.json')
+    const contextWindow = join(state, 'claude-context', `${native}.json`)
+    const launch = join(OrchestratorPaths.codexSessionsDirectory(context.configIdentity, 'development'), 'private')
+    for (const file of [identity, contextWindow, join(launch, 'x.launch.json')]) {
+      mkdirSync(join(file, '..'), { recursive: true })
+      writeFileSync(file, '{}', 'utf8')
+    }
+    const asked: unknown[] = []
+    context.publishDescriptor()
+    const client = clientOf(context, { erase: {
+      agents: { claude: { erase: (conversation) => {
+        asked.push(conversation)
+        return Promise.resolve({ erased: ['transcript'], leftovers: [], notes: [] })
+      } } },
+      sessionFiles: (sessionId) => Promise.resolve([`pasted:${sessionId}`]),
+    } })
+    await client.start()
+    await writable(client)
+
+    expect(sessionOf(client, 'private')?.admits).toContain('erase')
+    expect(sessionOf(client, 'shell')?.admits).toContain('remove')
+    expect(sessionOf(client, 'shell')?.admits).not.toContain('erase')
+    const erased = await client.manager.eraseSession('private')
+
+    expect(erased).toMatchObject({ ok: true, value: { sessionId: 'private', leftovers: [] } })
+    if (!erased.ok) throw new Error(erased.detail)
+    expect(erased.value.erased).toEqual(expect.arrayContaining([identity, contextWindow, launch, 'pasted:private', 'transcript']))
+    expect(erased.value.notes).toEqual([expect.stringContaining('Session Forked (forked) was forked from this conversation')])
+    expect(asked).toEqual([{ nativeSessionIds: [native], cwd: context.root, since: 1_000 }])
+    expect(storedRecord(context, 'private')).toBeUndefined()
+    for (const file of [identity, contextWindow, launch]) expect(existsSync(file), file).toBe(false)
+    const points = OrchestratorPaths.sessionSnapshotsDirectory(context.configIdentity, 'development')
+    for (const name of readdirSync(points))
+      expect(readFileSync(join(points, name), 'utf8')).not.toContain('"private"')
+    expect(await client.manager.eraseSession('shell')).toMatchObject({ ok: false, code: 'invalid-spec' })
+  })
+
+  it('finishes a running agent session without a worktree and then prunes it', async () => {
+    const context = await world()
+    const native = '00a3124e-a257-411c-8d8e-3f4cb8ab223b'
+    const binding = { hostInstanceId: 'fake-host-1', generation: 1 }
+    seedRecords(context, [
+      recordOf(context, 'running', { kind: 'agent', life: 'live', binding, agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: native } }),
+      recordOf(context, 'worktree', { kind: 'agent', life: 'live', binding, agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'w' },
+        worktree: { worktreePath: join(context.root, 'w'), branch: 'b', baseCommit: 'c', repositoryRoot: context.root } }),
+    ])
+    context.runtimes.set('running', runtime('running'))
+    context.runtimes.set('worktree', runtime('worktree'))
+    const stops = handleStop(context, { exits: true })
+    context.publishDescriptor()
+    const asked: unknown[] = []
+    const client = clientOf(context, { erase: { agents: { claude: { erase: (conversation) => {
+      asked.push(conversation)
+      return Promise.resolve({ erased: ['transcript'], leftovers: [], notes: [] })
+    } } } } })
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+
+    expect(sessionOf(client, 'running')?.admits).toContain('erase')
+    expect(sessionOf(client, 'worktree')?.admits).not.toContain('erase')
+    expect(await client.manager.eraseSession('running')).toMatchObject({ ok: true, value: { sessionId: 'running' } })
+    expect(stops.calls()).toBe(1)
+    expect(asked).toEqual([{ nativeSessionIds: [native], cwd: context.root, since: 1_000 }])
+    expect(storedRecord(context, 'running')).toBeUndefined()
+    expect(await client.manager.eraseSession('worktree')).toMatchObject({ ok: false, code: 'invalid-spec' })
+  })
+
+  it('prunes a conversation of the history: archived records, a conversation no record names, never a running one', async () => {
+    const context = await world()
+    const archived = '00a3124e-a257-411c-8d8e-3f4cb8ab223b'
+    const foreign = '116b42ca-ecae-46e3-a3cd-50d8f914f756'
+    const running = '1dedca64-07a7-457f-83c3-93c9d0b55a12'
+    seedRecords(context, [recordOf(context, 'live', { kind: 'agent', life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+      agent: { agentId: 'codex', launchMode: 'new', nativeSessionId: running } })])
+    context.runtimes.set('live', runtime('live'))
+    writeFileSync(SessionRecordsArchive.fileOf(recordsFileOf(context)), JSON.stringify({ schemaVersion: 1, savedAt: 1, records: [
+      recordOf(context, 'old', { kind: 'agent', endedAt: 2_000, agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: archived } }),
+    ] }), 'utf8')
+    context.publishDescriptor()
+    const asked: unknown[] = []
+    const eraser = { erase: (conversation: unknown) => {
+      asked.push(conversation)
+      return Promise.resolve({ erased: ['transcript'], leftovers: [], notes: [] })
+    } }
+    const client = clientOf(context, { erase: { agents: { claude: eraser, codex: eraser } } })
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+
+    expect(await client.manager.eraseConversation({ agentId: 'claude', nativeSessionId: archived, projectPath: 'Q:/p', createdAt: 5 }))
+      .toMatchObject({ ok: true, value: { sessionId: 'old', erased: expect.arrayContaining(['transcript']) } })
+    expect((await client.manager.localHistory()).some((entry) => entry.nativeSessionId === archived)).toBe(false)
+    expect(readFileSync(SessionRecordsArchive.fileOf(recordsFileOf(context)), 'utf8')).not.toContain('"old"')
+    expect(await client.manager.eraseConversation({ agentId: 'claude', nativeSessionId: foreign, projectPath: 'Q:/p', createdAt: 5 }))
+      .toMatchObject({ ok: true, value: { sessionId: foreign, erased: ['transcript'] } })
+    expect(asked).toEqual([
+      { nativeSessionIds: [archived], cwd: context.root, since: 1_000 },
+      { nativeSessionIds: [foreign], cwd: 'Q:/p', since: 5 },
+    ])
+    expect(await client.manager.eraseConversation({ agentId: 'codex', nativeSessionId: running, projectPath: 'Q:/p', createdAt: 5 }))
+      .toMatchObject({ ok: false, code: 'live-refused' })
   })
 
   /*

@@ -298,7 +298,10 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     expect: z.literal('stop', { error: 'expect must be stop' }).optional(),
     acknowledgeSetup: RemoteControlZod.text().optional(),
   }),
-  'sessions.remove': RemoteControlZod.sessionBody(),
+  'sessions.remove': z.strictObject({
+    session: RemoteControlZod.sessionSelector,
+    erase: z.literal(true, { error: 'erase must be true' }).optional(),
+  }),
   'sessions.worktree': RemoteControlZod.sessionBody(),
   'sessions.discardWorktree': RemoteControlZod.sessionBody(),
   'sessions.retrySetup': z.strictObject({

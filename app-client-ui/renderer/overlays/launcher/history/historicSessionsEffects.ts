@@ -1,5 +1,5 @@
 import type { CategoryInfo, ProjectEntry } from '../../../../../lib-orchestrator/projectManager/projectManagerApi.types'
-import type { SessionHistoryOpenSpec } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionErasure, SessionHistoryOpenSpec } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { TerminalTarget } from '../../../../shared/terminalTarget'
 import { ErrorText } from '../../../../shared/errorText'
 import { AppClientUiReport } from '../../../../shared/appClientUiReport'
@@ -80,6 +80,15 @@ export class HistoricSessionsEffects {
       }
     }))
     return active() ? HistoricSessionsModel.sorted(rows) : []
+  }
+
+  /** Erases the row's conversation from this computer; throws the refusal. */
+  static async prune(row: HistoricSessionRow): Promise<SessionErasure> {
+    const answer = await AppControl.value('historicSessions.prune', {
+      agentId: row.agentId, nativeSessionId: row.nativeSessionId, projectPath: row.project.path, createdAt: row.createdAt,
+    })
+    if (!answer.ok) throw new Error(answer.error)
+    return answer.value
   }
 
   async open(

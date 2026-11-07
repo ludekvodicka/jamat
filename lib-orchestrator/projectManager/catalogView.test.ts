@@ -27,10 +27,13 @@ describe('lib-orchestrator/projectManager/catalogView', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'jamat-v3-catalog-view-'))
     created.push(configDir)
     const configFile = join(configDir, 'config.json')
+    let writes = 0
     const write = (...next: Record<string, unknown>[]): void => {
       writeFileSync(configFile, JSON.stringify({ schemaVersion: 1, categories: next }), 'utf8')
-      // The store re-reads on mtime, and two writes inside one millisecond would look unchanged.
-      const future = new Date(Date.now() + 5_000)
+      // The store re-reads on mtime, and two writes inside one millisecond would look unchanged; so
+      // would two writes moved to the same future instant, hence a later one for every write.
+      writes += 1
+      const future = new Date(Date.now() + 5_000 * writes)
       utimesSync(configFile, future, future)
     }
     if (categories.length) write(...categories)

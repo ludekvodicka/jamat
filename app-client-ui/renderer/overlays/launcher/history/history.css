@@ -109,3 +109,27 @@
   overflow: auto;
   padding-inline: var(--space-3);
 }
+.jamat-launcher-history__notice {
+  max-height: 90px;
+  overflow: auto;
+  padding-inline: var(--space-3);
+  color: var(--color-text-2);
+}
+.jamat-launcher-history__notice p,
+.jamat-launcher-history__prune span {
+  margin: 0;
+}
+.jamat-launcher-history__prune {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border-hairline);
+}
+.jamat-launcher-history__prune span {
+  flex: 1;
+}
+.jamat-launcher-history__danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}

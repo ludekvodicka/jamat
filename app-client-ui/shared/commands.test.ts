@@ -94,6 +94,7 @@ describe('app-client-ui/shared/commands', () => {
       ['app.toggleDevTools', 'Ctrl+Shift+I'],
       ['tools.usage', null],
       ['tools.remarkable', null],
+      ['tools.memory', null],
       ['app.checkForUpdates', null],
       ['window.new', 'Ctrl+Shift+N'],
       ['window.settings', null],

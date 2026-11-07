@@ -195,7 +195,7 @@ command that starts with the words before it (`sessions --help`).
 | Update a main copy | `sessions update-main <session selector>\|--self [--confirm-live ID,ID]` |
 | Worktree results | `sessions worktree-results [--tag TAG] [--session-id ID] [--unacknowledged]`, `sessions acknowledge-worktree-result --action-id ID` |
 | Propose the commit message | `commit propose --self --message TEXT\|--message-file FILE [--directory DIR]` |
-| Remove an ended session | `sessions remove <session selector> [--working-directory PATH]` |
+| Remove an ended session | `sessions remove <session selector> [--working-directory PATH] [--erase]` |
 | End or repair a worktree session | `sessions discard-worktree\|cleanup-worktree <session selector>`, `sessions retry-setup <session selector> [--acknowledge-setup HASH]`; see Worktree sessions below |
 | Script runs and their logs | `sessions scripts <session selector>\|--self [--run-id ID]`; see Script runs below |
 | Run a command as a child of a session | `sessions scripts run <session selector>\|--self --command TEXT [--cwd DIR] [--title TEXT] [--wait [--timeout-ms N]]` |
@@ -757,6 +757,15 @@ Remove of that row then removes it. One with changes answers `conflict` with `da
 a process holds `conflict` with `'locked'` (it goes with its session once released). A Git worktree
 and its branch stay on disk. `--computer` routes to the named source; an older Jamat answers
 `unavailable` (exit 6).
+
+`sessions remove --erase` is the tree's Prune session, for an agent session that must
+not stay on this computer. After the Remove it deletes the agent's conversation (Claude transcript,
+sub-agents, file history, prompt history lines, temporary folder; Codex `thread/delete` plus its
+prompt and name lines), Jamat's files of the session and the copies of its record in the recovery
+points. `value.erasure` lists `erased`, `leftovers` (still on disk, with the reason) and `notes`
+(memory files the conversation wrote, forks holding a copy). Unlike a plain remove, it stops a running
+session that has no worktree first. A run row or a shell session answers
+`operation-failed`, a paired caller `forbidden`.
 
 `sessions color` and `sessions group` say those same two things about a session that already exists.
 Each NAMES the value rather than toggling it, so sending one twice changes nothing, and each requires

@@ -1,0 +1,176 @@
+/* Wider and taller than the details card it shares a frame with: a list beside a document. */
+.jamat-session-details__card.jamat-agent-memory {
+  width: min(1100px, 94vw);
+  height: 80vh;
+}
+.jamat-agent-memory__path {
+  padding: var(--space-1) var(--space-3);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__legend {
+  font-family: inherit;
+  color: var(--color-text-2);
+}
+.jamat-agent-memory__body {
+  display: grid;
+  grid-template-columns: minmax(180px, 28%) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+.jamat-agent-memory__list {
+  margin: 0;
+  padding: var(--space-1) 0;
+  overflow: auto;
+  list-style: none;
+  border-right: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  width: 100%;
+  padding: 3px var(--space-3);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-2);
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+.jamat-agent-memory__item:hover:not(:disabled) {
+  background: var(--color-surface-control-hover);
+}
+.jamat-agent-memory__item--selected {
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+}
+.jamat-agent-memory__name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-agent-memory__mark {
+  color: var(--color-accent);
+}
+.jamat-agent-memory__view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.jamat-agent-memory__toolbar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__file {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jamat-agent-memory__confirm {
+  color: var(--color-danger);
+}
+.jamat-session-details__button.jamat-agent-memory__danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+.jamat-agent-memory__view > .jamat-session-details__error,
+.jamat-agent-memory__notice {
+  margin: 0;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-secondary);
+}
+.jamat-agent-memory__notice {
+  color: var(--color-text-2);
+}
+.jamat-agent-memory__content {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-3);
+  overflow: auto;
+}
+.jamat-agent-memory__content textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+  resize: none;
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__content pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  white-space: pre-wrap;
+}
+.jamat-agent-memory__empty {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-secondary);
+  color: var(--color-text-4);
+}
+
+/* Opened from Historic sessions too, which is itself an overlay at 1000. */
+.jamat-session-details.jamat-agent-memory-layer {
+  z-index: 1050;
+}
+.jamat-agent-memory__tabs {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  padding: var(--space-1) var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__tab {
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+}
+.jamat-agent-memory__tab--selected {
+  color: var(--color-text-1);
+  border-bottom-color: var(--color-accent);
+}
+.jamat-agent-memory__session {
+  max-width: 50%;
+  margin-left: auto;
+  margin-bottom: var(--space-1);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-1);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-hairline);
+}
+.jamat-agent-memory__browser {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.jamat-agent-memory__group {
+  padding: var(--space-2) var(--space-3) 2px;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--color-text-3);
+}

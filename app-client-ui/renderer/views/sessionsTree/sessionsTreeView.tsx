@@ -120,6 +120,8 @@ export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGr
   reportError(message: string): void
   finalize(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   remove(sessionId: string): Promise<IpcResult<SessionsOpResult>>
+  /** Prune: remove, and erase the conversation and Jamat's files of the session from this computer. */
+  erase(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   /** The hash answers a `setup-not-acknowledged` refusal, and travels no further than one call. */
   retrySetup(sessionId: string, acknowledgeSetup?: string): Promise<IpcResult<SessionsOpResult>>
   /** A refusal over live sessions in the main copy names them; the confirmation overlay asks again with their ids. */
@@ -312,7 +314,8 @@ interface SessionsTreeChrome {
   /** Accepted live Finish calls waiting for their snapshot to reach an ended state. */
   awaitingAsk: ReadonlyMap<string, FinalizeAwaited>
   toggle(nodeId: string): void
-  request(node: SessionTreeNode, action: SessionAction): void
+  /** `chosen`: picked from a menu, which is deliberate already, so a Finish acts without arming first. */
+  request(node: SessionTreeNode, action: SessionAction, chosen?: boolean): void
   launch(intent: LauncherIntent): void
   openTask(target: TerminalTarget, task: TabControlTaskRef, title: string): void
   openActions(node: SessionTreeNode): void
@@ -780,6 +783,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       // Local resume runs through the shell's session command, outside this row action handler.
       else if (action === 'remove')
         run(key, 'Remove', () => ports.remove(sessionId), () => onCloseTerminal(node.target))
+      else if (action === 'erase')
+        run(key, 'Prune', () => ports.erase(sessionId), () => onCloseTerminal(node.target))
       else if (action === 'retrySetup')
         retrySetup(key, sessionId)
       else if (action === 'updateMain')
@@ -912,7 +917,8 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       perform(currentNode, action)
       return
     }
-    if (armedFor(currentNode.live, currentNode.endedAt)) {
+    // A Finish chosen from a menu is deliberate already; Prune and Remove always take the second click.
+    if (armedFor(currentNode.live, currentNode.endedAt) || (chosen && action === 'finalize')) {
       setPending(null)
       perform(currentNode, action)
       return
@@ -1274,7 +1280,8 @@ function TreeMenu(props: {
           ? undefined
           : props.chrome.groupItem(SessionsTreeModel.groupKeyOf(menu.node), menu.node.group,
             !props.chrome.shownWhenRemote.has(SessionsTreeModel.groupKeyOf(menu.node)))}
-        onAction={(action) => props.chrome.request(menu.node, action)}
+        // A Finish picked from the menu acts at once, as the tab menu's Finish does; Prune still arms.
+        onAction={(action) => props.chrome.request(menu.node, action, action === 'finalize')}
         onSwitchAccount={accounts => props.onSwitchAccount(menu.node.sessionId, accounts)}
         onClose={onClose}
       />
@@ -2361,7 +2368,7 @@ class SessionsTreeActions {
    * worktree opens its decision dialog.
    */
   private static readonly confirmedConst: readonly SessionAction[] =
-    ['finalize', 'remove']
+    ['finalize', 'remove', 'erase']
 
   static confirms(node: SessionTreeNode, action: SessionAction): boolean {
     return SessionsTreeActions.confirmedConst.includes(action)
@@ -2390,7 +2397,7 @@ class SessionsTreeActions {
     pending: PendingConfirm | null,
   ): readonly SessionAction[] {
     const targetKey = TerminalTargetCodec.key(node.target)
-    if (pending?.targetKey === targetKey && pending.action === 'remove') return ['remove']
+    if (pending?.targetKey === targetKey && (pending.action === 'remove' || pending.action === 'erase')) return [pending.action]
     // An open Session actions section runs the session's next steps itself; the row only opens it.
     if (node.actionsMark !== undefined && node.target.kind === 'local' && node.opensWorkflow) return []
     return node.actions.filter((action) => {
@@ -2398,7 +2405,7 @@ class SessionsTreeActions {
       else if (action === 'remove')
         return !node.live && !node.actions.includes('finalize')
           && (node.outcome === 'finished' || node.badges.completed)
-      else if (action === 'reopen' || action === 'retrySetup') return false
+      else if (action === 'reopen' || action === 'retrySetup' || action === 'erase') return false
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)
     })
@@ -2412,6 +2419,7 @@ class SessionsTreeActions {
   /** The Remove of an SVN worktree session takes the worktree too when nothing is left in it. */
   static confirmLabelOf(node: SessionTreeNode, action: SessionAction, label: string | null): string {
     if (action === 'remove' && node.badges.worktree?.kind === 'svn') return 'Remove with worktree?'
+    if (action === 'erase') return node.live ? 'Finish and prune?' : node.badges.worktree?.kind === 'svn' ? 'Prune with worktree?' : 'Prune?'
     return `${(label ?? SessionNodeState.actionLabelOf(action)).replace(/…$/, '')}?`
   }
 }

@@ -41,6 +41,8 @@ export type SessionAction =
   | 'close'
   | 'reopen'
   | 'remove'
+  /** Prune: remove, and erase what this computer keeps of the agent's conversation; a running one is stopped first. */
+  | 'erase'
   | 'retrySetup'
   | 'updateMain'
 
@@ -125,8 +127,8 @@ export class SessionNodeState {
     // launch the Host kept refusing ended up with Finish as its only button - and Finish on that
     // shape is the one operation that cannot work, because there is nothing to stop.
     const order: readonly SessionAction[] = running
-      ? ['finalize', 'close', 'remove']
-      : ['updateMain', 'finalize', 'close', 'retrySetup', 'reopen', 'remove']
+      ? ['finalize', 'close', 'remove', 'erase']
+      : ['updateMain', 'finalize', 'close', 'retrySetup', 'reopen', 'remove', 'erase']
     return order.filter((action) => {
       // The person's verdict, not the runtime's: a session they have called finished is one they
       // are done reading, whatever its life says. `admits` has nothing to say about it, because
@@ -144,7 +146,8 @@ export class SessionNodeState {
    */
   private static operationOf(action: SessionAction): SessionOperation {
     if (action === 'reopen') return 'restart'
-    else if (action === 'finalize' || action === 'remove' || action === 'retrySetup' || action === 'updateMain')
+    else if (action === 'finalize' || action === 'remove' || action === 'erase' || action === 'retrySetup'
+      || action === 'updateMain')
       return action
     // Named rather than swallowed by the throw below: this one HAS no library operation, and a
     // caller that reaches here has filtered the tab action through the admits gate by mistake.
@@ -159,6 +162,7 @@ export class SessionNodeState {
     else if (action === 'close') return 'Close'
     else if (action === 'reopen') return 'Rerun'
     else if (action === 'remove') return 'Remove'
+    else if (action === 'erase') return 'Prune session'
     else if (action === 'retrySetup') return 'Retry setup'
     else if (action === 'updateMain') return 'Update main copy'
     else

@@ -4,11 +4,16 @@ import { RemoteControlOutcome } from '../../../lib-orchestrator/remoteControl/re
 import type { RemoteControlRegistry } from '../../../lib-orchestrator/remoteControl/remoteControlRegistry'
 import { RemoteControlZod } from '../../../lib-orchestrator/remoteControl/remoteControlSchemas'
 import type { AppOperationMap } from '../../../lib-orchestrator/clientApi/appOperationMap'
+import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { HistoricSessions } from './history/historicSessions'
 
 /** The launcher's history: every agent conversation this client ran, and the ones of one project. */
 export class HistoricSessionsOperations {
-  static register(registry: Pick<RemoteControlRegistry, 'registrar'>, history: HistoricSessions): void {
+  static register(
+    registry: Pick<RemoteControlRegistry, 'registrar'>,
+    history: HistoricSessions,
+    sessions: Pick<SessionManager, 'eraseConversation'>,
+  ): void {
     const op = registry.registrar<AppOperationMap>()
     const lastUsedSince = RemoteControlZod.integer(0, Number.MAX_SAFE_INTEGER).nullable().optional()
     op('historicSessions.appJamat', {
@@ -24,6 +29,17 @@ export class HistoricSessionsOperations {
       run: async (body) => RemoteControlOutcome.of(
         await history.project(body.categoryId, body.projectName, body.lastUsedSince ?? null),
       ),
+    })
+    op('historicSessions.prune', {
+      kind: 'write',
+      description: 'Erase one conversation from this computer: every Jamat record naming it, its Jamat files and the agent transcript and history.',
+      input: z.strictObject({
+        agentId: z.enum(['claude', 'codex']),
+        nativeSessionId: RemoteControlZod.text(),
+        projectPath: RemoteControlZod.text(4_096),
+        createdAt: RemoteControlZod.integer(0, Number.MAX_SAFE_INTEGER),
+      }),
+      run: async (body) => RemoteControlOutcome.of(await sessions.eraseConversation(body)),
     })
   }
 }

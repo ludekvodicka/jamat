@@ -4,12 +4,14 @@ import { WorktreePublication } from '../../worktrees/worktreePublication'
 import { SvnStepRunner } from '../../worktrees/svnStepRunner'
 import { JsonShape } from '../../shared/jsonShape'
 import { randomUUID } from 'node:crypto'
-import { copyFile, readdir, unlink } from 'node:fs/promises'
+import { copyFile, readdir, readFile, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 
 import { AtomicJsonFile } from '../../shared/atomicJsonFile'
+import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
 import { type JsonDocumentReading, JsonDocumentStore } from '../../shared/jsonDocumentStore'
+import type { ErasureReport } from '../purge/agentHistoryEraser.types'
 import { SvnConflictShapes } from '../../svn/svnConflictShapes'
 import { SessionLimits } from '../sessionLimits'
 import type { SessionParentKind, SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
@@ -409,6 +411,42 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       const next = { ...current, clearedWorkflowIds: [...new Set([...current.clearedWorkflowIds ?? [], ...cleared])] }
       return this.commit(this.head.map((record) => record.sessionId === sessionId ? next : record), true, undefined, { sessionId, keepRunIds })
     }, true)
+  }
+
+  /**
+   * A removal keeps the file it changed as a recovery point, so a removed record is still in up to
+   * `snapshotKeepConst` of them. This drops the records from each point. A point that cannot be read
+   * or written is named and kept, because it holds every other record too.
+   */
+  async scrubRecoveryPoints(sessionIds: readonly string[]): Promise<ErasureReport> {
+    const report: ErasureReport = { erased: [], leftovers: [], notes: [] }
+    const gone = new Set(sessionIds)
+    let names: string[]
+    try { names = await readdir(this.snapshotsDirectory) }
+    catch (error) {
+      if (ErrnoCode.of(error) !== 'ENOENT') report.leftovers.push(`${this.snapshotsDirectory}: ${ErrorText.of(error)}`)
+      return report
+    }
+    for (const name of names.filter((one) => SessionRecordsStore.snapshotPatternConst.test(one))) {
+      const file = join(this.snapshotsDirectory, name)
+      try {
+        const document = JsonShape.record(JSON.parse(await readFile(file, 'utf8')))
+        const records = document?.records
+        if (document === null || !Array.isArray(records)) throw new Error('not a session records document')
+        const kept = records.filter((record) => {
+          const sessionId = JsonShape.record(record)?.sessionId
+          return typeof sessionId !== 'string' || !gone.has(sessionId)
+        })
+        if (kept.length === records.length) continue
+        await AtomicJsonFile.writeAsync(file, { ...document, records: kept }, { compact: true })
+        report.erased.push(`${records.length - kept.length} record(s) in ${file}`)
+      }
+      catch (error) {
+        // Rotated away by a removal meanwhile, which is the same outcome.
+        if (ErrnoCode.of(error) !== 'ENOENT') report.leftovers.push(`${file}: ${ErrorText.of(error)}`)
+      }
+    }
+    return report
   }
 
   /**

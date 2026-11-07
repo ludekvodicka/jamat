@@ -605,3 +605,13 @@ export class FileViewerText {
     return value.charCodeAt(0) === 0xFEFF ? value.slice(1) : value
   }
 }
+
+/**
+ * Markdown text that is not a FileViewer document, such as an agent memory file: no images, and a
+ * link is handed to the caller, which knows what its names mean.
+ */
+export function FileViewerMarkdown(props: { source: string; onLink(reference: string): void }): React.JSX.Element {
+  return <MdExtRenderer source={props.source} resolveImage={noImage} onLink={props.onLink} />
+}
+
+const noImage = (): Promise<string | null> => Promise.resolve(null)

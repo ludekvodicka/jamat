@@ -22,6 +22,7 @@ import type {
   SessionCreateSpec,
   SessionDetailsSaved,
   SessionDetailsUpdate,
+  SessionErasure,
   SessionGroup,
   SessionHistoryOpenSpec,
   SessionHistoryReference,
@@ -108,6 +109,8 @@ export interface RemoteControlSessionsPort {
   reopenSession(sessionId: string): Promise<SessionsOpResult>
   finalizeSession(sessionId: string, options?: { expect?: 'stop'; acknowledgeSetup?: string }): Promise<SessionsOpResult>
   removeSession(sessionId: string): Promise<SessionsOpResult>
+  /** Remove, then erase what this computer keeps of the session's conversation. */
+  eraseSession?(sessionId: string): Promise<SessionsOpResult<SessionErasure>>
   discardWorktree(sessionId: string): Promise<SessionsOpResult>
   /** A press of the Finish dialog on an SVN worktree; Discard only on a Git one. */
   finishWorktreeSession(sessionId: string, press: SessionFinishPress): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>>
@@ -488,7 +491,16 @@ export class RemoteControl {
       const tabOpen = await this.deps.tabs.open(created.value.sessionId, created.value.tabTitle, RemoteControl.tabRequesterOf(context))
       return RemoteControl.success({ sessionId: created.value.sessionId, tabTitle: created.value.tabTitle, tabOpen })
     })
-    bySession('sessions.remove', 'Delete an ended session record from the list, with its SVN worktree when nothing is left in it; changes keep both.', async (session) => {
+    bySession('sessions.remove', 'Delete an ended session record from the list, with its SVN worktree when nothing is left in it; changes keep both. erase: true also deletes the agent conversation and Jamat files of the session on this computer.', async (session, body, context) => {
+      if (body.erase === true) {
+        if (context.callerKind === 'remote-peer') return RemoteControl.error('forbidden', 'Erasing a session is local only')
+        if (this.deps.sessions.eraseSession === undefined) return RemoteControl.error('unavailable', 'Erasing a session is unavailable')
+        const erased = await this.deps.sessions.eraseSession(session.sessionId)
+        if (!erased.ok && (erased.code === 'live-refused' || erased.code === 'dirty' || erased.code === 'locked'))
+          return RemoteControl.error('conflict', erased.detail, { sourceCode: erased.code })
+        if (!erased.ok) return RemoteControl.sessionError(erased)
+        return RemoteControl.success({ sessionId: session.sessionId, erasure: erased.value })
+      }
       const result = await this.deps.sessions.removeSession(session.sessionId)
       /*
        * A live runtime is a conflict with the caller's request, not a failure of it: the caller

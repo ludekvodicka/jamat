@@ -122,7 +122,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
     expect(readOut(submenuOf(template, 'File')))
       .toEqual(['New Session', 'Historic sessions', 'New Remote Session', 'Settings', 'separator', 'Quit'])
     expect(readOut(submenuOf(template, 'Tools')))
-      .toEqual(['Usage', 'Remarkable', 'separator', 'Check for Updates…', 'separator', 'Review todos', 'Perf stalls'])
+      .toEqual(['Usage', 'Remarkable', 'Memory files', 'separator', 'Check for Updates…', 'separator', 'Review todos', 'Perf stalls'])
     expect(readOut(submenuOf(template, 'Window'))).toEqual(['New Window', 'Window Settings'])
     expect(readOut(submenuOf(template, 'Debug')))
       .toEqual(['Debug', 'Reload', 'separator', 'Restart App'])
@@ -221,6 +221,7 @@ describe('app-client-ui/app/shell/appMenu', () => {
       'view.maximizeToggle',
       'tools.usage',
       'tools.remarkable',
+      'tools.memory',
       'window.settings',
       'debug.open',
     ])

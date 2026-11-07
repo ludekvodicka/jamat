@@ -301,6 +301,8 @@ export type SessionOperation =
   | 'compact'
   | 'finalize'
   | 'remove'
+  /** Remove, and erase what this machine keeps of the agent's conversation; local only. */
+  | 'erase'
   | 'discardWorktree'
   | 'retrySetup'
   /** A landed row: update the main copy that lacks the revisions its worktree committed. */
@@ -1308,6 +1310,17 @@ export type SessionsOpErrorCode =
 /** A Host stop or restart: what the old Host could not stop on its way out, each line naming its runtime. */
 export interface HostStopWarnings {
   warnings: string[]
+}
+
+/** What a Remove with erase took off this machine after the record went, and what it could not. */
+export interface SessionErasure {
+  sessionId: string
+  /** Each file, folder or store entry that went. */
+  erased: string[]
+  /** Each one that is still there, with the reason. */
+  leftovers: string[]
+  /** What the person decides: a memory file the conversation wrote, a fork holding a copy of it. */
+  notes: string[]
 }
 
 export type SessionsOpResult<T = void> =
