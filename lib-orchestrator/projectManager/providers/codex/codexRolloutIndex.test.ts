@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, uti
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CodexRolloutCwdMemo } from './codexRolloutCwdMemo'
 import { CodexRolloutIndex } from './codexRolloutIndex'
@@ -523,8 +523,13 @@ describe('lib-orchestrator/projectManager/providers/codex/codexRolloutIndex', ()
         .toEqual([wanted.file])
       expect(reports).toEqual([])
       // The same store through the listing path DOES read it, which is what makes the silence above
-      // a property of this method rather than of the fixture.
-      await index.filesForProject(projectDir)
+      // a property of this method rather than of the fixture. The listing reads ninety days back from
+      // the clock, so the clock is set beside these named days; read from the real one, the earliest
+      // file left the window ninety days after them and this check failed on that date.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(noonConst + 7 * 86_400_000)
+      try { await index.filesForProject(projectDir) }
+      finally { vi.useRealTimers() }
       expect(reports).toHaveLength(2)
     })
 
