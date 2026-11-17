@@ -221,7 +221,7 @@ class RemoteSessionWorkspace implements SessionWorkspacePorts {
     this.sidebar = new RemoteSidebarPorts(target.remoteEndpointId, target.sessionId, () => this.open(), window.appClient.remote)
     this.taskPorts = this.createTaskPorts()
     this.remote = remote
-    this.epoch = this.endpoint()?.connectionId ?? null
+    this.epoch = this.connectedEpoch()
     this.content = new RemoteFileViewerPorts(target, () => this.open(), window.appClient.remote, (url) => window.appClient.fileViewer.openExternal(url))
     this.changesContent = new RemoteFileChangesPorts(target, () => this.open(), window.appClient.remote, (document) => this.content.adoptDocument(document))
     this.changesPorts = this.changesContent.changes
@@ -236,6 +236,16 @@ class RemoteSessionWorkspace implements SessionWorkspacePorts {
     return this.remote.current().snapshot?.outbound.find((entry) => entry.remoteEndpointId === this.target.remoteEndpointId)
   }
 
+  /**
+   * The gateway names a new connection before it is `connected` and refuses views until then. An
+   * epoch taken from that id reloaded the panes into "offline" once, and the later `connected`
+   * moved nothing, so they stayed there.
+   */
+  private connectedEpoch(): string | null {
+    const endpoint = this.endpoint()
+    return endpoint?.status === 'connected' ? endpoint.connectionId : null
+  }
+
   status(): string | null {
     const endpoint = this.endpoint()
     if (!endpoint || endpoint.status !== 'connected') return 'Remote session is offline. Session actions return when it reconnects.'
@@ -245,9 +255,9 @@ class RemoteSessionWorkspace implements SessionWorkspacePorts {
   }
 
   start(): () => void {
-    this.epoch = this.endpoint()?.connectionId ?? null
+    this.epoch = this.connectedEpoch()
     const stop = this.remote.subscribe(() => {
-      const epoch = this.endpoint()?.connectionId ?? null
+      const epoch = this.connectedEpoch()
       if (epoch === this.epoch) return
       this.reset()
       this.epoch = epoch
@@ -369,7 +379,7 @@ class RemoteSessionWorkspace implements SessionWorkspacePorts {
   }
 
   private open(): Promise<RemoteSessionView> {
-    const epoch = this.endpoint()?.connectionId ?? null
+    const epoch = this.connectedEpoch()
     if (epoch !== this.epoch) { this.reset(); this.epoch = epoch }
     if (!this.view) {
       const generation = this.generation

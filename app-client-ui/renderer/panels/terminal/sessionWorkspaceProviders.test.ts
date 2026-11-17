@@ -14,13 +14,14 @@ function fixture() {
   let serial = 1
   let session = info('First')
   let legacy = false
+  let status = 'connected'
   const readView = vi.fn(async () => ({ ok: true, value: { ok: true, value: { revision: 1, session: structuredClone(session) } } }))
   const pressAction = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
   const closeView = vi.fn(async () => ({ ok: true, value: { ok: true, value: null } }))
   const openView = vi.fn(async () => ({ ok: true, value: { ok: true, value: { viewId: epoch, epoch, viewerId: epoch, sessionId: 'session' } } }))
   vi.stubGlobal('appClient', { remote: { readView, pressAction, closeView, openView } })
   const remote = new SnapshotStore<RemoteConnectionsSnapshot>('fixture', {
-    read: async () => ({ ok: true, value: { revision: serial, inbound: [], outbound: [{ remoteEndpointId: 'peer', status: 'connected', connectionId: epoch,
+    read: async () => ({ ok: true, value: { revision: serial, inbound: [], outbound: [{ remoteEndpointId: 'peer', status, connectionId: epoch,
       workspaceCapabilities: legacy ? [] : ['session-workspace.read', 'session-workspace.views', 'session-workspace.actions', 'session-workspace.files', 'session-workspace.tasks'],
       sessions: { revision: 1, sessions: [{ sessionId: 'session' }] } as SessionsSnapshot,
     }] } as unknown as RemoteConnectionsSnapshot }), subscribe: () => () => {}, reportError: vi.fn(),
@@ -28,6 +29,8 @@ function fixture() {
   return { remote, readView, pressAction, closeView, openView,
     change: () => { epoch = 'two'; serial++; session = info('Second'); remote.refresh() },
     legacy: () => { legacy = true; serial++; remote.refresh() },
+    /** The order the gateway reports a redial in: the new connection id first, `connected` after it. */
+    redial: (next: 'connecting' | 'connected') => { epoch = 'two'; status = next; serial++; remote.refresh() },
   }
 }
 
@@ -69,6 +72,23 @@ describe('remote workspace composition', () => {
     expect(f.openView).toHaveBeenCalledTimes(2)
     stop(); stopWorkspace(); stopRemote()
     await waitFor(() => expect(f.closeView).toHaveBeenCalledWith('peer', 'two'))
+  })
+  // A file pane remounts on contentRevision; one reloaded while the new connection was not yet
+  // `connected` read "Remote session is offline" and stayed there after the connection came up.
+  it('reloads the workspace content when a redialed connection becomes connected, not when it is named', async () => {
+    const f = fixture()
+    const stopRemote = f.remote.start()
+    await waitFor(() => expect(f.remote.current().snapshot).not.toBeNull())
+    const workspace = SessionWorkspaceProviders.forTarget(target, f.remote)
+    const stopWorkspace = workspace.start()
+    const before = workspace.contentRevision()
+    f.redial('connecting')
+    await waitFor(() => expect(f.remote.current().snapshot!.outbound[0].status).toBe('connecting'))
+    const offline = workspace.contentRevision()
+    expect(offline).toBe(before + 1)
+    f.redial('connected')
+    await waitFor(() => expect(workspace.contentRevision()).toBe(offline + 1))
+    stopWorkspace(); stopRemote()
   })
   it('refuses unsupported workspace features without calling a local owner or opening a view', async () => {
     const f = fixture()
