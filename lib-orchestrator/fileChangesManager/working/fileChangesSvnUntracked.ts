@@ -12,6 +12,7 @@ import { JsonShape } from '../../shared/jsonShape'
 import { PathCompare } from '../../shared/pathCompare'
 import { SvnInvoker } from '../../svn/svnInvoker'
 import { FileChangesLimits } from '../fileChangesLimits'
+import { FileChangesReach } from '../fileChangesReach'
 import type { FileChangesVcsEntry } from '../vcs/fileChangesVcs.types'
 
 export interface FileChangesSvnUntrackedDeps {
@@ -37,19 +38,27 @@ export class FileChangesSvnUntracked {
     }
   }
 
+  /**
+   * `includedPaths` names the targets of a review that selected them; empty means the whole scope.
+   * Such a review shows only the rows its targets reach (`VersioningCommitManager.allows`), so only
+   * those are walked: an unignored `node_modules` beside 33 selected files refused the review at
+   * `listingEntriesMax` although none of its files could appear in it.
+   */
   async expand(entries: readonly FileChangesVcsEntry[], includedPaths: readonly string[] = []): Promise<readonly FileChangesVcsEntry[]> {
+    const reaches = FileChangesReach.of(includedPaths)
     const expanded = new Map(entries.map((entry) => [PathCompare.normalized(entry.absolutePath), entry]))
     FileChangesSvnUntracked.checkLimit(expanded.size)
     for (const directory of entries) {
-      if (directory.status !== 'untracked' || directory.nodeKind !== 'directory') continue
+      if (directory.status !== 'untracked' || directory.nodeKind !== 'directory' || !reaches(directory.absolutePath)) continue
       if (!(await lstat(directory.absolutePath)).isDirectory())
         throw new Error(`${directory.absolutePath} is no longer a regular directory; reload the list`)
-      const paths = await this.gitPaths(directory.absolutePath)
+      const paths = await this.gitPaths(directory.absolutePath, reaches)
       const included = includedPaths.filter((path) => PathCompare.isInside(directory.absolutePath, path))
       // A literal SVN selection must survive Git-only ignores (Jamat#76), without widening the
       // ordinary Git listing to ignored siblings or bypassing SVN's own ignore rules.
-      const children = paths === null ? await this.diskPaths(directory.absolutePath)
-        : [...paths, ...(included.length === 0 ? [] : await this.diskPaths(directory.absolutePath, included))]
+      const children = paths === null ? await this.diskPaths(directory.absolutePath, reaches)
+        : [...paths, ...(included.length === 0 ? [] : await this.diskPaths(directory.absolutePath,
+          (path) => included.some((selected) => PathCompare.isInside(path, selected))))]
       for (const path of children) {
         if (!PathCompare.isInside(directory.absolutePath, path)) throw new Error('An untracked path is outside its directory')
         const key = PathCompare.normalized(path)
@@ -67,7 +76,7 @@ export class FileChangesSvnUntracked {
     return [...expanded.values()]
   }
 
-  private async gitPaths(directory: string): Promise<readonly string[] | null> {
+  private async gitPaths(directory: string, reaches: (path: string) => boolean): Promise<readonly string[] | null> {
     const own = await this.deps.git.run(directory, ['rev-parse', '--show-toplevel'])
     let args: readonly string[]
     if (own.code === 0 && own.failure === null) args = []
@@ -90,6 +99,7 @@ export class FileChangesSvnUntracked {
     for (const name of listed.stdout.split('\0').filter(Boolean)) {
       let path = resolve(directory, name)
       if (!PathCompare.isInside(directory, path)) throw new Error('Git returned a path outside the new directory')
+      if (!reaches(path)) continue
       const node = await lstat(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null
         throw error
@@ -104,7 +114,8 @@ export class FileChangesSvnUntracked {
     return [...paths].sort((left, right) => left.length - right.length)
   }
 
-  private async diskPaths(directory: string, includedPaths?: readonly string[]): Promise<readonly string[]> {
+  /** `keeps` also prunes: nothing below a path it refuses is walked. */
+  private async diskPaths(directory: string, keeps: (path: string) => boolean): Promise<readonly string[]> {
     const config = await readFile(this.deps.configFile, 'utf8').catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return ''
       throw error
@@ -127,7 +138,7 @@ export class FileChangesSvnUntracked {
     for (let index = 0; index < pending.length; index++)
       for await (const name of glob(['*', '.*'], { cwd: pending[index], exclude: ['.svn', ...ignores] })) {
         const path = join(pending[index], name)
-        if (includedPaths !== undefined && !includedPaths.some((included) => PathCompare.isInside(path, included))) continue
+        if (!keeps(path)) continue
         const node = await lstat(path)
         paths.push(path)
         FileChangesSvnUntracked.checkLimit(paths.length)

@@ -243,7 +243,7 @@ export class FileChangesListing {
     else return 'modified'
   }
 
-  private static displayPath(cwd: string, absolutePath: string): string {
+  static displayPath(cwd: string, absolutePath: string): string {
     return PathCompare.isInside(cwd, absolutePath)
       ? relative(cwd, absolutePath).replace(/\\/g, '/') || '.'
       : absolutePath.replace(/\\/g, '/')

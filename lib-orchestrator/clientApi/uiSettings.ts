@@ -51,6 +51,10 @@ export interface UiSettingsValue {
   sessionsNestWorktrees?: boolean
   /** Ticket pass children under the session that started them. */
   sessionsNestTickets?: boolean
+  /** A Windows notice when an agent turn settles while no Jamat window has the focus. Absent reads as true. */
+  sessionCompletedNotice?: boolean
+  /** That notice plays the system sound. Absent reads as false: silent. */
+  sessionCompletedNoticeSound?: boolean
 }
 
 /** The three nesting toggles, the keys a read, a save and the Settings tab all name. */
@@ -120,6 +124,8 @@ export class UiSettings {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     }
   }
 
@@ -161,11 +167,19 @@ export class UiSettings {
     if (document.activateSessionOnDocument !== undefined && typeof document.activateSessionOnDocument !== 'boolean')
       report('The document activation setting is unusable; reading it as disabled')
     const nesting = UiSettings.coerceNesting(document, report)
+    const sessionCompletedNotice = document.sessionCompletedNotice !== false
+    if (document.sessionCompletedNotice !== undefined && typeof document.sessionCompletedNotice !== 'boolean')
+      report('The session completed notice setting is unusable; reading it as enabled')
+    const sessionCompletedNoticeSound = document.sessionCompletedNoticeSound === true
+    if (document.sessionCompletedNoticeSound !== undefined && typeof document.sessionCompletedNoticeSound !== 'boolean')
+      report('The session completed notice sound setting is unusable; reading it as silent')
     // Unknown fields must survive a save, while a deliberately retired field must not return.
     return {
       ...document,
       activateSessionOnDocument,
       ...nesting,
+      sessionCompletedNotice,
+      sessionCompletedNoticeSound,
       fontScalePercent:
         UiSettings.coercePercent(document.fontScalePercent, 'fontScalePercent', font, report),
       fileViewerFontScalePercent: UiSettings.coercePercent(
@@ -227,6 +241,8 @@ export class UiSettings {
       && UiSettings.isValidPercent(document.terminalScrollSpeedPercent, scroll)
       && (document.activateSessionOnDocument === undefined || typeof document.activateSessionOnDocument === 'boolean')
       && UiSettings.nestingKeysConst.every((key) => document[key] === undefined || typeof document[key] === 'boolean')
+      && (document.sessionCompletedNotice === undefined || typeof document.sessionCompletedNotice === 'boolean')
+      && (document.sessionCompletedNoticeSound === undefined || typeof document.sessionCompletedNoticeSound === 'boolean')
   }
 
   /** Into the range first, then onto the step: both ends are multiples of it, so that order holds. */

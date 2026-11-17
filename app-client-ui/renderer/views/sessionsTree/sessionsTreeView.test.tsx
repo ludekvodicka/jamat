@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   SessionActivity,
   SessionInfo,
+  SessionMainFinishOutcome,
   SessionsOpResult,
   SessionsSnapshot,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
@@ -393,6 +394,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     finalize(sessionId: string): Promise<IpcResult<SessionsOpResult>> {
       return this.record(`finalize:${sessionId}`)
+    }
+
+    /** What the library answers a Finish of a running session; `stopped` unless a test says otherwise. */
+    mainOutcome: SessionMainFinishOutcome = 'stopped'
+
+    async finishMain(sessionId: string): Promise<IpcResult<SessionsOpResult<{ sessionId: string; outcome: SessionMainFinishOutcome }>>> {
+      const answer = await this.record(`finishMain:${sessionId}`)
+      if (!answer.ok || !answer.value.ok) return answer as IpcResult<SessionsOpResult<{ sessionId: string; outcome: SessionMainFinishOutcome }>>
+      return { ok: true, value: { ok: true, value: { sessionId, outcome: this.mainOutcome } } }
     }
 
     remove(sessionId: string): Promise<IpcResult<SessionsOpResult>> {
@@ -1665,7 +1675,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
     fireEvent.click(actionNamed(container, 's-working', 'Finish?'))
 
-    expect(ports.calls).toEqual(['finalize:s-working'])
+    expect(ports.calls).toEqual(['finishMain:s-working'])
+  })
+
+  it('keeps a running session with changes of its own and opens its Session actions', async () => {
+    const opened = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: {} } } as never)
+    const snapshot = SessionsFixtures.mixed()
+    delete sessionOf(snapshot, 's-working').worktree
+    const { ports, container, onCloseTerminal } = await mount(snapshot)
+    ports.mainOutcome = 'choose'
+
+    fireEvent.click(actionNamed(container, 's-working', 'Finish'))
+    fireEvent.click(actionNamed(container, 's-working', 'Finish?'))
+
+    await waitFor(() => expect(opened).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-working' }))
+    expect(ports.calls).toEqual(['finishMain:s-working'])
+    expect(onCloseTerminal).not.toHaveBeenCalled()
   })
 
   it('offers Remove inline for a finished session without a completed mark or open tab', async () => {
@@ -2198,7 +2223,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       const snapshot = SessionsFixtures.mixed()
       const { ports, container, onCloseTerminal, onFinalizeAsk, unmount } = await mount(snapshot)
       confirmFinish(container, 's-shell')
-      await waitFor(() => expect(ports.calls).toEqual(['finalize:s-shell']))
+      await waitFor(() => expect(ports.calls).toEqual(['finishMain:s-shell']))
       await waitFor(() => expect(onCloseTerminal).toHaveBeenCalledWith({
         kind: 'local', sessionId: 's-shell',
       }))

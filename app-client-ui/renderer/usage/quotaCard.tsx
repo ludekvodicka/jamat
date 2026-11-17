@@ -20,9 +20,10 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
   const [burnHours, setBurnHours] = useState<BurnHours>(3)
   const [preset, setPreset] = useState<PoolRangePreset>('forecast')
   const [custom, setCustom] = useState(() => ({ from: UsageModel.localInput(Date.now() - 86_400_000), to: UsageModel.localInput(Date.now() + 7 * 86_400_000) }))
+  const cycleStart = UsageModel.cycleStart(accounts, now)
   const range = useMemo(() => preset === 'custom'
     ? { from: new Date(custom.from).getTime(), to: new Date(custom.to).getTime() }
-    : UsageModel.poolRange(preset, Date.now()), [preset, custom])
+    : UsageModel.poolRange(preset, Date.now(), cycleStart), [preset, custom, cycleStart])
   const [series, setSeries] = useState<PoolSeries | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {

@@ -329,4 +329,10 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
       launchMode: 'branch' as SessionAgentSpec['mode'],
     })).toThrow(/Unknown launch mode/)
   })
+
+  it('writes a configured command in the syntax of each agent', () => {
+    expect(AgentPresets.commandLine('/commit-svn', 'claude')).toEqual({ text: '/commit-svn', input: 'typed' })
+    expect(AgentPresets.commandLine('/commit-svn', 'codex')).toEqual({ text: '$commit-svn', input: 'paste' })
+    expect(AgentPresets.commandLine("Commit this session's changes to SVN.", 'codex')).toEqual({ text: "Commit this session's changes to SVN.", input: 'typed' })
+  })
 })

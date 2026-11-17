@@ -279,7 +279,8 @@ export class MainHub {
         ?? this.workspaceWindows.main().windowHandle()
     })
     this.shell = new ElectronShellPort({ dialogs: this.dialogIpc, parent: () => this.workspaceWindows.main().windowHandle(),
-      tabs: this.tabWindowRouter, groups: this.store, restart: () => this.appRestart.restart(), quit: () => app.quit() })
+      tabs: this.tabWindowRouter, groups: this.store, noticeIcon: () => WindowIcon.of(null),
+      noticeLogoFile: () => WindowIcon.defaultLogoFile(app.getPath('userData')), restart: () => this.appRestart.restart(), quit: () => app.quit() })
     this.orchestratorClient = new OrchestratorApiClient({ send: message => this.children.send('orchestrator', message),
       shell: this.shell, shellSnapshot: () => this.shellSnapshot(), event: event => this.orchestratorEvent(event),
       publish: (channel, args) => this.serviceTransport.publish(channel, 'all', ...args as never), report: message => this.report(message) })

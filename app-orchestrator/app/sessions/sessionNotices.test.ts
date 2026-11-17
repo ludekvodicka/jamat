@@ -20,6 +20,17 @@ describe('SessionNotices', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1)
     expect(open).not.toHaveBeenCalled()
     expect(notices).toHaveLength(1)
+    expect(notices[0]!.silent).toBe(false)
+    expect(notices[0]!.attribution).toBeNull()
+  })
+
+  it('passes a silent notice through to the shell', () => {
+    const notices: ShellNotice[] = []
+    const owner = new SessionNotices({ notify: notice => { notices.push(notice) },
+      onNotice: () => () => {}, openPath: async () => {} }, () => null, vi.fn(), () => {})
+    owner.show({ sessionId: 's1', title: 'Work · 001', body: 'Session completed', attribution: 'Applications' }, async () => {}, true)
+    expect(notices.map(notice => [notice.silent, notice.attribution])).toEqual([[true, 'Applications']])
+    owner.dispose()
   })
 
   it('consumes a notice action once and reads the latest session title on click', async () => {

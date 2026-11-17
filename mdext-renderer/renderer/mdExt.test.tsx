@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileViewerLimits } from '../../lib-orchestrator/fileViewer/fileViewerLimits'
 import { MarkdownTaskLines } from '../../lib-orchestrator/fileViewer/markdownTaskLines'
 import { MdExtBudget } from './mdExtBudget'
+import { MdExtDirectives } from './mdExtDirectives'
 import { MdExtNames } from './mdExtNames'
 import { MdExtRenderer } from './mdExtRenderer'
 import { MdExtSecurity } from './mdExtSecurity'
@@ -101,8 +102,8 @@ describe('mdext-renderer/renderer', () => {
   })
 
   /*
-   * The per-call ceilings bound ONE fence: 64 KiB of source to highlight, 50 000 characters of
-   * diagram spec. Nothing bounded how many. A generated API report with 500 fences is 500
+   * The per-call ceilings bound ONE fence: 64 KiB of source to highlight, 100 000 characters of
+   * diagram spec (256 000 for raw SVG). Nothing bounded how many. A generated API report with 500 fences is 500
    * synchronous Shiki calls chained through the microtask queue with no yield, on the thread that
    * draws the terminal and the sessions tree as well.
    */
@@ -211,6 +212,29 @@ describe('mdext-renderer/renderer', () => {
       expect(view.container.querySelector(`.${className}`), className).not.toBeNull()
   })
 
+  it('draws an underscore in a status key as a space, keeping diacritics', () => {
+    const view = render(
+      <MdExtRenderer source={'::status{PDF_po_stránkách=ok anti-bot=žádný}'}
+        resolveImage={() => Promise.resolve(null)} onLink={vi.fn()} />,
+    )
+    expect([...view.container.querySelectorAll('.mdext-status .mdext-chip')].map((chip) => chip.textContent))
+      .toEqual(['PDF po stránkách: ok', 'anti-bot: žádný'])
+  })
+
+  it('reads a quoted status key, which the directive syntax itself refuses', () => {
+    const view = render(
+      <MdExtRenderer source={'::status{fáze=1 "PDF po stránkách"=ok \'blokátor\'="Agent Toolkit"}'}
+        resolveImage={() => Promise.resolve(null)} onLink={vi.fn()} />,
+    )
+    expect([...view.container.querySelectorAll('.mdext-status .mdext-chip')].map((chip) => chip.textContent))
+      .toEqual(['fáze: 1', 'PDF po stránkách: ok', 'blokátor: Agent Toolkit'])
+  })
+
+  it('leaves a status line inside a code fence as written', () => {
+    const body = ['```', '::status{"a b"=ok}', '```', '::status{"c d"=ok}'].join('\n')
+    expect(MdExtDirectives.source(body)).toBe(['```', '::status{"a b"=ok}', '```', '::status{c_d=ok}'].join('\n'))
+  })
+
   it('renders every supported mdext directive and GFM extension', () => {
     const source = [
       ':::note[Note title]\nNote body\n:::',
@@ -239,6 +263,22 @@ describe('mdext-renderer/renderer', () => {
     expect(view.container.querySelector('.mdext-chip-bad')?.textContent).toBe('release: blocked')
     expect(view.container.querySelector('table')?.textContent).toContain('one')
     expect(view.container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2)
+  })
+
+  it('keeps a colon before a letter or digit as written in a table, prose and a callout title', () => {
+    const source = [
+      '| Start | End | Format | Command |\n|---|---|---|---|\n| 07:09 | 22:29 | h:mm | /pp:work |',
+      'Run /pp:work at 9:59, formatted h:mm, then :a[label]{x=1}.',
+      ':::note[Meeting at 07:09]\nBody\n:::',
+    ].join('\n\n')
+    const view = render(
+      <MdExtRenderer source={source} resolveImage={() => Promise.resolve(null)} onLink={vi.fn()} />,
+    )
+    expect([...view.container.querySelectorAll('td')].map((cell) => cell.textContent))
+      .toEqual(['07:09', '22:29', 'h:mm', '/pp:work'])
+    expect(view.container.querySelector('p')?.textContent)
+      .toBe('Run /pp:work at 9:59, formatted h:mm, then :a[label]{x=1}.')
+    expect(view.container.querySelector('.mdext-callout-title')?.textContent).toBe('Meeting at 07:09')
   })
 
   it('renders all five archify diagram types to SVG', () => {

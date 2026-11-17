@@ -77,6 +77,15 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnCopied', () 
     expect(entries.find((entry) => entry.repositoryPath === 'react/nested/deep.ts')).toMatchObject({ status: 'copied', nodeKind: 'file' })
   })
 
+  it('does not walk a copy that no named target reaches', async () => {
+    const f = await fixture([{ path: 'nested/deep.ts', item: 'normal' }])
+    const named = join(f.root, 'elsewhere.ts')
+    expect(await f.reader.expand([f.entry], [named])).toEqual([f.entry])
+    expect(f.run).not.toHaveBeenCalled()
+    expect((await f.reader.expand([f.entry], [join(f.directory, 'nested', 'deep.ts')])).map((entry) => entry.repositoryPath))
+      .toEqual(['react', 'react/nested/deep.ts'])
+  })
+
   /** A project moved into `xObsolete/` carries thousands of files; listing them refused the review. */
   it('keeps a copy carrying more than the listing limit as one row with its count', async () => {
     const children = Array.from({ length: FileChangesLimits.copiedListingEntriesMax + 1 }, (_, index) => ({ path: `f${index}.ts`, item: 'normal' }))

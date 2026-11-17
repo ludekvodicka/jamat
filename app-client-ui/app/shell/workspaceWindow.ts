@@ -80,10 +80,12 @@ export class WorkspaceWindow extends ShellWindowBase {
     this.loadOutcome = WorkspaceWindow.loadOutcomeOf(window)
     window.on('close', (event) => this.workspaceDeps.onCloseRequested(event))
     window.on('app-command', (event, command) => {
-      if (command !== 'browser-backward')
+      const commandId = command === 'browser-backward' ? 'view.fileBack'
+        : command === 'browser-forward' ? 'view.fileForward' : null
+      if (commandId === null)
         return
       event.preventDefault()
-      this.publish('menu:command', 'view.fileBack')
+      this.publish('menu:command', commandId)
     })
     this.workspaceDeps.onWindowCreated(window)
   }

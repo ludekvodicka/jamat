@@ -91,6 +91,7 @@ export class RemoteControlConst {
     'sessions.resolveConflicts',
     'sessions.solveWithAgent',
     'sessions.backToWork',
+    'sessions.finishMain',
   ] as const
   static readonly operations = RemoteControlConst.descriptorOperations
   static readonly mutatingOperations = [
@@ -140,6 +141,7 @@ export class RemoteControlConst {
     'sessions.resolveConflicts',
     'sessions.solveWithAgent',
     'sessions.backToWork',
+    'sessions.finishMain',
   ] as const
   static readonly socketOperations = [
     'events.subscribe',

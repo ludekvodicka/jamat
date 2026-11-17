@@ -6,7 +6,7 @@ import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 export interface SessionEventsPorts {
   refreshCommits(): void
   wakeSnapins(): void
-  noticeWaits(): void
+  notices(): void
   attentionSeen(): void
   publishSessions(): void
   publishControl(): void
@@ -26,7 +26,7 @@ export class SessionEvents {
     catch (error) { this.ports.report(`Commit review marks could not be refreshed: ${ErrorText.of(error)}`) }
     try { this.ports.wakeSnapins() }
     catch (error) { this.ports.report(`Snap-ins wake failed: ${ErrorText.of(error)}`) }
-    this.ports.noticeWaits()
+    this.ports.notices()
     this.ports.attentionSeen()
     this.ports.publishSessions()
     this.ports.publishControl()

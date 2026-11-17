@@ -93,7 +93,8 @@ export class TabControlBroker implements RemoteControlTabsPort {
     const draftId = prepared.ok ? prepared.value.draftId : null
     try {
       if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
-      // A person's own open is in front at once; an agent's opens behind and waits in the attention queue.
+      // A person's own open is in front at once. An agent's is in front of its session's split at once,
+      // which moves no focus, and waits in the attention queue for the tab and the caret.
       const activate = options.showRefusal === true
       const queued = !activate && (this.deps?.activateSessionOnCommit?.() ?? true)
       const existing = this.tabs.panelsOfSession(sessionId)[0]
@@ -109,7 +110,8 @@ export class TabControlBroker implements RemoteControlTabsPort {
         messageApplied: prepared.ok && prepared.messageApplied,
       }
       const sharedOpen = draftId === null ? undefined : await this.recordOpen(sessionId, draftId, command.title, { kind: 'review', reviewId: draftId, vcs, scopeRoot: command.scopeRoot }, options.intentId)
-      const result = await this.tabs.request(opened.value.windowId, { ...command, requestId: this.requestId(), activate, ...(sharedOpen ? { sharedOpen } : {}) })
+      const result = await this.tabs.request(opened.value.windowId, { ...command, requestId: this.requestId(), activate,
+        ...(queued ? { splitFront: true as const } : {}), ...(sharedOpen ? { sharedOpen } : {}) })
       if (result.ok && draftId !== null) {
         this.commits.attach(draftId, result.value.windowId)
         if (queued) this.attention.add(this.reviewEntry(draftId, sessionId, tabTitle, { ...command, panelId: result.value.panelId }))
@@ -130,9 +132,11 @@ export class TabControlBroker implements RemoteControlTabsPort {
       const command: CommitReviewCommand = { kind: 'open-commit', panelId: owner.panel.panelId,
         target, reviewId: draft.draftId, openId, itemKey, vcs: draft.vcs, scopeRoot: draft.scopeRoot, paths: draft.paths,
         title: `Commit ${draft.vcs.toUpperCase()}`, messageApplied: false }
-      const answer = await this.tabs.request(owner.windowId, { ...command, requestId: this.requestId(), activate: false })
+      const queued = this.deps?.activateSessionOnCommit?.() ?? true
+      const answer = await this.tabs.request(owner.windowId, { ...command, requestId: this.requestId(), activate: false,
+        ...(queued ? { splitFront: true as const } : {}) })
       if (!answer.ok) { this.projectedReviews.delete(id); return }
-      if (this.deps?.activateSessionOnCommit?.() ?? true) this.attention.add(this.reviewEntry(id, target.sessionId, owner.panel.title, command))
+      if (queued) this.attention.add(this.reviewEntry(id, target.sessionId, owner.panel.title, command))
       this.commitsChanged()
     })
   }

@@ -1,5 +1,6 @@
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { AttentionQueue } from './attentionQueue'
+import type { CompletedAttention } from '../sessions/completedAttention'
 import type { FinishAttention, FinishAttentionNotice } from '../sessions/finishAttention'
 import type { SessionMarksAttention } from './sessionMarksAttention'
 import type { TabControlBroker } from '../tabs/tabControlBroker'
@@ -8,16 +9,18 @@ import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 export class SessionAttention {
   private readonly snapshot: SessionManager['snapshot']
   private readonly finish: Pick<FinishAttention, 'seen' | 'waits'>
+  private readonly completed: Pick<CompletedAttention, 'seen'>
   private readonly marks: Pick<SessionMarksAttention, 'seen'>
   private readonly queue: Pick<AttentionQueue, 'add'>
   private readonly openWorkflow: TabControlBroker['openWorkflow']
   private readonly report: (message: string) => void
 
-  constructor(snapshot: SessionManager['snapshot'], finish: Pick<FinishAttention, 'seen' | 'waits'>,
+  constructor(snapshot: SessionManager['snapshot'], finish: Pick<FinishAttention, 'seen' | 'waits'>, completed: Pick<CompletedAttention, 'seen'>,
     marks: Pick<SessionMarksAttention, 'seen'>, queue: Pick<AttentionQueue, 'add'>,
     openWorkflow: TabControlBroker['openWorkflow'], report: (message: string) => void) {
     this.snapshot = snapshot
     this.finish = finish
+    this.completed = completed
     this.marks = marks
     this.queue = queue
     this.openWorkflow = openWorkflow
@@ -29,9 +32,11 @@ export class SessionAttention {
     catch (error) { this.report(`The attention queue could not read the sessions: ${ErrorText.of(error)}`) }
   }
 
-  noticeWaits(): void {
+  notices(): void {
     try { this.finish.seen(this.snapshot()) }
     catch (error) { this.report(`A waiting Finish could not be told: ${ErrorText.of(error)}`) }
+    try { this.completed.seen(this.snapshot()) }
+    catch (error) { this.report(`A completed session could not be told: ${ErrorText.of(error)}`) }
   }
 
   queueFinishWait(notice: FinishAttentionNotice): void {

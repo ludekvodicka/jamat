@@ -29,6 +29,8 @@ export function StepBody(props: {
       <button type="button" className="workflow__action workflow__action--primary" disabled={props.busy} onClick={props.onReview}>Review changes</button>
     </div>
     case 'commands': return <ul aria-label="Setup commands">{body.commands.map((command, index) => <li key={index}><code>{command}</code></li>)}</ul>
+    case 'files': return <><ul aria-label="Changed files">{body.paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
+      {body.more > 0 && <p>{body.more} more {body.more === 1 ? 'file' : 'files'}</p>}</>
     case 'log': return props.ports.tasks === undefined ? <p role="status">Task output is unavailable for this session workspace.</p> : <StepLog ports={props.ports.tasks} key={body.runId} sessionId={props.sessionId} runId={body.runId} title={props.title} visible={props.visible} onClose={props.onClose} />
     case 'conflicts': return body.conflicts === undefined || body.summary === undefined ? null
       : body.readOnly === true ? <><p>{body.summary}</p><ul>{body.conflicts.entries.map((entry) =>

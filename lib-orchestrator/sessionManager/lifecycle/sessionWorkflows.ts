@@ -3,6 +3,7 @@ import type { SessionRecord, SessionRecordActionHistory } from '../records/sessi
 import { SessionActionHistory } from '../records/sessionActionHistory'
 import type { SessionLiveState, SessionScriptRunInfo, SessionWorkflowAction, SessionWorkflowInfo, SessionWorkflowStepState } from '../sessionManagerApi.types'
 import { GitFinishWorkflow } from '../../worktrees/worktreeViews'
+import { MainFinishWorkflow } from './mainFinishWorkflow'
 import { SetupWorkflow } from './setupWorkflow'
 import { SvnActionWorkflow, WorktreeWords } from '../../worktrees/worktreeViews'
 
@@ -67,6 +68,8 @@ export class SessionWorkflows {
       && !sections.some((section) => section.workflowId === current.workflowId)) sections.push(current)
     for (const run of requested)
       if (run.phase === 'inner') sections.push(SessionWorkflows.requestedOf(run))
+    const main = MainFinishWorkflow.of(record)
+    if (main !== null) sections.push(main)
     const choice = SessionWorkflows.choiceOf(record)
     return [...sections.filter((section) => section.open || !record.clearedWorkflowIds?.includes(section.workflowId))
       .sort((left, right) => (left.startedAt ?? 0) - (right.startedAt ?? 0)), ...choice === null ? [] : [choice]]

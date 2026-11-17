@@ -89,6 +89,22 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsGit', () => {
     expect(runner.calls.find((call) => call.args[0] === 'status')?.args.at(-1)).toBe(':(literal)nested/[selected].ts')
   })
 
+  it('keeps only the entries a named target reaches', async () => {
+    const { root, cwd } = repository()
+    const runner = new Runner((args) => args[0] === 'rev-parse'
+      ? ok(`${root}\n`)
+      : ok('M  nested/changed.ts\0?? nested/src/new.ts\0?? nested/other.ts\0'))
+    const vcs = new FileChangesVcsGit(runner)
+
+    const result = await vcs.status((await vcs.detect(cwd))!, undefined, [join(cwd, 'src'), join(cwd, 'changed.ts')])
+
+    expect(result).toMatchObject({ ok: true, value: { entries: [
+      { repositoryPath: 'nested/changed.ts' },
+      { repositoryPath: 'nested/src/new.ts' },
+    ] } })
+    expect(result.ok && result.value.entries).toHaveLength(2)
+  })
+
   it('combines an explicit base diff with index, worktree, conflicts and untracked files', async () => {
     const { root, cwd } = repository()
     for (const name of ['committed.ts', 'untracked.ts', 'conflict.ts'])

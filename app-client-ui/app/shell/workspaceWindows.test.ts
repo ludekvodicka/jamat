@@ -331,7 +331,7 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(active.count).toBe(3)
   })
 
-  it('routes mouse Back only to the workspace window that received it', () => {
+  it('routes mouse Back and Forward only to the workspace window that received it', () => {
     const { registry } = harness()
     registry.createMain()
     registry.createHolder('holder-back')
@@ -345,9 +345,11 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(holder.sent).toEqual([['menu:command', 'view.fileBack']])
     expect(main.sent).toEqual([])
     holder.emitWindow('app-command', event, 'browser-forward')
+    expect(holder.sent).toEqual([['menu:command', 'view.fileBack'], ['menu:command', 'view.fileForward']])
     holder.emitWindow('app-command', event, 'volume-up')
-    expect(holder.sent).toHaveLength(1)
-    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(holder.sent).toHaveLength(2)
+    expect(event.preventDefault).toHaveBeenCalledTimes(2)
+    expect(main.sent).toEqual([])
   })
 
   it('grows a stored rectangle that is under the minimum size', () => {

@@ -70,6 +70,8 @@ import { FinalizeSteps } from '../worktrees/worktreeFinish'
 import { LandedRows } from '../worktrees/worktreeLanding'
 import { LaunchBackoff } from './lifecycle/launchBackoff'
 import type { ReconcileChange } from './lifecycle/reconciler'
+import { MainFinishFlow } from './lifecycle/mainFinishFlow'
+import type { MainFinishPort } from './mainFinishPort.types'
 import { SessionLifecycle } from './lifecycle/sessionLifecycle'
 import type { SessionWorktreePort, WorktreeFinisherRegistration } from '../worktrees/worktreeLifecycle.types'
 import { SessionSteps } from './lifecycle/sessionSteps'
@@ -108,7 +110,7 @@ import { WorktreeResultsStore } from '../worktrees/worktreeResults'
 import { SessionNotifyStore } from './notifies/sessionNotifyStore'
 import { SvnWaitNotices } from '../worktrees/worktreeResults'
 import { WorktreeWords } from '../worktrees/worktreeViews'
-import type { SessionChildInfo, SessionErasure, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
+import type { SessionChildInfo, SessionErasure, SessionMainFinishChoice, SessionMainFinishOutcome, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
 import type { AgentHistoryEraser } from './purge/agentHistoryEraser.types'
 import { SessionPurge } from './purge/sessionPurge'
 import { LaunchPlanner } from './launch/launchPlanner'
@@ -450,6 +452,8 @@ export class SessionManager {
   private resultRemovals: ResultRemovals | null = null
   /** Bound late: the client builds its commit dialog after the sessions. */
   private reviewPort: SessionReviewPort | null = null
+  /** Bound late for the same reason: the file changes, the terminal and the commit reviews are the client's. */
+  private mainFinish: MainFinishFlow | null = null
   private readonly worktreeLifecycle: WorktreeLifecycle
 
   /**
@@ -718,6 +722,7 @@ export class SessionManager {
     this.stopping = true
     this.started = false
     this.clearTimer()
+    this.mainFinish?.stop()
     this.monitor.stop()
     this.runLines.stop()
     await this.starting
@@ -763,6 +768,11 @@ export class SessionManager {
   }
 
   usageRecords() { return sessionUsageRecords(this.records?.listAll() ?? []) }
+
+  /** Whether `sessionId` has a record; null until the records file has been read, when nobody can tell. */
+  knowsSession(sessionId: string): boolean | null {
+    return this.records === null ? null : this.records.get(sessionId) !== null
+  }
 
   snapshot(): SessionsSnapshot {
     if (this.dirty) this.flushChanged()
@@ -1471,6 +1481,18 @@ export class SessionManager {
    * A Host that cannot be reached answers true, and lets the reopen give the real refusal: a timeout
    * invented here would name the wrong problem.
    */
+  /** After a stop: the record once the Host lists its process as gone and the record has ended. */
+  private async awaitEnded(sessionId: string, stillRunning: string, notEnded: string): Promise<SessionsOpResult<SessionRecord>> {
+    if (!await this.awaitRuntimeExit(sessionId))
+      return { ok: false, code: 'live-refused', detail: `Session ${sessionId} was asked to stop and was still running ${SessionManager.exitBudgetMillisecondsConst / 1_000} s later; ${stillRunning}` }
+    await this.refresh('operation')
+    const record = this.records?.get(sessionId) ?? null
+    if (record === null) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
+    if (record.life === 'live' || record.life === 'starting')
+      return { ok: false, code: 'live-refused', detail: `Session ${sessionId} stopped, but its record has not ended yet; ${notEnded}` }
+    return { ok: true, value: record }
+  }
+
   private async awaitRuntimeExit(sessionId: string): Promise<boolean> {
     const clock = this.deps.exitClock ?? SessionManager.realExitClockConst
     const until = clock.now() + SessionManager.exitBudgetMillisecondsConst
@@ -1520,13 +1542,9 @@ export class SessionManager {
     if (record.life === 'live' || record.life === 'starting') {
       const stopped = await this.stopSession(sessionId)
       if (!stopped.ok) return stopped
-      if (!await this.awaitRuntimeExit(sessionId))
-        return { ok: false, code: 'live-refused', detail: `Session ${sessionId} was asked to stop and was still running ${SessionManager.exitBudgetMillisecondsConst / 1_000} s later; nothing was erased` }
-      await this.refresh('operation')
-      record = records.get(sessionId)
-      if (record === null) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
-      if (record.life === 'live' || record.life === 'starting')
-        return { ok: false, code: 'live-refused', detail: `Session ${sessionId} stopped, but its record has not ended yet; erase it again in a moment` }
+      const ended = await this.awaitEnded(sessionId, 'nothing was erased', 'erase it again in a moment')
+      if (!ended.ok) return ended
+      record = ended.value
     }
     const runs = records.list().filter((one) => one.scriptOf?.sessionId === sessionId).map((one) => one.sessionId)
     const conversations = SessionPurge.conversationIdsOf(record)
@@ -1834,6 +1852,43 @@ export class SessionManager {
   /** Where a worker stores commit message proposals. */
   setReviewPort(port: SessionReviewPort): void {
     this.reviewPort = port
+  }
+
+  setMainFinishPort(port: MainFinishPort): void {
+    this.mainFinish?.stop()
+    this.mainFinish = new MainFinishFlow({
+      info: (sessionId) => this.snapshot().sessions.find((session) => session.sessionId === sessionId) ?? null,
+      current: (sessionId) => this.records?.get(sessionId)?.mainFinish,
+      committing: () => (this.records?.list() ?? []).filter((record) => record.mainFinish?.phase === 'committing').map((record) => record.sessionId),
+      write: async (sessionId, change) => {
+        if (this.records === null) return false
+        const written = await this.records.update(sessionId, (record) => {
+          const next = change(record.mainFinish)
+          return next === null ? null : { ...record, mainFinish: next }
+        })
+        if (written) this.changed()
+        return written
+      },
+      stop: (sessionId) => this.finalizeSession(sessionId, { expect: 'stop' }),
+      remove: async (sessionId) => {
+        const ended = await this.awaitEnded(sessionId, 'remove it by hand', 'remove it by hand')
+        const removed = ended.ok ? await this.removeSession(sessionId) : ended
+        if (removed.ok) this.deps.onRemovedItself?.(sessionId)
+        return removed
+      },
+      report: (message) => this.deps.onError(message),
+      now: () => Date.now(),
+    }, port)
+    if (!this.stopping) this.mainFinish.start()
+  }
+
+  /** The Finish of a main-copy agent session, or a press in its Session actions section; see `MainFinishFlow`. */
+  async finishMainSession(sessionId: string, choice?: SessionMainFinishChoice)
+    : Promise<SessionsOpResult<{ sessionId: string; outcome: SessionMainFinishOutcome }>> {
+    await this.lifecycle()
+    if (this.mainFinish === null) return { ok: false, code: 'invalid-spec', detail: 'Finish of a main copy is not available in this client' }
+    const answer = await this.mainFinish.press(sessionId, choice)
+    return answer.ok ? { ok: true, value: { sessionId, outcome: answer.value.outcome } } : answer
   }
 
   /**

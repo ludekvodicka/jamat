@@ -36,6 +36,11 @@ const { electronMock, hubMock } = vi.hoisted(() => ({
         return electronMock.lockGranted
       },
       setAppUserModelId: () => undefined,
+      commandLine: {
+        appendSwitch(name: string): void {
+          electronMock.calls.push(`switch:${name}`)
+        },
+      },
       quit(): void {
         electronMock.calls.push('quit')
       },
@@ -136,11 +141,12 @@ describe('app-client-ui/app/app', () => {
 
   // Electron resolves userData while it becomes ready and caches it; an override applied afterwards
   // leaves the caches in the shared default profile.
-  it('redirects userData and takes the lock before Electron becomes ready', () => {
+  // A UI Automation client switches accessibility on for good, and a large document then stalled main.
+  it('turns renderer accessibility off, redirects userData and takes the lock before Electron becomes ready', () => {
     void AppClientUi.run(import.meta.url)
 
     expect(electronMock.calls)
-      .toEqual(['setPath:userData', 'requestSingleInstanceLock', 'whenReady'])
+      .toEqual(['switch:disable-renderer-accessibility', 'setPath:userData', 'requestSingleInstanceLock', 'whenReady'])
     expect(electronMock.userDataPath).toBe(stateDirectory())
   })
 
@@ -165,7 +171,7 @@ describe('app-client-ui/app/app', () => {
     await AppClientUi.run(import.meta.url)
 
     expect(electronMock.calls)
-      .toEqual(['setPath:userData', 'requestSingleInstanceLock', 'quit'])
+      .toEqual(['switch:disable-renderer-accessibility', 'setPath:userData', 'requestSingleInstanceLock', 'quit'])
   })
 
   it('clears the HTTP cache before the hub starts only when a dev server serves the renderer', async () => {

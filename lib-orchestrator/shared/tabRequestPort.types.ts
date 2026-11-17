@@ -23,7 +23,9 @@ export interface SessionOpen {
 
 export type TabControlCommand = { sharedOpen?: SessionOpen } & (
   | { kind: 'open-snapin'; requestId: string; panelId: string; snapinKind: string; title: string }
-  | { kind: 'open-commit'; target?: TerminalTarget; reviewId?: string; openId?: string; itemKey?: string; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly RemoteControlCommitPath[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true }
+  | { kind: 'open-commit'; target?: TerminalTarget; reviewId?: string; openId?: string; itemKey?: string; requestId: string; panelId: string; vcs: FileChangesVcsId; scopeRoot: string; paths?: readonly RemoteControlCommitPath[]; title: string; messageApplied: boolean; activate?: boolean; existingOnly?: true
+    /** With `activate: false`: the review becomes the split's item in front, but neither the tab nor the keyboard focus moves. */
+    splitFront?: true }
   | {
       kind: 'open-session'
       requestId: string

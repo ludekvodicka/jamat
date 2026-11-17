@@ -13,6 +13,7 @@ import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import { FileViewerPanel, type FileViewerPanelProps } from './fileViewerPanel'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
 import { TerminalInputRegistry } from '../shell/terminalInputRegistry'
+import { PanelHistoryRegistry } from '../shell/panelHistoryRegistry'
 
 /**
  * The panel itself, which three renderer test files existed beside and none rendered.
@@ -109,6 +110,7 @@ class PanelHarness {
 
   static panel(params: Record<string, unknown>): {
     props: FileViewerPanelProps
+    history: PanelHistoryRegistry
     emit(patch: Record<string, unknown>): void
     updateParameters: ReturnType<typeof vi.fn>
     close: ReturnType<typeof vi.fn>
@@ -118,6 +120,7 @@ class PanelHarness {
       for (const listener of [...listeners]) listener(next)
     })
     const close = vi.fn()
+    const history = new PanelHistoryRegistry()
     const props = {
       params,
       api: {
@@ -139,9 +142,11 @@ class PanelHarness {
       ports: { viewer: window.appClient.fileViewer, directories: window.appClient.fileViewer, changes: window.appClient.fileChanges },
       changesPorts: window.appClient.fileChanges,
       fileTools: new PanelFileToolsRegistry(),
+      history,
     } as unknown as FileViewerPanelProps
     return {
       props,
+      history,
       updateParameters,
       close,
       emit: (patch) => {
@@ -484,5 +489,52 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
       newerParameter: 'keep-me',
       source: opened.source,
     }))
+  })
+
+  it('goes Back to the document File Tools replaced and Forward again, each where the reader left it', async () => {
+    const opened = PanelHarness.document({
+      documentId: 'document-2', documentKey: 'key-2', name: 'b.ts', path: 'C:/work/b.ts',
+      source: { kind: 'workspace', sessionId: 'session-1', path: 'C:/work/b.ts' },
+    })
+    const { fileViewer } = PanelHarness.install([PanelHarness.document(), PanelHarness.document({ documentId: 'document-3' }),
+      { ...opened, documentId: 'document-4' }])
+    fileViewer.openEntry.mockResolvedValueOnce({ ok: true, value: { ok: true, value: opened } })
+    const panel = PanelHarness.panel({
+      ...PanelHarness.workspaceParams(),
+      sidebar: { visible: true, width: 440, activeView: 'directoryExplorer' },
+    })
+    const view = render(<FileViewerPanel {...panel.props} />)
+    const lastWrite = () => panel.updateParameters.mock.lastCall![0] as Record<string, unknown>
+    await screen.findByText('export const answer = 42')
+    const bodyOf = () => view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    bodyOf().scrollTop = 640
+    expect(screen.queryByRole('button', { name: 'Back to previous document' })).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: /b\.ts/ }))
+    await waitFor(() => expect(panel.updateParameters).toHaveBeenCalled())
+    expect(lastWrite()).toMatchObject({ source: opened.source, forward: [],
+      history: [{ source: PanelHarness.document().source, restoreScroll: { documentKey: 'key-1', scrollTop: 640 } }] })
+
+    view.rerender(<FileViewerPanel {...panel.props} params={lastWrite()} />)
+    const back = await screen.findByRole('button', { name: 'Back to previous document' })
+    expect(back).toHaveAttribute('title', 'Back to C:/work/a.ts')
+    bodyOf().scrollTop = 120
+    // The mouse button reaches the panel through the registry, the same step as the toolbar button.
+    act(() => panel.history.step('panel-1', 'back'))
+    expect(lastWrite()).toMatchObject({ source: PanelHarness.document().source, history: [],
+      forward: [{ source: opened.source, restoreScroll: { documentKey: 'key-2', scrollTop: 120 } }],
+      restoreScroll: { documentKey: 'key-1', scrollTop: 640 } })
+
+    view.rerender(<FileViewerPanel {...panel.props} params={lastWrite()} />)
+    await waitFor(() => expect(fileViewer.text).toHaveBeenLastCalledWith('document-3'))
+    await waitFor(() => expect(bodyOf().scrollTop).toBe(640))
+    expect(screen.queryByRole('button', { name: 'Back to previous document' })).toBeNull()
+
+    act(() => panel.history.step('panel-1', 'forward'))
+    expect(lastWrite()).toMatchObject({ source: opened.source, forward: [],
+      restoreScroll: { documentKey: 'key-2', scrollTop: 120 } })
+    view.rerender(<FileViewerPanel {...panel.props} params={lastWrite()} />)
+    await waitFor(() => expect(fileViewer.text).toHaveBeenLastCalledWith('document-4'))
+    await waitFor(() => expect(bodyOf().scrollTop).toBe(120))
   })
 })

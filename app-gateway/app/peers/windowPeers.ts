@@ -13,6 +13,7 @@ import type { TerminalAttachSpec } from '../../../lib-orchestrator/sessionManage
 import type { TerminalClipboardPaste } from '../../../lib-orchestrator/sessionManager/terminalClipboardPaste'
 import type { PerfSpans } from '../../../lib-orchestrator/perfMonitor/perfSpans'
 import type { ViewerBuffer } from '../terminals/viewerBuffer'
+import { ResumeWaiters } from '../terminals/resumeWaiters'
 
 export interface WindowPeersDependencies {
   outbound(): RemoteOutboundPort
@@ -49,6 +50,7 @@ export class WindowPeers {
   private readonly claims = new Map<string, Claim>()
   private readonly views = new Map<string, { endpointId: string; view: RemoteSessionView }>()
   private readonly holds = new Map<RemoteConnectionsHoldReason, string>()
+  private readonly waiters = new ResumeWaiters()
   private accepting: boolean
   private paused = false
   private closed = false
@@ -163,7 +165,10 @@ export class WindowPeers {
       case 'remote:sessions-reference': return outbound.sessionReference(...call.args)
       case 'remote:terminal-attach': {
         this.admit()
-        if (this.paused) throw new Error('Terminal output is reconnecting')
+        if (this.paused) context.pending()
+        while (this.paused) await this.waiters.wait(context.signal)
+        if (context.signal.aborted) throw new Error('Remote window connection is closed')
+        this.admit()
         const [endpointId, externalId, spec] = call.args
         const key = WindowPeers.key(endpointId, externalId)
         if (this.claims.has(key)) throw new Error(`Remote terminal attach already exists: ${externalId}`)
@@ -240,11 +245,13 @@ export class WindowPeers {
       this.claims.set(key, claim)
       void this.attach(claim, true).catch(error => { this.report(String(error)); this.fatal() })
     }
+    this.waiters.release()
   }
 
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.waiters.close()
     for (const reason of this.holds.keys()) this.releaseHold(reason)
     for (const { endpointId, view } of this.views.values()) this.releaseView(endpointId, view)
     this.views.clear()

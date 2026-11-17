@@ -67,8 +67,12 @@ export interface FileChangesVcs {
   readonly defaultBaselineRef: FileChangesVcsBaselineRef
   historyBaselineRef(revision: string): FileChangesVcsBaselineRef
   detect(cwd: string): Promise<FileChangesVcsDetection | null>
-  /** SVN may return an unversioned ancestor of the file for ignore-aware expansion. */
-  status(detection: FileChangesVcsDetection, filePath?: string): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
+  /**
+   * SVN may return an unversioned ancestor of the file for ignore-aware expansion. `targets` are the
+   * paths a commit review named; entries none of them reaches (`FileChangesReach`) are left out
+   * before any further read, and empty keeps the whole scope.
+   */
+  status(detection: FileChangesVcsDetection, filePath?: string, targets?: readonly string[]): Promise<FileChangesVcsResult<FileChangesVcsStatus>>
   history(
     detection: FileChangesVcsDetection,
     limit: number,

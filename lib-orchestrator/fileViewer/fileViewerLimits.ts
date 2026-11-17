@@ -25,14 +25,20 @@ export class FileViewerLimits {
    * when the highlighter refuses.
    */
   static readonly highlightBytes = 64 * 1024
-  static readonly diagramSourceCharacters = 50_000
+  /**
+   * How long one diagram fence may be. Mermaid, Graphviz, Archify and Vega-Lite lay out on the
+   * thread that draws the whole window. A raw SVG fence is only sanitized, linear in its length,
+   * so it has its own, higher ceiling.
+   */
+  static readonly diagramSourceCharacters = 100_000
+  static readonly svgSourceCharacters = 256_000
 
   /**
    * How many items one diagram may declare in all, refused BEFORE any layout validator runs.
    *
    * Every archify validator compares each PAIR of items to find overlapping boxes, which is
    * quadratic, and an item with no `pos` has NaN coordinates where the overlap test answers true -
-   * so everything overlaps everything. About 4 000 ids fit under the character cap above and produce
+   * so everything overlaps everything. About 8 000 ids fit under the character cap above and produce
    * roughly 8 million sentences, joined into ONE exception message and drawn into the DOM.
    */
   static readonly diagramItemsMax = 400

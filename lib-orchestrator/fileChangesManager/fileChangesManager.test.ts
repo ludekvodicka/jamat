@@ -85,6 +85,35 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     })
   }
 
+  it('answers the session\'s own changes: what its transcript wrote that the status still shows, also inside a new directory', async () => {
+    const root = cwd()
+    const entry = (name: string, nodeKind: 'file' | 'directory', status: 'modified' | 'untracked', previous: string | null = null) => ({
+      absolutePath: join(root, name), repositoryPath: name, nodeKind, status,
+      previousAbsolutePath: previous === null ? null : join(root, previous), previousRepositoryPath: previous, gitState: null })
+    const mutation = (path: string, previousPath: string | null = null) => ({ mutationId: path, kind: previousPath === null ? 'update' as const : 'move' as const,
+      status: 'modified' as const, path: join(root, path), previousPath: previousPath === null ? null : join(root, previousPath), location: 'workspace' as const,
+      beforeContent: null, afterContent: null, oldText: null, newText: null, replaceAll: false, unifiedDiff: null, createdAt: 1 })
+    const adapter: FileChangesVcs = { ...vcs(root), id: 'svn', async status() {
+      return { ok: true, value: { externalRoots: [], entries: [entry('own.ts', 'file', 'modified'), entry('foreign.ts', 'file', 'modified'),
+        entry('fresh', 'directory', 'untracked'), entry('moved.ts', 'file', 'modified', 'old.ts')] } }
+    } }
+    const instance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      vcsAdapters: [adapter],
+      transcriptResolver: { async resolve(input) { return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, file: 'x', mtimeMs: 0, size: 0 } },
+        async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() {
+        return [{ groupId: 'g', message: 'm', createdAt: 1, mutations: [mutation('own.ts'), mutation('fresh/inner/new.ts'), mutation('moved.ts', 'old.ts'),
+          mutation('reverted.ts')] }]
+      } }],
+    })
+    const context = { sessionId: 'session', cwd: root, agent: { agentId: 'codex' as const, nativeSessionId: 'native' } }
+
+    expect(await instance.sessionChanges(context, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: ['own.ts', 'fresh', 'moved.ts'] } })
+    // Without an agent there is no transcript, so nothing is the session's own.
+    expect(await instance.sessionChanges({ ...context, agent: null }, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: [] } })
+  })
+
   it('lists sub-agents from the log source\'s start and files their edits under the spawning message', async () => {
     const root = cwd()
     const fixture = (name: string) => {
@@ -325,6 +354,27 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     expect(await instance.workingTree(context, 'svn', true, undefined, [join(root, '..', 'outside.txt')])).toMatchObject({ ok: false })
     expect(await instance.workingTree(context, 'svn', false, undefined, [join(root, 'file.ts')])).toMatchObject({ ok: false })
     expect(await instance.workingTree(context, 'checkpoint', true, undefined, [join(root, 'file.ts')])).toMatchObject({ ok: false })
+  })
+
+  it('hands the named commit paths to the status read, so the rest of the scope is never read', async () => {
+    const root = cwd()
+    const adapter = vcs(root)
+    const asked: (readonly string[] | undefined)[] = []
+    const originalStatus = adapter.status.bind(adapter)
+    adapter.status = async (detection, filePath, targets) => {
+      asked.push(targets)
+      return originalStatus(detection, filePath, targets)
+    }
+    const managerInstance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      workingSources: new FileChangesWorkingTreeSources({ commitSvn: adapter }),
+    })
+    const context = { sessionId: 'session', cwd: root, agent: null, worktree: null }
+
+    const listed = await managerInstance.workingTree(context, 'svn', true, undefined, [join(root, 'file.ts')])
+
+    expect(listed).toMatchObject({ ok: true, value: { entries: [{ displayPath: 'file.ts' }] } })
+    expect(asked).toEqual([[join(root, 'file.ts')]])
   })
 
   it('groups external file ids in the working snapshot', async () => {

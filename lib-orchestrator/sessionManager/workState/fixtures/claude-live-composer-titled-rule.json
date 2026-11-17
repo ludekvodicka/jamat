@@ -1,0 +1,34 @@
+{
+  "agent": "claude",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "empty"
+    }
+  },
+  "provenance": {
+    "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts, the styled screenLines of the viewport inspect",
+    "case": "an idle empty box whose top rule carries the session's AI title, `─── <title> ─`, which Claude 2.1.322 draws once the transcript has an ai-title entry",
+    "capture": "the Finish command of a main-copy session was refused with \"The composer never became ready\" against this screen. Sanitized: the prose rows above the box and the raw text before the box are replaced by neutral English, and the AI title by a neutral label of the same length, so the rule keeps its recorded width. The box rows and their ANSI are left intact",
+    "ported": "nothing - recorded in this tree",
+    "identical": "not present in the V1 or V2 corpus"
+  },
+  "recorded": {
+    "build": "claude-code 2.1.322",
+    "capturedAt": "2026-11-12",
+    "cols": 167,
+    "rows": 72
+  },
+  "frame": {
+    "rawTail": "\u001b[K\u001b[38;2;136;136;136m\r\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-recorded-session-ai-title-row ─\u001b[m> \u001b[K\u001b[38;2;136;136;136m\r\n───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[m\r\n\u001b[K\r\n  \u001b[38;2;255;107;128m⏵⏵ bypass permissions on \u001b[38;2;153;153;153m(shift+tab to cycle)\u001b[K\u001b[69;3H\u001b[?25h\u001b[?2004h\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[m",
+    "screenTail": "※ recap: The project files moved to the new folder; the versioned files wait for the locked working copy. Close any open\n  dialog and tell me to run the cleanup so the move can finish.\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-recorded-session-ai-title-row ─\n>\n───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "wideScreenTail": "  🔴 The files under version control stay in the old folder, because the working copy is locked.\n  ✅ The new project exists with every unversioned file, its CLAUDE.md and its memory.\n\n  🟡 Close any open version control dialog and tell me to run the cleanup. Then I move the remaining files.\n  🟡 Then open a new session in the new project and continue there.\n\n✻ Sautéed for 11s · done 2:15 PM\n\n※ recap: The project files moved to the new folder; the versioned files wait for the locked working copy. Close any open\n  dialog and tell me to run the cleanup so the move can finish.\n\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-recorded-session-ai-title-row ─\n>\n───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\n  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    "screenStyled": true
+  }
+}

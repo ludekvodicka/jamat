@@ -19,6 +19,7 @@ export class VersioningSettingsOperations {
   static readonly fieldsConst = [
     'mode', 'diffTool', 'activateSessionOnCommit', 'returnToPreviousSessionAfterCommit',
     'returnToPreviousSessionWithinMinutes', 'switchAfterIdleSeconds', 'closeCommitOnSuccess', 'commitReview', 'commitSplitRatio',
+    'finishCommitCommands',
   ] as const satisfies readonly VersioningSettingsField[]
 
   constructor(private readonly configStore: ConfigStore) {}

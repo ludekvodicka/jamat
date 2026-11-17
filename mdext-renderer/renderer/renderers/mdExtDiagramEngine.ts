@@ -1,3 +1,5 @@
+import type { RenderOptions } from '@viz-js/viz'
+
 import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewerLimits'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
@@ -7,12 +9,11 @@ export type MdExtDiagramSurface = 'screen' | 'paper'
 
 interface MdExtDiagramEngineEntry {
   languages: readonly string[]
+  maxSourceCharacters: number
   render(source: string, signal: AbortSignal | undefined, surface: MdExtDiagramSurface): Promise<string>
 }
 
 export class MdExtDiagramEngine {
-  static readonly maxSourceCharacters = FileViewerLimits.diagramSourceCharacters
-
   private static mermaidSequence = 0
   /**
    * One Graphviz heap for the window.
@@ -21,7 +22,7 @@ export class MdExtDiagramEngine {
    * `Module().then(m => new Viz(m))` - so calling it per fence allocated a WASM heap per fence.
    * Kept here the way `FileHighlighter` keeps its one Shiki.
    */
-  private static viz: Promise<{ renderString(source: string, options: { format: string }): string }>
+  private static viz: Promise<{ renderString(source: string, options: RenderOptions): string }>
     | null = null
   private static mermaidQueue: Promise<unknown> = Promise.resolve()
   /** The light theme's colours for the tokens a Vega-Lite chart reads on `paper`. */
@@ -35,16 +36,37 @@ export class MdExtDiagramEngine {
   private static readonly engines: readonly MdExtDiagramEngineEntry[] = [
     {
       languages: ['mermaid'],
+      maxSourceCharacters: FileViewerLimits.diagramSourceCharacters,
       render: (source, signal, surface) => MdExtDiagramEngine.mermaid(source, signal, surface),
     },
-    { languages: ['dot', 'gv', 'graphviz'], render: (source) => MdExtDiagramEngine.dot(source) },
-    { languages: ['vega-lite', 'vegalite'], render: (source, _signal, surface) => MdExtDiagramEngine.vegaLite(source, surface) },
-    { languages: ['archify'], render: (source) => MdExtDiagramEngine.archify(source) },
-    { languages: ['svg'], render: (source) => MdExtDiagramEngine.rawSvg(source) },
+    {
+      languages: ['dot', 'gv', 'graphviz'],
+      maxSourceCharacters: FileViewerLimits.diagramSourceCharacters,
+      render: (source, _signal, surface) => MdExtDiagramEngine.dot(source, surface),
+    },
+    {
+      languages: ['vega-lite', 'vegalite'],
+      maxSourceCharacters: FileViewerLimits.diagramSourceCharacters,
+      render: (source, _signal, surface) => MdExtDiagramEngine.vegaLite(source, surface),
+    },
+    {
+      languages: ['archify'],
+      maxSourceCharacters: FileViewerLimits.diagramSourceCharacters,
+      render: (source) => MdExtDiagramEngine.archify(source),
+    },
+    {
+      languages: ['svg'],
+      maxSourceCharacters: FileViewerLimits.svgSourceCharacters,
+      render: (source) => MdExtDiagramEngine.rawSvg(source),
+    },
   ]
 
   static supports(language: string): boolean {
     return MdExtDiagramEngine.engines.some((engine) => engine.languages.includes(language))
+  }
+
+  static maxSourceCharacters(language: string): number {
+    return MdExtDiagramEngine.engine(language).maxSourceCharacters
   }
 
   /**
@@ -52,9 +74,13 @@ export class MdExtDiagramEngine {
    * in the queue and render anyway, because the component only stopped LISTENING to the answer.
    */
   static render(language: string, source: string, signal?: AbortSignal, surface: MdExtDiagramSurface = 'screen'): Promise<string> {
+    return MdExtDiagramEngine.engine(language).render(source, signal, surface)
+  }
+
+  private static engine(language: string): MdExtDiagramEngineEntry {
     const engine = MdExtDiagramEngine.engines.find((item) => item.languages.includes(language))
     if (!engine) throw new Error(`Unknown diagram engine: ${language}`)
-    return engine.render(source, signal, surface)
+    return engine
   }
 
   /**
@@ -109,22 +135,32 @@ export class MdExtDiagramEngine {
     })
   }
 
-  private static async dot(source: string): Promise<string> {
+  /**
+   * Graphviz paints black ink on a white page unless told otherwise, which on the dark workspace is
+   * a white slab. The theme's colours go in as DEFAULT attributes, so a colour the source sets wins.
+   */
+  private static async dot(source: string, surface: MdExtDiagramSurface): Promise<string> {
     if (MdExtDiagramEngine.viz === null)
       MdExtDiagramEngine.viz = import('@viz-js/viz').then(({ instance }) => instance())
-    return (await MdExtDiagramEngine.viz).renderString(source, { format: 'svg' })
+    const ink = MdExtDiagramEngine.surfaceToken(surface, '--color-text-1')
+    const line = MdExtDiagramEngine.surfaceToken(surface, '--color-text-3')
+    return (await MdExtDiagramEngine.viz).renderString(source, {
+      format: 'svg',
+      graphAttributes: { bgcolor: 'transparent', color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
+      nodeAttributes: { color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
+      edgeAttributes: { color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
+    })
   }
 
   private static async vegaLite(source: string, surface: MdExtDiagramSurface): Promise<string> {
-    const token = (name: string): string => surface === 'paper'
-      ? MdExtDiagramEngine.paperTokensConst[name] ?? MdExtDiagramEngine.token(name)
-      : MdExtDiagramEngine.token(name)
+    const token = (name: string): string => MdExtDiagramEngine.surfaceToken(surface, name)
     let parsed: unknown
     try { parsed = JSON.parse(source) }
     catch { throw new Error('Invalid Vega-Lite JSON spec') }
     const spec = JsonShape.record(parsed)
     if (spec === null) throw new Error('Vega-Lite spec must be an object')
-    const [vegaLite, vega] = await Promise.all([import('vega-lite'), import('vega')])
+    const [vegaLite, vega, interpreter] = await Promise.all(
+      [import('vega-lite'), import('vega'), import('vega-interpreter')])
     const userConfig = JsonShape.record(spec.config) ?? {}
     const themed = {
       ...spec,
@@ -157,7 +193,10 @@ export class MdExtDiagramEngine {
     const loader = vega.loader()
     loader.load = () => Promise.reject(new Error('External resources are disabled'))
     loader.sanitize = () => Promise.reject(new Error('External resources are disabled'))
-    const view = new vega.View(vega.parse(compiled), { renderer: 'none', loader })
+    // The interpreter, not Vega's default code generator: that one compiles every expression with
+    // `new Function`, and the window CSP has no 'unsafe-eval'.
+    const view = new vega.View(vega.parse(compiled, undefined, { ast: true }),
+      { renderer: 'none', loader, expr: interpreter.expressionInterpreter })
     try { return await view.toSVG() }
     finally { view.finalize() }
   }
@@ -214,6 +253,12 @@ export class MdExtDiagramEngine {
     defaults: Record<string, unknown>,
   ): Record<string, unknown> {
     return { ...defaults, ...(JsonShape.record(config[key]) ?? {}) }
+  }
+
+  private static surfaceToken(surface: MdExtDiagramSurface, name: string): string {
+    return surface === 'paper'
+      ? MdExtDiagramEngine.paperTokensConst[name] ?? MdExtDiagramEngine.token(name)
+      : MdExtDiagramEngine.token(name)
   }
 
   private static token(name: string): string {

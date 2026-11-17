@@ -26,6 +26,12 @@ describe('MdExtClipboardHtml', () => {
     expect(callout?.textContent).toContain('Warning')
   })
 
+  it('keeps clock times and name:name tokens as written', async () => {
+    const root = parse(await MdExtClipboardHtml.of('| Start |\n|---|\n| 07:09 |\n\nRun /pp:work at h:mm.\n'))
+    expect(root.querySelector('td')?.textContent).toBe('07:09')
+    expect(root.querySelector('p')?.textContent).toBe('Run /pp:work at h:mm.')
+  })
+
   it('keeps raw HTML in the source as text', async () => {
     const root = parse(await MdExtClipboardHtml.of('<script>alert(1)</script>\n\nText'))
     expect(root.querySelector('script')).toBeNull()

@@ -69,6 +69,7 @@ export class FileChangesWorkingTreeSources {
     requested: FileChangesWorkingTreeSource | null,
     filePath?: string,
     forCommit = false,
+    targets: readonly string[] = [],
   ): Promise<FileChangesWorkingTreeRead> {
     const warnings: string[] = []
     const candidates = forCommit && requested === 'svn' ? await this.svnCandidates(context, this.commitSvn)
@@ -113,7 +114,7 @@ export class FileChangesWorkingTreeSources {
     }
     else if (selected.source === 'checkpoint' || selected.source === 'svn' || selected.source === 'git') {
       const status = await selected.adapter
-        .status(selected.detection, filePath)
+        .status(selected.detection, filePath, targets)
         .catch((error) => ({ ok: false as const, detail: ErrorText.of(error) }))
       if (!status.ok) {
         warnings.push(`${FileChangesWorkingTreeSources.labelOf(selected.source)}: ${status.detail}`)

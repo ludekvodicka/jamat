@@ -90,6 +90,7 @@ describe('app-client-ui/shared/commands', () => {
       ['view.toggleTabSidebar', 'Ctrl+G'],
       ['view.fileChanges', null],
       ['view.fileBack', null],
+      ['view.fileForward', null],
       ['view.maximizeToggle', 'F11'],
       ['app.toggleDevTools', 'Ctrl+Shift+I'],
       ['tools.usage', null],

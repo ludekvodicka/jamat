@@ -340,7 +340,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('returns to the document replaced by a Markdown link and releases both grants', async () => {
+  it('returns to the document replaced by a Markdown link where the reader left it, and releases both grants', async () => {
     const current = FileViewerPaneHarness.document()
     const linked = FileViewerPaneHarness.document({
       documentId: 'document-b', documentKey: 'key-b', name: 'b.md', path: 'C:/work/b.md',
@@ -369,8 +369,8 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
             setState(step.state)
           }}
           onClose={() => setState(PanelSplitParams.closed(state, item.key))}
-          onOpenItem={(next) => {
-            const step = PanelSplitParams.opened(state, next)
+          onOpenItem={(next, reading) => {
+            const step = PanelSplitParams.opened(state, next, reading)
             if (!step.ok) return step.refusal
             setState(step.state)
             return null
@@ -383,8 +383,12 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     const view = render(<Split />)
     expect(screen.getByRole('button', { name: 'Close document' })).toBeEnabled()
     expect(screen.getByText('Opening file...')).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('link', { name: 'Other' }))
+    const link = await screen.findByRole('link', { name: 'Other' })
+    const bodyOf = () => view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    bodyOf().scrollTop = 640
+    fireEvent.click(link)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Back to previous document' })).toBeEnabled())
+    expect(bodyOf().scrollTop).toBe(0)
     const back = screen.getByRole('button', { name: 'Back to previous document' })
     expect(back).toHaveAttribute('title', 'Back to C:/work/a.md')
     await waitFor(() => expect(fileViewer.restore).toHaveBeenCalledTimes(3))
@@ -392,6 +396,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     fireEvent.click(back)
 
     await waitFor(() => expect(fileViewer.restore).toHaveBeenLastCalledWith(current.source, true))
+    await waitFor(() => expect(bodyOf().scrollTop).toBe(640))
     fireEvent.click(screen.getByRole('button', { name: 'Close document' }))
     expect(screen.getByText('Terminal')).toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Split file' })).toBeNull()
@@ -433,7 +438,7 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
       key: 'key-b',
       title: 'b.md',
       source: linked.source,
-    }))
+    }, { key: FileViewerPaneHarness.item(current).key, scrollTop: undefined }))
     expect(onRefused).toHaveBeenCalledWith('The split already holds 8 files.')
     expect(fileViewer.release).toHaveBeenCalledWith('document-b')
   })

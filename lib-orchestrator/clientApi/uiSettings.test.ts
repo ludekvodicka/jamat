@@ -85,6 +85,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     })
   })
 
@@ -120,6 +122,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('fontScalePercent')
@@ -149,6 +153,8 @@ describe('app-client-ui/shared/uiSettings', () => {
         sessionsNestSubagents: true,
         sessionsNestWorktrees: true,
         sessionsNestTickets: true,
+        sessionCompletedNotice: true,
+        sessionCompletedNoticeSound: false,
       })
       expect(messages).toHaveLength(3)
     }
@@ -183,6 +189,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     }
     expect(UiSettings.coerce(stored, report)).toEqual(stored)
     expect(messages).toEqual([])
@@ -295,6 +303,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
       _note: 'hand written',
     }
 
@@ -326,6 +336,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
       _note: 'hand written',
     })
   })
@@ -343,8 +355,23 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     }
   }
+
+  it('reads the session completed notice as enabled and silent unless a usable value says otherwise', () => {
+    const messages: string[] = []
+    const report = (message: string): void => { messages.push(message) }
+    expect(UiSettings.coerce({}, report)).toMatchObject({ sessionCompletedNotice: true, sessionCompletedNoticeSound: false })
+    expect(UiSettings.coerce({ sessionCompletedNotice: false, sessionCompletedNoticeSound: true }, report))
+      .toMatchObject({ sessionCompletedNotice: false, sessionCompletedNoticeSound: true })
+    expect(messages).toEqual([])
+    expect(UiSettings.coerce({ sessionCompletedNotice: 'no', sessionCompletedNoticeSound: 1 }, report))
+      .toMatchObject({ sessionCompletedNotice: true, sessionCompletedNoticeSound: false })
+    expect(messages).toHaveLength(2)
+    expect(UiSettings.isValid({ ...UiSettings.defaultValue(), sessionCompletedNoticeSound: 'yes' })).toBe(false)
+  })
 
   it('validates the shape field by field, never as text', () => {
     expect(UiSettings.isValid(UiSettings.defaultValue())).toBe(true)
@@ -358,6 +385,8 @@ describe('app-client-ui/shared/uiSettings', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
       scrollSpeedPercent: 100,
     })).toBe(true)
     expect(UiSettings.isValid({ fontScalePercent: 100 })).toBe(false)

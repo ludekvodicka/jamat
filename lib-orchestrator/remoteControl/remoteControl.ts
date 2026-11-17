@@ -143,6 +143,9 @@ export interface RemoteControlSessionsPort {
   resolveConflicts?(sessionId: string, request: SvnConflictsResolveRequest): Promise<SessionsOpResult<SessionConflictsResolved>>
   /** An agent session in the worktree of a waiting SVN action, briefed on why it waits. */
   solveWithAgent(sessionId: string): Promise<SessionsOpResult<SessionCreated>>
+  /** The window's Finish of a main-copy agent session, or a press in its Session actions section. */
+  finishMainSession?(sessionId: string, choice?: import('../sessionManager/sessionManagerApi.types').SessionMainFinishChoice)
+    : Promise<SessionsOpResult<{ sessionId: string; outcome: import('../sessionManager/sessionManagerApi.types').SessionMainFinishOutcome }>>
   /** Ends a Finish that has published nothing yet; the worktree and its worker go on. */
   backToWork(sessionId: string, requestedBy: SessionFinishPress['requestedBy'], confirmStoppedRunId?: string): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>>
   /** A requested run: a shell command for a running session, as its child. */
@@ -547,6 +550,15 @@ export class RemoteControl {
       const current = await this.deps.sessions.worktreeOf(session.sessionId)
       return RemoteControl.success({ ...result.value, ...(current.ok && current.value.worktreeView !== undefined
         ? { worktreeView: current.value.worktreeView } : {}) })
+    })
+    bySession('sessions.finishMain', "Finish an agent session in a main copy: one with changes of its own waits in Session actions for Commit & close, Commit & continue, Close session or Back to work; a commit types the configured command into the session.", async (session, body, context) => {
+      if (context.callerKind === 'remote-peer') return RemoteControl.error('forbidden', 'Finish of a main copy is local only')
+      if (this.deps.sessions.finishMainSession === undefined) return RemoteControl.error('unavailable', 'Finish of a main copy is unavailable')
+      const result = await this.deps.sessions.finishMainSession(session.sessionId, body.mainChoice)
+      if (!result.ok && result.code === 'live-refused')
+        return RemoteControl.error('conflict', result.detail, { sourceCode: result.code })
+      if (!result.ok) return RemoteControl.sessionError(result)
+      return RemoteControl.success(result.value)
     })
     bySession('sessions.updateMain', 'UPDATE of the main copy a landed row was cut from, or a session works in, as visible runs of that session.', async (session, body, context) => {
       if (context.callerKind === 'remote-peer' && body.confirmLive !== undefined)

@@ -59,7 +59,7 @@ export class SessionsSnapshotValidation {
   private static readonly localItemsConst: readonly string[] = ['added', 'conflicted', 'deleted', 'external', 'ignored', 'merged', 'obstructed',
     'replaced', 'unversioned'] satisfies readonly SvnLocalItem[]
   private static readonly workflowKindsConst: readonly string[] =
-    ['before', 'finish', 'discard', 'update-main', 'git-finish', 'script'] satisfies readonly SessionWorkflowKind[]
+    ['before', 'finish', 'discard', 'update-main', 'git-finish', 'script', 'main-finish'] satisfies readonly SessionWorkflowKind[]
   private static readonly workflowStatesConst: readonly string[] =
     ['pending', 'running', 'done', 'failed', 'waits', 'skipped'] satisfies readonly SessionWorkflowStepState[]
   private static readonly workflowTargetsConst: readonly string[] =
@@ -75,7 +75,7 @@ export class SessionsSnapshotValidation {
   private static readonly conflictLossesConst: readonly string[] =
     ['nothing', 'mine', 'incoming'] satisfies readonly SvnConflictLoss[]
   private static readonly workflowActionsConst: readonly string[] =
-    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker'] satisfies readonly SessionWorkflowActionId[]
+    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker', 'commit-close', 'commit-continue', 'close-session', 'cancel-finish'] satisfies readonly SessionWorkflowActionId[]
 
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)
@@ -248,6 +248,8 @@ export class SessionsSnapshotValidation {
       case 'commit': return (body.vcs === 'svn' || body.vcs === 'git') && SessionsSnapshotValidation.filledText(body.scopeRoot)
         && (body.marked === undefined || Array.isArray(body.marked) && body.marked.every((path) => typeof path === 'string'))
       case 'commands': return Array.isArray(body.commands) && body.commands.every((command) => typeof command === 'string')
+      case 'files': return Array.isArray(body.paths) && body.paths.every((path) => typeof path === 'string')
+        && SessionsSnapshotValidation.nonNegativeInteger(body.more)
       case 'log': return SessionsSnapshotValidation.filledText(body.runId)
       case 'conflicts': {
         const conflicts = body.conflicts === undefined ? undefined : JsonShape.record(body.conflicts)

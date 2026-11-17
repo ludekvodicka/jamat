@@ -16,6 +16,7 @@ import { SvnConflictShapes } from '../../svn/svnConflictShapes'
 import { SessionLimits } from '../sessionLimits'
 import type { SessionParentKind, SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
+import { MainFinishWorkflow } from '../lifecycle/mainFinishWorkflow'
 import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import { SessionActionHistory } from './sessionActionHistory'
 import { SessionRecordsArchive } from './sessionRecordsArchive'
@@ -609,6 +610,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         const next = { ...record }
         if (record.sessionId === newLifetime) delete next.clearedWorkflowIds
         delete next.actionHistory
+        if (next.mainFinish?.phase === 'closed') delete next.mainFinish
         const kept = next.scriptRuns?.filter((run) => active.has(run.runId)) ?? []
         if (kept.length > 0) next.scriptRuns = kept
         else delete next.scriptRuns
@@ -619,10 +621,12 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         if (before === null || !previouslyEnded.has(record.sessionId)
           || record.actionHistory !== undefined || record.scriptRuns !== undefined)
           removedLogs.add(record.sessionId)
-        if (record.actionHistory === undefined && record.scriptRuns === undefined) return record
+        const closedFinish = record.mainFinish?.phase === 'closed'
+        if (record.actionHistory === undefined && record.scriptRuns === undefined && !closedFinish) return record
         const next = { ...record }
         delete next.actionHistory
         delete next.scriptRuns
+        if (closedFinish) delete next.mainFinish
         return next
       }
       if (before === record) return record
@@ -961,6 +965,11 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       this.report(`${subject}: dropping its Finish checks (${checks})`)
       delete record.finishChecks
     }
+    const mainFinish = SessionRecordsStore.mainFinishProblem(record.mainFinish)
+    if (mainFinish !== null) {
+      this.report(`${subject}: dropping its Finish of the main copy (${mainFinish})`)
+      delete record.mainFinish
+    }
     // The passes only draw the workflow: ones this build cannot read cost the steps, never the action.
     const passes = record.svnAction && typeof record.svnAction === 'object' ? SessionRecordsStore.passesProblem(record.svnAction) : null
     if (passes !== null && record.svnAction) {
@@ -1091,6 +1100,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     // flowId, completed, stopRequested and note, none of which is a setup field.
     const problem = SessionRecordsStore.pendingSetupProblem(record.pendingSetup)
       ?? SessionRecordsStore.finishChecksProblem(record.finishChecks)
+      ?? SessionRecordsStore.mainFinishProblem(record.mainFinish)
       ?? SessionRecordsStore.transcriptCwdProblem(record.transcriptCwd, record.kind)
       ?? SessionRecordsStore.setupSkippedProblem(record.setupSkipped)
       ?? SessionRecordsStore.commandsProblem(record.commands)
@@ -1620,6 +1630,30 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       || value.cursor < 0 || value.cursor >= value.steps.length)
       return `pendingSetup cursor must be an index into its ${value.steps.length} steps`
     return null
+  }
+
+  private static mainFinishProblem(value: SessionRecord['mainFinish']): string | null {
+    if (value === undefined) return null
+    if (!value || typeof value !== 'object') return 'mainFinish must be an object'
+    if (typeof value.startedAt !== 'number' || !Number.isFinite(value.startedAt)) return 'mainFinish needs a startedAt number'
+    if (value.phase !== 'choosing' && value.phase !== 'committing' && value.phase !== 'closed')
+      return `unknown mainFinish phase ${JSON.stringify(value.phase)}`
+    if (value.vcs !== null && value.vcs !== 'svn' && value.vcs !== 'git') return `unknown mainFinish vcs ${JSON.stringify(value.vcs)}`
+    if (!SessionRecordsStore.isStringList(value.paths) || value.paths.length > MainFinishWorkflow.pathsLimitConst)
+      return `mainFinish paths must be at most ${MainFinishWorkflow.pathsLimitConst} strings`
+    if (!Number.isSafeInteger(value.more) || value.more < 0) return 'mainFinish more must be a count'
+    if (value.command !== undefined && typeof value.command !== 'string') return 'mainFinish command must be a string'
+    if (value.sentAt !== undefined && (typeof value.sentAt !== 'number' || !Number.isFinite(value.sentAt))) return 'mainFinish sentAt must be a number'
+    if (value.workingSeen !== undefined && value.workingSeen !== true) return 'mainFinish workingSeen must be true when present'
+    if (value.note !== undefined && typeof value.note !== 'string') return 'mainFinish note must be a string'
+    if (value.phase === 'committing' && (value.sentAt === undefined || value.vcs === null)) return 'a committing mainFinish needs sentAt and a vcs'
+    if (value.phase !== 'closed') return value.endedAt === undefined && value.result === undefined ? null : 'an open mainFinish has no ending'
+    if (typeof value.endedAt !== 'number' || !Number.isFinite(value.endedAt)) return 'a closed mainFinish needs an endedAt number'
+    const result = value.result
+    switch (result) {
+      case 'closed': case 'sent': case 'cancelled': case 'ended': return null
+      default: return `unknown mainFinish result ${JSON.stringify(result)}`
+    }
   }
 
   /** Shape only, like the before gate beside it: the cursor must name one of its steps. */

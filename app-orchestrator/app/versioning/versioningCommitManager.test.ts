@@ -522,6 +522,32 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.manager.read('window', f.draftId)?.selection?.paths).toEqual([second.path])
   })
 
+  it('starts a Finish review afresh after a restart instead of keeping its saved empty selection', async () => {
+    const f = await finishFixture()
+    f.deps.workflow!.owns = () => true
+    const draft = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      selection: { snapshotId: 'snapshot', fileIds: [] } })).toMatchObject({ ok: true })
+    const second = await addSecondFile(f)
+    const restored = new VersioningCommitManager(f.deps)
+    restored.attach(f.draftId, 'window')
+    restored.files('window', f.draftId, f.snapshot)
+    expect(restored.read('window', f.draftId)?.selection?.paths).toEqual([f.path, second.path])
+  })
+
+  it('keeps the saved selection of a plain commit dialog after a restart', async () => {
+    const f = await fixture()
+    f.deps.reviews = new VersioningReviewStore(join(f.root, 'reviews.json'), f.report)
+    f.manager.files('window', f.draftId, f.snapshot)
+    const draft = f.manager.read('window', f.draftId)!
+    expect(f.manager.edit('window', { draftId: f.draftId, epoch: draft.epoch!, expectedRevision: draft.revision,
+      selection: { snapshotId: 'snapshot', fileIds: [] } })).toMatchObject({ ok: true })
+    const restored = new VersioningCommitManager(f.deps)
+    restored.attach(f.draftId, 'window')
+    restored.files('window', f.draftId, f.snapshot)
+    expect(restored.read('window', f.draftId)?.selection?.paths).toEqual([])
+  })
+
   it('keeps the saved selection of a plain commit dialog when a new path appears', async () => {
     const f = await fixture()
     f.manager.files('window', f.draftId, f.snapshot)
@@ -2285,6 +2311,34 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledTimes(1)
     expect(f.manager.status(f.draftId)).toMatchObject({ state: 'failed', revision: null, detail: expect.stringContaining('E155011') })
     expect(f.manager.read('window', f.draftId)?.message).toBe(f.request.message)
+  })
+
+  const outdated = (name: string) => ({ ok: false as const, code: 'out-of-date' as const,
+    detail: `svn: E155011: Commit failed (details follow):\nsvn: E155011: Directory '${name}' is out of date` })
+
+  /** 168-web: a commit deleting seven directories behind their own files' commits met one per click. */
+  it('keeps updating while each out-of-date failure names a new node', async () => {
+    const f = await fixture()
+    const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
+      .mockResolvedValueOnce(outdated('a')).mockResolvedValueOnce(outdated('b'))
+      .mockResolvedValue({ ok: true, value: { committedPaths: [], revision: '46', output: 'Committed revision 46.' } })
+    f.deps.svn.commit = commit
+    f.deps.svn.updateOutOfDate = vi.fn(async (_scope: string, failure: string) => ({ ok: true as const, value: { output: `Updated ${failure.slice(-17, -16)}` } }))
+    expect(await f.manager.run('window', f.request)).toEqual({ ok: true, revision: '46' })
+    expect(commit).toHaveBeenCalledTimes(3)
+    expect(f.deps.svn.updateOutOfDate).toHaveBeenCalledTimes(2)
+    expect(f.manager.read('window', f.draftId)?.phase).toMatchObject({ kind: 'done', output: expect.stringMatching(/Updated a\nUpdated b/) })
+  })
+
+  it('stops updating when an out-of-date failure names a node it already updated', async () => {
+    const f = await fixture()
+    const commit = vi.fn<VersioningCommitManagerDeps['svn']['commit']>()
+      .mockResolvedValueOnce(outdated('a')).mockResolvedValueOnce(outdated('b')).mockResolvedValue(outdated('a'))
+    f.deps.svn.commit = commit
+    f.deps.svn.updateOutOfDate = vi.fn(async () => ({ ok: true as const, value: { output: 'Updated' } }))
+    const repeated = await f.manager.run('window', f.request)
+    expect(repeated).toMatchObject({ ok: false, reloadRequired: true, detail: expect.stringContaining('after Jamat updated what it named 2 time(s)') })
+    expect(commit).toHaveBeenCalledTimes(3)
   })
 
   it('commits the reviewed selection itself after an update that left it alone', async () => {

@@ -281,6 +281,7 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
         preview: null,
         items: [],
         history: [],
+        forward: [],
         recent: [],
       })
       expect(PanelSplitParams.of(null)).toEqual(PanelSplitParams.default())
@@ -644,6 +645,72 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(PanelSplitParams.closed(closed, 'key:c.md').history).toEqual([])
       const sibling = PanelSplitParams.closed(b, 'key:b.md')
       expect(PanelSplitParams.backTargetOf(sibling)).toBe(null)
+    })
+
+    it('returns to where the reader was, in place of the line the file was opened at', () => {
+      const a = PanelSplitParams.opened(PanelSplitParams.default(), { ...itemFixture('a.md'), location: { line: 23 } })
+      if (!a.ok) throw new Error(a.refusal)
+      const b = PanelSplitParams.opened(a.state, itemFixture('b.md'), { key: 'key:a.md', scrollTop: 640 })
+      if (!b.ok) throw new Error(b.refusal)
+      expect(b.state.history).toEqual([{ ...itemFixture('a.md'), scrollTop: 640 }])
+      const returned = back(PanelSplitParams.of({ split: JSON.parse(JSON.stringify(b.state)) }))
+      expect(returned.items).toEqual([{ ...itemFixture('a.md'), scrollTop: 640 }])
+      // A reading of another item, or of the top, keeps no offset.
+      const other = PanelSplitParams.opened(b.state, itemFixture('c.md'), { key: 'key:a.md', scrollTop: 90 })
+      if (!other.ok) throw new Error(other.refusal)
+      expect(other.state.history.at(-1)).toEqual(itemFixture('b.md'))
+      const top = PanelSplitParams.opened(b.state, itemFixture('c.md'), { key: 'key:b.md', scrollTop: undefined })
+      if (!top.ok) throw new Error(top.refusal)
+      expect(top.state.history.at(-1)).toEqual(itemFixture('b.md'))
+      expect(PanelSplitParams.of({ split: { ...b.state, history: [{ ...itemFixture('a.md'), scrollTop: 'far' }] } }).history)
+        .toEqual([itemFixture('a.md')])
+    })
+
+    it('keeps the offset of the file a tab switch leaves, so its tab returns there', () => {
+      const a = PanelSplitParams.keptOpen(open(PanelSplitParams.default(), 'a.md'), 'key:a.md')
+      const b = PanelSplitParams.keptOpen(open(a, 'b.md'), 'key:b.md')
+      const atA = PanelSplitParams.activated(b, 'key:a.md', { key: 'key:b.md', scrollTop: 480 })
+      expect(atA.items).toEqual([itemFixture('a.md'), { ...itemFixture('b.md'), scrollTop: 480 }])
+      const atB = PanelSplitParams.activated(atA, 'key:b.md', { key: 'key:a.md', scrollTop: 120 })
+      expect(atB.items).toEqual([{ ...itemFixture('a.md'), scrollTop: 120 }, { ...itemFixture('b.md'), scrollTop: 480 }])
+      // A click on the tab in front moves nothing, so its reading is not a departure.
+      expect(PanelSplitParams.activated(atB, 'key:b.md', { key: 'key:b.md', scrollTop: 10 }).items).toEqual(atB.items)
+    })
+
+    it('goes Forward through every step Back took, each file where the reader left it', () => {
+      const a = open(PanelSplitParams.default(), 'a.md')
+      const b = open(a, 'b.md')
+      const c = open(b, 'c.md')
+      const atB = PanelSplitParams.navigatedBack(c, { key: 'key:c.md', scrollTop: 300 })
+      if (!atB.ok) throw new Error(atB.refusal)
+      const atA = PanelSplitParams.navigatedBack(atB.state, { key: 'key:b.md', scrollTop: 200 })
+      if (!atA.ok) throw new Error(atA.refusal)
+      expect(atA.state.forward.map((item) => [item.title, item.scrollTop])).toEqual([['c.md', 300], ['b.md', 200]])
+      expect(PanelSplitParams.forwardTargetOf(atA.state)?.title).toBe('b.md')
+
+      const again = PanelSplitParams.navigatedForward(PanelSplitParams.of({ split: JSON.parse(JSON.stringify(atA.state)) }))
+      if (!again.ok) throw new Error(again.refusal)
+      expect(again.state.items).toEqual([{ ...itemFixture('b.md'), scrollTop: 200 }])
+      expect(again.state.history.map((item) => item.title)).toEqual(['a.md'])
+      const last = PanelSplitParams.navigatedForward(again.state)
+      if (!last.ok) throw new Error(last.refusal)
+      expect(last.state.items).toEqual([{ ...itemFixture('c.md'), scrollTop: 300 }])
+      expect(last.state.forward).toEqual([])
+      expect(PanelSplitParams.navigatedForward(last.state)).toEqual({ ok: true, state: last.state })
+    })
+
+    it('clears Forward on a move to another item, and keeps it when the file in front only changes', () => {
+      const back = PanelSplitParams.navigatedBack(open(open(PanelSplitParams.default(), 'a.md'), 'b.md'))
+      if (!back.ok) throw new Error(back.refusal)
+      expect(back.state.forward).toHaveLength(1)
+      const zoomed = PanelSplitParams.opened(back.state, { ...itemFixture('a.md'), zoomPercent: 150 })
+      if (!zoomed.ok) throw new Error(zoomed.refusal)
+      expect(zoomed.state.forward).toHaveLength(1)
+      expect(open(back.state, 'c.md').forward).toEqual([])
+      const behind = PanelSplitParams.openedBehind(back.state, itemFixture('c.md'))
+      if (!behind.ok) throw new Error(behind.refusal)
+      expect(behind.state.forward).toHaveLength(1)
+      expect(PanelSplitParams.closed(back.state, 'key:a.md').forward).toEqual([])
     })
 
     it('returns to a replaced preview beside eight kept files', () => {

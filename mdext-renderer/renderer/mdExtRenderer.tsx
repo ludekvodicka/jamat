@@ -44,7 +44,7 @@ export const MdExtRenderer = memo(function MdExtRenderer(
         rehypePlugins={[[rehypeSanitize, MdExtSecurity.sanitizeSchema]]}
         components={components}
       >
-        {split.body}
+        {MdExtDirectives.source(split.body)}
         </ReactMarkdown>
       </MdExtComponents.context.Provider>
     </div>

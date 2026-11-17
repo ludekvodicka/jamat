@@ -138,11 +138,23 @@ describe('mdext-renderer/renderer/renderers/mdExtDiagramEngine', () => {
     })
   })
 
+  describe('how long one diagram source may be', () => {
+    it('gives raw SVG its own ceiling, above the one for engines that lay out', () => {
+      expect(MdExtDiagramEngine.maxSourceCharacters('svg')).toBe(256_000)
+      for (const language of ['mermaid', 'dot', 'vega-lite', 'archify'])
+        expect(MdExtDiagramEngine.maxSourceCharacters(language)).toBe(100_000)
+    })
+
+    it('refuses a language with no engine', () => {
+      expect(() => MdExtDiagramEngine.maxSourceCharacters('plantuml')).toThrow('Unknown diagram engine: plantuml')
+    })
+  })
+
   describe('how much one diagram may declare', () => {
     /*
      * Every archify validator compares each PAIR of items, and an item with no `pos` has NaN
      * coordinates where the overlap test answers true - so everything overlaps everything. About
-     * 4 000 ids fit under the character cap and produce roughly 8 million sentences, joined into one
+     * 8 000 ids fit under the character cap and produce roughly 8 million sentences, joined into one
      * exception message and drawn into the DOM.
      */
     it('refuses a spec with more items than it will draw, before any validator runs', async () => {
@@ -187,6 +199,52 @@ describe('mdext-renderer/renderer/renderers/mdExtDiagramEngine', () => {
       expect(refusal).to.be.instanceOf(Error)
       expect(refusal!.message.length).toBeLessThan(4_200)
       expect(refusal!.message).toMatch(/\.\.\. and \d+ more characters$/)
+    })
+  })
+
+  describe('a Vega-Lite chart under the window CSP', () => {
+    /*
+     * `script-src 'self'` without 'unsafe-eval' refuses `new Function` and `eval`, and Vega's
+     * default code generator compiles every encoder, format and tooltip with `new Function`. The
+     * stubs throw where the renderer's CSP throws, so a render that still evaluates a string fails.
+     * `paper` because it reads no computed style: jsdom's selector engine compiles with `Function`,
+     * which the browser's does not.
+     */
+    it('draws a temporal bar chart with axis.format and tooltip without evaluating a string', async () => {
+      vi.useRealTimers()
+      const refused = (): never => { throw new EvalError('unsafe-eval is not allowed') }
+      vi.stubGlobal('Function', refused)
+      vi.stubGlobal('eval', refused)
+      try {
+        const svg = await MdExtDiagramEngine.render('vega-lite', JSON.stringify({
+          width: 400,
+          data: {
+            values: [
+              { row: 'alpha', from: '2026-11-09T07:42:15', to: '2026-11-09T08:43:15', who: 'ty', time: '07:42-08:43' },
+              { row: 'beta', from: '2026-11-09T09:01:26', to: '2026-11-09T09:07:45', who: 'agent', time: '09:01-09:07' },
+            ],
+          },
+          mark: { type: 'bar', cornerRadius: 2 },
+          encoding: {
+            y: { field: 'row', type: 'nominal', title: null, sort: ['beta', 'alpha'] },
+            x: { field: 'from', type: 'temporal', title: null, axis: { format: '%H:%M', tickCount: 6 } },
+            x2: { field: 'to' },
+            color: {
+              field: 'who',
+              type: 'nominal',
+              scale: { domain: ['ty', 'agent'], range: ['#3b82f6', '#f59e0b'] },
+            },
+            tooltip: [{ field: 'row' }, { field: 'time' }],
+          },
+        }), undefined, 'paper')
+
+        expect(svg).toMatch(/^<svg/)
+        expect(svg).toContain('08:00')
+        expect(svg).toContain('#3b82f6')
+        expect(svg).toContain('#f59e0b')
+        expect(svg).toContain('>alpha<')
+      }
+      finally { vi.unstubAllGlobals() }
     })
   })
 

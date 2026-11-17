@@ -24,6 +24,8 @@ export type UiSettingsInput =
   | { input: 'terminal-scroll-speed'; percent: number }
   | { input: 'activate-session-on-document'; value: boolean }
   | { input: 'sessions-nest'; key: UiSettingsNestingKey; value: boolean }
+  | { input: 'session-completed-notice'; value: boolean }
+  | { input: 'session-completed-notice-sound'; value: boolean }
 
 export type UiSettingsEffect = SettingsCardEffect<UiSettingsValue>
 
@@ -63,7 +65,9 @@ export class UiSettingsModel {
       && buffer.scrollSpeedPercent === loaded.scrollSpeedPercent
       && buffer.terminalScrollSpeedPercent === loaded.terminalScrollSpeedPercent
       && (buffer.activateSessionOnDocument === true) === (loaded.activateSessionOnDocument === true)
-      && UiSettings.nestingKeysConst.every((key) => (buffer[key] !== false) === (loaded[key] !== false)))
+      && UiSettings.nestingKeysConst.every((key) => (buffer[key] !== false) === (loaded[key] !== false))
+      && (buffer.sessionCompletedNotice !== false) === (loaded.sessionCompletedNotice !== false)
+      && (buffer.sessionCompletedNoticeSound === true) === (loaded.sessionCompletedNoticeSound === true))
   }
 
   static transition(state: UiSettingsModelState, input: UiSettingsInput): UiSettingsStep {
@@ -110,6 +114,10 @@ export class UiSettingsModel {
       return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, activateSessionOnDocument: input.value }))
     else if (input.input === 'sessions-nest')
       return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, [input.key]: input.value }))
+    else if (input.input === 'session-completed-notice')
+      return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, sessionCompletedNotice: input.value }))
+    else if (input.input === 'session-completed-notice-sound')
+      return UiSettingsModel.edited(state, (buffer) => ({ ...buffer, sessionCompletedNoticeSound: input.value }))
     else
       throw new Error(`Unknown ui settings input: ${JSON.stringify(input)}`)
   }

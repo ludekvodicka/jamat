@@ -45,7 +45,7 @@ export class MdExtClipboardHtml {
     const markup = renderToStaticMarkup(createElement(ReactMarkdown, {
       remarkPlugins: [remarkGfm, remarkDirective, MdExtDirectives.plugin],
       rehypePlugins: [[rehypeSanitize, MdExtSecurity.sanitizeSchema]],
-    }, MdExtFrontmatter.split(source).body))
+    }, MdExtDirectives.source(MdExtFrontmatter.split(source).body)))
     const document = new DOMParser().parseFromString(`<div>${markup}</div>`, 'text/html')
     const root = document.body.firstElementChild!
     await MdExtClipboardHtml.drawDiagrams(root)
@@ -74,7 +74,7 @@ export class MdExtClipboardHtml {
       const language = /language-([\w-]+)/.exec(code.className)?.[1]
       const source = (code.textContent ?? '').replace(/\n$/, '')
       return language && MdExtDiagramEngine.supports(language) && source.trim()
-        && source.length <= MdExtDiagramEngine.maxSourceCharacters && budget.allowsDiagram(index)
+        && source.length <= MdExtDiagramEngine.maxSourceCharacters(language) && budget.allowsDiagram(index)
         ? [{ pre: code.parentElement!, language, source }]
         : []
     })

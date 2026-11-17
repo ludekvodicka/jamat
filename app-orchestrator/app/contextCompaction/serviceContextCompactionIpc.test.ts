@@ -5,6 +5,7 @@ import type { RemoteControlStepResult, RemoteControlTerminalDeliverDto } from '.
 import type { RemoteControlTerminal } from '../../../lib-orchestrator/remoteControl/remoteControlTerminal'
 import type { AppClientUiIpcInvokeMap } from '../../../lib-orchestrator/clientApi/appClientUiIpc'
 import { ServiceContextCompactionIpc } from './serviceContextCompactionIpc'
+import { ContextCompactionCooldowns } from './contextCompactionCooldowns'
 
 const ipcMainMock = { handlers }
 
@@ -49,7 +50,7 @@ describe('app-client-ui/app/contextCompaction/serviceContextCompactionIpc', () =
           return Promise.resolve({ kind: 'none', code: 'transcript-not-found', reason: 'test' })
         },
       },
-      () => now,
+      new ContextCompactionCooldowns(null, () => undefined, () => now),
     )).initialize()
   })
 

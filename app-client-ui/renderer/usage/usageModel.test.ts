@@ -47,12 +47,24 @@ describe('UsageModel', () => {
   })
 
   it('derives the pool ranges and whole-day token periods from now', () => {
-    expect(UsageModel.poolRange('forecast', 10 * 86_400_000)).toEqual({ from: 9 * 86_400_000, to: 17 * 86_400_000 })
-    expect(UsageModel.poolRange('week', 10 * 86_400_000)).toEqual({ from: 3 * 86_400_000, to: 41 * 86_400_000 })
-    expect(UsageModel.poolRange('month', 40 * 86_400_000)).toEqual({ from: 10 * 86_400_000, to: 71 * 86_400_000 })
+    expect(UsageModel.poolRange('forecast', 10 * 86_400_000, null)).toEqual({ from: 9 * 86_400_000, to: 17 * 86_400_000 })
+    expect(UsageModel.poolRange('forecast', 10 * 86_400_000, 5 * 86_400_000)).toEqual({ from: 4.5 * 86_400_000, to: 17 * 86_400_000 })
+    expect(UsageModel.poolRange('week', 10 * 86_400_000, 5 * 86_400_000)).toEqual({ from: 3 * 86_400_000, to: 41 * 86_400_000 })
+    expect(UsageModel.poolRange('month', 40 * 86_400_000, null)).toEqual({ from: 10 * 86_400_000, to: 71 * 86_400_000 })
     expect(UsageModel.tokenPeriod('today', new Date(2026, 10, 4, 19))).toEqual({ from: '2026-11-04', to: '2026-11-04' })
     expect(UsageModel.tokenPeriod('week', new Date(2026, 10, 4, 19))).toEqual({ from: '2026-10-29', to: '2026-11-04' })
     expect(UsageModel.day(new Date(2026, 9, 26, 23, 59))).toBe('2026-10-26')
+  })
+
+  it('starts the weekly cycle at the earliest current window of an enabled account, floored to the hour', () => {
+    const hour = 3_600_000, week = 168 * hour, now = 1000 * hour
+    const weekly = (resetsAt: number, enabled = true): UsageAccount => ({ ...account, enabled,
+      state: { kind: 'ok', fetchedAt: 1, windows: [{ durationMinutes: 10080, usedPercent: 10, resetsAt: new Date(resetsAt).toISOString() }] } })
+    expect(UsageModel.cycleStart([weekly(now + 100 * hour + 1234)], now)).toBe(now - 68 * hour)
+    expect(UsageModel.cycleStart([weekly(now + 100 * hour), weekly(now + 20 * hour)], now)).toBe(now - 148 * hour)
+    expect(UsageModel.cycleStart([weekly(now - 2 * hour)], now)).toBe(now - 2 * hour)
+    expect(UsageModel.cycleStart([weekly(now - week - 2 * hour)], now)).toBe(now - 2 * hour)
+    expect(UsageModel.cycleStart([weekly(now + 20 * hour, false), account], now)).toBeNull()
   })
 
   it('draws a few projected days after 7 and 30 days, and enough to show the pool running empty', () => {

@@ -5,6 +5,7 @@ import { GitInvoker } from '../../git/gitInvoker'
 import { BoundedMap } from '../../shared/boundedMap'
 import { PathCompare } from '../../shared/pathCompare'
 import { FileChangesLimits } from '../fileChangesLimits'
+import { FileChangesReach } from '../fileChangesReach'
 import { FileChangesVcsBase } from './fileChangesVcsBase'
 import type {
   FileChangeStatus,
@@ -81,6 +82,7 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
   async status(
     detection: FileChangesVcsDetection,
     filePath?: string,
+    targets: readonly string[] = [],
   ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     const outcome = await this.run(detection.root, [
       'status',
@@ -94,7 +96,9 @@ export class FileChangesVcsGit extends FileChangesVcsBase implements FileChanges
     ])
     if (!FileChangesVcsGit.succeeded(outcome))
       return { ok: false, detail: this.detailOf(outcome) }
-    return { ok: true, value: { entries: await this.parseStatus(detection, outcome.stdout), externalRoots: [] } }
+    const reaches = FileChangesReach.of(targets)
+    const entries = (await this.parseStatus(detection, outcome.stdout)).filter((entry) => reaches(entry.absolutePath))
+    return { ok: true, value: { entries, externalRoots: [] } }
   }
 
   /**

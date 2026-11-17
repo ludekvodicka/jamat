@@ -20,12 +20,13 @@ export class UsageModel {
   ]
 
   /**
-   * The range read from `usage.history`. Forecast is a day back and a week ahead. The 7 and 30 day
-   * ranges read the whole projection horizon, so `poolView` can stretch them to the empty pool.
+   * The range read from `usage.history`. Forecast starts half a day before the current weekly window
+   * (a day back without a reset time) and reaches a week ahead. The 7 and 30 day ranges read the
+   * whole projection horizon, so `poolView` can stretch them to the empty pool.
    */
-  static poolRange(preset: Exclude<PoolRangePreset, 'custom'>, now: number): { from: number; to: number } {
+  static poolRange(preset: Exclude<PoolRangePreset, 'custom'>, now: number, cycleStart: number | null): { from: number; to: number } {
     if (preset === 'forecast')
-      return { from: now - 86_400_000, to: now + 7 * 86_400_000 }
+      return { from: cycleStart === null ? now - 86_400_000 : cycleStart - 12 * 3_600_000, to: now + 7 * 86_400_000 }
     else if (preset === 'week')
       return { from: now - 7 * 86_400_000, to: now + UsageModel.projectionDaysConst * 86_400_000 }
     else if (preset === 'month')
@@ -48,6 +49,20 @@ export class UsageModel {
     const empty = series.poolEmptyAt
     const end = empty === null ? series.now + ahead : Math.max(series.now + ahead, empty + (empty - range.from) / 20)
     return { from: range.from, to: Math.min(series.until, end) }
+  }
+
+  /**
+   * The earliest start of an enabled account's current weekly window, or null when no account has a
+   * reset time. Floored to the hour: a reset time derived from seconds-until-reset drifts between
+   * readings, and every change would read the history again.
+   */
+  static cycleStart(accounts: readonly UsageAccount[], now: number): number | null {
+    const week = UsageModel.weeklyMinutesConst * 60_000
+    const starts = accounts.flatMap(account => {
+      const reset = account.enabled ? Date.parse(UsageModel.window(account, UsageModel.weeklyMinutesConst)?.resetsAt ?? '') : NaN
+      return Number.isFinite(reset) ? [reset - Math.ceil((reset - now) / week) * week] : []
+    })
+    return starts.length === 0 ? null : Math.floor(Math.min(...starts) / 3_600_000) * 3_600_000
   }
 
   /** Whole local days, today included. */

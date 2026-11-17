@@ -25,6 +25,7 @@ import type {
   FileChangesWorkingTreeSnapshot,
   FileChangesWorkingTreeSource,
   FileChangesVcsDetection,
+  FileChangesVcsId,
   FileDiffRequest,
   FileDiffResult,
 } from './fileChangesManagerApi.types'
@@ -88,6 +89,11 @@ export interface FileChangesManagerDeps {
   svnUntracked?: Pick<FileChangesSvnUntracked, 'expand'>
   svnCopied?: Pick<FileChangesSvnCopied, 'expand'>
 }
+
+/** The session's own current changes: `vcs` null when no VCS governs its directory. */
+export type FileChangesSessionResult =
+  | { ok: true; value: { vcs: FileChangesVcsId | null; paths: string[] } }
+  | { ok: false; detail: string }
 
 export type FileChangesBaselineContentResult =
   | { ok: true; kind: 'content'; content: string; label: string }
@@ -170,13 +176,13 @@ export class FileChangesManager {
     if (includedPaths.length > 0 && (!forCommit || requested !== 'svn' && requested !== 'git'
       || includedPaths.some((path) => !PathCompare.isInside(context.cwd, path))))
       return { ok: false, code: 'invalid-context', detail: 'Explicit commit paths must be inside their SVN or Git scope' }
-    const read = await this.workingSources.read(context, requested, filePath, forCommit)
+    const named = filePath === undefined ? includedPaths : [...includedPaths, filePath]
+    const read = await this.workingSources.read(context, requested, filePath, forCommit, named)
     let vcsEntries = read.entries
     if (forCommit && read.selection.selected === 'svn') {
       // Untracked first: it can turn a new directory into the files under it, and a copied one
       // that is ALSO new to SVN must be walked as a copy rather than off disk.
-      try { vcsEntries = await this.svnCopied.expand(await this.svnUntracked.expand(vcsEntries,
-        filePath === undefined ? includedPaths : [...includedPaths, filePath])) }
+      try { vcsEntries = await this.svnCopied.expand(await this.svnUntracked.expand(vcsEntries, named), named) }
       catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
     }
     if (filePath !== undefined) vcsEntries = vcsEntries.filter((entry) =>
@@ -323,6 +329,43 @@ export class FileChangesManager {
       }
     }
     return this.perf ? this.perf.span('fileChanges.poll', compose) : compose()
+  }
+
+  /**
+   * The current changes the session's own transcript made: every path its agent wrote, moved or
+   * deleted that the working copy still shows changed, as paths relative to the session directory.
+   * A changed directory the status did not expand (a new SVN directory) counts when the agent wrote
+   * inside it. The status is the authority, so a write the agent reverted is no change; a change made
+   * by a shell command alone is not in the transcript and is not counted. Main-only, like
+   * `readBaseline`: it issues no snapshot and no id.
+   */
+  async sessionChanges(context: FileChangesContext, preferredVcs: FileChangesVcsId): Promise<FileChangesSessionResult> {
+    const invalid = await FileChangesManager.invalidContext(context)
+    if (invalid !== null) return { ok: false, detail: invalid }
+    const warnings: string[] = []
+    const [selection, logGroups] = await Promise.all([
+      this.detector.select(context.cwd, preferredVcs),
+      this.readLogGroups(context, warnings),
+    ])
+    if (warnings.length > 0) return { ok: false, detail: warnings.join('; ') }
+    const selected = selection.selected
+    if (selected === null) return { ok: true, value: { vcs: null, paths: [] } }
+    const touched = new Set<string>()
+    for (const group of logGroups)
+      for (const mutation of group.mutations) {
+        touched.add(PathCompare.comparable(mutation.path))
+        if (mutation.previousPath !== null) touched.add(PathCompare.comparable(mutation.previousPath))
+      }
+    if (touched.size === 0) return { ok: true, value: { vcs: selected.adapter.id, paths: [] } }
+    let status: Awaited<ReturnType<FileChangesVcs['status']>>
+    try { status = await selected.adapter.status(selected.detection) }
+    catch (error) { return { ok: false, detail: `${selected.adapter.id} status: ${ErrorText.of(error)}` } }
+    if (!status.ok) return { ok: false, detail: `${selected.adapter.id} status: ${status.detail}` }
+    const paths = status.value.entries.filter((entry) => touched.has(PathCompare.comparable(entry.absolutePath))
+      || entry.previousAbsolutePath !== null && touched.has(PathCompare.comparable(entry.previousAbsolutePath))
+      || entry.nodeKind === 'directory' && [...touched].some((path) => PathCompare.isInside(entry.absolutePath, path)))
+      .map((entry) => FileChangesListing.displayPath(context.cwd, entry.absolutePath))
+    return { ok: true, value: { vcs: selected.adapter.id, paths } }
   }
 
   history(snapshotId: string, cursor: string): FileChangesHistoryResult {

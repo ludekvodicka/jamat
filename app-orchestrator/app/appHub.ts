@@ -5,6 +5,7 @@ import { FileViewerMediaView } from '../../lib-orchestrator/fileViewer/fileViewe
 import { SessionNotices } from './sessions/sessionNotices'
 import { ServiceChannels } from '../../lib-orchestrator/clientApi/serviceChannels'
 import { SessionEvents } from './sessions/sessionEvents'
+import { StaleSessionTabs } from './sessions/staleSessionTabs'
 import { SessionAttention } from './attention/sessionAttention'
 import { ChangedPathHints } from './terminals/changedPathHints'
 import { SessionSharedItems } from './tabs/sessionSharedItems'
@@ -93,12 +94,14 @@ import { ClientStatePaths } from '../../lib-orchestrator/shared/clientStatePaths
 import { ReviewInteractionAccess } from './versioning/reviewInteractionAccess'
 import { VersioningReviewStore } from './versioning/versioningReviewStore'
 import { VersioningCommitMessageStore } from './versioning/versioningCommitMessageStore'
+import { CompletedAttention } from './sessions/completedAttention'
 import { FinishAttention } from './sessions/finishAttention'
 import { AttentionQueue } from './attention/attentionQueue'
 import { ServiceAttentionIpc } from './attention/serviceAttentionIpc'
 import { SessionMarksAttention } from './attention/sessionMarksAttention'
 import { MainCopyUpdateNotice } from './sessions/mainCopyUpdateNotice'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
+import { ContextCompactionCooldowns } from './contextCompaction/contextCompactionCooldowns'
 import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
 import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
 import { FileChangesSettingsOperations } from './fileChanges/fileChangesSettingsOperations'
@@ -108,6 +111,7 @@ import { ExternalDiffLauncher } from './versioning/externalDiffLauncher'
 import { VersioningCommitManager } from './versioning/versioningCommitManager'
 import { VersioningWorkflowAccess } from './versioning/versioningWorkflowAccess'
 import { SessionReviewPortAdapter } from './versioning/sessionReviewPortAdapter'
+import { MainFinishPortAdapter } from './sessions/mainFinishPortAdapter'
 import { WorktreeSettingsOperations } from './worktrees/worktreeSettingsOperations'
 import { VersioningSettings } from '../../lib-orchestrator/versioning/versioningSettings'
 import { VersioningSettingsSection } from './versioning/versioningSettingsSection'
@@ -187,6 +191,7 @@ export class OrchestratorHub {
 
   private readonly notices: SessionNotices
   private readonly sessionEvents: SessionEvents
+  private readonly staleTabs: StaleSessionTabs
   private readonly sessionAttention: SessionAttention
   readonly api: OrchestratorApi
   readonly transport: OrchestratorTransport
@@ -272,13 +277,20 @@ export class OrchestratorHub {
     this.sessionEvents = new SessionEvents({
       refreshCommits: () => this.commits?.workflowChanged(),
       wakeSnapins: () => this.snapins?.wake(),
-      noticeWaits: () => this.sessionAttention.noticeWaits(),
+      notices: () => this.sessionAttention.notices(),
       attentionSeen: () => this.sessionAttention.seen(this.presentation.seen),
       publishSessions: () => { this.broadcast('sessions:changed'); this.publishProjection() },
       publishControl: () => this.remoteControlServer.publishEvent('sessions.changed'),
       publishInbound: () => this.remoteInbound.publishEvent('sessions.changed'),
       publishActivity: () => this.remoteControl.activity.publish('sessions.changed'),
       titleOf: id => this.tabTitleOf(id), scriptRunCollapsed: (...args) => this.scriptRunCollapsed(...args), report: message => this.report(message),
+    })
+    this.staleTabs = new StaleSessionTabs({
+      openSessionIds: () => [...new Set(this.shell.tabs.snapshot().flatMap((panel) => panel.sessionId !== null
+        && this.shell.tabs.panelsOfTerminalTarget(TerminalTargetCodec.key({ kind: 'local', sessionId: panel.sessionId })).length > 0
+        ? [panel.sessionId] : []))],
+      knows: (sessionId) => this.sessions?.knowsSession(sessionId) ?? null,
+      close: (sessionId) => this.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
     })
     this.finishAttention = new FinishAttention({ show: (notice) => {
       this.notices.show(notice)
@@ -425,13 +437,13 @@ export class OrchestratorHub {
       configIdentity,
       channel,
       autoStartHost: !context.smoke,
-      onChanged: () => { accounts.sessionsChanged(); this.sessionEvents.changed() },
+      onChanged: () => { accounts.sessionsChanged(); this.sessionEvents.changed(); this.reconcileTabs() },
       onError: (message) => this.report(message),
-      // A session whose worktree ended goes as Remove takes it, and Remove's caller closes the tab.
+      // A session whose worktree ended, or whose Commit & close left nothing, goes as Remove takes it, and Remove's caller closes the tab.
       onRemovedItself: (sessionId) =>
         this.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
       onMainCopyUpdated: (update) => this.notices.update(MainCopyUpdateNotice.of(update)),
-      onScriptCollapsed: (event) => this.sessionEvents.scriptCollapsed(event),
+      onScriptCollapsed: (event) => { this.staleTabs.collapsedRun(event.runId); this.sessionEvents.scriptCollapsed(event) },
       removeTree: (path, onProgress) => OriginalTreeRemoval.remove(path, onProgress),
       svnAssembly: this.svnAssemblyWorker,
       // Read per launch rather than captured once: `readSection` re-reads whenever the file's mtime
@@ -605,7 +617,7 @@ export class OrchestratorHub {
       },
     )
     this.sessionMarks = new SessionMarksAttention(this.attention, (sessionId, tabTitle) => this.tabControlBroker.showSession(sessionId, tabTitle))
-    this.sessionAttention = new SessionAttention(() => this.sessions.snapshot(), this.finishAttention, this.sessionMarks, this.attention, (...args) => this.tabControlBroker.openWorkflow(...args), message => this.report(message))
+    this.sessionAttention = new SessionAttention(() => this.sessions.snapshot(), this.finishAttention, this.completedAttention(configStore), this.sessionMarks, this.attention, (...args) => this.tabControlBroker.openWorkflow(...args), message => this.report(message))
     this.sessions.setReviewPort(new SessionReviewPortAdapter(this.commits))
     this.fileViewerAccess = new FileViewerAccess({
       viewer: this.fileViewer,
@@ -642,7 +654,11 @@ export class OrchestratorHub {
       onError: (message) => this.report(message),
       files: pastedFiles,
     })
-    this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess)
+    this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess,
+      new ContextCompactionCooldowns(OrchestratorPaths.contextCompactionCooldownsFile(configIdentity, channel), (message) => this.report(message)))
+    this.sessions.setMainFinishPort(new MainFinishPortAdapter({ sessions: this.sessions, fileChanges: this.fileChanges,
+      terminal: remoteTerminal, transcripts: transcriptAccess, commits: this.commits,
+      commandOf: (vcs) => VersioningSettings.finishCommandOf(configStore.readSection(VersioningSettingsSection.spec), vcs) }))
     this.directoryNotes = new DirectoryNotesOperations(
       configStore,
       this.sessions,
@@ -968,6 +984,14 @@ export class OrchestratorHub {
     this.publishProjection()
   }
 
+  /** Main published new panels: a restored or moved tab may draw a session whose record is gone. */
+  shellChanged(): void { this.reconcileTabs() }
+
+  private reconcileTabs(): void {
+    try { this.staleTabs.reconcile() }
+    catch (error) { this.report(`Tabs of removed sessions could not be closed: ${ErrorText.of(error)}`) }
+  }
+
   publishProjection(): void {
     if (this.sessions) this.event({ kind: 'projection', value: { processTree: this.sessions.processTree(), snapins: this.api.snapinDefinitions() } })
   }
@@ -1097,6 +1121,20 @@ export class OrchestratorHub {
     void this.tabControlBroker.openSnapin(kind, definition.title).then((answer) => {
       if (!answer.ok) this.report(answer.error.detail)
     }).catch((error: unknown) => this.report(ErrorText.of(error)))
+  }
+
+  private completedAttention(configStore: ConfigStore): CompletedAttention {
+    return new CompletedAttention({
+      settings: () => {
+        const ui = configStore.readSection(UiSettingsSection.spec)
+        return { enabled: ui.sessionCompletedNotice !== false, sound: ui.sessionCompletedNoticeSound === true }
+      },
+      background: () => this.presentation.front === null,
+      show: notice => this.notices.show(notice, async () => {
+        const shown = await this.tabControlBroker.showSession(notice.sessionId, this.tabTitleOf(notice.sessionId) ?? notice.body)
+        if (shown === null) throw new Error(`The session ${notice.sessionId} could not be shown`)
+      }, notice.silent),
+    })
   }
 
   private tabTitleOf(sessionId: string): string | null {

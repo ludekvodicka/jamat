@@ -165,7 +165,7 @@ export class OrchestratorApp {
   }
   private event(target: string, name: string, payload: unknown): void {
     if (target === 'shell') {
-      if (name === 'snapshot') this.shell!.update(payload as ShellSnapshot)
+      if (name === 'snapshot') { this.shell!.update(payload as ShellSnapshot); this.hub?.shellChanged() }
       else if (name === 'notice') { const value = payload as { id: string; event: 'clicked' | 'closed' }; this.shell!.notice(value.id, value.event) }
       else throw new Error('Unknown shell event: ' + name)
     } else if (target === 'orchestrator') {

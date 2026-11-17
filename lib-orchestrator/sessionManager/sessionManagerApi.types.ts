@@ -485,8 +485,17 @@ export interface SessionSvnConflictInfo {
   options: SessionSvnConflictOptionInfo[]
 }
 
+/** A press of a main-copy Finish: commit through the session's agent and close or go on, close without a commit, or leave it. */
+export type SessionMainFinishChoice = 'commit-close' | 'commit-continue' | 'close' | 'cancel'
+
+/**
+ * What a main-copy Finish did: `stopped` the session, `choose` waits in Session actions, `sent` the
+ * command and the session works on, `committing` waits for the commit turn, `cancelled` left it.
+ */
+export type SessionMainFinishOutcome = 'stopped' | 'choose' | 'sent' | 'committing' | 'cancelled'
+
 /** Which chain of a session a workflow shows. */
-export type SessionWorkflowKind = 'before' | 'finish' | 'discard' | 'update-main' | 'git-finish' | 'script'
+export type SessionWorkflowKind = 'before' | 'finish' | 'discard' | 'update-main' | 'git-finish' | 'script' | 'main-finish'
 
 export type SessionWorkflowStepState = 'pending' | 'running' | 'done' | 'failed' | 'waits' | 'skipped'
 
@@ -505,7 +514,7 @@ export type SessionWorkflowTarget =
 /** A press a workflow admits now; each surface maps it onto an operation. */
 export type SessionWorkflowActionId = 'refresh-preparation' | 'prepare-worktree' | 'confirm-environment' | 'review-correction' | 'override-checks' | 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
   | 'resolve-with-agent' | 'open-merger' | 'solve-with-agent' | 'agree-setup' | 'cancel-setup' | 'update-main' | 'later' | 'back-to-work' | 'confirm-stopped' | 'stop-run' | 'remove-run'
-  | 'confirm-busy' | 'resume-worker'
+  | 'confirm-busy' | 'resume-worker' | 'commit-close' | 'commit-continue' | 'close-session' | 'cancel-finish'
 
 export interface SessionWorkflowStep {
   /** Stable within the workflow: `1:updating`, `1:check:lint`, `2:review:lib`. */
@@ -528,6 +537,8 @@ export type SessionWorkflowBody =
     /** Each repository takes its own labelled message, even a lone one: a mount, or the rest after another repository published. */
     separateMessages?: true; marked?: string[]; messageCheck?: { message: string; source: CommitMessageSource; findings: CommitMessageFindingInfo[] } }
   | { kind: 'commands'; commands: readonly string[] }
+  /** The changed files a main-copy Finish asks about; `more` were found beyond the list. */
+  | { kind: 'files'; paths: readonly string[]; more: number }
   | { kind: 'log'; runId: string }
   | { kind: 'conflicts'; summary?: string; conflicts?: { entries: SessionSvnConflictInfo[]; more: number }; mergeBrief?: string | null; readOnly?: true }
 
@@ -539,9 +550,9 @@ export interface SessionWorkflowRound {
 
 export interface SessionWorkflowCommand {
   operation: 'sessions.retrySetup' | 'sessions.discardWorktree' | 'sessions.finishWorktree' | 'sessions.updateMain' | 'sessions.solveWithAgent' | 'sessions.backToWork' | 'sessions.finalize'
-    | 'sessions.remove' | 'sessions.reopen'
+    | 'sessions.remove' | 'sessions.reopen' | 'sessions.finishMain'
   sessionId?: string
-  body: { choice?: 'commit' | 'keep' | 'discard'; agent?: true; reviewCorrection?: true; overrideChecks?: true; refreshPreparation?: true; confirmEnvironment?: true; confirmWorking?: true; acknowledgeSetup?: string; confirmLive?: readonly string[]; expect?: 'stop'; confirmStoppedRunId?: string }
+  body: { choice?: 'commit' | 'keep' | 'discard'; agent?: true; reviewCorrection?: true; overrideChecks?: true; refreshPreparation?: true; confirmEnvironment?: true; confirmWorking?: true; acknowledgeSetup?: string; confirmLive?: readonly string[]; expect?: 'stop'; confirmStoppedRunId?: string; mainChoice?: SessionMainFinishChoice }
 }
 
 export interface SessionWorkflowAction {
@@ -1304,6 +1315,8 @@ export type SessionsOpErrorCode =
   | 'message-edited'
   | 'message-unchecked'
   | 'never-started'
+  /** A main-copy Finish could not type its commit command into the session; the reason travels in the detail. */
+  | 'not-delivered'
   /** The option loses incoming work: only the person may choose it, in the window, with a confirmation. */
   | 'person-only'
 

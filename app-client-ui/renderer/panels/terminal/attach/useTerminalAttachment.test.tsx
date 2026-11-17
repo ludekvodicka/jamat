@@ -450,6 +450,7 @@ function Harness(props: {
   sessionId: string
   attachEpoch?: number
   remoteEndpointId?: string
+  detect?: Parameters<typeof useTerminalAttachment>[7]
 }): React.JSX.Element {
   const holder = useRef<HTMLDivElement | null>(null)
   const target: TerminalTarget = props.remoteEndpointId === undefined
@@ -463,6 +464,7 @@ function Harness(props: {
     onMenu,
     onTyped,
     onPasteNote,
+    props.detect,
   )
   return (
     <div>
@@ -1424,25 +1426,41 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
     })
 
     /**
-     * A remote screen has no detector to ask and no clipboard channel to read, so the only thing a
-     * menu could offer is a copy of what is selected - and with nothing selected there is nothing
-     * to offer at all. The arm that decides this was entered by no test: replacing its body with a
-     * throw left the whole terminal folder green.
+     * A remote screen whose peer offers no detector still pastes, so a right click always opens a
+     * menu. It opened only over a selection, and a plain right click on a remote screen did nothing.
      */
-    it('opens a remote menu only over a selection, and says which kind it is', () => {
+    it('opens a remote menu without a detector, with or without a selection', () => {
       render(<Harness sessionId="remote-session" remoteEndpointId="remote-pc::default::stable" />)
 
       mouse('contextmenu', { button: 2 })
 
-      expect(menus).toEqual([])
+      expect(menus).toHaveLength(1)
+      expect(menus[0].kind).to.equal('remote')
+      expect(menus[0].hasSelection).to.equal(false)
 
       terminal().selection = 'picked with the mouse'
       mouse('contextmenu', { button: 2, clientX: 30, clientY: 8 })
 
+      expect(menus).toHaveLength(2)
+      expect(menus[1].kind).to.equal('remote')
+      expect(menus[1].hasSelection).to.equal(true)
+      expect(menus[1].position).toEqual({ x: 30, y: 8 })
+    })
+
+    // The peer's capabilities usually arrive after the attach; the detector frozen there stayed missing.
+    it('uses a remote detector that arrived after the attach', async () => {
+      const endpointId = 'remote-pc::default::stable'
+      const view = render(<Harness sessionId="remote-session" remoteEndpointId={endpointId} />)
+      const detect = vi.fn(async () => ({ ok: true as const, value: { requestId: 'peer-request', detections: [] } }))
+      view.rerender(<Harness sessionId="remote-session" remoteEndpointId={endpointId} detect={detect} />)
+
+      mouse('contextmenu', { button: 2 })
+
       expect(menus).toHaveLength(1)
-      expect(menus[0].kind).to.equal('remote')
-      expect(menus[0].hasSelection).to.equal(true)
-      expect(menus[0].position).toEqual({ x: 30, y: 8 })
+      const menu = menus[0]
+      if (menu.kind !== 'local') throw new Error(`Unexpected terminal menu: ${menu.kind}`)
+      expect(await menu.detect()).toEqual({ ok: true, value: { requestId: 'peer-request', detections: [] } })
+      expect(detect).toHaveBeenCalledTimes(1)
     })
 
     // Selection, scrolling and everything else the left button does is xterm's, and stays xterm's.

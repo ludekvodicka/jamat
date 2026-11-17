@@ -6,6 +6,7 @@ import type { TerminalAttachSpec, TerminalFrame } from '../../../lib-orchestrato
 import type { WindowTerminalCall } from '../../../lib-orchestrator/sessionManager/windowTerminal.types'
 import type { PerfSpans } from '../../../lib-orchestrator/perfMonitor/perfSpans'
 import { ViewerBuffer } from './viewerBuffer'
+import { ResumeWaiters } from './resumeWaiters'
 
 interface Claim { id: string; spec: TerminalAttachSpec; active: boolean; lifetime: AbortController }
 
@@ -17,6 +18,7 @@ export class WindowTerminals {
   private readonly report: (message: string) => void
   private readonly fatal: () => void
   private readonly perf: PerfSpans
+  private readonly waiters: ResumeWaiters
   private paused: boolean
   private accepting: boolean
   private closed: boolean
@@ -30,6 +32,7 @@ export class WindowTerminals {
     this.perf = perf
     this.output = output
     this.claims = new Map()
+    this.waiters = new ResumeWaiters()
     this.paused = false
     this.accepting = accepting
     this.closed = false
@@ -48,6 +51,7 @@ export class WindowTerminals {
       this.claims.set(externalId, replacement)
       void this.attach(externalId, replacement, true).catch(error => { this.report(String(error)); this.fatal() })
     }
+    this.waiters.release()
   }
 
   async authorize(externalId: string): Promise<string | null> {
@@ -64,6 +68,7 @@ export class WindowTerminals {
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.waiters.close()
     for (const claim of this.claims.values())
       try { claim.lifetime.abort(); this.terminals.detach(claim.id) }
       catch (error) { this.report(String(error)) }
@@ -75,8 +80,11 @@ export class WindowTerminals {
     switch (call.method) {
       case 'terminal:attach': {
         const [externalId, spec] = call.args
+        // A refusal here showed a running session as lost, and its Reconnect met the same pause.
+        if (this.paused) context.pending()
+        while (this.paused) await this.waiters.wait(context.signal)
+        if (this.closed || context.signal.aborted) throw new Error('Window terminal connection is closed')
         if (!this.accepting) throw new Error('The workspace window is closing')
-        if (this.paused) throw new Error('Terminal output is reconnecting')
         if (this.claims.has(externalId)) throw new Error(`Attach id already claimed: ${externalId}`)
         const claim = { id: randomUUID(), spec, active: true, lifetime: new AbortController() }
         this.claims.set(externalId, claim)

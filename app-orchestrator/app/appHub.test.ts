@@ -83,7 +83,7 @@ describe('orchestration composition boundary', () => {
     const calls: string[] = []
     const events = new SessionEvents({
       refreshCommits: () => { calls.push('commits'); throw new Error('fixture') },
-      wakeSnapins: () => { calls.push('snapins') }, noticeWaits: () => { calls.push('notices') },
+      wakeSnapins: () => { calls.push('snapins') }, notices: () => { calls.push('notices') },
       attentionSeen: () => { calls.push('attention') }, publishSessions: () => { calls.push('windows') },
       publishControl: () => { calls.push('control') }, publishInbound: () => { calls.push('inbound') },
       publishActivity: () => { calls.push('activity') }, titleOf: () => null,

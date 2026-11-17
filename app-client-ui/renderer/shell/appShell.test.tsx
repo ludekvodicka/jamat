@@ -830,6 +830,12 @@ class AppClientStub {
       'sessions.openHistory': { library: (body: Body) => sessions.openHistory(body.spec) },
       'sessions.reopen': { library: (body: Body) => sessions.reopen(session(body)) },
       'sessions.finalize': { library: (body: Body) => sessions.finalize(session(body)) },
+      // The library's answer for a session without changes of its own: it stops, as finalize does.
+      'sessions.finishMain': { library: async (body: Body) => {
+        const stopped = await sessions.finalize(session(body))
+        return stopped.ok && stopped.value.ok
+          ? { ok: true, value: { ok: true, value: { sessionId: session(body), outcome: 'stopped' } } } : stopped
+      } },
       'sessions.remove': { library: (body: Body) => sessions.remove(session(body)) },
       'sessions.fork': {
         library: (body: Body) => sessions.fork(session(body), body.name === undefined ? undefined : { name: body.name }),

@@ -7,6 +7,7 @@ import type { RemoteOutboundPort } from '../../lib-orchestrator/remoteControl/re
 import type { TerminalAttachOwner, TerminalPort } from '../../lib-orchestrator/sessionManager/terminalPort'
 import type { TerminalAttachResult, TerminalAttachSpec, TerminalFrame } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { GatewayWindow } from './gatewayWindow'
+import { ViewerBuffer } from './terminals/viewerBuffer'
 
 const turn = async (): Promise<void> => { for (let n = 0; n < 12; n++) await Promise.resolve() }
 class Port extends EventEmitter {
@@ -219,6 +220,44 @@ for (const family of ['local', 'remote'] as const) {
   })
 }
 
+for (const family of ['local', 'remote'] as const) {
+  test(`holds a ${family} attach made during a truncation until the window resumes`, async t => {
+    const h = fixture(t), window = h.window('window')
+    await window.attach(); const local = h.id()
+    window.acknowledge(false)
+    window.frame(local, { type: 'terminal.data', runtimeSessionId: 'r', generation: 1, outputEpoch: 1, outputSeq: 1, lastOutputAt: 1, delta: 'x'.repeat(1_100_000) })
+    window.frame(local, { type: 'terminal.data', runtimeSessionId: 'r', generation: 1, outputEpoch: 1, outputSeq: 2, lastOutputAt: 1, delta: 'x'.repeat(1_100_000) })
+    const truncated = window.port.messages.find(message => message.type === 'stream-truncated')
+    assert.ok(truncated && truncated.type === 'stream-truncated')
+    const method = family === 'local' ? 'attach' : 'remote-attach'
+    const before = h.records.filter(record => record.method === method).length
+    let settled = false
+    const late = (family === 'local' ? window.attach('late', 'session-2') : window.remoteAttach('late')).finally(() => { settled = true })
+    await turn()
+    assert.equal(settled, false)
+    assert.equal(h.records.filter(record => record.method === method).length, before)
+    window.received(window.frames[0]!.generation, window.frames[0]!.sequence)
+    window.acknowledge(true)
+    window.reset(truncated.generation)
+    assert.partialDeepStrictEqual(await late, { ok: true })
+    assert.equal(h.records.filter(record => record.method === method).length, before + 1 + (family === 'local' ? 1 : 0))
+    assert.deepEqual(h.reports, [])
+  })
+
+  test(`refuses a ${family} attach waiting for a resume when its window closes`, async t => {
+    const h = fixture(t), window = h.window('window')
+    await window.attach(); const local = h.id()
+    window.acknowledge(false)
+    window.frame(local, { type: 'terminal.data', runtimeSessionId: 'r', generation: 1, outputEpoch: 1, outputSeq: 1, lastOutputAt: 1, delta: 'x'.repeat(1_100_000) })
+    window.frame(local, { type: 'terminal.data', runtimeSessionId: 'r', generation: 1, outputEpoch: 1, outputSeq: 2, lastOutputAt: 1, delta: 'x'.repeat(1_100_000) })
+    const late = family === 'local' ? window.attach('late', 'session-2') : window.remoteAttach('late')
+    await turn()
+    window.server.close()
+    await assert.rejects(late)
+    assert.equal(h.records.filter(record => record.method === (family === 'local' ? 'attach' : 'remote-attach')).length, family === 'local' ? 1 : 0)
+  })
+}
+
 test('retains a normal offline remote attachment without failing the window', async t => {
   const h = fixture(t), window = h.window('window')
   h.state.remoteUnavailable = true
@@ -250,14 +289,14 @@ test('shares encoded native snapshot credit across many attaches while another w
   for (let index = 0; index < 64; index++) {
     const nativeBytes = slow.frames.slice(index).reduce((sum, frame) => sum + Buffer.byteLength(JSON.stringify(frame)), 0)
     maximum = Math.max(maximum, nativeBytes)
-    assert.ok(nativeBytes <= 2 * 1024 * 1024)
+    assert.ok(nativeBytes <= ViewerBuffer.reservedBytesMaxConst)
     const frame = slow.frames[index]!
     assert.ok(frame)
     slow.received(frame.generation, frame.sequence)
     await turn()
   }
   await Promise.all(tasks)
-  assert.ok(maximum > 1024 * 1024)
+  assert.ok(maximum > ViewerBuffer.reservedBytesMaxConst / 2)
   assert.equal(slow.port.messages.some(message => message.type === 'stream-truncated'), false)
   assert.deepEqual(h.reports, [])
 })

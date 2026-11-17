@@ -24,6 +24,7 @@ export class OrchestratorPaths {
   private static readonly codexRolloutCwdFileNameConst = 'codex-rollout-cwd.json'
   private static readonly rateMonitorCacheFileNameConst = 'rate-monitor-cache.json'
   private static readonly terminalOpenedPathsFileNameConst = 'terminal-opened-paths.json'
+  private static readonly contextCompactionCooldownsFileNameConst = 'context-compaction-cooldowns.json'
   private static readonly claudeStatusLineNameConst = 'claude-statusline'
   private static readonly claudeContextSnapshotsNameConst = 'claude-context'
   private static readonly claudeIdentitiesNameConst = 'claude-identity'
@@ -157,6 +158,14 @@ export class OrchestratorPaths {
     return join(
       OrchestratorPaths.directory(configIdentity, channel),
       OrchestratorPaths.terminalOpenedPathsFileNameConst,
+    )
+  }
+
+  /** When each session's `/compact` pause ends, kept so a client restart does not send a second one. */
+  static contextCompactionCooldownsFile(configIdentity: string, channel: RuntimeChannel): string {
+    return join(
+      OrchestratorPaths.directory(configIdentity, channel),
+      OrchestratorPaths.contextCompactionCooldownsFileNameConst,
     )
   }
 

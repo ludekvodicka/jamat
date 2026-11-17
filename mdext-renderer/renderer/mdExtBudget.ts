@@ -3,10 +3,10 @@ import { FileViewerLimits } from '../../lib-orchestrator/fileViewer/fileViewerLi
 /**
  * How much of ONE document is given the expensive treatment.
  *
- * The per-call ceilings bound one fence: 64 KiB of source to highlight, 50 000 characters of diagram
- * spec. Nothing bounded how MANY. A generated API report with 500 fences is 500 synchronous Shiki
- * calls chained through the microtask queue with no yield, and one renderer draws every panel of the
- * window - so the terminal and the sessions tree stop with it.
+ * The per-call ceilings bound one fence: 64 KiB of source to highlight, 100 000 characters of
+ * diagram spec (256 000 for raw SVG). Nothing bounded how MANY. A generated API report with 500
+ * fences is 500 synchronous Shiki calls chained through the microtask queue with no yield, and one
+ * renderer draws every panel of the window - so the terminal and the sessions tree stop with it.
  *
  * **Decided once per fence and remembered**, keyed by where the fence starts in the document. A
  * re-render must not move a fence in or out of the budget: the answer would flip between highlighted

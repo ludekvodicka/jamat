@@ -2,7 +2,7 @@ import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { FileViewerDocumentSource } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
-import type { PanelSplitFileItem } from '../widgets/tabs/panelSplit'
+import type { PanelSplitFileItem, PanelSplitReading } from '../widgets/tabs/panelSplit'
 import { FileViewerContent } from './fileViewerContent'
 import { FileViewerGetDocumentControl } from './fileViewerGetDocument'
 import type { PromptInsertTarget } from '../shell/terminalInputRegistry'
@@ -22,6 +22,7 @@ import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
+import { FileViewerScrollTop, useFileViewerScrollRestore } from './fileViewerScrollRestore'
 import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
@@ -36,7 +37,8 @@ export function FileViewerPane(props: {
   reloadRequest: number
   onBack(): void
   onClose(): void
-  onOpenItem(item: PanelSplitFileItem): string | null
+  /** `reading` is where the reader was in this file, given when a link leaves it for another. */
+  onOpenItem(item: PanelSplitFileItem, reading?: PanelSplitReading): string | null
   onRefused(reason: string): void
   insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
@@ -80,6 +82,9 @@ export function FileViewerPane(props: {
   const search = useFileViewerSearch(body, () => {
     if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
   })
+  // The pane mounts once per shown item, so the offset it mounted with is restored once.
+  const [restoreTop, setRestoreTop] = useState(props.item.scrollTop)
+  useFileViewerScrollRestore(body, restoreTop, model.textReady, () => setRestoreTop(undefined))
   const openSource = useCallback((source: FileViewerDocumentSource): void => {
     model.openSource(source, (document) => {
       const refusal = onOpenItem({
@@ -88,11 +93,11 @@ export function FileViewerPane(props: {
         title: document.name,
         source: document.source,
         ...(props.item.target ? { target: props.item.target } : {}),
-      })
+      }, { key: props.item.key, scrollTop: FileViewerScrollTop.of(body.current) })
       if (refusal !== null)
         onRefused(refusal)
     })
-  }, [model.openSource, onOpenItem, onRefused])
+  }, [model.openSource, onOpenItem, onRefused, props.item.key, props.item.target, body])
 
   return (
     <section

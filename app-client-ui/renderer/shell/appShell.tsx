@@ -42,6 +42,7 @@ import { AgentSettingsStore } from '../contextCompaction/agentSettingsStore'
 import { ContextCompactionController } from '../contextCompaction/contextCompactionController'
 import { SessionCompact } from '../contextCompaction/sessionCompact'
 import { PanelFileToolsRegistry } from '../fileViewer/panelFileToolsRegistry'
+import { PanelHistoryRegistry } from './panelHistoryRegistry'
 import { SnapshotStore } from '../ipc/snapshotStore'
 import { ConfigurationOverlay } from '../overlays/configuration/configurationOverlay'
 import type {
@@ -658,6 +659,7 @@ class AppShellComposition {
   ): WorkspaceShellWiring {
     const panels = new PanelRegistry()
     const fileTools = new PanelFileToolsRegistry()
+    const panelHistory = new PanelHistoryRegistry()
     const panelFocus = new PanelFocusRegistry()
     const sessionPorts = AppShellComposition.sessionPorts()
     const sessionsSnapshot = new SnapshotStore<SessionsSnapshot>(
@@ -761,6 +763,7 @@ class AppShellComposition {
             marks={sessionsMarks}
               commitOpen={commitOpen}
             fileTools={fileTools}
+            history={panelHistory}
             splitPins={splitPins}
             openFile={(source, documentKey, hint, location, target) =>
               WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location, target)}
@@ -781,7 +784,7 @@ class AppShellComposition {
         <ErrorBoundary what="The file viewer">
           <Suspense fallback={<p>Opening file...</p>}>
             <SessionContentPanel params={props.params} remote={remoteSnapshot}>
-              {(ports, changesPorts) => <AppShellComposition.fileViewerPanelConst {...props} inputs={terminalInputs} fileTools={fileTools} ports={ports} changesPorts={changesPorts} />}
+              {(ports, changesPorts) => <AppShellComposition.fileViewerPanelConst {...props} inputs={terminalInputs} fileTools={fileTools} history={panelHistory} ports={ports} changesPorts={changesPorts} />}
             </SessionContentPanel>
           </Suspense>
         </ErrorBoundary>
@@ -878,6 +881,7 @@ class AppShellComposition {
         intents,
         worktreeSetupIntents,
         fileTools,
+        panelHistory,
         { snapshot: sessionsSnapshot, remote: remoteSnapshot, openTerminal, compact: contextCompact, finishRequests },
       ),
       finishRequests,
@@ -912,6 +916,7 @@ class AppShellComposition {
       subscribe: (onChanged) => window.appClient.onSessionsChanged(onChanged),
       reportError: (message) => AppClientUiReport.error(`${message}`),
       finalize: (sessionId) => AppControl.sessionsDone('sessions.finalize', { session: AppControl.sessionOf(sessionId) }),
+      finishMain: (sessionId) => AppControl.sessions('sessions.finishMain', { session: AppControl.sessionOf(sessionId) }),
       remove: (sessionId) => AppControl.sessionsDone('sessions.remove', { session: AppControl.sessionOf(sessionId) }),
       erase: (sessionId) => AppControl.sessionsDone('sessions.remove', { session: AppControl.sessionOf(sessionId), erase: true }),
       retrySetup: (sessionId, acknowledgeSetup) =>
@@ -1143,6 +1148,7 @@ class AppShellComposition {
     intents: LauncherIntentStore,
     worktreeSetupIntents: WorktreeSetupIntentStore,
     fileTools: PanelFileToolsRegistry,
+    panelHistory: PanelHistoryRegistry,
     session: {
       snapshot: SnapshotStore<SessionsSnapshot>
       remote: SnapshotStore<RemoteConnectionsSnapshot>
@@ -1310,7 +1316,8 @@ class AppShellComposition {
     commands.register('view.maximizeToggle', () => controller.toggleMaximizeActiveGroup())
     commands.register('view.toggleTabSidebar', () => fileTools.toggle(controller.activePanelId()))
     commands.register('view.fileChanges', () => fileTools.openFileChanges(controller.activePanelId()))
-    commands.register('view.fileBack', () => WorkspacePanels.backInSplit(controller))
+    commands.register('view.fileBack', () => panelHistory.step(controller.activePanelId(), 'back'))
+    commands.register('view.fileForward', () => panelHistory.step(controller.activePanelId(), 'forward'))
     commands.assertCovers(AppCommands.rendererFor(role))
     return commands
   }

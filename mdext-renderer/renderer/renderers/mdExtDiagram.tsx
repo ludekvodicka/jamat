@@ -21,7 +21,7 @@ export function MdExtDiagram(props: {
       setSvg('')
       return () => { alive = false }
     }
-    if (props.source.length > MdExtDiagramEngine.maxSourceCharacters) {
+    if (props.source.length > MdExtDiagramEngine.maxSourceCharacters(props.language)) {
       setSvg(null)
       setError('Diagram source is too large')
       return () => { alive = false }

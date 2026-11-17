@@ -268,6 +268,10 @@ function world(options?: {
         worktreeCalls.push({ method: `backToWork by ${requestedBy}`, sessionId })
         return { ok: true, value: { sessionId, actionId: 'a1' } }
       },
+      finishMainSession: async (sessionId, choice) => {
+        worktreeCalls.push({ method: `finishMain ${choice ?? 'press'}`, sessionId })
+        return { ok: true, value: { sessionId, outcome: choice === 'cancel' ? 'cancelled' : 'choose' } }
+      },
       worktreeOf: async (sessionId) => options?.worktree ?? {
         ok: true,
         value: { sessionId, worktree: null, retired: null, finish: null, action: null, outcome: null, cleanup: null, receipts: [], step: null, workflow: null },
@@ -675,6 +679,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.resolveConflicts', { session: { kind: 'sessionId', sessionId: 'session-1' }, paths: 'all', option: 'merged' }, 'op-resolve-all'),
       request('sessions.solveWithAgent', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-solve'),
       request('sessions.backToWork', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-back'),
+      request('sessions.finishMain', { session: { kind: 'sessionId', sessionId: 'session-1' }, mainChoice: 'cancel' }, 'op-finish-main'),
       request('sessions.discardWorktree', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-discard'),
       request('sessions.fork', { session: { kind: 'sessionId', sessionId: 'session-1' }, name: 'Branch' }, 'op-fork'),
       request('sessions.switchAccount', { session: { kind: 'sessionId', sessionId: 'session-1' }, accountId: 'work' }, 'op-switch'),

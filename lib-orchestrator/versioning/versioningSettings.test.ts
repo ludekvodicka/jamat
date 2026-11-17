@@ -75,6 +75,22 @@ describe('app-client-ui/shared/versioningSettings', () => {
     expect(messages).toHaveLength(1)
     expect(VersioningSettings.isValid({ ...VersioningSettings.defaultValue(), closeCommitOnSuccess: 'no' })).toBe(false)
   })
+  it('types plain words for a Finish commit until a team names its own commands, one line each', () => {
+    const base = VersioningSettings.defaultValue()
+    expect(VersioningSettings.finishCommandOf(base, 'svn')).toBe("Commit this session's changes to SVN.")
+    expect(VersioningSettings.finishCommandOf(base, 'git')).toBe("Commit this session's changes to Git.")
+    const own = { ...base, finishCommitCommands: { svn: '/commit-svn', git: '/commit-git' } }
+    expect(VersioningSettings.isValid(own)).toBe(true)
+    expect(VersioningSettings.finishCommandOf(VersioningSettings.coerce(own, () => undefined), 'svn')).toBe('/commit-svn')
+    for (const commands of [{ svn: '', git: '/commit-git' }, { svn: '/commit-svn\nrm', git: '/commit-git' }, { svn: '/commit-svn' },
+      { svn: 'x'.repeat(801), git: '/commit-git' }]) {
+      expect(VersioningSettings.isValid({ ...base, finishCommitCommands: commands })).toBe(false)
+      const reports: string[] = []
+      expect(VersioningSettings.coerce({ ...base, finishCommitCommands: commands }, (message) => reports.push(message)).finishCommitCommands).toBeUndefined()
+      expect(reports).toEqual(['The Finish commit commands are unusable; reading them as the default words'])
+    }
+  })
+
   it('migrates a mode-only document and validates external arguments before substituting paths', () => {
     const messages: string[] = []
     expect(VersioningSettings.coerce({ mode: 'git' }, (text) => messages.push(text)))

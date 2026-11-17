@@ -92,7 +92,7 @@ describe('Session actions', () => {
     view.rerender(<SessionActionsPane session={reviewing} sessions={store} visible ports={ports} />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeEnabled())
     expect(screen.queryByText(/This review is outdated/)).toBeNull()
-    expect(screen.getByText('Ready for validation')).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Review changes' })).getByText('Ready for validation')).toBeVisible()
     view.rerender(<SessionActionsPane session={{ ...reviewing, worktreeView: { ...reviewing.worktreeView!, version: 5 } }} sessions={store} visible ports={ports} />)
     expect(screen.getByText(/This review is outdated/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Commit & merge' })).toBeDisabled()
@@ -213,6 +213,21 @@ describe('Session actions', () => {
     expect(screen.getAllByText('Checkout')).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Setup' }))
     expect(screen.getAllByText('Checkout')).toHaveLength(2)
+  })
+
+  // Mirabia 167: a Finish drawn closed ran its preparation again under a bare collapsed heading.
+  it('opens a closed section when it runs again and names its state in the heading', () => {
+    const view = render(<SessionActionsPane session={session([{ ...section('Finish', false), badge: 'not started' }])} sessions={store} visible ports={ports} />)
+    const heading = screen.getByRole('button', { name: /^Finish/ })
+    expect(heading).toHaveAttribute('aria-expanded', 'false')
+    expect(heading.textContent).toBe('Finish')
+    view.rerender(<SessionActionsPane session={session([{ ...section('Finish', true), badge: 'preparing' }])} sessions={store} visible ports={ports} />)
+    expect(heading).toHaveAttribute('aria-expanded', 'true')
+    expect(heading.textContent).toBe('Finishpreparing')
+    fireEvent.click(heading)
+    view.rerender(<SessionActionsPane session={session([{ ...section('Finish', true), badge: 'Ready for validation' }])} sessions={store} visible ports={ports} />)
+    expect(heading).toHaveAttribute('aria-expanded', 'false')
+    expect(heading.textContent).toBe('FinishReady for validation')
   })
 
   // UA1-J07-7: the outcome of a kept worktree carries its decision; a collapsed heading hid it.

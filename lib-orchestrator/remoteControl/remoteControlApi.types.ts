@@ -673,6 +673,16 @@ export interface RemoteControlOperationMap {
     response: { sessionId: string }
   }
   /**
+   * The window's Finish of an agent session in a main copy. Without `mainChoice`, a session with
+   * changes of its own waits in Session actions (`choose`); any other stops (`stopped`). With it, a
+   * press of that section: a commit types the configured command into the session and commits
+   * nothing itself. Local only; `sessions.finalize` stays the plain stop for every other caller.
+   */
+  'sessions.finishMain': {
+    request: { session: RemoteControlSessionSelector; mainChoice?: import('../sessionManager/sessionManagerApi.types').SessionMainFinishChoice }
+    response: { sessionId: string; outcome: import('../sessionManager/sessionManagerApi.types').SessionMainFinishOutcome }
+  }
+  /**
    * One session's worktree, read from its record: where it stands, where it went once removed, the
    * SVN finish that runs, the last outcome, the cleanup and the receipts of the SVN commits made from
    * its commit split or into its worktree. A session without a worktree answers its receipts too; a

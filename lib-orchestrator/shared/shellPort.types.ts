@@ -48,7 +48,8 @@ export type ShellClipboardRead =
   | { kind: 'empty' }
   | { kind: 'too-large' }
 
-export interface ShellNotice { id: string; title: string; body: string }
+/** `attribution` is a small grey line under the body, or null for none. */
+export interface ShellNotice { id: string; title: string; body: string; attribution: string | null; silent: boolean }
 export interface ShellPort {
   confirm(request: ShellConfirmRequest): Promise<boolean>
   saveDialog(request: { title: string; defaultPath?: string }): Promise<string | null>

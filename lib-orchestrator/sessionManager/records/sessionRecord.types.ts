@@ -351,6 +351,36 @@ export interface SessionRecordLaunchWait {
   reason: string
 }
 
+/**
+ * Finish of an agent session working in a main copy, not in a worktree: the files its own transcript
+ * changed that the working copy still shows as changed, and what the person chose. Jamat commits
+ * nothing itself; a commit choice types the configured command into the session, whose agent writes
+ * the message. A later Finish replaces it; the session's ended-history cleanup removes a closed one.
+ */
+export interface SessionRecordMainFinish {
+  startedAt: number
+  phase: 'choosing' | 'committing' | 'closed'
+  /** The VCS the command commits to; null when the read failed, which offers no commit. */
+  vcs: 'svn' | 'git' | null
+  /** The session's own changed paths as the person reads them, at most `MainFinishWorkflow.pathsLimitConst`. */
+  paths: string[]
+  /** How many more paths the read found than `paths` keeps. */
+  more: number
+  /** The command typed for a commit choice, and when. */
+  command?: string
+  sentAt?: number
+  /** Commit & close: the agent was seen working since the command, so its next idle ends the turn. */
+  workingSeen?: true
+  /** One line: why the person is asked again, or why the last press did nothing. */
+  note?: string
+  /** Closed only: when, and how. */
+  endedAt?: number
+  result?: SessionMainFinishResult
+}
+
+/** `closed`: the session was stopped; `sent`: the command went and the session works on; `ended`: it ended by itself first. */
+export type SessionMainFinishResult = 'closed' | 'sent' | 'cancelled' | 'ended'
+
 export interface SessionRecordActionHistory {
   key: string
   startedAt: number
@@ -405,6 +435,8 @@ export interface SessionRecord {
   worktreeOutcome?: SessionWorktreeOutcome
   /** Closed action sources, oldest first; cleared after the session and its open actions end. */
   actionHistory?: SessionRecordActionHistory[]
+  /** The last Finish of a main-copy agent session; see `SessionRecordMainFinish`. */
+  mainFinish?: SessionRecordMainFinish
   /** Cleared sections still derivable from operational state must not reappear after a write or restart. */
   clearedWorkflowIds?: string[]
   /** Set once the worktree was removed, together with `worktree` going. */

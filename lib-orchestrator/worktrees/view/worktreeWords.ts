@@ -344,6 +344,9 @@ export class WorktreeWords {
       case 'update-main': return { operation: 'sessions.updateMain', body: { confirmLive: action.confirmLive } }
       case 'solve-with-agent': return { operation: 'sessions.solveWithAgent', body: {} }
       case 'resume-worker': return { operation: 'sessions.reopen', body: {} }
+      case 'commit-close': case 'commit-continue': return { operation: 'sessions.finishMain', body: { mainChoice: action.id } }
+      case 'close-session': return { operation: 'sessions.finishMain', body: { mainChoice: 'close' } }
+      case 'cancel-finish': return { operation: 'sessions.finishMain', body: { mainChoice: 'cancel' } }
       case 'stop-agent': case 'stop-run': return action.runId === undefined ? undefined : { operation: 'sessions.finalize', sessionId: action.runId, body: { expect: 'stop' } }
       case 'remove-run': return action.runId === undefined ? undefined : { operation: 'sessions.remove', sessionId: action.runId, body: {} }
       default: throw new Error(`Unknown workflow action: ${JSON.stringify(action.id satisfies never)}`)

@@ -504,7 +504,15 @@ export class AppCommands {
     },
     {
       id: 'view.fileBack',
-      title: 'Back in Split Files',
+      title: 'Back in File Viewer',
+      target: 'renderer',
+      windowScope: 'any',
+      surfaces: [],
+      terminalSafe: true,
+    },
+    {
+      id: 'view.fileForward',
+      title: 'Forward in File Viewer',
       target: 'renderer',
       windowScope: 'any',
       surfaces: [],

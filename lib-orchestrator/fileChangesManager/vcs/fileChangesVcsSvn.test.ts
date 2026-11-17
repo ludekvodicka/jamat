@@ -369,6 +369,34 @@ describe('lib-orchestrator/fileChangesManager/vcs/fileChangesVcsSvn', () => {
     } })
   })
 
+  it('leaves out every entry no named target reaches before it reads properties or nested checkouts', async () => {
+    const { root, cwd } = workingCopy()
+    const project = join(cwd, 'Adf')
+    const foreign = join(cwd, 'foreign')
+    mkdirSync(join(project, 'docs'), { recursive: true })
+    mkdirSync(join(foreign, '.svn'), { recursive: true })
+    writeFileSync(join(project, 'docs', 'review.md'), 'new\n', 'utf8')
+    const commands: string[][] = []
+    const missing = Array.from({ length: 6_000 }, (_, index) =>
+      `<entry path="other/f${index}.ts"><wc-status item="missing" props="none" revision="2"/></entry>`).join('')
+    const vcs = new FileChangesVcsSvn(new Runner((args) => {
+      if (args[0] !== 'info') commands.push(args)
+      if (args[0] === 'proplist') return ok('<properties></properties>')
+      return detectionAnswer(root, args) ?? ok(`<status><target path=".">${missing}
+        <entry path="changed.ts"><wc-status item="normal" props="modified" revision="2"/></entry>
+        <entry path="foreign"><wc-status item="unversioned" props="none"/></entry>
+        <entry path="Adf"><wc-status item="unversioned" props="none"/></entry>
+      </target></status>`)
+    }))
+
+    const result = await vcs.status((await vcs.detect(cwd))!, undefined, [join(project, 'docs', 'review.md')])
+
+    expect(result).toEqual({ ok: true, value: { externalRoots: [], entries: [
+      expect.objectContaining({ absolutePath: project, nodeKind: 'directory', status: 'untracked' }),
+    ] } })
+    expect(commands.map((args) => args[0])).toEqual(['status'])
+  })
+
   it('reads a baseline as the bytes svn printed, so a binary file keeps them', async () => {
     const { root, cwd } = workingCopy()
     const bytes = Buffer.from([0x89, 0x50, 0x00, 0xff, 0xfe, 0x80])

@@ -56,9 +56,10 @@ export class AgentComposerReader {
   /**
    * The rule drawn above and below Claude's box. A frame recorded before `ScreenTail` counted rows
    * in cells (`claude-live-idle.json`, 2026-08-19) carries the rule and the marker on ONE row, so a
-   * rule with something after it is split back into the two rows it was.
+   * rule with something after it is split back into the two rows it was. Claude 2.1.322 draws the
+   * session's AI title into the top rule as `─── <title> ─` (`claude-live-composer-titled-rule.json`).
    */
-  private static readonly claudeRuleConst = /^─{8,}$/
+  private static readonly claudeRuleConst = /^─{8,}(?: [^\s─].* ─+)?$/
   private static readonly ruleThenRowConst = /^((?:\x1b\[[0-9;]*m)*─{8,})((?:\x1b\[[0-9;]*m)*[^\x1b\s─].*)$/
   /**
    * `>` in the current build, `❯` in 2.1.235 (`claude-live-idle.json`). The current build follows

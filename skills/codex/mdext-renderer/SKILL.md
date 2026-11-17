@@ -1,6 +1,6 @@
 ---
 name: mdext-renderer
-description: "Author .md or .mdext that Jamat renders richly: GFM, highlighted code, SVG, Mermaid, Graphviz, Vega-Lite, Archify, callouts, status chips, and collapsibles. Use for reports, plans, design notes, and anything the user will view in Jamat. Output stays valid Markdown. Triggers: 'mdext', 'vizuální dokument', 'diagram do reportu'."
+description: "Author .md or .mdext that Jamat renders richly: GFM, highlighted code, SVG, Graphviz, Vega-Lite, Archify, callouts, status chips, and collapsibles. Use for reports, plans, design notes, and anything the user will view in Jamat. Output stays valid Markdown. Triggers: 'mdext', 'vizuální dokument', 'diagram do reportu'."
 ---
 
 # mdext-renderer

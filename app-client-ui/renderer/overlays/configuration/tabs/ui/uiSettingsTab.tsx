@@ -139,6 +139,17 @@ export function UiSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
           Activate session when an agent opens a document</label>
         <p className="jamat-configuration-ui__note">Bring the document's session and window to the foreground. Disabled by default, documents open in the background. Commit activation is configured separately under Versioning.</p>
       </ConfigurationSection>
+      <ConfigurationSection title="Notifications">
+        <label><input type="checkbox" checked={buffer?.sessionCompletedNotice !== false}
+          disabled={buffer === null || saving}
+          onChange={(event) => ports.dispatch({ input: 'session-completed-notice', value: event.currentTarget.checked })} />
+          Notify when a session completes while Jamat is in the background</label>
+        <label><input type="checkbox" checked={buffer?.sessionCompletedNoticeSound === true}
+          disabled={buffer === null || saving || buffer.sessionCompletedNotice === false}
+          onChange={(event) => ports.dispatch({ input: 'session-completed-notice-sound', value: event.currentTarget.checked })} />
+          Play a sound</label>
+        <p className="jamat-configuration-ui__note">A Windows notice "Jamat session completed" with the session name, when an agent finishes its turn and no Jamat window has the focus. A click shows the session. Enabled and silent by default.</p>
+      </ConfigurationSection>
       <ConfigurationSection title="Text size">
         <UiSettingsSlider
           disabled={buffer === null || saving}

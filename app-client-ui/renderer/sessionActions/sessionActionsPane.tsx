@@ -101,6 +101,15 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   // A closed section that still offers presses, such as a kept worktree's Discard, starts open too.
   const initiallyExpanded = useRef(section.open || section.actions.length > 0)
   const expanded = props.expanded ?? initiallyExpanded.current
+  // A section drawn closed that starts to run or wait again opens, or its progress stays hidden
+  // under a bare heading (Mirabia 167, 2026-11-16). Collapsing it later is the person's choice.
+  const wasOpen = useRef(section.open)
+  const expand = useRef(props.onExpand)
+  expand.current = props.onExpand
+  useEffect(() => {
+    if (section.open && !wasOpen.current) expand.current(true)
+    wasOpen.current = section.open
+  }, [section.open])
   const [note, setNote] = useState<ReturnType<typeof WorkflowFooterNotes.of>>({ kind: 'none' })
   const [busy, setBusy] = useState(false)
   /** The press that waits for its answer; a Finish step can take seconds before the record moves (UA1-J09-8). */
@@ -212,6 +221,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   return <section className={`session-actions__section${props.reviewOpen ? ' session-actions__section--review' : ''}`} aria-label={section.title} hidden={props.hidden}>
     <div ref={historyPane} tabIndex={-1} hidden={props.reviewOpen}>
     <button className="session-actions__heading" type="button" aria-expanded={expanded} onClick={() => props.onExpand(!expanded)}>{section.title}
+      {section.open && section.badge !== '' && <span className="session-actions__state">{section.badge}</span>}
       {section.startedAt !== undefined && <time className="session-actions__time" dateTime={new Date(section.startedAt).toISOString()}>
         {new Date(section.startedAt).toLocaleString()}</time>}</button>
     {expanded && <>

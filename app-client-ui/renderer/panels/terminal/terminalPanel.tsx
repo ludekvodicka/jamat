@@ -45,6 +45,8 @@ import type { SessionCompact } from '../../contextCompaction/sessionCompact'
 import type { ContextCompactionController } from '../../contextCompaction/contextCompactionController'
 import type { FileViewerBaselineHint } from '../../fileViewer/fileViewerPanel.types'
 import { PanelFileToolsRegistry } from '../../fileViewer/panelFileToolsRegistry'
+import { FileViewerScrollTop } from '../../fileViewer/fileViewerScrollRestore'
+import type { PanelHistoryDirection, PanelHistoryRegistry } from '../../shell/panelHistoryRegistry'
 import { useFileChanges } from '../../fileViewer/useFileChanges'
 import { useWorkingTreeChanges } from '../../fileViewer/useWorkingTreeChanges'
 import type { SnapshotStore } from '../../ipc/snapshotStore'
@@ -64,13 +66,14 @@ import { ContextMenu } from '../../widgets/contextMenu'
 import { PanelSidebarLayout, usePanelSidebar } from '../../widgets/tabs/panelSidebar'
 import {
   type PanelSplitItem,
+  type PanelSplitReading,
   PanelSplitLayout,
   PanelSplitParams,
   PanelSplitStrip,
   usePanelSplit,
 } from '../../widgets/tabs/panelSplit'
 import './terminalPanel.css'
-import { TerminalContextMenu } from './menu/terminalContextMenu'
+import { TerminalContextMenu, TerminalMenuItems } from './menu/terminalContextMenu'
 import { TerminalClipboard } from './input/terminalClipboard'
 import { TerminalNotesPanel } from './notes/terminalNotesPanel'
 import { useTerminalNotes } from './notes/useTerminalNotes'
@@ -112,6 +115,7 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   marks: SessionsMarksStore
   commitOpen: CommitOpenStore
   fileTools: PanelFileToolsRegistry
+  history: PanelHistoryRegistry
   /** Where the session's pinned split items outlive the tab. */
   splitPins: TerminalSplitPinsStore
   openFile(
@@ -226,6 +230,22 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const pendingReviews = localTools ? commitState.snapshot?.reviews ?? [] : []
   const hiddenReviews = pendingReviews.filter((review) =>
     review.sessionId === sessionId && !split.state.items.some((item) => TerminalSplitMarks.shows(review, item, sessionId)))
+  const reviewItemOf = useCallback((review: (typeof pendingReviews)[number]): PanelSplitItem => review.workflow
+    ? PanelSplitParams.workflowItemOf(sessionId, target) : {
+      kind: 'commit' as const, key: SessionWorkspaceKeys.of(target, review.draftId), target, reviewId: review.draftId,
+      vcs: review.vcs, scopeRoot: review.scopeRoot, paths: review.paths, title: `Commit ${review.vcs.toUpperCase()}`,
+    }, [sessionId, target])
+  // A session whose `!` says a review waits shows that review when somebody switches to it: its item
+  // in the split comes forward, or opens when the split no longer holds it (a restored layout). Read
+  // through a ref, because the activation listener below is subscribed once per terminal.
+  const pendingFront = useRef<() => void>(() => {})
+  pendingFront.current = () => {
+    const review = pendingReviews.find((candidate) => candidate.sessionId === sessionId)
+    if (review === undefined) return
+    const shown = split.state.items.find((item) => TerminalSplitMarks.shows(review, item, sessionId))
+    if (shown === undefined) setMenuNote(split.open(reviewItemOf(review), true))
+    else if (split.state.active !== shown.key) split.activate(shown.key)
+  }
   const [sharedOverflow, setSharedOverflow] = useState<readonly SessionOpen[]>([])
   const shared = useRef<SharedSessionViews | null>(null)
   const sharedSplit = useRef(split)
@@ -283,6 +303,22 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [focus, visibleCommitPane])
   const focusSplitPane = useCallback(() => focusPanel('content'), [focusPanel])
   useLayoutEffect(() => { splitRef.current = split }, [split])
+  // The file in front gives its offset to a move away from it, so returning to it lands there.
+  const splitReading = useCallback((): PanelSplitReading | undefined => {
+    const current = splitRef.current
+    const active = current.state.items.find((item) => item.key === current.state.active)
+    return active?.kind === 'file'
+      ? { key: active.key, scrollTop: FileViewerScrollTop.inViewer(splitPane.current) }
+      : undefined
+  }, [])
+  const stepSplit = useCallback((direction: PanelHistoryDirection): void => {
+    const current = splitRef.current
+    const reading = splitReading()
+    if (direction === 'back') setMenuNote(current.back(reading))
+    else if (direction === 'forward') setMenuNote(current.forward(reading))
+    else throw new Error(`Unknown history direction: ${direction satisfies never}`)
+  }, [splitReading])
+  useEffect(() => props.history.register(props.api.id, stepSplit), [props.api.id, props.history, stepSplit])
   // Runs after the new pane's ref is attached and the commit slots' `hidden` is written.
   useLayoutEffect(() => {
     if (!splitPaneHadFocus.current) return
@@ -368,8 +404,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     requiredWorkingTreeSource,
   )
 
-  const openSplitItem = useCallback((item: PanelSplitItem): string | null =>
-    splitRef.current.open(item), [])
+  const openSplitItem = useCallback((item: PanelSplitItem, reading?: PanelSplitReading): string | null =>
+    splitRef.current.open(item, true, reading), [])
   const openInSplit = useCallback((
     document: FileViewerDocument,
     baselineHint?: FileViewerBaselineHint,
@@ -592,7 +628,10 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     }
     const disposable = props.api.onDidActiveChange((event) => {
       setActive(event.isActive)
-      if (event.isActive) focusPanel()
+      if (event.isActive) {
+        pendingFront.current()
+        focusPanel()
+      }
     })
     return () => {
       setActive(false)
@@ -676,13 +715,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       {hiddenReviews.length > 0 && <div className="jamat-terminal__pending-reviews" role="region" aria-label="Pending commit reviews">
         <span>Pending commit reviews ({hiddenReviews.length})</span>
         {hiddenReviews.map((review) => <button className="jamat-terminal__workspace-action" type="button" key={review.draftId}
-          title={JSON.stringify(review.paths ?? [review.scopeRoot])} onClick={() => {
-            const item = review.workflow ? PanelSplitParams.workflowItemOf(sessionId, target) : {
-              kind: 'commit' as const, key: SessionWorkspaceKeys.of(target, review.draftId), target, reviewId: review.draftId,
-              vcs: review.vcs, scopeRoot: review.scopeRoot, paths: review.paths, title: `Commit ${review.vcs.toUpperCase()}`,
-            }
-            setMenuNote(split.open(item, true))
-          }}>Open {review.vcs.toUpperCase()} review: {review.scopeRoot}{review.paths === undefined ? '' : ` (${review.paths.length} selected paths)`}</button>)}
+          title={JSON.stringify(review.paths ?? [review.scopeRoot])} onClick={() => setMenuNote(split.open(reviewItemOf(review), true))}>Open {review.vcs.toUpperCase()} review: {review.scopeRoot}{review.paths === undefined ? '' : ` (${review.paths.length} selected paths)`}</button>)}
       </div>}
       {sharedOverflow.length > 0 && <details><summary>Shared opens ({sharedOverflow.length})</summary>
         {sharedOverflow.map((item) => <button type="button" key={item.openId} onClick={() => shared.current?.openPending(item.openId)}>{item.title}</button>)}
@@ -754,9 +787,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           key={menu.clickId}
           position={menu.position}
           ariaLabel="Remote terminal actions"
-          // A remote menu is only ever opened over a selection, so Copy is the whole of it. The
-          // empty arm this used to carry could not happen and said it could.
-          items={[{ key: 'copy', label: 'Copy', onSelect: menu.copySelection }]}
+          items={TerminalMenuItems.documentHalf(menu)}
           onClose={() => setMenu(null)}
         />
       )}
@@ -778,7 +809,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           active={split.state.active}
           preview={split.state.preview}
           marks={TerminalSplitMarks.of(split.state.items, sessionId, pendingReviews, actionInfo)}
-          onActivate={(key) => { split.activate(key); requestAnimationFrame(focusSplitPane) }}
+          onActivate={(key) => { split.activate(key, splitReading()); requestAnimationFrame(focusSplitPane) }}
           onKeepOpen={split.keepOpen}
           onSetPinned={split.setPinned}
           onReload={reloadSplitItem}
@@ -805,7 +836,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             workingTree={workingTree}
             backPath={PanelSplitParams.backTargetOf(split.state)?.source.path ?? null}
             reloadRequest={splitReload}
-            onBack={() => setMenuNote(splitRef.current.back())}
+            onBack={() => stepSplit('back')}
             onClose={() => split.close(activeItem.key)}
             onOpenItem={openSplitItem}
             onRefused={setMenuNote}

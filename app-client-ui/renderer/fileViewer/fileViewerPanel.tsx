@@ -1,7 +1,7 @@
 import { SessionWorkspaceTargets, type SessionFilePorts } from '../../shared/sessionWorkspace'
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { IDockviewPanelProps } from 'dockview'
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import type {
   FileViewerDocument,
@@ -26,10 +26,12 @@ import type {
   FileViewerBaselineHint,
   FileViewerChangedOpen,
   FileViewerPanelParams,
+  FileViewerPanelVisit,
 } from './fileViewerPanel.types'
 import { FileViewerContent } from './fileViewerContent'
 import { FileViewerGetDocumentControl } from './fileViewerGetDocument'
 import type { TerminalInputRegistry } from '../shell/terminalInputRegistry'
+import type { PanelHistoryDirection, PanelHistoryRegistry } from '../shell/panelHistoryRegistry'
 import { FileViewerSourceShape } from './fileViewerSourceShape'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
@@ -37,6 +39,7 @@ import { useFileChanges } from './useFileChanges'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
+import { FileViewerScrollTop, useFileViewerScrollRestore } from './fileViewerScrollRestore'
 import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 import './fileViewerPanel.css'
 
@@ -44,6 +47,7 @@ export type FileViewerPanelProps = IDockviewPanelProps & {
   ports: SessionFilePorts
   changesPorts: AppClientUiBridge['fileChanges'] | null
   fileTools: PanelFileToolsRegistry
+  history: PanelHistoryRegistry
   inputs?: TerminalInputRegistry
 }
 
@@ -93,20 +97,26 @@ function FileViewerPanelBody(
     sidebar.state.visible && toolsTab === 'workingTree',
     params.baselineHint?.workingTreeSource,
   )
+  // The document on screen, which a link, File Tools, Back or Forward leaves behind. It and the
+  // body's offset are read before the next document is drawn.
+  const shown = useRef<FileViewerDocument | null>(null)
   const onDocument = useCallback((
     next: FileViewerDocument,
     hint: FileViewerBaselineHint | undefined,
     persist: boolean,
   ): void => {
     props.api.setTitle(next.name)
-    if (persist)
-      updateParameters({
-        ...currentParameters(),
-        sessionId: next.source.sessionId,
-        source: next.source,
-        baselineHint: hint,
-        location: undefined,
-      })
+    if (!persist) return
+    const current = currentParameters()
+    updateParameters({
+      ...current,
+      sessionId: next.source.sessionId,
+      source: next.source,
+      baselineHint: hint,
+      location: undefined,
+      ...FileViewerPanelState.opened(current, shown.current, next, FileViewerScrollTop.of(body.current)),
+      restoreScroll: undefined,
+    })
   }, [currentParameters, props.api, updateParameters])
   const model = useFileViewerDocument(
     params.source,
@@ -116,6 +126,8 @@ function FileViewerPanelBody(
     ports,
     onDocument,
   )
+  // A document that failed to replace this one is not on screen as the source, so it has no offset.
+  useLayoutEffect(() => { shown.current = model.error ? null : model.document })
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload, ports.viewer)
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   useEffect(() => { if (model.sourceMissing) props.api.close() }, [model.sourceMissing, props.api])
@@ -130,6 +142,18 @@ function FileViewerPanelBody(
     updateParameters({ ...currentParameters(), zoomPercent: percent })
   }, [currentParameters, updateParameters])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
+  const restore = params.restoreScroll
+  useFileViewerScrollRestore(body, restore?.scrollTop,
+    model.textReady && model.document?.documentKey === restore?.documentKey,
+    () => updateParameters({ ...currentParameters(), restoreScroll: undefined }))
+  const step = useCallback((direction: PanelHistoryDirection): void => {
+    const current = currentParameters()
+    const leaving = FileViewerPanelState.visitOf(current, shown.current, FileViewerScrollTop.of(body.current))
+    const next = FileViewerPanelState.stepped(current, direction, leaving)
+    if (next !== null) updateParameters(next)
+  }, [body, currentParameters, updateParameters])
+  useEffect(() => props.history.register(props.api.id, step), [props.api.id, props.history, step])
+  const backTo = params.history.at(-1)
   // Held and written the way the zoom above is, for the same reason.
   const [wrapLines, setWrapLines] = useState(params.wrapLines)
   const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
@@ -195,6 +219,10 @@ function FileViewerPanelBody(
         {model.document && (
           <>
             <div className="file-viewer-toolbar">
+              {backTo !== undefined && (
+                <button type="button" className="file-viewer-back" aria-label="Back to previous document"
+                  title={`Back to ${backTo.source.path}`} onClick={() => step('back')}>← Back</button>
+              )}
               <FileViewerViewControl
                 modes={model.document.modes}
                 value={model.mode}
@@ -254,6 +282,8 @@ function FileViewerPanelBody(
 }
 
 export class FileViewerPanelState {
+  static readonly historyMaxConst = 50
+
   static read(value: Record<string, unknown>):
     | { ok: true; value: FileViewerPanelParams }
     | { ok: false; detail: string } {
@@ -283,6 +313,109 @@ export class FileViewerPanelState {
       location: FileViewerSourceShape.location(value.location),
       zoomPercent: FileViewerZoom.read(value.zoomPercent),
       wrapLines: value.wrapLines === true,
+      history: FileViewerPanelState.visits(value.history),
+      forward: FileViewerPanelState.visits(value.forward),
+      restoreScroll: FileViewerPanelState.restoreScroll(value.restoreScroll),
     }
+  }
+
+  /**
+   * The panel's own source as a visit, with the offset of `shown` when it is drawn. Null for
+   * parameters without a readable source.
+   */
+  static visitOf(
+    value: Record<string, unknown>,
+    shown: FileViewerDocument | null,
+    scrollTop: number | undefined,
+  ): FileViewerPanelVisit | null {
+    const source = FileViewerSourceShape.read(value.source)
+    if (source === null)
+      return null
+    const baselineHint = FileViewerSourceShape.hint(value.baselineHint)
+    return {
+      source,
+      ...(baselineHint === undefined ? {} : { baselineHint }),
+      ...(shown === null || scrollTop === undefined ? {} : { restoreScroll: { documentKey: shown.documentKey, scrollTop } }),
+    }
+  }
+
+  /**
+   * The lists after `next` replaced `shown`: a new visit, and no Forward left. Showing the same
+   * document again, a reload or a new baseline of it, is no visit and keeps both.
+   */
+  static opened(
+    value: Record<string, unknown>,
+    shown: FileViewerDocument | null,
+    next: FileViewerDocument,
+    scrollTop: number | undefined,
+  ): { history: readonly FileViewerPanelVisit[]; forward: readonly FileViewerPanelVisit[] } {
+    const history = FileViewerPanelState.visits(value.history)
+    if (shown?.documentKey === next.documentKey)
+      return { history, forward: FileViewerPanelState.visits(value.forward) }
+    const visit = FileViewerPanelState.visitOf(value, shown, scrollTop)
+    return { history: visit === null ? history : FileViewerPanelState.added(history, visit), forward: [] }
+  }
+
+  /**
+   * The parameters after Back or Forward, or null without a visit that way. `leaving` joins the
+   * other list, so the step can be undone; the step itself adds no visit.
+   */
+  static stepped(
+    value: Record<string, unknown>,
+    direction: PanelHistoryDirection,
+    leaving: FileViewerPanelVisit | null,
+  ): Record<string, unknown> | null {
+    const history = FileViewerPanelState.visits(value.history)
+    const forward = FileViewerPanelState.visits(value.forward)
+    let from: readonly FileViewerPanelVisit[]
+    let to: readonly FileViewerPanelVisit[]
+    if (direction === 'back') { from = history; to = forward }
+    else if (direction === 'forward') { from = forward; to = history }
+    else throw new Error(`Unknown history direction: ${direction satisfies never}`)
+    const visit = from.at(-1)
+    if (visit === undefined)
+      return null
+    const left = from.slice(0, -1)
+    const reached = leaving === null ? to : FileViewerPanelState.added(to, leaving)
+    return {
+      ...value,
+      sessionId: visit.source.sessionId,
+      source: visit.source,
+      baselineHint: visit.baselineHint,
+      location: undefined,
+      history: direction === 'back' ? left : reached,
+      forward: direction === 'back' ? reached : left,
+      restoreScroll: visit.restoreScroll,
+    }
+  }
+
+  private static added(visits: readonly FileViewerPanelVisit[], visit: FileViewerPanelVisit): readonly FileViewerPanelVisit[] {
+    return [...visits, visit].slice(-FileViewerPanelState.historyMaxConst)
+  }
+
+  private static visits(value: unknown): readonly FileViewerPanelVisit[] {
+    if (!Array.isArray(value))
+      return []
+    return value.slice(-FileViewerPanelState.historyMaxConst).flatMap((entry): FileViewerPanelVisit[] => {
+      if (!JsonShape.isRecord(entry))
+        return []
+      const source = FileViewerSourceShape.read(entry.source)
+      if (source === null)
+        return []
+      const baselineHint = FileViewerSourceShape.hint(entry.baselineHint)
+      const restoreScroll = FileViewerPanelState.restoreScroll(entry.restoreScroll)
+      return [{
+        source,
+        ...(baselineHint === undefined ? {} : { baselineHint }),
+        ...(restoreScroll === undefined ? {} : { restoreScroll }),
+      }]
+    })
+  }
+
+  private static restoreScroll(value: unknown): FileViewerPanelParams['restoreScroll'] {
+    if (!JsonShape.isRecord(value) || typeof value.documentKey !== 'string' || !value.documentKey)
+      return undefined
+    const scrollTop = FileViewerScrollTop.read(value.scrollTop)
+    return scrollTop === undefined ? undefined : { documentKey: value.documentKey, scrollTop }
   }
 }

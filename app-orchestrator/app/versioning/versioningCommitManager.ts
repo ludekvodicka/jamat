@@ -370,13 +370,18 @@ export class VersioningCommitManager {
     const defaults = this.checkedPaths(ownerId, draftId, filtered)
     const checked = CommitTargets.eligible(filtered)
       .filter((entry) => entry.origin !== 'setup' && (defaults === null || defaults.includes(entry.path))).map((entry) => entry.path)
-    if (draft.dto.selection === undefined) {
+    const finish = this.deps.workflow?.owns?.(draft.dto.sessionId) === true
+    // `listed` lives only in memory, so a Finish review's first listing after a restart cannot tell a
+    // path the person cleared from one that appeared since, and starts afresh. Mirabia 167 kept an
+    // empty selection from before a restart and opened its 129 verified paths unchecked (2026-11-16).
+    if (draft.dto.selection === undefined || finish && listed === undefined) {
+      if (JSON.stringify(draft.dto.selection?.paths) === JSON.stringify(checked)) return filtered
       draft.dto.selection = { snapshotId: snapshot.snapshotId, paths: checked }
       this.bump(draft)
     }
     // A Finish publishes only its whole verified set, so a path that appeared since the person chose
     // starts checked; a plain dialog keeps what the person chose.
-    else if (listed !== undefined && this.deps.workflow?.owns?.(draft.dto.sessionId) === true) {
+    else if (listed !== undefined && finish) {
       const added = checked.filter((path) => !listed.has(PathCompare.comparable(path)))
       if (added.length === 0) return filtered
       draft.dto.selection = { snapshotId: snapshot.snapshotId, paths: [...draft.dto.selection.paths, ...added] }
@@ -931,22 +936,31 @@ export class VersioningCommitManager {
         if (draft.dto.vcs === 'svn') {
           const targets = entries.map(({ entry }) => ({ absolutePath: entry.path, nodeKind: entry.nodeKind, status: entry.status }))
           let result = await this.deps.svn.commit(scope, targets, messageFile, onProgress)
-          let updateOutput: string | null = null
-          if (!result.ok && result.code === 'out-of-date') {
-            // An out-of-date scope usually holds somebody else's unrelated files, and then the
-            // update brings nothing this commit is about: retrying the same reviewed selection sends
-            // exactly what the person approved. `staleOf` is what draws that line - the moment the
-            // update writes into a selected file, the review is about something else and stops here.
+          const updates: string[] = []
+          const named = new Set<string>()
+          // An out-of-date scope usually holds somebody else's unrelated files, and then the
+          // update brings nothing this commit is about: retrying the same reviewed selection sends
+          // exactly what the person approved. `staleOf` is what draws that line - the moment the
+          // update writes into a selected file, the review is about something else and stops here.
+          // SVN stops at the first outdated node and names only that one, so a commit deleting
+          // several directories behind their own files' commits meets one per attempt; the loop
+          // goes on while each failure names something new, and a repeat means the update did not help.
+          while (!result.ok && result.code === 'out-of-date') {
             const outdated = result.detail
+            const key = VersioningCommitManager.outOfDateKey(outdated)
+            if (named.has(key))
+              return fail(`SVN still reports this commit out of date after Jamat updated what it named ${updates.length} time(s):\n${outdated}`, true)
+            named.add(key)
             const updated = await this.updateOutdated(draft, scope, entries, outdated)
-            if (!updated.ok) return fail(`${updated.detail}\n\nOriginal commit error:\n${outdated}`, updated.wrote)
+            if (!updated.ok) return fail(`${updated.detail}\n\nOriginal commit error:\n${outdated}`, updated.wrote || updates.length > 0)
+            updates.push(updated.output)
             const stale = await this.staleOf(scope, entries, true)
             if (stale !== null)
-              return fail(`${stale}\nThe update changed a file this commit holds. Review it, then click Commit files again.\n\n${updated.output}\n\nOriginal commit error:\n${outdated}`, true)
-            updateOutput = updated.output
+              return fail(`${stale}\nThe update changed a file this commit holds. Review it, then click Commit files again.\n\n${updates.join('\n')}\n\nOriginal commit error:\n${outdated}`, true)
             onProgress({ stage: 'preparing', completed: 0, total: null })
             result = await this.deps.svn.commit(scope, targets, messageFile, onProgress)
           }
+          const updateOutput = updates.length === 0 ? null : updates.join('\n')
           // An update that happened leaves the shown list behind whatever the retry did.
           if (!result.ok) return fail(result.detail, updateOutput !== null)
           draft.committedPaths = [...new Set([...(draft.committedPaths ?? []), ...result.value.committedPaths])]
@@ -1291,6 +1305,11 @@ export class VersioningCommitManager {
         : { ok: false, detail: `SVN update failed or left conflicts:\n${result.detail}`, wrote: true }
     }
     catch (error) { return { ok: false, detail: `SVN update failed: ${ErrorText.of(error)}`, wrote: true } }
+  }
+
+  /** The error lines of an out-of-date failure: the same lines twice mean SVN named the same nodes again. */
+  private static outOfDateKey(failure: string): string {
+    return failure.split(/\r?\n/).filter((line) => /\bE\d{6}:/.test(line)).map((line) => line.trim()).sort().join('\n')
   }
 
   private failed(draft: Draft, detail: string, reloadRequired = false): Extract<VersioningCommitRunResult, { ok: false }> {

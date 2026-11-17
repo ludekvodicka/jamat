@@ -55,9 +55,24 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/versioning/versioni
     const titles = [...view.container.querySelectorAll('.jamat-configuration__section-title')]
       .map((node) => node.textContent)
 
-    expect(titles).toEqual(['AI versioning', 'Commit review', 'Commit completion', 'External diff viewer', 'File changes'])
+    expect(titles).toEqual(['AI versioning', 'Commit review', 'Commit completion', 'External diff viewer', 'File changes', 'Finish commit commands'])
     expect(selectsOf(view.container).map((select) => select.value)).toEqual(['git', 'svn'])
-    expect(view.getAllByText('Save')).toHaveLength(5)
+    expect(view.getAllByText('Save')).toHaveLength(6)
+  })
+
+  it('saves the Finish commit commands, refuses an empty one and resets to the default words', async () => {
+    const { view, saved } = await mount()
+    const svn = view.getByLabelText('SVN') as HTMLInputElement
+    expect(svn.value).toBe("Commit this session's changes to SVN.")
+    const save = (): HTMLButtonElement => view.getAllByText('Save')[5] as HTMLButtonElement
+    fireEvent.change(svn, { target: { value: '' } })
+    expect(save().disabled).toBe(true)
+    fireEvent.change(svn, { target: { value: '/commit-svn' } })
+    fireEvent.change(view.getByLabelText('Git'), { target: { value: '/commit-git' } })
+    await act(async () => { fireEvent.click(save()) })
+    expect(saved).toEqual([expect.objectContaining({ finishCommitCommands: { svn: '/commit-svn', git: '/commit-git' } })])
+    fireEvent.click(view.getAllByText('Reset to default').at(-1)!)
+    expect((view.getByLabelText('SVN') as HTMLInputElement).value).toBe("Commit this session's changes to SVN.")
   })
 
   it('saves and resets commit activation independently', async () => {

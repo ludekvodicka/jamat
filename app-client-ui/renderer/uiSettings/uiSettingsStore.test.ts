@@ -36,6 +36,8 @@ describe('app-client-ui/renderer/uiSettings/uiSettingsStore', () => {
       sessionsNestSubagents: true,
       sessionsNestWorktrees: true,
       sessionsNestTickets: true,
+      sessionCompletedNotice: true,
+      sessionCompletedNoticeSound: false,
     }
   }
 

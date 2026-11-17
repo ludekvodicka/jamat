@@ -19,6 +19,7 @@ export default defineConfig({
       'remark-gfm',
       'shiki',
       'vega',
+      'vega-interpreter',
       'vega-lite',
       'vitest',
       'yaml',

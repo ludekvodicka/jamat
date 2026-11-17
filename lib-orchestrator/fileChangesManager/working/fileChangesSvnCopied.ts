@@ -8,6 +8,7 @@ import { JsonShape } from '../../shared/jsonShape'
 import { PathCompare } from '../../shared/pathCompare'
 import { SvnInvoker } from '../../svn/svnInvoker'
 import { FileChangesLimits } from '../fileChangesLimits'
+import { FileChangesReach } from '../fileChangesReach'
 import type { FileChangesVcsEntry } from '../vcs/fileChangesVcs.types'
 
 export interface FileChangesSvnCopiedDeps {
@@ -36,11 +37,13 @@ export class FileChangesSvnCopied {
     this.deps = deps ?? { svn: new SvnInvoker({ timeoutMilliseconds: FileChangesLimits.commitReadTimeoutMilliseconds }) }
   }
 
-  async expand(entries: readonly FileChangesVcsEntry[]): Promise<readonly FileChangesVcsEntry[]> {
+  /** `includedPaths` as in `FileChangesSvnUntracked.expand`: a copy no named target reaches is not walked. */
+  async expand(entries: readonly FileChangesVcsEntry[], includedPaths: readonly string[] = []): Promise<readonly FileChangesVcsEntry[]> {
+    const reaches = FileChangesReach.of(includedPaths)
     const expanded = new Map(entries.map((entry) => [PathCompare.normalized(entry.absolutePath), entry]))
     FileChangesSvnCopied.checkLimit(expanded.size)
     for (const directory of entries) {
-      if (directory.status !== 'added' || directory.nodeKind !== 'directory') continue
+      if (directory.status !== 'added' || directory.nodeKind !== 'directory' || !reaches(directory.absolutePath)) continue
       const carried = await this.contentsOf(directory.absolutePath)
       if (carried.length > FileChangesLimits.copiedListingEntriesMax) {
         expanded.set(PathCompare.normalized(directory.absolutePath), { ...directory, carriedItems: carried.length })

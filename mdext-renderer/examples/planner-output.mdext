@@ -61,13 +61,35 @@ export async function rateLimit(req: Req, res: Res, next: Next) {
 
 ## Decision flow
 
-A small auto-laid-out decision → Mermaid is the right tool here (no need for Archify's explicit layout):
+A small decision, drawn as hand-SVG. `currentColor` keeps the text and lines readable in both themes:
 
-```mermaid
-graph TD
-  A[request] --> B{hits > limit?}
-  B -->|no| C[handler]
-  B -->|yes| D[429 + Retry-After]
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 150" width="580" height="150" font-family="system-ui" font-size="13" fill="currentColor">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10z" fill="currentColor"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.5">
+    <rect x="10" y="55" width="110" height="40" rx="8"/>
+    <path d="M160 75L230 45L300 75L230 105Z"/>
+    <rect x="390" y="15" width="130" height="40" rx="8"/>
+    <rect x="390" y="95" width="180" height="40" rx="8"/>
+  </g>
+  <g fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)">
+    <path d="M120 75H158"/>
+    <path d="M300 75H350V35H388"/>
+    <path d="M350 75V115H388"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="65" y="80">request</text>
+    <text x="230" y="80">hits &gt; limit?</text>
+    <text x="455" y="40">handler</text>
+    <text x="480" y="120">429 + Retry-After</text>
+  </g>
+  <text x="358" y="58" font-size="12" opacity="0.7">no</text>
+  <text x="358" y="100" font-size="12" opacity="0.7">yes</text>
+</svg>
 ```
 
 ## Tasks

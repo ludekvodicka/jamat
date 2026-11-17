@@ -34,6 +34,7 @@
       "shiki/langs/*": ["node_modules/shiki/dist/langs/*"],
       "shiki/themes/*": ["node_modules/shiki/dist/themes/*"],
       "vega": ["node_modules/vega"],
+      "vega-interpreter": ["node_modules/vega-interpreter"],
       "vega-lite": ["node_modules/vega-lite/build/index.d.ts"],
       "vitest": ["node_modules/vitest"],
       "yaml": ["node_modules/yaml"]

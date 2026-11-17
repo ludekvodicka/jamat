@@ -51,6 +51,7 @@ export type CommandId =
   | 'view.toggleTabSidebar'
   | 'view.fileChanges'
   | 'view.fileBack'
+  | 'view.fileForward'
   | 'view.maximizeToggle'
   | 'tools.usage'
   | 'tools.remarkable'

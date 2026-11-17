@@ -9,6 +9,11 @@ interface CreditWaiter<T> {
 
 export class ViewerBuffer<T> {
   static readonly bytesMaxConst = 2 * 1024 * 1024
+  /**
+   * Snapshot slots wait for credit, live output does not. A window re-attaching many terminals once
+   * filled the whole budget with slots, so the next live frame truncated it again, and again.
+   */
+  static readonly reservedBytesMaxConst = ViewerBuffer.bytesMaxConst / 2
   private readonly send: (value: T, generation: number, sequence: number) => void
   private readonly bytesOf: (value: T, generation: number, sequence: number) => number
   private readonly truncate: (generation: number) => void
@@ -59,7 +64,7 @@ export class ViewerBuffer<T> {
   reserve(bytes: number, signal: AbortSignal): Promise<ViewerReservation<T>> {
     if (this.closed || this.truncated || signal.aborted)
       return Promise.reject(new Error('Viewer snapshot reservation cancelled'))
-    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > ViewerBuffer.bytesMaxConst)
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > ViewerBuffer.reservedBytesMaxConst)
       return Promise.reject(new Error('Snapshot frame reservation exceeds the viewer limit'))
     return new Promise((resolve, reject) => {
       const waiter: CreditWaiter<T> = { bytes, signal, resolve, reject, abort: () => {
@@ -102,7 +107,7 @@ export class ViewerBuffer<T> {
     if (this.closed || this.truncated) return
     while (this.waiting.length) {
       const waiter = this.waiting[0]!
-      if (this.bytes + waiter.bytes > ViewerBuffer.bytesMaxConst) return
+      if (this.bytes + waiter.bytes > ViewerBuffer.reservedBytesMaxConst) return
       this.waiting.shift()
       waiter.signal.removeEventListener('abort', waiter.abort)
       this.bytes += waiter.bytes

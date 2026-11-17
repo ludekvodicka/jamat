@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import type { NativeImage } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TabRequestPort } from '../../../lib-orchestrator/shared/tabRequestPort.types'
 import { ClientStateStore } from '../clientState/clientStateStore'
@@ -28,6 +30,7 @@ vi.mock('electron', () => ({
 }))
 
 describe('ElectronShellPort', () => {
+  const noticeIcon = { logo: true } as unknown as NativeImage
   const roots: string[] = []
   beforeEach(() => { vi.resetAllMocks(); native.notices.length = 0; native.supported = true })
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -40,7 +43,7 @@ describe('ElectronShellPort', () => {
     const dialogs = { confirmPairing: vi.fn(async () => false), confirmInboundAccess: vi.fn(async () => false),
       confirmMainWindowClose: vi.fn(async () => false) }
     const restart = vi.fn(async () => true), quit = vi.fn()
-    const shell = new ElectronShellPort({ groups: store, parent: () => null, dialogs, tabs: {} as TabRequestPort, restart, quit })
+    const shell = new ElectronShellPort({ groups: store, parent: () => null, dialogs, tabs: {} as TabRequestPort, noticeIcon: () => noticeIcon, noticeLogoFile: () => 'Q:/logo.png', restart, quit })
     return { root, stateFile, store, dialogs, shell, restart, quit }
   }
 
@@ -121,15 +124,21 @@ describe('ElectronShellPort', () => {
     expect(native.openExternal).toHaveBeenCalledWith('https://example.test/')
     const events = vi.fn()
     shell.onNotice(events)
-    shell.notify({ id: 'one', title: 'Title', body: 'Body' })
+    shell.notify({ id: 'one', title: 'Work · 001 <a&b>', body: 'Body', attribution: 'Applications/Tools', silent: true })
+    expect((native.notices[0] as unknown as { options: unknown }).options).toEqual({ title: 'Work · 001 <a&b>', body: 'Body', silent: true, icon: noticeIcon,
+      toastXml: '<toast><visual><binding template="ToastGeneric">'
+        + `<image placement="appLogoOverride" src="${pathToFileURL('Q:/logo.png').href}"/>`
+        + '<text>Work · 001 &#60;a&#38;b&#62;</text><text>Body</text><text placement="attribution">Applications/Tools</text>'
+        + '</binding></visual><audio silent="true"/></toast>' })
     native.notices[0]!.emit('click')
     native.notices[0]!.emit('close')
     expect(events).toHaveBeenCalledExactlyOnceWith('one', 'clicked')
     native.supported = false
-    shell.notify({ id: 'unsupported', title: 'Title', body: 'Body' })
+    shell.notify({ id: 'unsupported', title: 'Title', body: 'Body', attribution: null, silent: false })
     expect(events).toHaveBeenLastCalledWith('unsupported', 'closed')
     native.supported = true
-    shell.notify({ id: 'two', title: 'Title', body: 'Body' })
+    shell.notify({ id: 'two', title: 'Title', body: 'Body', attribution: null, silent: false })
+    expect((native.notices[1] as unknown as { options: { toastXml: string } }).options.toastXml).not.toMatch(/attribution|<audio/)
     shell.dispose()
     expect(events).toHaveBeenLastCalledWith('two', 'closed')
     expect(await shell.restart('test')).toBe(true)

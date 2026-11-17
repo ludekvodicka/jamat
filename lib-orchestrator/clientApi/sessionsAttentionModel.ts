@@ -101,9 +101,9 @@ export class SessionsAttentionModel {
    * the last byte. Nothing measured on arriving output can see that moment.
    *
    * `unknown` is not a settle: a classifier that lost the thread would otherwise raise attention on
-   * every session whose screen went quiet.
+   * every session whose screen went quiet. The background completion notice reads the same rule.
    */
-  private static settled(
+  static settled(
     before: SessionActivity | null | undefined,
     after: SessionActivity | null,
   ): boolean {

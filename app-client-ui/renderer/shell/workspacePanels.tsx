@@ -190,21 +190,6 @@ export class WorkspacePanels {
       await controller.hidePanel(panelId)
   }
 
-  static backInSplit(controller: TabsController): void {
-    const panelId = controller.activePanelId()
-    if (panelId === null || controller.keyOf(panelId) !== PanelKeysConst.terminal)
-      return
-    controller.applyPanelParameters(panelId, (params) => {
-      const current = PanelSplitParams.of(params)
-      const result = PanelSplitParams.navigatedBack(current)
-      if (!result.ok) {
-        AppClientUiReport.error(result.refusal)
-        return params
-      }
-      return result.state === current ? params : PanelSplitParams.merged(params, result.state)
-    })
-  }
-
   /**
    * One tab per session, for free: the panel id is derived from the key and the params, so a second
    * request for the same session activates the tab that is already open rather than attaching twice.
@@ -417,8 +402,9 @@ export class WorkspacePanels {
         // so a review already held is found by its draft and brought forward as it is.
         const held = command.reviewId === undefined ? undefined
           : previous.items.find((item) => item.kind === 'commit' && item.reviewId === command.reviewId)
+        const behind = command.activate === false && command.splitFront !== true
         if (held !== undefined)
-          return command.activate === false ? params : PanelSplitParams.merged(params, PanelSplitParams.activated(previous, held.key))
+          return behind ? params : PanelSplitParams.merged(params, PanelSplitParams.activated(previous, held.key))
         const key = command.itemKey ?? PanelSplitParams.commitKeyOf(command.vcs, command.scopeRoot, command.paths)
         if (command.existingOnly && !previous.items.some((item) => item.key === key)) {
           refusal = 'The commit dialog is no longer open'
@@ -431,8 +417,8 @@ export class WorkspacePanels {
           ...(command.paths === undefined ? {} : { paths: command.paths }),
         })
         if (!result.ok) { refusal = result.refusal; return params }
-        return PanelSplitParams.merged(params, command.activate === false && previous.active !== null
-          ? { ...result.state, active: previous.active, history: previous.history, recent: previous.recent } : result.state)
+        return PanelSplitParams.merged(params, behind && previous.active !== null
+          ? { ...result.state, active: previous.active, history: previous.history, forward: previous.forward, recent: previous.recent } : result.state)
       })
       if (applied && refusal === null && command.activate !== false) {
         controller.activatePanel(command.panelId)

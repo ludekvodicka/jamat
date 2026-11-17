@@ -12,6 +12,7 @@ import { TabControlTask, type TabControlTaskItem, type TabControlTaskRef } from 
 import { VersioningCommitPaths, type VersioningCommitPath } from '../../../shared/versioningCommit'
 import { FileViewerSourceShape } from '../../fileViewer/fileViewerSourceShape'
 import type { FileViewerBaselineHint } from '../../fileViewer/fileViewerPanel.types'
+import { FileViewerScrollTop } from '../../fileViewer/fileViewerScrollRestore'
 import { FileViewerZoom } from '../../fileViewer/fileViewerZoom'
 import { ContextMenu, type ContextMenuEntry, type ContextMenuPosition } from '../contextMenu'
 import { usePanelParameters } from './panelParameters'
@@ -32,6 +33,8 @@ export interface PanelSplitFileItem {
   zoomPercent?: number
   /** Long lines wrap at the pane edge; absent scrolls them. */
   wrapLines?: true
+  /** Where the reader was when they left the file, restored when it is shown again; absent is the top. */
+  scrollTop?: number
   /** Esc and Ctrl+W close the whole tab instead of it, and the session's split pins keep it. */
   pinned?: true
 }
@@ -73,8 +76,16 @@ export interface PanelSplitState {
   /** Empty means the split is not there at all: visibility is derived, never stored. */
   items: readonly PanelSplitItem[]
   history: readonly PanelSplitFileItem[]
+  /** Files Back left, the latest last; Forward returns to them, and any other move clears them. */
+  forward: readonly PanelSplitFileItem[]
   /** Keys of held items of every kind, the most recently active last: what a close returns to. */
   recent: readonly string[]
+}
+
+/** The scroll offset of the item in front, read by its pane as the reader leaves it. */
+export interface PanelSplitReading {
+  key: string
+  scrollTop: number | undefined
 }
 
 export interface PanelSplitCapture {
@@ -85,9 +96,10 @@ export interface PanelSplitCapture {
 export interface PanelSplitHandle {
   state: PanelSplitState
   /** `null` when the item was taken; a sentence when it was refused, for the caller to show. */
-  open(item: PanelSplitItem, activate?: boolean): string | null
-  back(): string | null
-  activate(key: string): void
+  open(item: PanelSplitItem, activate?: boolean, reading?: PanelSplitReading): string | null
+  back(reading?: PanelSplitReading): string | null
+  forward(reading?: PanelSplitReading): string | null
+  activate(key: string, reading?: PanelSplitReading): void
   keepOpen(key: string): void
   setPinned(key: string, pinned: boolean): void
   /** Adds the session's stored pins that the restored or reopened split does not hold. */
@@ -119,7 +131,7 @@ export class PanelSplitParams {
   private static readonly ratioDigitsConst = 3
 
   static default(): PanelSplitState {
-    return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [], recent: [] }
+    return { ratio: PanelSplitParams.ratioDefaultConst, active: null, preview: null, items: [], history: [], forward: [], recent: [] }
   }
 
   static commitKeyOf(vcs: FileChangesVcsId, scopeRoot: string, paths?: readonly VersioningCommitPath[]): string {
@@ -178,6 +190,7 @@ export class PanelSplitParams {
       active,
       preview: PanelSplitParams.preview(stored.preview, items),
       history: items.length === 0 ? [] : PanelSplitParams.history(stored.history).filter(accepts),
+      forward: items.length === 0 ? [] : PanelSplitParams.history(stored.forward).filter(accepts),
       recent: PanelSplitParams.recent(stored.recent, items, active),
     }
   }
@@ -198,20 +211,38 @@ export class PanelSplitParams {
     return Math.round(bounded * scale) / scale
   }
 
-  static opened(state: PanelSplitState, item: PanelSplitItem):
+  /** `reading` is where the reader was in the item in front, kept on it and on its Back visit. */
+  static opened(state: PanelSplitState, item: PanelSplitItem, reading?: PanelSplitReading):
     | { ok: true; state: PanelSplitState }
     | { ok: false; refusal: string } {
-    const result = PanelSplitParams.placed(state, item)
+    const read = PanelSplitParams.read(state, reading)
+    const result = PanelSplitParams.placed(read, item)
     if (!result.ok)
       return result
     return {
       ok: true,
       state: {
         ...result.state,
-        history: PanelSplitParams.remembered(state, item.key),
+        history: PanelSplitParams.remembered(read, item.key, read.history),
+        forward: result.state.active === state.active ? state.forward : [],
         recent: PanelSplitParams.touched(result.state, item.key),
       },
     }
+  }
+
+  /**
+   * The reading position replaces the line the file was opened at: the reader has moved on from it,
+   * and a pane given both would scroll to the line over the restored offset.
+   */
+  private static read(state: PanelSplitState, reading: PanelSplitReading | undefined): PanelSplitState {
+    if (reading === undefined || reading.key !== state.active)
+      return state
+    const items = state.items.map((item) => {
+      if (item.key !== reading.key || item.kind !== 'file') return item
+      const { location: _location, scrollTop: _scrollTop, ...rest } = item
+      return reading.scrollTop === undefined ? rest : { ...rest, scrollTop: reading.scrollTop }
+    })
+    return { ...state, items }
   }
 
   /**
@@ -225,37 +256,73 @@ export class PanelSplitParams {
     const result = PanelSplitParams.opened(base, item)
     if (!result.ok || state.active === null)
       return result
-    return { ok: true, state: { ...result.state, active: state.active, history: state.history, recent: state.recent } }
+    return { ok: true, state: { ...result.state, active: state.active, history: state.history, forward: state.forward, recent: state.recent } }
   }
 
   static backTargetOf(state: PanelSplitState): PanelSplitFileItem | null {
-    if (state.active === null)
-      return null
-    return state.history.findLast((item) => item.key !== state.active) ?? null
+    return PanelSplitParams.stepTargetOf(state, state.history)
   }
 
-  static navigatedBack(state: PanelSplitState): ReturnType<typeof PanelSplitParams.opened> {
-    const target = PanelSplitParams.backTargetOf(state)
+  static forwardTargetOf(state: PanelSplitState): PanelSplitFileItem | null {
+    return PanelSplitParams.stepTargetOf(state, state.forward)
+  }
+
+  /** The file in front, with `reading`, joins the Forward list. The return trip adds no visit. */
+  static navigatedBack(state: PanelSplitState, reading?: PanelSplitReading): ReturnType<typeof PanelSplitParams.opened> {
+    return PanelSplitParams.stepped(state, 'back', reading)
+  }
+
+  /** The file in front, with `reading`, joins the Back history again. */
+  static navigatedForward(state: PanelSplitState, reading?: PanelSplitReading): ReturnType<typeof PanelSplitParams.opened> {
+    return PanelSplitParams.stepped(state, 'forward', reading)
+  }
+
+  private static stepTargetOf(state: PanelSplitState, visits: readonly PanelSplitFileItem[]): PanelSplitFileItem | null {
+    if (state.active === null)
+      return null
+    return visits.findLast((item) => item.key !== state.active) ?? null
+  }
+
+  private static stepped(
+    state: PanelSplitState,
+    direction: 'back' | 'forward',
+    reading: PanelSplitReading | undefined,
+  ): ReturnType<typeof PanelSplitParams.opened> {
+    let from: readonly PanelSplitFileItem[]
+    let to: readonly PanelSplitFileItem[]
+    if (direction === 'back') { from = state.history; to = state.forward }
+    else if (direction === 'forward') { from = state.forward; to = state.history }
+    else throw new Error(`Unknown split direction: ${direction satisfies never}`)
+    const target = PanelSplitParams.stepTargetOf(state, from)
     if (target === null)
       return { ok: true, state }
-    const result = PanelSplitParams.placed(state, target)
+    const read = PanelSplitParams.read(state, reading)
+    const result = PanelSplitParams.placed(read, target)
     if (!result.ok)
       return result
+    const left = from.slice(0, from.lastIndexOf(target))
+    const reached = PanelSplitParams.remembered(read, target.key, to)
     return {
       ok: true,
       state: {
         ...result.state,
-        history: state.history.slice(0, state.history.lastIndexOf(target)),
+        history: direction === 'back' ? left : reached,
+        forward: direction === 'back' ? reached : left,
         recent: PanelSplitParams.touched(result.state, target.key),
       },
     }
   }
 
-  private static remembered(state: PanelSplitState, nextKey: string): readonly PanelSplitFileItem[] {
+  /** `visits` with the file in front added, when the move leaves it for another item. */
+  private static remembered(
+    state: PanelSplitState,
+    nextKey: string,
+    visits: readonly PanelSplitFileItem[],
+  ): readonly PanelSplitFileItem[] {
     const previous = state.items.find((item) => item.key === state.active)
     if (previous === undefined || previous.key === nextKey || previous.kind !== 'file')
-      return state.history
-    return [...state.history, previous].slice(-PanelSplitParams.historyMaxConst)
+      return visits
+    return [...visits, previous].slice(-PanelSplitParams.historyMaxConst)
   }
 
   private static touched(state: PanelSplitState, key: string): readonly string[] {
@@ -309,25 +376,29 @@ export class PanelSplitParams {
     const items = state.items.filter((candidate) => candidate.key !== key)
     const preview = state.preview === key ? null : state.preview
     const history = items.length === 0 ? [] : state.history.filter((item) => item.key !== key)
+    const forward = items.length === 0 ? [] : state.forward.filter((item) => item.key !== key)
     const recent = state.recent.filter((candidate) => candidate !== key && items.some((item) => item.key === candidate))
     if (state.active !== key)
-      return { ...state, items, preview, history, recent }
+      return { ...state, items, preview, history, forward, recent }
     // The item that was in front before this one takes over, so closing a file opened from a commit
     // dialog returns to that dialog. Without such an item the next sibling takes over, and the
     // previous one when there is no next. `ratio` survives an empty list, so the width a person
     // dragged is still theirs the next time something opens.
     const next = recent.at(-1) ?? items[index]?.key ?? items[index - 1]?.key ?? null
-    return { ...state, items, active: next, preview, history, recent }
+    return { ...state, items, active: next, preview, history, forward, recent }
   }
 
-  static activated(state: PanelSplitState, key: string): PanelSplitState {
+  /** `reading` is where the reader was in the item in front, kept on it so its tab returns there. */
+  static activated(state: PanelSplitState, key: string, reading?: PanelSplitReading): PanelSplitState {
     if (!state.items.some((candidate) => candidate.key === key))
       return state
+    const read = key === state.active ? state : PanelSplitParams.read(state, reading)
     return {
-      ...state,
+      ...read,
       active: key,
-      history: PanelSplitParams.remembered(state, key),
-      recent: PanelSplitParams.touched(state, key),
+      history: PanelSplitParams.remembered(read, key, read.history),
+      forward: key === read.active ? read.forward : [],
+      recent: PanelSplitParams.touched(read, key),
     }
   }
 
@@ -475,6 +546,7 @@ export class PanelSplitParams {
       && Number.isFinite(candidate.zoomPercent)
       ? FileViewerZoom.snap(candidate.zoomPercent)
       : undefined
+    const scrollTop = FileViewerScrollTop.read(candidate.scrollTop)
     return {
       kind: 'file',
       key: candidate.key,
@@ -484,6 +556,7 @@ export class PanelSplitParams {
       ...(location === undefined ? {} : { location }),
       ...(zoomPercent === undefined ? {} : { zoomPercent }),
       ...(candidate.wrapLines === true ? { wrapLines: true as const } : {}),
+      ...(scrollTop === undefined ? {} : { scrollTop }),
       ...(candidate.pinned === true ? { pinned: true as const } : {}),
     }
   }
@@ -588,19 +661,29 @@ export function usePanelSplit(
 
   return {
     state,
-    open: useCallback((item: PanelSplitItem, activate = true): string | null => {
+    open: useCallback((item: PanelSplitItem, activate = true, reading?: PanelSplitReading): string | null => {
       const currentParams = currentParameters()
       const previous = PanelSplitParams.of(currentParams)
-      const result = activate ? PanelSplitParams.opened(previous, item) : PanelSplitParams.openedBehind(previous, item)
+      const result = activate ? PanelSplitParams.opened(previous, item, reading) : PanelSplitParams.openedBehind(previous, item)
       if (!result.ok)
         return result.refusal
       store(currentParams, result.state)
       return null
     }, [currentParameters, store]),
-    back: useCallback((): string | null => {
+    back: useCallback((reading?: PanelSplitReading): string | null => {
       const currentParams = currentParameters()
       const current = PanelSplitParams.of(currentParams)
-      const result = PanelSplitParams.navigatedBack(current)
+      const result = PanelSplitParams.navigatedBack(current, reading)
+      if (!result.ok)
+        return result.refusal
+      if (result.state !== current)
+        store(currentParams, result.state)
+      return null
+    }, [currentParameters, store]),
+    forward: useCallback((reading?: PanelSplitReading): string | null => {
+      const currentParams = currentParameters()
+      const current = PanelSplitParams.of(currentParams)
+      const result = PanelSplitParams.navigatedForward(current, reading)
       if (!result.ok)
         return result.refusal
       if (result.state !== current)
@@ -608,9 +691,9 @@ export function usePanelSplit(
       return null
     }, [currentParameters, store]),
     activate: useCallback(
-      (key: string) => {
+      (key: string, reading?: PanelSplitReading) => {
         const currentParams = currentParameters()
-        store(currentParams, PanelSplitParams.activated(PanelSplitParams.of(currentParams), key))
+        store(currentParams, PanelSplitParams.activated(PanelSplitParams.of(currentParams), key, reading))
       },
       [currentParameters, store],
     ),

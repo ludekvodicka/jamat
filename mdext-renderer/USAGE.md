@@ -45,8 +45,11 @@ on a big dataset, or automatic light/dark.
 | Data pipeline / movement, PII / classification | **Archify** `dataflow` | ` ```archify ` | |
 | State machine / lifecycle | **Archify** `lifecycle` | ` ```archify ` | |
 | Quantitative data — **big or repeatable** | **Vega-Lite** | ` ```vega-lite ` | compact data, auto-theme |
+| Flow, pipeline, graph of boxes and arrows | **Hand-SVG** | ` ```svg ` | wrap long chains into rows, see below |
 | Custom graph layout / a Graphviz feature | **Graphviz** | ` ```dot ` | |
-| Quick auto-laid-out flow / graph | **Mermaid** | ` ```mermaid ` | |
+
+**Never write a ` ```mermaid ` fence.** Existing ones still render, but their labels can come out
+unreadable in Jamat (dark text on dark nodes). Draw a flow as hand-SVG instead.
 
 ### Hand-authored SVG (` ```svg `)
 
@@ -55,6 +58,10 @@ Put an `<svg>` element straight into a ` ```svg ` fence; it is sanitized (`sanit
 class as engine output — this is NOT the raw-HTML hatch; P1-002 stays closed.** Content that isn't an
 `<svg>` shows an error + source. Full style + chart recipes (bars / line+area / donut, scale mapping,
 the sanitize-safe element set): [svg-style.md](./svg-style.md).
+
+The picture is scaled down to the reading column, about 1000 px wide. Keep the `viewBox` width close
+to that, so 12 to 14 px text stays readable: put a chain of more than about five boxes into two or
+more rows instead of one long line.
 
 ````
 ```svg
@@ -66,18 +73,15 @@ the sanitize-safe element set): [svg-style.md](./svg-style.md).
 ```
 ````
 
-### Mermaid / Graphviz / Vega-Lite
-
-````
-```mermaid
-graph TD; A[Start] --> B{ok?}; B -->|yes| C[done]; B -->|no| A
-```
-````
+### Vega-Lite
 
 **Data charts** — a ` ```vega-lite ` fence holds a [Vega-Lite](https://vega.github.io/vega-lite/) JSON
-spec (bar / line / scatter / area / heatmap …). For real data-driven charts; Mermaid is for
-flow/structure. **Data must be inline** (`"data": { "values": [...] }`) — remote/`file:` `data.url`s
+spec (bar / line / scatter / area / heatmap …). For real data-driven charts; flows and structure
+are hand-SVG or Archify. **Data must be inline** (`"data": { "values": [...] }`) — remote/`file:` `data.url`s
 and image marks are blocked (offline + no-exfil), so a spec that fetches a URL renders an error.
+**Write a fixed time as an ISO string**, for example `"2026-11-09T06:00:00"`, or a DateTime object, in a
+temporal `scale.domain` or `datum`. A millisecond number there draws a wrong time axis, because the chart
+runs without JavaScript `eval`. Millisecond numbers in `data.values` are fine.
 
 ````
 ```vega-lite
@@ -139,10 +143,11 @@ Body is **markdown** — lists, `code`, [links](https://example.com) all work.
 
 **Status chips** — one `::status` line → a row of pills, colored by value (`passing`/`done`/`ok` →
 green; `pending`/`partial`/`medium` → amber; `fail`/`high`/`blocked` → red; anything else → neutral).
-Quote values containing spaces or `%`.
+Quote a key or value containing spaces or `%`. In a key, `_` also shows as a space, so
+`"PDF po stránkách"=ok` and `PDF_po_stránkách=ok` both draw "PDF po stránkách: ok".
 
 ```
-::status{build=passing coverage="82%" risk=high}
+::status{build=passing coverage="82%" risk=high text_layer=partial}
 ```
 
 **Collapsible** — `:::details[Title]` hides long optional content (alternatives, raw logs) behind a
@@ -155,7 +160,8 @@ Long content here.
 ```
 
 An **unrecognized** directive name renders its content as a plain block (no styling, no error) — so
-authoring an unknown block never breaks the view.
+authoring an unknown block never breaks the view. A colon inside a line (`07:09`, `h:mm`, `/pp:work`)
+is never a directive: it renders as written, so there is no need to escape it.
 
 ## Interactive documents
 
@@ -211,8 +217,8 @@ See [the interactive checklist example](./examples/interactive-checklist.md).
 2. **Always tag code fences with a language** so they highlight — ` ```ts ` not ` ``` `.
 3. Put document metadata in YAML frontmatter (title, status, date, …) — it becomes the collapsible strip.
 4. For a visual, **pick from the table above** — hand-author a ` ```svg ` for bespoke charts / reports /
-   illustrations (default); use a typed engine (Archify / Vega-Lite / Mermaid) for deterministic,
-   data-heavy, or auto-themed cases. Keep SVG inside the sanitize-safe set (no `<foreignObject>`/scripts);
+   illustrations (default); use a typed engine (Archify / Vega-Lite) for deterministic,
+   data-heavy, or auto-themed cases. Never Mermaid. Keep SVG inside the sanitize-safe set (no `<foreignObject>`/scripts);
    for Archify, place nodes deliberately (no overlaps / off-canvas).
 5. Use **callouts** (`:::warning` …) for asides/constraints, **`::status{…}`** for status/metrics,
    **`:::details[…]`** for long optional content — instead of hand-formatting them.
@@ -223,6 +229,7 @@ See [the interactive checklist example](./examples/interactive-checklist.md).
 - Every multi-line code sample is in a fenced block **with a language tag**.
 - Each visual uses the right tool (hand-SVG for bespoke; a typed engine for data-heavy/deterministic).
 - A ` ```svg ` fence holds a valid `<svg>` that fits its `viewBox` and stays in the sanitize-safe set.
+- No ` ```mermaid ` fence; a flow is a ` ```svg ` whose text stays readable at the column width.
 - Archify specs are valid JSON, set `diagram_type`, place nodes without overlaps / off-canvas, and
   keep **connection labels short** (≈ ≤ 12 chars) or offset them (`labelDx`/`labelDy`/`labelAt`) so
   they don't overlap a node. A failed layout renders its source instead of a broken diagram.

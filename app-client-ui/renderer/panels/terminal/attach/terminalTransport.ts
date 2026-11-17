@@ -93,10 +93,10 @@ export interface TerminalTransport {
 }
 
 export class TerminalTransports {
-  static of(target: TerminalTarget, detect?: TerminalAttachTransport['detect']): TerminalTransport {
+  static of(target: TerminalTarget): TerminalTransport {
     if (target.kind === 'local') return TerminalTransports.local(target.sessionId)
     else if (target.kind === 'remote')
-      return TerminalTransports.remote(target.remoteEndpointId, target.sessionId, detect)
+      return TerminalTransports.remote(target.remoteEndpointId, target.sessionId)
     else
       throw new Error(`Unknown terminal target: ${JSON.stringify(target)}`)
   }
@@ -141,7 +141,7 @@ export class TerminalTransports {
     }
   }
 
-  private static remote(remoteEndpointId: string, sessionId: string, detect?: TerminalAttachTransport['detect']): TerminalTransport {
+  private static remote(remoteEndpointId: string, sessionId: string): TerminalTransport {
     return {
       localTools: false,
       label: `Remote terminal ${remoteEndpointId} for session ${sessionId}`,
@@ -191,7 +191,6 @@ export class TerminalTransports {
           return answer.value.value
         },
         agentSharesClipboard: false,
-        ...(detect ? { detect } : {}),
         onFrame: (handler) => window.appClient.onRemoteTerminalFrame((endpointId, id, frame) => {
           if (endpointId === remoteEndpointId && id === attachId) { RendererPerf.current.frame(attachId, frame); return handler(frame) }
         }),

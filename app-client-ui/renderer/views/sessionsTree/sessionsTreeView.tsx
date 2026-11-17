@@ -16,6 +16,7 @@ import {
 import type {
   OrphanInfo,
   SessionInfo,
+  SessionMainFinishOutcome,
   SessionOutcome,
   SessionSetupAgreement,
   SessionsOpResult,
@@ -119,6 +120,11 @@ import { useSessionsGroups, type SessionsGroupsPorts } from './useSessionsGroups
 export interface SessionsTreePorts extends SavedSessionsFiltersPorts, SessionsGroupsPorts {
   reportError(message: string): void
   finalize(sessionId: string): Promise<IpcResult<SessionsOpResult>>
+  /**
+   * The Finish of a running local session. The library stops it, or, for an agent in a main copy
+   * with changes of its own, keeps it running and waits in Session actions (`choose`).
+   */
+  finishMain(sessionId: string): Promise<IpcResult<SessionsOpResult<{ sessionId: string; outcome: SessionMainFinishOutcome }>>>
   remove(sessionId: string): Promise<IpcResult<SessionsOpResult>>
   /** Prune: remove, and erase the conversation and Jamat's files of the session from this computer. */
   erase(sessionId: string): Promise<IpcResult<SessionsOpResult>>
@@ -773,7 +779,19 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       if (node.target.kind !== 'local')
         throw new Error(`A local operation received a remote target: ${JSON.stringify(node.target)}`)
       const sessionId = node.target.sessionId
-      if (action === 'finalize')
+      if (action === 'finalize' && node.live) {
+        // The library decides: a main-copy agent with changes of its own waits in Session actions.
+        let outcome: SessionMainFinishOutcome | null = null
+        run(key, 'Finish', async (): Promise<IpcResult<SessionsOpResult>> => {
+          const answer = await ports.finishMain(sessionId)
+          if (!answer.ok || !answer.value.ok) return answer as IpcResult<SessionsOpResult>
+          outcome = answer.value.value.outcome
+          return { ok: true, value: { ok: true, value: undefined } }
+        }, () => {
+          if (outcome === 'stopped') onStopped?.()
+          else WorkflowPortsOf.openWorkflow(sessionId)
+        })
+      } else if (action === 'finalize')
         run(
           key,
           'Finish',

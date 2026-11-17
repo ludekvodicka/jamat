@@ -166,6 +166,23 @@ describe('lib-orchestrator/fileChangesManager/working/fileChangesSvnUntracked', 
       .toEqual(['new', 'new/nested', 'new/nested/chosen.txt'])
   })
 
+  /** 33 named files beside an unignored `node_modules` refused the review at the listing limit. */
+  it('walks only what named targets reach, so an unrelated new directory cannot overflow the list', async () => {
+    const f = await fixture()
+    const unrelated: FileChangesVcsEntry = { ...f.entry, absolutePath: join(f.root, 'big'), repositoryPath: 'big' }
+    const chosen = join(f.directory, 'nested', 'chosen.txt')
+    const disk = await f.reader.expand([f.entry, unrelated], [chosen])
+    expect(disk.map((entry) => entry.repositoryPath)).toEqual(['new', 'big', 'new/nested', 'new/nested/chosen.txt'])
+    expect((await f.reader.expand([f.entry], [join(f.directory, 'nested')])).map((entry) => entry.repositoryPath))
+      .toEqual(['new', 'new/nested', 'new/nested/chosen.txt', 'new/nested/unchecked.txt'])
+    const many = Array.from({ length: FileChangesLimits.listingEntriesMax + 1 }, (_, index) => `big/f${index}.ts`)
+    f.deps.git.run = vi.fn(async (cwd, args) => ({ code: args.includes('check-ignore') ? 1 : 0, failure: null, stderr: '',
+      stdout: args.includes('--show-toplevel') ? f.root : cwd === f.directory ? 'nested/chosen.txt nested/unchecked.txt .hidden ' : many.join(' ') }))
+    const listed = await f.reader.expand([f.entry, unrelated], [chosen])
+    expect(listed.map((entry) => entry.repositoryPath)).toEqual(['new', 'big', 'new/nested', 'new/nested/chosen.txt'])
+    expect(vi.mocked(f.deps.git.run).mock.calls.some(([cwd]) => cwd === unrelated.absolutePath)).toBe(false)
+  })
+
   it('fails the entire read on enumeration failure or overflow', async () => {
     const f = await fixture()
     f.deps.svn.run = vi.fn(async () => ({ code: 1, failure: null, stdout: '', stderr: 'cannot read ignores' }))

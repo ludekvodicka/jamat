@@ -59,7 +59,7 @@ export type TerminalMenuContext = TerminalMenuContextBase & (
   /**
    * `detect` is what was under the click, sent to be given meaning. The buffer scan happened at the
    * click; the selection is read at the call, so a menu opened over one carries whatever it holds by
-   * then. A remote screen has no detector to ask, which is why the two arms differ at all.
+   * then. A remote screen whose peer offers no detector has only the clipboard items.
    */
   | { kind: 'local'; detect(): Promise<IpcResult<TerminalDetectResult>> }
   | { kind: 'remote' }
@@ -132,6 +132,10 @@ export function useTerminalAttachment(
   onTyped: (data: string) => void,
   /** Why the last paste put nothing in the prompt, or null once one did. Read lazily like `onMenu`. */
   onPasteNote: (note: string | null) => void,
+  /**
+   * A remote peer's detector, read at the right click like `onMenu`: the peer's capabilities usually
+   * arrive after the terminal attached, and a detector frozen at the attach was missing for good.
+   */
   detect?: TerminalAttachTransport['detect'],
 ): TerminalAttachmentHandle {
   const [state, setState] = useState<TerminalSurfaceState>({
@@ -186,7 +190,7 @@ export function useTerminalAttachment(
      * branches together, so one of them was left unfinished and compiled: paste took the key from
      * xterm and then returned at once for a remote screen.
      */
-    const transport = TerminalTransports.of(target, detect ? (capture) => detectRef.current!(capture) : undefined).attachment(attachId)
+    const transport = TerminalTransports.of(target).attachment(attachId)
     const settings = UiSettingsStore.current()
     const appearance = TerminalTheme.current(settings)
     const terminal = new Terminal({
@@ -406,18 +410,16 @@ export function useTerminalAttachment(
           if (selected.length > 0) copyOut(selected)
         },
       }
-      // Which menu is which is the transport's own answer: only a transport with a detector can
-      // offer the items that need one, and the selection is read at the call rather than at the
-      // click. A transport without one has Copy and nothing else, so it is drawn only over a
-      // selection.
-      const detect = transport.detect
+      // Only a detector can offer the items that need one, and the selection is read at the call
+      // rather than at the click. Without one the menu still copies and pastes.
+      const detect = transport.detect ?? detectRef.current
       if (detect !== undefined)
         onMenuRef.current({
           ...common,
           kind: 'local',
           detect: () => detect({ ...capture, selection: terminal.getSelection() || null }),
         })
-      else if (common.hasSelection)
+      else
         onMenuRef.current({ ...common, kind: 'remote' })
     }
     holder.addEventListener('contextmenu', onContextMenu)

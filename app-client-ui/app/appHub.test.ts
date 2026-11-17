@@ -51,6 +51,7 @@ import type { ProcessCallContext } from '../../lib-orchestrator/shared/processCa
 import { ServiceRemarkableIpc } from '../../app-orchestrator/app/remarkable/serviceRemarkableIpc'
 import { ServiceShellIpc } from './shell/serviceShellIpc'
 import { ServiceTabsIpc } from './tabs/serviceTabsIpc'
+import { WindowIcon } from './shell/windowIcon'
 import { SessionReviewPortAdapter } from '../../app-orchestrator/app/versioning/sessionReviewPortAdapter'
 import type { VersioningCommitManagerDeps } from '../../app-orchestrator/app/versioning/versioningCommitManager'
 
@@ -385,6 +386,8 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
       captured.reviewPort = port
     }
 
+    setMainFinishPort(): void {}
+
     noteCommitted(receipt: unknown): void {
       captured.receipts.push(receipt)
     }
@@ -685,6 +688,7 @@ describe('app-client-ui/app/appHub', () => {
   beforeEach(() => {
     stateRoot = mkdtempSync(join(tmpdir(), 'jamat-v3-app-hub-test-'))
     process.env.JAMAT_V3_LOCAL_STATE_DIR = stateRoot
+    vi.spyOn(WindowIcon, 'defaultLogoFile').mockReturnValue(join(stateRoot, 'jamat-logo.png'))
     FakeWindow.created = []
     captured.sessionDeps = null
     captured.processEvent = null

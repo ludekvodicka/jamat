@@ -1,4 +1,5 @@
-import { dialog, Notification, safeStorage, shell, type BrowserWindow } from 'electron'
+import { dialog, Notification, safeStorage, shell, type BrowserWindow, type NativeImage } from 'electron'
+import { pathToFileURL } from 'node:url'
 import type { ShellClipboardRead, ShellConfirmRequest, ShellGroupChange, ShellGroupWrite, ShellNotice, ShellPort, ShellSecretCipher, ShellSessionGroups } from '../../../lib-orchestrator/shared/shellPort.types'
 import type { TabRequestPort } from '../../../lib-orchestrator/shared/tabRequestPort.types'
 import { PastedFileStore } from '../../../lib-orchestrator/pastedFiles/pastedFileStore'
@@ -11,6 +12,10 @@ export interface ElectronShellPortDeps {
   parent(): BrowserWindow | null
   tabs: TabRequestPort
   groups: Pick<ClientStateStore, 'loadSessionGroups' | 'assignSessionGroup' | 'inheritSessionGroup' | 'saveSessionGroups' | 'pruneSessionGroups' | 'onSessionGroupsChanged'>
+  /** The Jamat logo every notice carries. */
+  noticeIcon(): NativeImage
+  /** The same logo as a PNG file, for the Windows toast XML. */
+  noticeLogoFile(): string
   restart(reason: string): Promise<boolean>
   quit(): void
 }
@@ -57,11 +62,30 @@ export class ElectronShellPort implements ShellPort {
       for (const listener of this.noticeListeners) listener(notice.id, 'closed')
       return
     }
-    const toast = new Notification({ title: notice.title, body: notice.body })
+    const toast = new Notification({ title: notice.title, body: notice.body, silent: notice.silent, icon: this.deps.noticeIcon(), toastXml: this.toastXml(notice) })
     this.notices.set(notice.id, toast)
     toast.on('click', () => this.noticeEvent(notice.id, toast, 'clicked'))
     toast.on('close', () => this.noticeEvent(notice.id, toast, 'closed'))
     toast.show()
+  }
+
+  /**
+   * Windows reads the toast from this XML and ignores the plain properties, because only the XML can
+   * put the small attribution line under the body. Other platforms ignore `toastXml`.
+   */
+  private toastXml(notice: ShellNotice): string {
+    const text = (value: string, placement = '') => `<text${placement}>${ElectronShellPort.escapeXml(value)}</text>`
+    return '<toast><visual><binding template="ToastGeneric">'
+      + `<image placement="appLogoOverride" src="${ElectronShellPort.escapeXml(pathToFileURL(this.deps.noticeLogoFile()).href)}"/>`
+      + text(notice.title) + text(notice.body)
+      + (notice.attribution === null ? '' : text(notice.attribution, ' placement="attribution"'))
+      + '</binding></visual>'
+      + (notice.silent ? '<audio silent="true"/>' : '')
+      + '</toast>'
+  }
+
+  private static escapeXml(value: string): string {
+    return value.replace(/[&<>"']/g, char => `&#${char.charCodeAt(0)};`)
   }
 
   onNotice(listener: (id: string, event: 'clicked' | 'closed') => void): () => void {

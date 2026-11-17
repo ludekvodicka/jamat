@@ -30,6 +30,25 @@ export interface FileViewerPanelParams extends Record<string, unknown> {
   zoomPercent: number
   /** Long lines wrap at the panel edge; a layout written before the toggle existed reads as false. */
   wrapLines: boolean
+  /** Documents a link or File Tools replaced in this panel, oldest first; Back returns to the last. */
+  history: readonly FileViewerPanelVisit[]
+  /** Documents Back left, the latest last; Forward returns to them, and a new open clears them. */
+  forward: readonly FileViewerPanelVisit[]
+  /** Set by Back or Forward until its document is drawn: the offset to scroll that document to. */
+  restoreScroll?: FileViewerScrollRequest
+}
+
+export interface FileViewerPanelVisit {
+  source: FileViewerDocumentSource
+  baselineHint?: FileViewerBaselineHint
+  /** Absent when the reader was at the top, or when the document could not be shown. */
+  restoreScroll?: FileViewerScrollRequest
+}
+
+/** Names the document, so the document still on screen while Back loads is not the one scrolled. */
+export interface FileViewerScrollRequest {
+  documentKey: string
+  scrollTop: number
 }
 
 export interface FileViewerChangedOpen {

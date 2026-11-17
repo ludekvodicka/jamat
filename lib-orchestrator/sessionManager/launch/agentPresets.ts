@@ -206,6 +206,19 @@ export class AgentPresets {
     else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
   }
 
+  /**
+   * A configured line in the agent's own command syntax, and how to put it into the composer. A
+   * leading `/` names a Claude command or skill, typed, because a bracketed paste leaves it as
+   * pasted text. Codex answers "Unrecognized command" to a `/` it does not know and runs a skill
+   * from `$name`. Typed, that `$` opens Codex's skill list and Enter only picks the entry; pasted,
+   * it is submitted and the skill loads (Codex CLI 0.167.0, 2026-11-10). Other lines stay as written.
+   */
+  static commandLine(text: string, agentId: SessionAgentId): { text: string; input: 'typed' | 'paste' } {
+    if (agentId === 'claude') return { text, input: 'typed' }
+    else if (agentId === 'codex') return text.startsWith('/') ? { text: `$${text.slice(1)}`, input: 'paste' } : { text, input: 'typed' }
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+  }
+
   private static oneShotArgsOf(agentId: SessionAgentId): string[] {
     if (agentId === 'claude') return ['-p']
     else if (agentId === 'codex')

@@ -308,7 +308,7 @@ export class SessionNodeState {
 
   private static holdsAction(kind: SessionWorkflowKind): boolean {
     switch (kind) {
-      case 'before': case 'finish': case 'discard': case 'update-main': case 'git-finish': return true
+      case 'before': case 'finish': case 'discard': case 'update-main': case 'git-finish': case 'main-finish': return true
       case 'script': return false
       default: throw new Error(`Unknown workflow kind: ${JSON.stringify(kind satisfies never)}`)
     }

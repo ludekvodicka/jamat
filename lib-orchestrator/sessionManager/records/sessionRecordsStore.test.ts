@@ -1769,6 +1769,36 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(reported).toContain('a failed finishChecks result needs a reason')
   })
 
+  // The Finish of a main copy is read by its shape alone; a damaged one costs the Finish, never the session.
+  it('reads the Finish of a main copy by its phase, its paths and its ending', async () => {
+    const finishing = (sessionId: string, mainFinish: unknown): SessionRecord =>
+      record(sessionId, { mainFinish: mainFinish as SessionRecord['mainFinish'] })
+    const choosing = { startedAt: 1, phase: 'choosing', vcs: 'svn', paths: ['a.ts'], more: 0 }
+    const context = harness({
+      schemaVersion: 1,
+      savedAt: 5,
+      records: [
+        finishing('a', choosing),
+        finishing('b', { ...choosing, phase: 'committing', command: '/commit-svn', sentAt: 2, workingSeen: true }),
+        finishing('c', { ...choosing, phase: 'closed', endedAt: 3, result: 'sent' }),
+        finishing('d', { ...choosing, phase: 'committing' }),
+        finishing('e', { ...choosing, phase: 'closed', endedAt: 3, result: 'merged' }),
+        finishing('f', { ...choosing, endedAt: 3 }),
+        finishing('g', { ...choosing, paths: 'a.ts' }),
+      ],
+    })
+    const store = await context.load()
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g'])
+    expect(store.list().filter((entry) => entry.mainFinish !== undefined).map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c'])
+    const reported = context.reports.join(' | ')
+    expect(reported).toContain('record "d": dropping its Finish of the main copy (a committing mainFinish needs sentAt and a vcs)')
+    expect(reported).toContain('unknown mainFinish result "merged"')
+    expect(reported).toContain('an open mainFinish has no ending')
+    expect(reported).toContain('mainFinish paths must be at most 200 strings')
+    await expect(store.put(record('h', { mainFinish: { ...choosing, more: -1 } as SessionRecord['mainFinish'] })))
+      .rejects.toThrow(/mainFinish more must be a count/)
+  })
+
   // A setup step passes as a step, then has no after definition: every reconcile pass would throw on it.
   it('drops Finish checks holding a step that is not a declared check, keeps the session, and refuses to write one', async () => {
     const step = { key: 'k1', scriptId: 'setup', name: 'setup', commands: [{ command: 'pnpm install', cwd: '/w' }] }

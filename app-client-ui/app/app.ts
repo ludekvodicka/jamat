@@ -17,6 +17,11 @@ export class AppClientUi {
   /** Config is read before `whenReady`: a launch that cannot name its config directory has no window. */
   static async run(mainModuleUrl: string): Promise<void> {
     FileViewerProtocol.registerScheme()
+    // One UI Automation query (a text tool reading the focused field) switches Chromium's accessibility
+    // on until the client exits. From then on every large document rebuilt the tree in main: a
+    // 160 KB plan reload held its UI thread for 15 to 18 s and made the Windows cursor stutter.
+    // Main reads the switch and keeps accessibility off whoever asks; it must be set before ready.
+    app.commandLine.appendSwitch('disable-renderer-accessibility')
     const config = AppConfig.load(app.isPackaged)
     const agentMarker = ChildEnvironment.agentSessionMarkerOf(process.env)
     if (agentMarker !== null)

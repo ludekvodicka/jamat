@@ -21,6 +21,7 @@ import type {
 import { ErrorText } from '../../shared/errorText'
 import { JsonShape } from '../../shared/jsonShape'
 import { FileChangesLimits } from '../fileChangesLimits'
+import { FileChangesReach } from '../fileChangesReach'
 import type { CommandOutcome, CommandRunner } from '../../shared/commandInvoker.types'
 import { FileChangesVcsBase } from './fileChangesVcsBase'
 import { SvnInvoker } from '../../svn/svnInvoker'
@@ -80,6 +81,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
   async status(
     detection: FileChangesVcsDetection,
     filePath?: string,
+    targets: readonly string[] = [],
   ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     // No `--verbose`: it prints an XML entry for every VERSIONED node, and `statusOf` throws all of
     // those away - a working copy of forty thousand files then overran the reader's output ceiling
@@ -96,7 +98,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       if (!FileChangesVcsSvn.succeeded(outcome))
         return { ok: false, detail: this.detailOf(outcome) }
       try {
-        const { nested, ...value } = await this.parseStatus(detection, outcome.stdout)
+        const { nested, ...value } = await this.parseStatus(detection, outcome.stdout, FileChangesReach.of(targets))
         // SVN cannot address a child below an unversioned directory. Find that directory so the
         // existing untracked reader can apply ignore rules without scanning the whole scope.
         if (target !== undefined && value.entries.length === 0 && outcome.stderr.includes('W155010')
@@ -105,7 +107,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
           target = dirname(target)
           continue
         }
-        return nested.length === 0 ? { ok: true, value } : await this.withNested(detection, value, nested)
+        return nested.length === 0 ? { ok: true, value } : await this.withNested(detection, value, nested, targets)
       }
       catch (error) { return { ok: false, detail: ErrorText.of(error) } }
     }
@@ -214,6 +216,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
     detection: FileChangesVcsDetection,
     value: FileChangesVcsStatus,
     nested: readonly { path: string; external: boolean }[],
+    targets: readonly string[],
   ): Promise<FileChangesVcsResult<FileChangesVcsStatus>> {
     const outcome = await this.runner.run(detection.cwd, [
       'info', '--xml', '--non-interactive', '--', '.@', ...nested.map((candidate) => `${candidate.path}@`),
@@ -249,7 +252,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
         scopeRelativePath: '.',
         scopeUrl: info.url.replace(/\/$/, ''),
         repositoryPathPrefix: info.relativeUrl.replace(/^\^/, '').replace(/\/$/, ''),
-      })
+      }, undefined, targets)
       if (!status.ok) return { ok: false, detail: `${candidate.path}: ${status.detail}` }
       if (sameRepository) externalRoots.delete(candidate.path)
       else externalRoots.add(candidate.path)
@@ -265,6 +268,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
   private async parseStatus(
     detection: FileChangesVcsDetection,
     xml: string,
+    reaches: (path: string) => boolean,
   ): Promise<FileChangesVcsStatus & { nested: { path: string; external: boolean }[] }> {
     const document = this.parser.parse(xml) as XmlNode
     const status = FileChangesVcsSvn.objectOf(document.status)
@@ -291,6 +295,7 @@ export class FileChangesVcsSvn extends FileChangesVcsBase implements FileChanges
       const absolutePath = resolve(detection.cwd, entryPath)
       if (!PathCompare.isInside(detection.cwd, absolutePath))
         throw new Error(`SVN returned a path outside its requested scope: ${entryPath}`)
+      if (!reaches(absolutePath)) continue
       if (item === 'external') {
         externalRoots.add(absolutePath)
         if (!walked.has(PathCompare.comparable(absolutePath)) && await FileChangesVcsSvn.workingCopyRoot(absolutePath))

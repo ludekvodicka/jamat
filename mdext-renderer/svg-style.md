@@ -199,7 +199,7 @@ hand-authored SVG.
 | **Pills / badges** | status tokens | sev = solid; resolved = solid green; neutral = border + mono value; status = **tinted** (low-alpha fill + colored text) | existing **status chips** (`::status`) |
 | **Highlights list** | scannable bullets | custom square accent bullet | plain markdown list |
 | **Charts** | quantitative data | bar/line/scatter/area | existing **vega-lite** fence |
-| **Diagrams** | structure/flow/sequence | typed | existing **archify** / **mermaid** fences |
+| **Diagrams** | structure/flow/sequence | typed | existing **archify** fence or hand-SVG |
 
 **Takeaway for Phase B:** the genuinely *new* report-composition gap is **`statcards`, `statusboard`,
 `timeline`** (start here) and later **`board`**. Everything else is already covered (charts → vega-lite,
@@ -212,7 +212,7 @@ callouts/status → typed blocks, diagrams → archify). Don't rebuild what exis
 | Bespoke chart / report / illustration / **anything custom** | **hand-author a ` ```svg ` fence** (this guide) — renders inline today, sanitized |
 | **Data-heavy** chart, or you want it cheap + **auto-themed** | `vega-lite` fence (compact data → SVG) |
 | Typed architecture-family diagram, deterministic + themed | `archify` fence |
-| Quick auto-laid-out flow / graph | `mermaid` / `dot` fence |
+| Flow / pipeline / graph | hand-author a ` ```svg ` fence, never `mermaid`; `dot` only for a Graphviz feature |
 
 **Hand-SVG is the default for visuals** — you draw it, full control, looks best. Reach for a typed
 engine only when you need determinism, cheap tokens on a big dataset, or automatic light/dark. See the

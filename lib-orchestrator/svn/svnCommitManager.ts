@@ -240,11 +240,11 @@ export class SvnCommitManager {
    * BASE is behind: for a deleted directory, a BASE older than the commits of its own files. Bringing
    * that node alone to HEAD is all the retry needs, and it never targets a moved node.
    *
-   * A depth-empty update hides what came in below the node, so a directory this commit deletes or
-   * moves is updated only when nothing below it changed: otherwise the retry would delete somebody's
-   * change unseen, and a deeper update raises the tree conflict a person has to settle. That, a moved
-   * node, and a change coming into work this commit does not hold stop with code `refused` before any
-   * write, naming what to update by hand.
+   * A depth-empty update hides what came in below the node. Status reports nothing below a locally
+   * deleted directory, so that directory is updated and deleted with whatever came in below it, which
+   * is the intended result (2026-11-16). A removed node with an incoming change status does report, a
+   * moved node, and a change coming into work this commit does not hold stop with code `refused`
+   * before any write, naming what to update by hand: updating them raises a tree conflict.
    */
   async updateOutOfDate(scope: string, failure: string, selected: readonly string[]): Promise<SvnResult<{ output: string }>> {
     try {

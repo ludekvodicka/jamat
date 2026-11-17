@@ -48,14 +48,15 @@ registry entry. All are lazy-loaded (the engine's code only loads when a diagram
 - ` ```svg ` — **hand-authored SVG**: the model draws the visual directly; the source is validated as an
   `<svg>` then passed through `sanitizeSvg` and injected (same safety class as engine output). See
   [svg-style.md](./svg-style.md).
-- ` ```mermaid ` — Mermaid (flowcharts, sequence, state, gantt, class, …), rendered client-side.
+- ` ```mermaid ` — Mermaid, rendered client-side for existing documents. Do not author new
+  Mermaid fences ([USAGE.md](./USAGE.md)).
 - ` ```dot ` / ` ```gv ` / ` ```graphviz ` — Graphviz DOT via viz-js → SVG.
 - ` ```vega-lite ` (alias ` ```vegalite `) — Vega-Lite JSON spec → headless SVG.
 - ` ```archify ` — vendored deterministic spec→SVG renderer, five `diagram_type`s (see below).
 
 100% offline; every engine-produced SVG is sanitized before injection; a render error (or a ` ```svg `
 fence whose content isn't an `<svg>`) falls back to a readable "show source" view; oversized inputs
-(>50 KB source) show source instead of hanging.
+(over 100 000 characters of source, 256 000 for ` ```svg `) show source instead of hanging.
 
 ### When to use which engine
 
@@ -63,17 +64,19 @@ See the decision table in [USAGE.md](./USAGE.md#diagrams--charts--pick-the-right
 **hand-authored ` ```svg ` is the default for bespoke visuals** (charts, reports, illustrations — you
 draw it, full control). Reach for a typed engine when you want determinism, cheap tokens on big data,
 or auto-theming: **Archify** for the architecture-family (architecture / workflow / sequence /
-dataflow / lifecycle), **Vega-Lite** for data-heavy/repeatable charts, **Mermaid** for quick
-auto-layout flows, **Graphviz** for custom graph layout. The roster is extensible.
+dataflow / lifecycle), **Vega-Lite** for data-heavy/repeatable charts, hand-SVG for flows,
+**Graphviz** for custom graph layout. The roster is extensible.
 
 ### Vega-Lite (data charts)
 
 A ` ```vega-lite ` fence holds a [Vega-Lite](https://vega.github.io/vega-lite/) JSON spec → headless
-SVG (bar / line / scatter / area / heatmap …). For real data-driven charts; Mermaid is for
-flow/structure. **Data must be inline** (`"data": { "values": [...] }`): remote/`file:` `data.url`s
+SVG (bar / line / scatter / area / heatmap …). For real data-driven charts; flows and structure
+are hand-SVG or Archify. **Data must be inline** (`"data": { "values": [...] }`): remote/`file:` `data.url`s
 and image marks are blocked by a rejecting loader (offline + no-exfil), so a spec that fetches a URL
 renders an error rather than reaching the network. The chart recolors for light/dark; the spec's own
-`config` overrides the theme defaults.
+`config` overrides the theme defaults. Vega runs through `vega-interpreter` (`ast: true`), because the
+window CSP has no `'unsafe-eval'`. The interpreter reads `datetime(ms)` as a year, so a millisecond number
+in a temporal `scale.domain` or `datum` draws a wrong axis; an ISO string or a DateTime object works.
 
 ## Archify — the five diagram types
 
@@ -212,6 +215,8 @@ Body is full Markdown. Use for alternatives-considered, raw logs, long optional 
 
 An unrecognized directive name (`:::whatever`) renders its content as a plain block — no styling, no
 error. Author-supplied attributes/classes on a block are ignored (the widget owns its markup).
+mdext has no inline (text) directive: a colon inside a line (`07:09`, `h:mm`, `/pp:work`,
+`:name[label]`) renders as its source text.
 
 ## Not supported (by design)
 

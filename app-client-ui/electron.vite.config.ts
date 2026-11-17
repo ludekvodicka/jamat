@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { createIdResolver, type DepOptimizationConfig, type Plugin } from 'vite'
+import { DevRestartQuiet } from './scripts/devRestartQuiet'
 import { gatewayBuildPlugin } from './scripts/gatewayBuildPlugin'
 
 type DependencyOptimizerPlugin = NonNullable<
@@ -103,13 +104,16 @@ export class PnpmPreserveSymlinksResolver {
 // electron-vite discovers on its own.
 // preserveSymlinks in the Vite module graph: this tree is reached through a `subst` virtual disk,
 // and without it the main entry is bundled twice, which splits every module-level singleton in half.
+// Main and preload rebuild, and Electron restarts, only after their inputs stay unchanged this long.
+const restartQuiet = { buildDelay: DevRestartQuiet.millisecondsOf(process.env) }
+
 export default defineConfig({
   main: {
     cacheDir: resolve(__dirname, 'out/.vite-main'),
     resolve: { preserveSymlinks: true },
     plugins: [gatewayBuildPlugin(resolve(__dirname, '..')), externalizeDepsPlugin()],
     build: {
-      watch: {},
+      watch: restartQuiet,
       rollupOptions: {
         input: {
           start: resolve(__dirname, 'start.ts'),
@@ -121,7 +125,7 @@ export default defineConfig({
     cacheDir: resolve(__dirname, 'out/.vite-preload'),
     resolve: { preserveSymlinks: true },
     plugins: [externalizeDepsPlugin()],
-    build: { lib: { entry: resolve(__dirname, 'preload/index.ts') } },
+    build: { watch: restartQuiet, lib: { entry: resolve(__dirname, 'preload/index.ts') } },
   },
   renderer: {
     cacheDir: resolve(__dirname, 'out/.vite-renderer'),
@@ -142,6 +146,7 @@ export default defineConfig({
         'remark-gfm',
         'shiki',
         'vega',
+        'vega-interpreter',
         'vega-lite',
         'yaml',
       ],

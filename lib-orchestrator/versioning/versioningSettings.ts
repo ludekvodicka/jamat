@@ -31,6 +31,18 @@ export interface VersioningSettingsValue {
   switchAfterIdleSeconds?: number
   closeCommitOnSuccess?: boolean
   commitSplitRatio?: number
+  /**
+   * What Finish of a main-copy session types into the session for a commit, per VCS. Jamat commits
+   * nothing itself there: the agent knows what the changes are for and writes the message. Absent
+   * reads as plain English words any agent understands; a team with its own commit commands, such
+   * as `/commit-svn`, names them here.
+   */
+  finishCommitCommands?: VersioningFinishCommands
+}
+
+export interface VersioningFinishCommands {
+  svn: string
+  git: string
 }
 
 export type VersioningSettingsField = keyof VersioningSettingsValue | 'commitReview'
@@ -51,6 +63,34 @@ export class VersioningSettings {
   static readonly defaultCommitSplitRatioConst = 0.75
   static readonly minCommitSplitRatioConst = 0.15
   static readonly maxCommitSplitRatioConst = 0.85
+  static readonly defaultFinishCommitCommandsConst: VersioningFinishCommands = {
+    svn: "Commit this session's changes to SVN.",
+    git: "Commit this session's changes to Git.",
+  }
+  /** The typed limit of a delivered line (`RemoteControlDeliverConst.textLengthConst`). */
+  static readonly maxFinishCommandLengthConst = 800
+
+  static finishCommandOf(value: VersioningSettingsValue, vcs: 'svn' | 'git'): string {
+    const commands = value.finishCommitCommands ?? VersioningSettings.defaultFinishCommitCommandsConst
+    switch (vcs) {
+      case 'svn': return commands.svn
+      case 'git': return commands.git
+      default: throw new Error(`Unknown VCS: ${JSON.stringify(vcs satisfies never)}`)
+    }
+  }
+
+  /** One line each, typed into a composer: no line break or other control character. */
+  static isFinishCommands(value: unknown): value is VersioningFinishCommands {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const commands = value as Partial<Record<keyof VersioningFinishCommands, unknown>>
+    return VersioningSettings.isFinishCommand(commands.svn) && VersioningSettings.isFinishCommand(commands.git)
+  }
+
+  private static isFinishCommand(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0 && value.length <= VersioningSettings.maxFinishCommandLengthConst
+      // eslint-disable-next-line no-control-regex
+      && !/[\u0000-\u001f\u007f]/.test(value)
+  }
 
   static isCommitSplitRatio(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value)
@@ -104,7 +144,8 @@ export class VersioningSettings {
       return ['activateSessionOnCommit', 'returnToPreviousSessionAfterCommit', 'returnToPreviousSessionWithinMinutes', 'switchAfterIdleSeconds']
     else if (field === 'mode' || field === 'diffTool' || field === 'activateSessionOnCommit'
       || field === 'returnToPreviousSessionAfterCommit' || field === 'returnToPreviousSessionWithinMinutes'
-      || field === 'switchAfterIdleSeconds' || field === 'closeCommitOnSuccess' || field === 'commitSplitRatio') return [field]
+      || field === 'switchAfterIdleSeconds' || field === 'closeCommitOnSuccess' || field === 'commitSplitRatio'
+      || field === 'finishCommitCommands') return [field]
     else throw new Error(`Unknown versioning setting: ${String(field)}`)
   }
 
@@ -151,9 +192,12 @@ export class VersioningSettings {
       ? document.commitSplitRatio : VersioningSettings.defaultCommitSplitRatioConst
     if (document.commitSplitRatio !== undefined && !VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
       report('The commit split ratio is unusable; reading it as 75%')
+    const finishCommitCommands = VersioningSettings.isFinishCommands(document.finishCommitCommands) ? document.finishCommitCommands : undefined
+    if (document.finishCommitCommands !== undefined && finishCommitCommands === undefined)
+      report('The Finish commit commands are unusable; reading them as the default words')
     return { ...document, mode, diffTool, activateSessionOnCommit, returnToPreviousSessionAfterCommit,
       returnToPreviousSessionWithinMinutes, switchAfterIdleSeconds, closeCommitOnSuccess,
-      commitSplitRatio: document.commitSplitRatio === undefined ? undefined : commitSplitRatio }
+      commitSplitRatio: document.commitSplitRatio === undefined ? undefined : commitSplitRatio, finishCommitCommands }
   }
 
   /** Writing is strict, which is what keeps the file readable by the next version that reads it. */
@@ -167,6 +211,7 @@ export class VersioningSettings {
       && (document.switchAfterIdleSeconds === undefined || VersioningSettings.isSwitchAfterIdle(document.switchAfterIdleSeconds))
       && (document.closeCommitOnSuccess === undefined || typeof document.closeCommitOnSuccess === 'boolean')
       && (document.commitSplitRatio === undefined || VersioningSettings.isCommitSplitRatio(document.commitSplitRatio))
+      && (document.finishCommitCommands === undefined || VersioningSettings.isFinishCommands(document.finishCommitCommands))
   }
 
   /**

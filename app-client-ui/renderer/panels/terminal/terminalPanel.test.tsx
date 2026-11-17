@@ -42,6 +42,7 @@ import { TerminalInputRegistry } from '../../shell/terminalInputRegistry'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import { PanelFileToolsRegistry } from '../../fileViewer/panelFileToolsRegistry'
 import { PanelFocusRegistry } from '../../shell/panelFocusRegistry'
+import { PanelHistoryRegistry } from '../../shell/panelHistoryRegistry'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { SessionDrag } from '../../sessions/sessionDrag'
@@ -566,6 +567,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
   let inputs: TerminalInputRegistry
   let drafts: TerminalDraftRegistry
   let panelFocus: PanelFocusRegistry
+  let panelHistory: PanelHistoryRegistry
   let sessions: SnapshotStore<SessionsSnapshot>
   let remoteSessions: SnapshotStore<RemoteConnectionsSnapshot>
   let sessionModel: SessionModelStore
@@ -638,6 +640,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           inputs={inputs}
           drafts={drafts}
           panelFocus={panelFocus}
+          history={panelHistory}
           sessions={sessions}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
@@ -673,6 +676,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           inputs={inputs}
           drafts={drafts}
           panelFocus={panelFocus}
+          history={panelHistory}
           sessions={sessions}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}
@@ -713,6 +717,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     inputs = new TerminalInputRegistry()
     drafts = new TerminalDraftRegistry()
     panelFocus = new PanelFocusRegistry()
+    panelHistory = new PanelHistoryRegistry()
     sessionModel = new SessionModelStore({
       read: () => Promise.resolve({
         ok: true as const,
@@ -1382,6 +1387,48 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(view.container.querySelector('.jamat-panel-split__pane')).not.toBeNull()
     })
 
+    it('steps the split Back and Forward from the mouse buttons with the offset of the file it leaves', async () => {
+      const first = TerminalPanelFixtures.splitItem(1)
+      const second = TerminalPanelFixtures.splitItem(2)
+      const api = new PanelApiFake('terminal:history')
+      const view = mount(api, 'session-1', {
+        params: { split: { ratio: 0.5, active: second.key, preview: second.key, items: [second], history: [first] } },
+      })
+      const body = await waitFor(() => {
+        const element = view.container.querySelector<HTMLElement>('.jamat-panel-split__pane .file-viewer-body')
+        if (element === null) throw new Error('the split file is not drawn')
+        return element
+      })
+      body.scrollTop = 75
+
+      act(() => panelHistory.step('terminal:history', 'back'))
+      expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({ active: first.key, history: [],
+        forward: [{ ...second, scrollTop: 75 }] })
+
+      act(() => panelHistory.step('terminal:history', 'forward'))
+      expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({ active: second.key, forward: [],
+        items: [{ ...second, scrollTop: 75 }], history: [first] })
+    })
+
+    it('keeps the offset of the file a split tab click leaves', async () => {
+      const first = TerminalPanelFixtures.splitItem(1)
+      const second = TerminalPanelFixtures.splitItem(2)
+      const api = new PanelApiFake('terminal:tab-switch')
+      const view = mount(api, 'session-1', {
+        params: { split: { ratio: 0.5, active: second.key, preview: null, items: [first, second], history: [] } },
+      })
+      const body = await waitFor(() => {
+        const element = view.container.querySelector<HTMLElement>('.jamat-panel-split__pane .file-viewer-body')
+        if (element === null) throw new Error('the split file is not drawn')
+        return element
+      })
+      body.scrollTop = 75
+
+      fireEvent.click(view.getByRole('tab', { name: new RegExp(first.title) }))
+      expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({ active: first.key,
+        items: [first, { ...second, scrollTop: 75 }] })
+    })
+
     it('hides the last closed item without forgetting the ratio', async () => {
       const item = TerminalPanelFixtures.splitItem(1)
       const api = new PanelApiFake('terminal:close-split')
@@ -1991,6 +2038,28 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         act(() => changed())
         await waitFor(() => expect(view.queryByRole('region', { name: 'Pending commit reviews' })).toBeNull())
         expect(store.get('terminal:1').primary?.title).not.toBe('Commit review required')
+      } finally { stop() }
+    })
+
+    it('brings the pending review forward when somebody switches to its session', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const review = { draftId: 'waiting-review', sessionId: 's-clean', vcs: 'svn' as const, scopeRoot: 'C:/outside/project', workflow: false }
+      const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: ['s-clean'], reviews: [review] } }),
+        subscribe: () => () => {}, reportError: vi.fn() })
+      const stop = commitOpen.start()
+      try {
+        const api = new PanelApiFake('terminal:1')
+        const view = mount(api, 's-clean', { commitOpen })
+        await view.findByRole('region', { name: 'Pending commit reviews' })
+        api.emitActive(true)
+        await waitFor(() => expect(PanelSplitParams.of(api.paramsValue()).items).toEqual([expect.objectContaining({
+          kind: 'commit', reviewId: 'waiting-review' })]))
+        const split = PanelSplitParams.of(api.paramsValue())
+        expect(split.active).toBe(split.items[0]!.key)
+        // A second switch finds it already shown and opens no second item.
+        api.emitActive(false)
+        api.emitActive(true)
+        expect(PanelSplitParams.of(api.paramsValue()).items).toHaveLength(1)
       } finally { stop() }
     })
 
@@ -2946,6 +3015,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           inputs={inputs}
           drafts={drafts}
           panelFocus={panelFocus}
+          history={panelHistory}
           sessions={sessions}
           remoteSessions={remoteSessions}
           sessionModel={sessionModel}

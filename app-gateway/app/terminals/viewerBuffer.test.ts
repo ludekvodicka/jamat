@@ -58,12 +58,12 @@ test('admits payload-free reservations fairly and never exceeds aggregate native
     return slot.send('x'.repeat(65_536))
   }))
   await Promise.resolve()
-  assert.equal(frames.length, 32)
-  assert.deepEqual(admitted, Array.from({ length: 32 }, (_, index) => index))
+  assert.equal(frames.length, 16)
+  assert.deepEqual(admitted, Array.from({ length: 16 }, (_, index) => index))
   const first = frames[0]!
   buffer.received(first.generation + 1, first.sequence)
   await Promise.resolve()
-  assert.equal(frames.length, 32)
+  assert.equal(frames.length, 16)
   for (let index = 0; index < 48; index++) {
     const frame = frames[index]!
     assert.ok(frame)
@@ -73,7 +73,7 @@ test('admits payload-free reservations fairly and never exceeds aggregate native
     await Promise.resolve()
   }
   await Promise.all(tasks)
-  assert.equal(maximum, ViewerBuffer.bytesMaxConst)
+  assert.equal(maximum, ViewerBuffer.reservedBytesMaxConst)
   assert.equal(nativeBytes, 0)
   assert.deepEqual(admitted, Array.from({ length: 48 }, (_, index) => index))
   buffer.close()
@@ -84,11 +84,11 @@ test('cancels queued and unused slots but retains cancelled native bytes until t
   const buffer = new ViewerBuffer<string>({ bytesOf: value => value.length,
     send: (_value, generation, sequence) => sent.push({ generation, sequence }), truncate() {}, resume() {} })
   const owner = new AbortController(), queuedOwner = new AbortController()
-  const slot = await buffer.reserve(ViewerBuffer.bytesMaxConst, owner.signal)
+  const slot = await buffer.reserve(ViewerBuffer.reservedBytesMaxConst, owner.signal)
   const cancelledQueue = assert.rejects(buffer.reserve(1, queuedOwner.signal), /cancelled/)
   queuedOwner.abort()
   await cancelledQueue
-  const delivery = assert.rejects(slot.send('x'.repeat(ViewerBuffer.bytesMaxConst)), /cancelled/)
+  const delivery = assert.rejects(slot.send('x'.repeat(ViewerBuffer.reservedBytesMaxConst)), /cancelled/)
   owner.abort()
   await delivery
   let admitted = false
@@ -98,9 +98,30 @@ test('cancels queued and unused slots but retains cancelled native bytes until t
   buffer.received(sent[0]!.generation, sent[0]!.sequence)
   const unused = await next
   unused.release()
-  const retry = await buffer.reserve(ViewerBuffer.bytesMaxConst, new AbortController().signal)
+  const retry = await buffer.reserve(ViewerBuffer.reservedBytesMaxConst, new AbortController().signal)
   const failed = assert.rejects(retry.send('y'), /failed/)
   buffer.received(sent[1]!.generation, sent[1]!.sequence, true)
   await failed
+  buffer.close()
+})
+
+test('keeps half of the window budget for live output while snapshot slots wait for credit', async () => {
+  const sent: { generation: number; sequence: number }[] = []
+  const buffer = new ViewerBuffer<string>({ bytesOf: value => value.length,
+    send: (_value, generation, sequence) => sent.push({ generation, sequence }),
+    truncate: () => assert.fail('live output beside waiting snapshot slots must not truncate'), resume() {} })
+  const abort = new AbortController()
+  const slots = Array.from({ length: 40 }, () => buffer.reserve(65_536, abort.signal).then(slot => slot.send('x'.repeat(65_536))))
+  await Promise.resolve()
+  assert.equal(sent.length, ViewerBuffer.reservedBytesMaxConst / 65_536)
+  assert.equal(buffer.push('y'.repeat(ViewerBuffer.bytesMaxConst - ViewerBuffer.reservedBytesMaxConst)), true)
+  await assert.rejects(buffer.reserve(ViewerBuffer.reservedBytesMaxConst + 1, abort.signal), /exceeds the viewer limit/)
+  for (let index = 0; index < 41; index++) {
+    const frame = sent[index]
+    assert.ok(frame)
+    buffer.received(frame.generation, frame.sequence)
+    for (let turn = 0; turn < 4; turn++) await Promise.resolve()
+  }
+  await Promise.all(slots)
   buffer.close()
 })

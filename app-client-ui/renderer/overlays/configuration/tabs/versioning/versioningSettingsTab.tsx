@@ -9,9 +9,10 @@ import { DiffToolSection } from './diffToolSection'
 import { VersioningModeSection } from './versioningModeSection'
 import { CommitReviewSection } from './commitReviewSection'
 import { CommitCompletionSection } from './commitCompletionSection'
+import { FinishCommandsSection } from './finishCommandsSection'
 
 export function VersioningSettingsTab(props: ConfigurationTabProps): React.JSX.Element {
-  const dirty = useRef({ versioning: false, fileChanges: false, diffTool: false, commitReview: false, commitCompletion: false })
+  const dirty = useRef({ versioning: false, fileChanges: false, diffTool: false, commitReview: false, commitCompletion: false, finishCommands: false })
   const dirtyChange = useRef(props.onDirtyChange)
   dirtyChange.current = props.onDirtyChange
   const report = useCallback((section: keyof typeof dirty.current, modified: boolean): void => {
@@ -26,6 +27,7 @@ export function VersioningSettingsTab(props: ConfigurationTabProps): React.JSX.E
       <CommitCompletionSection onDirtyChange={(modified) => report('commitCompletion', modified)} />
       <DiffToolSection onDirtyChange={(modified) => report('diffTool', modified)} />
       <FileChangesSettingsSection onDirtyChange={(modified) => report('fileChanges', modified)} />
+      <FinishCommandsSection onDirtyChange={(modified) => report('finishCommands', modified)} />
     </>
   )
 }

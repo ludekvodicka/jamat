@@ -154,7 +154,7 @@ class TabControlHarness {
     const commandIndex = this.windows.published.length
     const pending = this.broker.openCommit(sessionId, sessionId, 'svn', scopeRoot, null, { paths })
     const command = await this.command(commandIndex)
-    expect(command).toMatchObject({ kind: 'open-commit', panelId: sessionId, activate: false })
+    expect(command).toMatchObject({ kind: 'open-commit', panelId: sessionId, activate: false, splitFront: true })
     this.acceptReview(command)
     expect(await pending).toMatchObject({ ok: true, value: { commitSessionId: draftId } })
   }
@@ -217,6 +217,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     const first = h.broker.projectReview(target, draft, 'item', 'open-1')
     const command = await h.command()
     expect(command).toMatchObject({ kind: 'open-commit', activate: false, reviewId: 'review', openId: 'open-1' })
+    expect((command as { splitFront?: true }).splitFront).toBe(queued ? true : undefined)
     h.acceptReview(command)
     await first
     if (queued) {
@@ -806,6 +807,7 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     const pending = h.broker.openCommit('session', 'App', 'svn', null, null, {})
     const command = await h.command()
     expect(command).toMatchObject({ kind: 'open-commit', activate: false, panelId: 'panel' })
+    expect(command).not.toHaveProperty('splitFront')
     h.acknowledge('holder', command, { kind: 'commit-opened', panelId: 'panel' })
     expect(await pending).toMatchObject({ ok: true, value: { commitSessionId: 'draft' } })
     expect(h.windows.focused).toEqual([])

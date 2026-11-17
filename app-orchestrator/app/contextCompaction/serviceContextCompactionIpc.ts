@@ -5,6 +5,7 @@ import { ServiceIpcBase } from '../../../lib-orchestrator/clientApi/serviceIpcBa
 import type { ContextCompactionCooldown } from '../../../lib-orchestrator/clientApi/contextCompactionCooldown'
 import type { ContextCompactionDelivery } from '../../../lib-orchestrator/clientApi/contextCompactionDelivery'
 import type { SessionTranscriptAccess } from '../sessionTranscript/sessionTranscriptAccess'
+import type { ContextCompactionCooldowns } from './contextCompactionCooldowns'
 
 export class ServiceContextCompactionIpc extends ServiceIpcBase<
   typeof ServiceContextCompactionIpc.channelsConst
@@ -16,22 +17,20 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
     'contextCompaction:deliver': true,
   } as const
 
-  private static readonly cooldownMillisecondsConst = 10 * 60_000
   private static readonly commandConst = '/compact'
-  private readonly cooldowns = new Map<string, number>()
+  private readonly cooldowns: ContextCompactionCooldowns
   private readonly terminal: Pick<RemoteControlTerminal, 'deliver'>
   private readonly transcripts: Pick<SessionTranscriptAccess, 'read'>
-  private readonly now: () => number
 
   constructor(
     terminal: Pick<RemoteControlTerminal, 'deliver'>,
     transcripts: Pick<SessionTranscriptAccess, 'read'>,
-    now: () => number = Date.now,
+    cooldowns: ContextCompactionCooldowns,
   ) {
     super()
     this.terminal = terminal
     this.transcripts = transcripts
-    this.now = now
+    this.cooldowns = cooldowns
   }
 
   initialize(): void {
@@ -46,39 +45,11 @@ export class ServiceContextCompactionIpc extends ServiceIpcBase<
     this.assertComplete(ServiceContextCompactionIpc.channelsConst)
   }
 
-  claimAutomatic(sessionId: string): boolean {
-    const now = this.now()
-    this.prune(now)
-    if ((this.cooldowns.get(sessionId) ?? 0) > now) return false
-    this.cooldowns.set(
-      sessionId,
-      now + ServiceContextCompactionIpc.cooldownMillisecondsConst,
-    )
-    return true
-  }
+  claimAutomatic(sessionId: string): boolean { return this.cooldowns.claim(sessionId) }
 
-  noteManual(sessionId: string): void {
-    const now = this.now()
-    this.prune(now)
-    this.cooldowns.set(
-      sessionId,
-      now + ServiceContextCompactionIpc.cooldownMillisecondsConst,
-    )
-  }
+  noteManual(sessionId: string): void { this.cooldowns.note(sessionId) }
 
-  private prune(now: number): void {
-    for (const [sessionId, expiresAt] of this.cooldowns)
-      if (expiresAt <= now) this.cooldowns.delete(sessionId)
-  }
-
-  cooldown(sessionId: string): ContextCompactionCooldown | null {
-    this.prune(this.now())
-    const expiresAt = this.cooldowns.get(sessionId)
-    return expiresAt === undefined ? null : {
-      requestedAt: expiresAt - ServiceContextCompactionIpc.cooldownMillisecondsConst,
-      expiresAt,
-    }
-  }
+  cooldown(sessionId: string): ContextCompactionCooldown | null { return this.cooldowns.read(sessionId) }
 
   /**
    * Typed, not pasted: a slash command is what a person types, and a bracketed paste reaches the

@@ -32,14 +32,14 @@ export class SessionNotices {
     })
   }
 
-  show(notice: Pick<FinishAttentionNotice, 'sessionId' | 'title' | 'body'>, click?: () => Promise<void>): void {
+  show(notice: Pick<FinishAttentionNotice, 'sessionId' | 'title' | 'body'> & { attribution?: string | null }, click?: () => Promise<void>, silent = false): void {
     if (this.disposed) return
     const id = randomUUID()
     this.actions.set(id, click ?? (async () => {
       const opened = await this.openWorkflow(notice.sessionId, this.titleOf(notice.sessionId) ?? notice.title)
       if (!opened.ok) this.report(`The workflow of session ${notice.sessionId} could not be opened: ${opened.error.detail}`)
     }))
-    this.shell.notify({ id, title: notice.title, body: notice.body })
+    this.shell.notify({ id, title: notice.title, body: notice.body, attribution: notice.attribution ?? null, silent })
   }
 
   update(notice: MainCopyUpdateNoticeView): void {
