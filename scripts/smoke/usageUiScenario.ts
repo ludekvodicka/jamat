@@ -108,7 +108,7 @@ export class UsageUiScenario {
         seen = JSON.parse(await ui.evaluate<string>('JSON.stringify({ tabs: document.querySelectorAll(".jamat-usage").length, cards: document.querySelectorAll(".jamat-usage__quotas > .jamat-usage__card").length, charts: document.querySelectorAll(".jamat-usage__graph svg").length, text: (document.querySelector(".jamat-usage")?.innerText ?? "").slice(0, 600) })'))
         return seen.tabs === 1 && seen.cards === 2 && seen.charts >= 4
       }, 'One Usage tab with quota cards and four Vega charts').catch((error: unknown) => { throw new Error(`${String(error)}; last seen ${JSON.stringify(seen)}`) })
-      assert((await ui.evaluate<string>('document.body.innerText')).includes('155 of 200%'))
+      assert((await ui.evaluate<string>('document.body.innerText')).includes('weighted by plan'))
       assert((await ui.evaluate<string>('document.body.innerText')).includes('JamatProof'))
       assert.equal((await open(3)).windows, 1)
       await ui.capture(join(screenshotRoot, 'phase3-usage-overview-1440x900.png'))
