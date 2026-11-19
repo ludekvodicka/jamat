@@ -560,6 +560,15 @@ describe('Session actions', () => {
     expect(screen.getByRole('textbox')).toHaveValue('Fix selection')
   })
 
+  it('draws Review changes in one row with the presses of its step', async () => {
+    const { workflow } = reviewFixture()
+    workflow.actions.push({ id: 'refresh-preparation', label: 'Recheck local changes', primary: false, place: 'step' })
+    render(<SessionActionsPane session={session([workflow])} sessions={store} visible ports={ports} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to Session actions' }))
+    const group = screen.getByRole('group', { name: 'Changes actions' })
+    expect(within(group).getAllByRole('button').map((button) => button.textContent)).toEqual(['Review changes', 'Discard', 'Keep', 'Recheck local changes'])
+  })
+
   // Worker-agent 033: after Publish the step still asked for validation with its warning glyph until the record moved.
   it('draws the waiting review step as running while its Publish press is answered', async () => {
     const { workflow } = reviewFixture()

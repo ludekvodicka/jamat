@@ -576,6 +576,7 @@ class AppClientStub {
       onAgentSettingsChanged: () => () => undefined,
       onRateChanged: () => () => undefined,
       onUsageChanged: () => () => undefined,
+      onUsageCallersChanged: () => () => undefined,
       onSnapinsChanged: () => () => undefined,
       onHostPingResult: () => () => undefined,
       // Answered rather than refused: opening a session's tab is how the shell's two panel-id

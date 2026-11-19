@@ -247,8 +247,9 @@ export class AgentPresets {
       // The person's ~/.claude skill can belong to another installation, and a call there reached
       // the wrong instance (UA1-J14-9); there is no fallback to it.
       if (cli === undefined) throw new Error('The SVN merger needs the Jamat CLI line of this client')
+      // `--no-chrome`: the "Claude in Chrome extension detected" dialog held the 008 merger before its brief.
       return ['--allowedTools', `Bash(${cli} sessions resolve-conflict:*)`, `Bash(${cli} sessions conflicts:*)`,
-        '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits']
+        '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits', '--no-chrome']
     }
     else throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
   }

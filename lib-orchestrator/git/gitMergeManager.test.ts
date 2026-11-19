@@ -347,6 +347,19 @@ describe('lib-orchestrator/git/gitMergeManager', () => {
       return invoker
     }
 
+    it('names the files the last commit left with conflict markers, and a commit that settled them cleanly as none', { timeout: 120_000 }, async (context) => {
+      const invoker = await skipWithoutGit(context)
+      const { root, facts, merge } = await landable(invoker)
+      expect(valueOf(await merge.contains(root, valueOf(await merge.revision(root))))).toBe(true)
+      writeFileSync(join(facts.worktreePath, 'a.txt'), 'head\n<<<<<<< HEAD\nCHANGED\n=======\nother\n>>>>>>> main\ntail\n', 'utf8')
+      writeFileSync(join(facts.worktreePath, 'doc.md'), 'Title\n=======\n', 'utf8')
+      await commit(invoker, facts.worktreePath, 'resolved badly')
+      expect(valueOf(await merge.markedFiles(facts.worktreePath))).toEqual(['a.txt'])
+      writeFileSync(join(facts.worktreePath, 'a.txt'), 'head\nCHANGED\nother\ntail\n', 'utf8')
+      await commit(invoker, facts.worktreePath, 'resolved')
+      expect(valueOf(await merge.markedFiles(facts.worktreePath))).toEqual([])
+    })
+
     /** The landing writes the session's work into the project's own files, with a merge commit. */
     it('lands the session branch in the project repository', { timeout: 120_000 }, async (context) => {
       const invoker = await skipWithoutGit(context)

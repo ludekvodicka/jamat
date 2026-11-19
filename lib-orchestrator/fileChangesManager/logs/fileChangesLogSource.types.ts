@@ -25,6 +25,13 @@ export interface FileChangesLogGroup {
   mutations: readonly FileChangesLogMutation[]
 }
 
+/** A shell command the agent ran: from its call to its returned result, both as transcript times. */
+export interface FileChangesShellRun {
+  command: string
+  startedAt: number
+  endedAt: number
+}
+
 export interface RawFileChangesLogMutation extends Omit<
   FileChangesLogMutation,
   'path' | 'previousPath' | 'location'

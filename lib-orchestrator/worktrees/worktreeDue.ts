@@ -9,6 +9,9 @@ import { FinishStepPolicy } from './finish/finishStepPolicy'
 import type { WorktreeDueChange } from './worktreeLifecycle.types'
 
 export class WorktreeDue {
+  /** A Git merge resolver runs in print mode and ends by itself; one still running then is stuck, and nothing else would end it. */
+  static readonly gitResolverLimitMillisecondsConst = 20 * 60_000
+
   static of(records: readonly SessionRecord[], now: number, clientStartedAt: number, held: ReadonlySet<string>): WorktreeDueChange[] {
     const changes: WorktreeDueChange[] = []
     for (const record of records) {
@@ -26,12 +29,22 @@ export class WorktreeDue {
         changes.push({ kind: 'svn-action-due', sessionId: record.sessionId })
         continue
       }
+      const resolver = WorktreeDue.overdueGitResolver(record, records, now)
+      if (resolver !== null) changes.push({ kind: 'stop-script-run', runId: resolver })
       const action = record.svnAction
       if (action !== undefined && !held.has(record.sessionId)
         && (SvnActionStages.clientDue(action, now) || SvnResolverTiming.overdue(action, now)))
         changes.push({ kind: 'svn-action-due', sessionId: record.sessionId })
     }
     return changes
+  }
+
+  private static overdueGitResolver(record: SessionRecord, records: readonly SessionRecord[], now: number): string | null {
+    const merge = record.worktreeMerge
+    if (record.worktree?.kind === 'svn' || merge?.phase !== 'resolving' || merge.failure !== undefined || merge.resolveSessionId === undefined) return null
+    const run = records.find((candidate) => candidate.sessionId === merge.resolveSessionId)
+    if (run === undefined || (run.life !== 'live' && run.life !== 'starting')) return null
+    return now - run.createdAt >= WorktreeDue.gitResolverLimitMillisecondsConst ? run.sessionId : null
   }
 
   private static cleanupDue(

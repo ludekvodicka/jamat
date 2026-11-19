@@ -172,6 +172,16 @@ describe('WorktreeLifecycle', () => {
     expect(WorktreeLifecycle.due([clean, action], 10, 0, new Set(['action']))).toEqual([])
   })
 
+  it('stops a Git merge resolver that still runs after twenty minutes, and nothing earlier', () => {
+    const current = record({ worktreeMerge: { phase: 'resolving', startedAt: 1, resolveSessionId: 'resolver' } })
+    current.worktree!.kind = 'git'
+    const resolver = record({ sessionId: 'resolver', life: 'live', createdAt: 1000 })
+    delete resolver.worktree
+    expect(WorktreeLifecycle.due([current, resolver], 1000 + 20 * 60_000 - 1, 0, new Set())).toEqual([])
+    expect(WorktreeLifecycle.due([current, resolver], 1000 + 20 * 60_000, 0, new Set())).toEqual([{ kind: 'stop-script-run', runId: 'resolver' }])
+    expect(WorktreeLifecycle.due([{ ...current, worktreeMerge: { ...current.worktreeMerge!, failure: 'stopped' } }, resolver], 1000 + 20 * 60_000, 0, new Set())).toEqual([])
+  })
+
   it('composes the existing CLI worktree state', async () => {
     const current = record({ worktreeLifecycle: { version: 12, actionId: 'a', phase: 'finishing', step: 'committing', outOfDate: 0,
       journal: [], facts: { worker: { liveness: 'alive', resumeFailures: 0 } } } })

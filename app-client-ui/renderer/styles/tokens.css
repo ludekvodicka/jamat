@@ -31,6 +31,12 @@
   --color-commit-added: #ee87ef;
   --color-commit-deleted: #ff8585;
 
+  /* One line per account in the Usage weekly pool chart, beside the accent pool line; validated as a
+     set for colour-vision deficiency against --color-surface-raised. A fourth account draws muted. */
+  --color-series-1: #d95926;
+  --color-series-2: #9085e9;
+  --color-series-3: #199e70;
+
   /* Window identity is data at runtime. The picker reads these computed values and stores the
      chosen hex; no renderer module carries a second copy of this palette. */
   --window-color-default: var(--color-surface-raised);

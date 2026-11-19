@@ -105,6 +105,7 @@ export function ConflictList(props: {
                 {entry.settled !== undefined ? <span className="workflow__conflict-note">{entry.settled}</span>
                   : entry.by !== null && <span className="workflow__conflict-note">{ConflictGroups.byOf(entry.by)}</span>}
                 {entry.saved !== null && <span className="workflow__conflict-note">saved: <code>{entry.saved}</code></span>}
+                <span className="workflow__conflict-buttons">
                 {ConflictOptions.offered(entry) && (
                   <span className="workflow__conflict-options" role="group" aria-label={`Options for ${named(entry) ? `the ${entry.kind} conflict of ` : ''}${entry.path}`}>
                     {entry.options.map((option) => {
@@ -124,11 +125,6 @@ export function ConflictList(props: {
                     })}
                   </span>
                 )}
-                {entry.options.filter((option) => armed === ConflictOptions.keyOf(ConflictOptions.rowOf(entry), option.id)).map((option) => (
-                  <span key={option.id} className="workflow__conflict-warning" role="alert">
-                    {option.label}: {option.note}. Click it again to confirm.
-                  </span>
-                ))}
                 <span className="workflow__conflict-actions">
                   <button type="button" className="workflow__conflict-action" onClick={() => run(entry, () => props.ports.openFile(entry.path))}>Open</button>
                   <button type="button" className="workflow__conflict-action" disabled={!!props.ports.editorUnavailable} title={props.ports.editorUnavailable}
@@ -136,6 +132,12 @@ export function ConflictList(props: {
                     Edit in TortoiseSVN
                   </button>
                 </span>
+                </span>
+                {entry.options.filter((option) => armed === ConflictOptions.keyOf(ConflictOptions.rowOf(entry), option.id)).map((option) => (
+                  <span key={option.id} className="workflow__conflict-warning" role="alert">
+                    {option.label}: {option.note}. Click it again to confirm.
+                  </span>
+                ))}
                 {noteOf(entry) !== null && <span className="workflow__conflict-refusal" role="alert">{noteOf(entry)}</span>}
               </li>
             ))}

@@ -652,7 +652,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionFlow', () => {
       }
       await it_.endRun(1)
       expect(needsOf(it_)).toMatchObject({ kind: 'locked' })
-      expect(needsOf(it_)?.reason).toContain('press UPDATE again')
+      expect(needsOf(it_)?.reason).toContain('press Update again')
       expect(it_.launched.every((run) => run.process?.args.includes('cleanup') !== true)).toBe(true)
       expect(it_.launched).toHaveLength(4)
 
@@ -713,7 +713,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionFlow', () => {
       await update(tree)
       tree.svn.statusValue = { textConflicts: ['a.txt'], otherConflicts: ['gone'], changed: [] }
       await tree.endRun(0)
-      expect(needsOf(tree)).toMatchObject({ kind: 'conflict', reason: '2 conflicts need you: a.txt, gone (tree); settle them, then press UPDATE again' })
+      expect(needsOf(tree)).toMatchObject({ kind: 'conflict', reason: '2 conflicts need you: a.txt, gone (tree); settle them, then press Update again' })
       // The same read-only list, and no write beside the resolver's: no resolve, no resolver.
       expect(tree.record()?.svnAction?.conflictSet?.entries.map((entry) => entry.path)).toEqual(['a.txt', 'gone'])
       expect(tree.log.some((entry) => entry.startsWith('resolve'))).toBe(false)
@@ -728,7 +728,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionFlow', () => {
       expect(needsOf(marked)).toMatchObject({ kind: 'resolver-failed' })
       // A hand edit alone leaves svn marking the file: the wait names the list whose options settle it (UA1-J13-4).
       expect(needsOf(marked)?.reason).toBe('the resolver left conflicts in: a.txt; settle each one in the conflict list below '
-        + '(edit the file and press Merge, or take one side), then press UPDATE again')
+        + '(edit the file and press Merge, or take one side), then press Update again')
       expect(marked.record()?.svnAction?.conflictSet?.entries.map((entry) => `${entry.path} ${entry.state}`)).toEqual(['a.txt person'])
     })
   })

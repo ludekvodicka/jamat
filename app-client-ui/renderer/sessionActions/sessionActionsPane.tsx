@@ -217,6 +217,8 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
     {pressing !== null && actions.some((action) => action.id === pressing.id)
       && <p role="status" className="workflow__summary">{pressing.label}: sent, Jamat works on it</p>}
   </>
+  const reviewButton = (open: () => void): React.JSX.Element =>
+    <button type="button" className="workflow__action workflow__action--primary" disabled={busy} onClick={open}>Review changes</button>
   const reviewBody = props.review?.body
   return <section className={`session-actions__section${props.reviewOpen ? ' session-actions__section--review' : ''}`} aria-label={section.title} hidden={props.hidden}>
     <div ref={historyPane} tabIndex={-1} hidden={props.reviewOpen}>
@@ -233,13 +235,16 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
           // Publish closes the review, and the record leaves the person's wait only after Finish has
           // checked the approved files again, seconds later; until then the step drew its old request.
           const publishing = step.key === current && step.key === pressedStep && pressing?.requiresCommit === true
+          const openReview = step === props.review ? () => { reviewVersion.current = { key: step.key, version: props.session?.worktreeView?.version }; props.onReview() } : undefined
           return <li key={step.key}>
           <ActionsStep step={publishing ? { ...step, state: 'running' } : step} sessionId={props.session!.sessionId} now={now} visible={visible} ports={props.ports}
             expanded={props.expandedSteps[step.key]} onExpand={(value) => props.onExpandStep(step.key, value)}
-            onReview={step === props.review ? () => { reviewVersion.current = { key: step.key, version: props.session?.worktreeView?.version }; props.onReview() } : undefined} busy={busy}
+            onReview={openReview} busy={busy}
             live={publishing ? `${pressing.label}: sent, Jamat works on it` : WorkflowLive.textOf(step, WorkflowLive.stepTextOf(props.session?.step), lines)}
             progress={WorkflowLive.fractionOf(step, props.session?.step)} />
+          {step.key === current && publishing && openReview !== undefined && <div className="workflow__step-actions">{reviewButton(openReview)}</div>}
           {step.key === current && !publishing && <div className="workflow__step-actions" role="group" aria-label={`${step.title} actions`}>
+            {openReview !== undefined && reviewButton(openReview)}
             {deferred?.key === step.key ? <>
               <p role="status" className="workflow__summary">{deferred.line}</p>
               <button type="button" className="session-actions__toggle" onClick={() => setDeferred(null)}>
@@ -332,7 +337,7 @@ function ActionsStep(props: { step: SessionWorkflowStep; sessionId: string; now:
         else props.onExpand(!expanded)
       }} />
     {step.body?.kind === 'commit' && <StepBody ports={props.ports} body={step.body} sessionId={props.sessionId} title={step.title} visible={props.visible}
-      conflicts={props.ports.conflicts} onReview={props.onReview} busy={props.busy} />}
+      conflicts={props.ports.conflicts} />}
     {step.body !== undefined && step.body.kind !== 'commit' && <button ref={detailsToggle} type="button" className="session-actions__toggle" aria-expanded={expanded}
       onClick={() => props.onExpand(!expanded)}>{expanded ? 'Hide details' : 'Show details'}: {step.title}</button>}
     {expanded && step.body !== undefined && step.body.kind !== 'commit' && <div className="session-actions__body">

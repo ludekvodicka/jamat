@@ -396,7 +396,11 @@ export class LauncherEffects {
       && ['active', 'disabled', 'needs-login', 'pending-login'].includes(account.state)
       && (account.profileProblem === null || typeof account.profileProblem === 'string')
       && (account.identity === null || typeof account.identity === 'object'
-        && typeof account.identity.key === 'string' && typeof account.identity.label === 'string'))
+        && typeof account.identity.key === 'string' && typeof account.identity.label === 'string')
+      && (account.quota === undefined || account.quota !== null && typeof account.quota === 'object'
+        && (account.quota.sessionUsedPercent === null || typeof account.quota.sessionUsedPercent === 'number')
+        && (account.quota.weeklyUsedPercent === null || typeof account.quota.weeklyUsedPercent === 'number')
+        && (account.quota.weeklyResetsAt === null || typeof account.quota.weeklyResetsAt === 'string')))
   }
 
   /**

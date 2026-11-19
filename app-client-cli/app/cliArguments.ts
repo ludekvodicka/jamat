@@ -42,6 +42,8 @@ export class CliArguments {
     'commit propose': { options: ['--message', '--message-file', '--directory'], flags: ['--self'], mutation: true },
     'status': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     'accounts list': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
+    /* The account broker's frozen v1 arguments (`docs/architecture/account-broker.md`); local only, so no --computer. */
+    'accounts pick': { options: ['--caller', '--purpose'], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
       flags: [],

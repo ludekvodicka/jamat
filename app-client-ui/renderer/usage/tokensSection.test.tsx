@@ -4,7 +4,7 @@ import { TokensSection } from './tokensSection'
 
 const { read } = vi.hoisted(() => ({ read: vi.fn() }))
 vi.mock('../ipc/appControl', () => ({ AppControl: { value: read } }))
-vi.mock('./usageChart', () => ({ usageChartTheme: () => ({ text: '', grid: '', accent: '' }),
+vi.mock('./usageChart', () => ({ usageChartTheme: () => ({ text: '', grid: '', accent: '', series: [] }),
   UsageChart: ({ label }: { label: string }) => <div role="img" aria-label={label} /> }))
 describe('TokensSection', () => {
   beforeEach(() => {

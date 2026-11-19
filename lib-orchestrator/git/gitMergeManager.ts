@@ -215,6 +215,30 @@ export class GitMergeManager extends GitManager {
     return { ok: true, value: false }
   }
 
+  /** Whether the main copy's HEAD contains `commit`, the commit a worktree was cut from. */
+  async contains(repositoryRoot: string, commit: string): Promise<GitResult<boolean>> {
+    return this.isMerged(repositoryRoot, commit)
+  }
+
+  /**
+   * The files the worktree's last commit changed that still hold a conflict marker line in that
+   * commit, read from the committed tree so an unstaged edit hides none. `=======` alone is left out:
+   * a Markdown heading underline can be exactly that.
+   */
+  async markedFiles(worktreePath: string): Promise<GitResult<string[]>> {
+    const changed = await this.invoker.run(worktreePath, ['diff', '--name-only', '-z', 'HEAD^1', 'HEAD', '--'])
+    const changedFailure = GitManager.failureOf(changed, 'git-failed')
+    if (changedFailure) return changedFailure
+    const paths = new Set(changed.stdout.split('\0').filter((path) => path !== ''))
+    if (paths.size === 0) return { ok: true, value: [] }
+    const grep = await this.invoker.run(worktreePath, ['grep', '-l', '-I', '-z', '-E', '^(<{7}|>{7})( |$)', 'HEAD', '--'])
+    // git grep exits 1 when nothing matched.
+    if (!grep.failure && grep.code === 1) return { ok: true, value: [] }
+    const grepFailure = GitManager.failureOf(grep, 'git-failed')
+    if (grepFailure) return grepFailure
+    return { ok: true, value: grep.stdout.split('\0').map((entry) => entry.replace(/^HEAD:/, '')).filter((path) => paths.has(path)) }
+  }
+
   /**
    * The feature branch into the main copy, `--no-ff` on purpose: the merge commit is what makes the
    * session visible in the history afterwards, and a fast-forward would leave no trace that the work

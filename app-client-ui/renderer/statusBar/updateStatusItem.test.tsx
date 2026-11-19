@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DtoAutoUpdateStatus } from '../../shared/electron/autoUpdate/common/autoUpdate.dto'
 import type { AutoUpdateApi } from '../../shared/electron/autoUpdate/common/autoUpdateApi'
-import { UpdateStatusItem } from './updateStatusItem'
+import { UpdateStatusItem, VersionStatusItem } from './updateStatusItem'
 
 describe('app-client-ui/renderer/statusBar/updateStatusItem', () => {
   /** A pull of `null` never answers, which is the item's first moment before main replies. */
@@ -92,5 +92,21 @@ describe('app-client-ui/renderer/statusBar/updateStatusItem', () => {
 
     expect(api.calls).toEqual(['openReleasePage', 'install'])
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('checks for updates on a click on the version, only where the updater admits a check', async () => {
+    const api = new FakeAutoUpdate({ running: '3.6.0', mode: 'automatic', releasePage: true, state: { kind: 'current', checkedAt: 0 } })
+    render(<VersionStatusItem version="3.6.0" api={api} />)
+    const version = await screen.findByRole('button', { name: 'v3.6.0' })
+    await screen.findByTitle('Check for updates')
+
+    fireEvent.click(version)
+    expect(api.calls).toEqual(['check'])
+
+    api.push({ running: '3.6.0', mode: 'off', releasePage: true, state: { kind: 'off', reason: 'Development run: install a packaged release to get updates.' } })
+    expect(version.getAttribute('aria-disabled')).toBe('true')
+    expect(version.title).toBe('Development run: install a packaged release to get updates.')
+    fireEvent.click(version)
+    expect(api.calls).toEqual(['check'])
   })
 })

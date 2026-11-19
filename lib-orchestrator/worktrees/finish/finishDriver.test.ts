@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { finishTestRecords, emptyUpdateTargets, testAssembly } from './finishTestRecords'
 import { FinishDriver, type FinishDriverDeps } from './finishDriver'
+import type { SessionRecord } from '../../sessionManager/worktreeSessionRecords'
 import { SyncStep } from './syncStep'
 import { Reconciler } from '../../sessionManager/lifecycle/reconciler'
 import { WorktreeLifecycleMigration } from '../worktreeLifecycleMigration'
@@ -72,6 +73,8 @@ async function harness() {
       items: paths.map((path) => ({ path, item: 'normal', props: 'none', base: revision, changed: revision })) } }),
     revertSetup: async () => ({ ok: true, value: undefined }),
     advancePublished: vi.fn(async () => ({ ok: true, value: undefined })),
+    hashes: async (_root: string, paths: string[]) => ({ ok: true, value: Object.fromEntries(paths.map((path) => [path, hash])) }),
+    baseAbove: async () => ({ ok: true, value: null }),
   }
   const deps = {
     records: h.records, commands, runner, logs, results, svn,
@@ -118,6 +121,10 @@ async function harness() {
     approve: () => driver.start('worker', { choice: 'commit', requestedBy: 'window', selection: [join(root, 'a.txt')], message: '[App] Fix file',
       messageSource: 'person-local', reviewVersion: h.records.get('worker')!.worktreeLifecycle!.version }) }
 }
+
+/** A merger whose Claude confirmed its conversation, so only its idle limit or its work ends it. */
+const confirmedMerger = (runId: string, path: string, life: 'live' | 'ended' = 'live') => ({ sessionId: runId, kind: 'agent' as const, title: 'merge', createdAt: 1, life,
+  binding: null, directory: { mode: 'adHoc' as const, path }, agent: { agentId: 'claude' as const, launchMode: 'new' as const, nativeSessionId: runId, nativeSessionIdSource: 'claude-statusline' as const } }) as SessionRecord
 
 describe('FinishDriver', () => {
   it('answers a press once its action is saved and runs the sync after the answer', async () => {
@@ -1041,13 +1048,15 @@ describe('FinishDriver', () => {
     expect(h.state().conflictProgress).toMatchObject({ owner: 'merger', milliseconds: 0, observedAt: now })
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window', agent: true })
     expect(h.deps.createResolver).toHaveBeenCalledTimes(2)
+    await h.records.put(confirmedMerger(h.state().execution!.merger!.runId, h.root))
     now += 20 * 60_000
     await h.driver.drive('worker')
-    expect(h.state().wait?.reason).toBe('The merger made no settlement for twenty minutes')
+    expect(h.state().wait?.reason).toMatch(/^The merger made no settlement for twenty minutes; the merger ended with 1 left/)
     expect(h.events).not.toContain('commit')
   })
 
-  it.each(['live', 'uncaptured'] as const)('keeps a %s merger behind the conflict wait on a repeated press', async (kind) => {
+  // 008: a merger with nothing left to settle never ends by itself; the press stops it and goes on.
+  it.each(['live', 'uncaptured'] as const)('stops a %s merger whose paths are settled on a repeated press, and goes on after its check', async (kind) => {
     const h = await harness()
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
     const syncs = h.events.filter((event) => event === 'sync').length
@@ -1058,12 +1067,15 @@ describe('FinishDriver', () => {
       syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0, entries: [
         { path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'settled', by: 'agent', settledWith: 'merged', options: ['merged'], facts: {} },
       ] } } }))
+    h.deps.stopRun = vi.fn(async () => true)
     await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
-    expect(h.state()).toMatchObject({ phase: 'waiting', step: 'worker-resolving', execution: { runId: 'merger' } })
-    expect(h.state().execution?.merger?.endedAt).toBeUndefined()
-    expect(h.state().review).toBeUndefined()
-    expect(h.events.filter((event) => event === 'sync')).toHaveLength(syncs)
+    expect(h.deps.stopRun).toHaveBeenCalledWith('merger', false)
+    expect(h.state().execution?.merger).toMatchObject({ endedAt: expect.any(Number), checkedAt: expect.any(Number) })
+    expect(h.state().execution?.runId).toBeUndefined()
+    expect(h.state().step).not.toBe('worker-resolving')
+    expect(h.events.filter((event) => event === 'sync').length).toBeGreaterThan(syncs)
     expect(h.events).not.toContain('commit')
+    expect(h.failures).toEqual([])
   })
 
   it.each([false, true])('restarts only the reopened conflict journal while merger live is %s', async (merging) => {
@@ -1121,12 +1133,15 @@ describe('FinishDriver', () => {
       execution: { ...record.worktreeLifecycle!.execution!, runId: 'merger', merger: { runId: 'merger', setAt: 1, startedAt: 1 } },
       syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
         entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    // A Host that refuses to stop the live merger keeps it to its own verdict, as before the drive stopped spent mergers.
+    h.deps.stopRun = vi.fn(async (id: string) => h.records.get(id)?.life !== 'live')
     h.deps.sync.resolve = async () => {
       await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, step: 'checking',
         syncConflictSet: { ...record.worktreeLifecycle!.syncConflictSet!, entries: record.worktreeLifecycle!.syncConflictSet!.entries.map((entry) => ({ ...entry, state: 'settled', by: 'agent', settledWith: 'merged' })) } } }))
       return { ok: true, value: { sessionId: 'worker', path: 'a.txt', state: 'settled', left: 0 } }
     }
     expect(await h.driver.resolveConflict('worker', { path: 'a.txt', option: 'merged', confirm: false, requestedBy: 'cli', by: 'agent' })).toMatchObject({ ok: true })
+    await h.driver.settled('worker')
     expect(h.state().step).toBe('worker-resolving')
     expect(h.state().review).toBeUndefined()
     expect(await h.driver.noteVerdict('worker', { kind: 'succeeded' })).toBe(false)
@@ -1168,6 +1183,102 @@ describe('FinishDriver', () => {
     expect(h.deps.svn.baseAbove).toHaveBeenCalledTimes(1)
     expect(h.events).not.toContain('commit')
     expect(h.failures).toEqual([])
+  })
+
+  it.each(['worker settles the last path', 'Check again finds nothing open', 'drive alone'] as const)('stops a live merger with nothing left when the %s, and goes on (008)', async (settler) => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.put(confirmedMerger('merger', h.root))
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'worker-resolving', review: undefined,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'merger', merger: { runId: 'merger', setAt: 1, startedAt: 1 } },
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: settler === 'drive alone' ? 'settled' : 'agent', options: ['merged'], facts: {} }] } } }))
+    h.deps.stopRun = vi.fn(async () => true)
+    if (settler === 'worker settles the last path') {
+      h.deps.sync.resolve = async () => {
+        await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, step: 'syncing',
+          syncConflictSet: { ...record.worktreeLifecycle!.syncConflictSet!, entries: record.worktreeLifecycle!.syncConflictSet!.entries.map((entry) => ({ ...entry, state: 'settled', by: 'agent', settledWith: 'merged' })) } } }))
+        return { ok: true, value: { sessionId: 'worker', path: 'a.txt', state: 'settled', left: 0 } }
+      }
+      expect(await h.driver.resolveConflict('worker', { path: 'a.txt', option: 'merged', confirm: false, requestedBy: 'cli', by: 'agent' })).toMatchObject({ ok: true })
+      await h.driver.settled('worker')
+    }
+    else if (settler === 'Check again finds nothing open') expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    else await h.driver.drive('worker')
+    expect(h.deps.stopRun).toHaveBeenCalledWith('merger', false)
+    expect(h.state().execution?.merger).toMatchObject({ endedAt: expect.any(Number), checkedAt: expect.any(Number) })
+    expect(h.state().step).not.toBe('worker-resolving')
+    expect(h.state().wait).toBeUndefined()
+    expect(h.failures).toEqual([])
+  })
+
+  it('leaves a confirmed merger with paths still open running at Check again', async () => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.put(confirmedMerger('merger', h.root))
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'worker-resolving', review: undefined,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'merger', merger: { runId: 'merger', setAt: 1, startedAt: 1 } },
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    h.deps.svn.conflictSet = async () => ({ ok: true, value: { revision: 2, facts: [{ path: 'a.txt', kind: 'text' }], rows: [] } }) as never
+    h.deps.stopRun = vi.fn(async () => true)
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    expect(h.deps.stopRun).not.toHaveBeenCalled()
+    expect(h.state().syncConflictSet?.entries[0].state).toBe('agent')
+    expect(h.state().wait).toBeUndefined()
+  })
+
+  it('stops a merger that never confirmed its conversation after five minutes and names a startup dialog', async () => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    let now = Date.now()
+    h.deps.now = () => now
+    await h.records.put({ ...confirmedMerger('merger', h.root), agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'merger' } } as SessionRecord)
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'worker-resolving', review: undefined,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'merger', merger: { runId: 'merger', setAt: 1, startedAt: now } },
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    h.deps.svn.conflictSet = async () => ({ ok: true, value: { revision: 2, facts: [{ path: 'a.txt', kind: 'text' }], rows: [] } }) as never
+    vi.mocked(h.deps.resolver.withMarkers).mockResolvedValue(['a.txt'])
+    h.deps.stopRun = vi.fn(async () => true)
+    now += 4 * 60_000
+    await h.driver.drive('worker')
+    expect(h.deps.stopRun).not.toHaveBeenCalled()
+    now += 60_000
+    await h.driver.drive('worker')
+    expect(h.deps.stopRun).toHaveBeenCalledWith('merger', false)
+    expect(h.state().wait).toMatchObject({ kind: 'conflict-person', reason: expect.stringContaining('did not confirm its start within 5 minutes') })
+    expect(WorktreeWords.actions(h.state()).map((action) => action.id)).toEqual(expect.arrayContaining(['finish-again', 'resolve-with-agent']))
+  })
+
+  it('answers a failed recheck under a live merger on the press and keeps the drive going', async () => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.put(confirmedMerger('merger', h.root))
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'worker-resolving', review: undefined,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'merger', merger: { runId: 'merger', setAt: 1, startedAt: Date.now() } },
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    h.deps.svn.conflictSet = async () => ({ ok: false, code: 'svn-failed', detail: 'E155004 locked' }) as never
+    expect(await h.press('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: false, code: 'svn-failed' })
+    expect(h.state()).toMatchObject({ phase: 'finishing', step: 'worker-resolving' })
+    expect(h.state().wait).toBeUndefined()
+  })
+
+  it('keeps the conflicts with the worker that holds their handoff when the person presses Check again', async () => {
+    const h = await harness()
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!, phase: 'finishing', step: 'worker-resolving', review: undefined,
+      handoff: { id: 'h1', key: `conflicts:${record.worktreeLifecycle!.actionId}:1`, text: 'settle', at: 1, attempts: 1, state: 'delivered' },
+      syncConflictSet: { readAt: 1, baseRevision: 1, revision: 2, more: 0,
+        entries: [{ path: 'a.txt', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } } }))
+    h.deps.svn.conflictSet = async () => ({ ok: true, value: { revision: 2, facts: [{ path: 'a.txt', kind: 'text' }], rows: [] } }) as never
+    vi.mocked(h.deps.resolver.withMarkers).mockResolvedValue(['a.txt'])
+    h.deps.createResolver = vi.fn()
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })).toMatchObject({ ok: true })
+    expect(h.state().wait).toBeUndefined()
+    expect(h.state().syncConflictSet?.entries[0].state).toBe('agent')
+    expect(h.deps.createResolver).not.toHaveBeenCalled()
   })
 
   it('finishes a persisted no-window review wait after restart without repeating its notice', async () => {

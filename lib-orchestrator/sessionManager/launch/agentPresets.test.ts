@@ -274,7 +274,7 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
       cliConst,
     )).toEqual([
       '--allowedTools', `Bash(${cliConst} sessions resolve-conflict:*)`, `Bash(${cliConst} sessions conflicts:*)`,
-      '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits',
+      '--disallowedTools', 'Bash(svn:*)', 'Bash(svnadmin:*)', '--permission-mode', 'acceptEdits', '--no-chrome',
       '--resume', parentConst, '--fork-session', '--session-id', mintedConst, 'merge it',
     ])
   })

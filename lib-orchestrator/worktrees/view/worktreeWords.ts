@@ -162,7 +162,10 @@ export class WorktreeWords {
       ? WorktreeWords.reviewReady(state) ? WorktreeWords.wait('review') : { title: 'Preparing the synced review', tone: 'running' as const }
       : state.wait === undefined ? { title: SvnActionStages.installOf(state.execution ?? {}) !== null ? 'Installing dependencies for changed inputs'
         // An owner without declared checks runs none while its review is prepared (D15).
-        : state.step === 'checking' && state.execution?.checks.length === 0 ? 'Preparing the synced review' : WorktreeWords.step(state.step), tone: 'running' as const }
+        : state.step === 'checking' && state.execution?.checks.length === 0 ? 'Preparing the synced review'
+        // The badge named the worker while the merger worked (008).
+        : state.step === 'worker-resolving' && state.execution?.merger !== undefined && state.execution.merger.endedAt === undefined ? 'The merger is resolving conflicts'
+        : WorktreeWords.step(state.step), tone: 'running' as const }
       : state.wait.kind === 'conflict-person' && state.syncConflictSet !== undefined && !SvnConflictFlow.unsettled(state.syncConflictSet)
         ? { title: 'Conflicts settled', tone: 'wait' as const } : WorktreeWords.wait(state.wait.kind)
     switch (state.phase) {
@@ -347,6 +350,7 @@ export class WorktreeWords {
       case 'commit-close': case 'commit-continue': return { operation: 'sessions.finishMain', body: { mainChoice: action.id } }
       case 'close-session': return { operation: 'sessions.finishMain', body: { mainChoice: 'close' } }
       case 'cancel-finish': return { operation: 'sessions.finishMain', body: { mainChoice: 'cancel' } }
+      case 'check-finish': return { operation: 'sessions.finishMain', body: { mainChoice: 'check' } }
       case 'stop-agent': case 'stop-run': return action.runId === undefined ? undefined : { operation: 'sessions.finalize', sessionId: action.runId, body: { expect: 'stop' } }
       case 'remove-run': return action.runId === undefined ? undefined : { operation: 'sessions.remove', sessionId: action.runId, body: {} }
       default: throw new Error(`Unknown workflow action: ${JSON.stringify(action.id satisfies never)}`)

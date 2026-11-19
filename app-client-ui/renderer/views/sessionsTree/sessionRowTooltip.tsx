@@ -139,6 +139,8 @@ export function SessionRowTooltip(props: {
   worktree: string | null
   /** A landed row: what its main copy lacks and what brings it in; absent for every other row. */
   landing?: string | null
+  /** The added account an agent session runs on; absent on Main, like the row's account pill. */
+  account?: string
 }): React.JSX.Element {
   const element = useRef<HTMLDivElement>(null)
   const [placement, setPlacement] = useState<SessionRowTooltipPosition>({ x: 0, y: 0 })
@@ -149,7 +151,7 @@ export function SessionRowTooltip(props: {
     if (anchor && box)
       setPlacement(SessionRowTooltipPlacement.beside(
         anchor, box.width, box.height, window.innerWidth, window.innerHeight))
-  }, [props.anchor, props.title, props.note, props.worktree, props.landing])
+  }, [props.anchor, props.title, props.note, props.worktree, props.landing, props.account])
 
   return createPortal(
     <div
@@ -160,6 +162,9 @@ export function SessionRowTooltip(props: {
       style={{ left: placement.x, top: placement.y }}
     >
       <div className="jamat-sessions__tooltip-title">{props.title}</div>
+      {props.account !== undefined && (
+        <div className="jamat-sessions__tooltip-worktree" data-tooltip-account="true">Account: {props.account}</div>
+      )}
       {props.worktree !== null && (
         <div className="jamat-sessions__tooltip-worktree">{props.worktree}</div>
       )}

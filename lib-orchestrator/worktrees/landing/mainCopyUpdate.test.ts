@@ -259,7 +259,7 @@ describe('MainCopyUpdate', () => {
     await h.settled()
     const action = h.records.get('worker')!.svnAction!
     expect(action.conflictSet?.entries.map((entry) => entry.path)).toEqual(['a'])
-    expect(action.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press UPDATE again; '
+    expect(action.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press Update again; '
       + 'conflicts from before this UPDATE are not part of it and stay yours as svn left them: older')
     expect(h.deps.createResolver).not.toHaveBeenCalled()
   })
@@ -278,7 +278,7 @@ describe('MainCopyUpdate', () => {
     expect(second.actionId).toBe(first.actionId)
     expect(second.updateProtection?.before).toEqual(['older'])
     expect(second.conflictSet?.entries.map((entry) => entry.path)).toEqual(['a'])
-    expect(second.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press UPDATE again; '
+    expect(second.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press Update again; '
       + 'conflicts from before this UPDATE are not part of it and stay yours as svn left them: older')
     expect(h.results.list({})[0].main).toBeUndefined()
   })
@@ -297,7 +297,7 @@ describe('MainCopyUpdate', () => {
     const other = h.records.get('other')!.svnAction!
     expect(other.updateProtection?.before).toEqual(['older'])
     expect(other.conflictSet?.entries.map((entry) => entry.path)).toEqual(['a'])
-    expect(other.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press UPDATE again; '
+    expect(other.needs?.reason).toBe('1 conflict needs you: a (property); settle them, then press Update again; '
       + 'conflicts from before this UPDATE are not part of it and stay yours as svn left them: older')
     expect(h.results.list({})[0].main).toBeUndefined()
   })
@@ -328,6 +328,25 @@ describe('MainCopyUpdate', () => {
     const action = h.records.get('worker')!.svnAction!
     expect(action.conflictSet?.entries[0]).toMatchObject({ path: 'a', state: 'settled', by: 'person', settledWith: 'take-incoming' })
     expect(action.needs).toMatchObject({ kind: 'conflict', reason: '1 conflict: you fixed 1; all are settled, press Update to go on' })
+  })
+
+  it.each([true, false])('stops an UPDATE resolver past its limit and says whether the stop held (stop confirmed: %s)', async (confirmed) => {
+    const h = await harness()
+    h.setConflicts([], ['a'])
+    expect(await h.update.startUpdate('worker', h.root, 'window', false, false)).toMatchObject({ ok: true })
+    await h.settled()
+    h.setConflicts(['a'], ['a'])
+    expect(await h.update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
+    await h.settled()
+    expect(h.records.get('worker')!.svnAction).toMatchObject({ stage: 'resolving' })
+    const stopRun = vi.fn(async () => confirmed)
+    Object.assign(h.deps, { stopRun, now: () => 10 + 21 * 60_000 })
+    const update = new MainCopyUpdate(h.deps)
+    update.due('worker')
+    await h.settled()
+    expect(stopRun).toHaveBeenCalled()
+    expect(h.records.get('worker')!.svnAction?.needs).toMatchObject({ kind: 'resolver-failed',
+      reason: confirmed ? expect.stringContaining('was stopped') : expect.stringContaining('could not stop it, so it may still edit files') })
   })
 
   it('starts no resolver for an UPDATE nobody pressed, then one per press, again after a failed one (Finish 072)', async () => {
@@ -478,7 +497,7 @@ describe('MainCopyUpdate', () => {
     it('names the locked external, not the main copy root, when another client holds the lock', async () => {
       const { h, ea } = await lockedAfter(false)
       expect(h.records.get('worker')!.svnAction!.needs!.reason)
-        .toBe(`${ea} is locked by another svn client; let it finish, or run svn cleanup there yourself, then press UPDATE again`)
+        .toBe(`${ea} is locked by another svn client; let it finish, or run svn cleanup there yourself, then press Update again`)
     })
   })
 

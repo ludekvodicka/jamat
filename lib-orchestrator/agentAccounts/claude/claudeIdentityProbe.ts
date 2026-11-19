@@ -20,9 +20,12 @@ export class ClaudeIdentityProbe {
     if (!JsonShape.isRecord(raw)) return { kind: 'failed', reason: 'Invalid Claude identity metadata' }
     if (raw.oauthAccount === undefined || raw.oauthAccount === null) return { kind: 'logged-out' }
     const account = raw.oauthAccount
-    if (JsonShape.isRecord(account) && typeof account.emailAddress === 'string' && account.emailAddress.trim()
-      && typeof account.organizationUuid === 'string' && account.organizationUuid.trim())
-      return { kind: 'logged-in', identity: { key: `${account.organizationUuid}/${account.emailAddress}`, label: account.emailAddress } }
-    return { kind: 'failed', reason: 'Claude identity metadata has no account identity' }
+    if (!JsonShape.isRecord(account) || typeof account.emailAddress !== 'string' || !account.emailAddress.trim()
+      || typeof account.organizationUuid !== 'string' || !account.organizationUuid.trim())
+      return { kind: 'failed', reason: 'Claude identity metadata has no account identity' }
+    const tier = [account.userRateLimitTier, account.organizationRateLimitTier]
+      .find((value): value is string => typeof value === 'string' && value.trim() !== '')
+    return { kind: 'logged-in', identity: { key: `${account.organizationUuid}/${account.emailAddress}`, label: account.emailAddress },
+      ...(tier === undefined ? {} : { rateLimitTier: tier }) }
   }
 }

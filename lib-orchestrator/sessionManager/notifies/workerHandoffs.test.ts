@@ -82,6 +82,20 @@ describe('WorkerHandoffs', () => {
     expect(source.pending()).toEqual([])
   })
 
+  it('holds a pending conflict handoff while a merger works on the paths, and delivers it after the merger ended', async () => {
+    const h = await finishTestRecords({ syncConflictSet: { readAt: 5, baseRevision: 1, revision: 2, more: 0,
+      entries: [{ path: 'a', kind: 'text', shape: 'text-overlap', state: 'agent', options: ['merged'], facts: {} }] } })
+    const source = new WorkerHandoffs(() => h.records, call)
+    await source.conflicts('worker')
+    const merger = { runId: 'm', setAt: 5, startedAt: 6 }
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      execution: { root: 'R:/w', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 1, ...record.worktreeLifecycle!.execution, merger } } }))
+    expect(source.pending()).toEqual([])
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      execution: { ...record.worktreeLifecycle!.execution!, merger: { ...merger, endedAt: 7 } } } }))
+    expect(source.pending()).toHaveLength(1)
+  })
+
   it('ties a resume to its action, so an older resume never holds a later Finish (UA1-J13-1)', async () => {
     const h = await finishTestRecords()
     const source = new WorkerHandoffs(() => h.records, call)

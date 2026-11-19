@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -81,7 +81,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       diffExecutor: new FileDiffComputer(),
       vcsAdapters: [vcs(root)],
       transcriptResolver: { async resolve() { return null }, async subagentFiles() { return [] } },
-      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() { return [] } }],
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async shellRuns() { return [] }, async load() { return [] } }],
     })
   }
 
@@ -102,7 +102,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       vcsAdapters: [adapter],
       transcriptResolver: { async resolve(input) { return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, file: 'x', mtimeMs: 0, size: 0 } },
         async subagentFiles() { return [] } },
-      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() {
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async shellRuns() { return [] }, async load() {
         return [{ groupId: 'g', message: 'm', createdAt: 1, mutations: [mutation('own.ts'), mutation('fresh/inner/new.ts'), mutation('moved.ts', 'old.ts'),
           mutation('reverted.ts')] }]
       } }],
@@ -112,6 +112,46 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     expect(await instance.sessionChanges(context, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: ['own.ts', 'fresh', 'moved.ts'] } })
     // Without an agent there is no transcript, so nothing is the session's own.
     expect(await instance.sessionChanges({ ...context, agent: null }, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: [] } })
+  })
+
+  it('counts a file a shell command of the session names and wrote while it ran, not one it only named or one written then by another', async () => {
+    const root = cwd()
+    const startedAt = 1_700_000_000_000
+    const file = (name: string, modifiedAt: number | null) => {
+      const path = join(root, name)
+      mkdirSync(dirname(path), { recursive: true })
+      if (modifiedAt === null) return
+      writeFileSync(path, 'x\n', 'utf8')
+      utimesSync(path, modifiedAt / 1_000, modifiedAt / 1_000)
+    }
+    file('src/scripted.ts', startedAt + 5_000)
+    file('scripted.ts', startedAt + 5_000)
+    file('abs.ts', startedAt + 9_000)
+    file('read.ts', startedAt - 600_000)
+    file('foreign.ts', startedAt + 5_000)
+    file('gone.ts', null)
+    const names = ['src/scripted.ts', 'scripted.ts', 'abs.ts', 'read.ts', 'foreign.ts', 'gone.ts']
+    const adapter: FileChangesVcs = { ...vcs(root), id: 'svn', async status() {
+      return { ok: true, value: { externalRoots: [], entries: names.map((name) => ({ absolutePath: join(root, name), repositoryPath: name, nodeKind: 'file' as const,
+        status: name === 'gone.ts' ? 'deleted' as const : 'modified' as const, previousAbsolutePath: null, previousRepositoryPath: null, gitState: null })) } }
+    } }
+    // The script names `abs.ts` absolutely, as a Python string literal doubles a Windows backslash.
+    const literal = join(root, 'abs.ts').replace(/\\/g, '\\\\')
+    const instance = new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      vcsAdapters: [adapter],
+      transcriptResolver: { async resolve(input) { return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, file: 'x', mtimeMs: 0, size: 0 } },
+        async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'claude', subagentsSince: () => null, async load() { return [] }, async shellRuns() {
+        return [
+          { command: `python3 - <<'EOF'\nedit('src/scripted.ts', [('a', 'b')])\nedit('${literal}', [])\nEOF`, startedAt, endedAt: startedAt + 10_000 },
+          { command: 'svn diff read.ts foreign.ts.bak && svn rm gone.ts', startedAt: startedAt + 20_000, endedAt: startedAt + 21_000 },
+        ]
+      } }],
+    })
+    const context = { sessionId: 'session', cwd: root, agent: { agentId: 'claude' as const, nativeSessionId: 'native' } }
+
+    expect(await instance.sessionChanges(context, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: ['src/scripted.ts', 'abs.ts'] } })
   })
 
   it('lists sub-agents from the log source\'s start and files their edits under the spawning message', async () => {
@@ -460,7 +500,7 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       },
       vcsAdapters: [adapter],
       transcriptResolver: { async resolve() { return null }, async subagentFiles() { return [] } },
-      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async load() { return [] } }],
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async shellRuns() { return [] }, async load() { return [] } }],
     })
     const listed = await managerInstance.list({
       sessionId: 'session', cwd: root, agent: null,

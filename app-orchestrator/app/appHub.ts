@@ -83,9 +83,12 @@ import { TerminalTargetCodec } from '../../lib-orchestrator/clientApi/terminalTa
 import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { AgentSettingsOperations } from './agents/agentSettingsOperations'
 import { AgentAccounts } from '../../lib-orchestrator/agentAccounts/agentAccounts'
+import { AccountBroker } from '../../lib-orchestrator/agentAccounts/accountBroker'
+import { AccountCallerLog } from '../../lib-orchestrator/agentAccounts/accountCallerLogView'
 import { builtInAccountProfiles } from '../../lib-orchestrator/agentAccounts/builtInAccountsView'
 import { AccountsSection } from './accounts/accountsSection'
 import { AccountsOperations } from './accounts/accountsOperations'
+import { AccountBrokerCommand } from './accounts/accountBrokerCommand'
 import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
 import { AutolauncherManager } from './autolauncher/autolauncherManager'
 import { AutolauncherTarget } from './autolauncher/autolauncherTarget'
@@ -255,6 +258,7 @@ export class OrchestratorHub {
 
   private remoteRevision: number
   private readonly accounts: AgentAccounts
+  private readonly callerLog: AccountCallerLog
 
   constructor(runtime: OrchestratorRuntime, shell: ShellPort, transport: ServiceTransport, gatewayCalls: ProcessCalls, perf: PerfMonitor, names: PerfNames, event: (event: OrchestratorEvent) => void) {
     this.presentation = { anythingVisible: false, accepting: [], seen: [], front: null, lastActivePanel: null }
@@ -359,6 +363,7 @@ export class OrchestratorHub {
       ...builtInAccountProfiles(process.env),
       accountsRoot: join(context.config.configDir, 'accounts'),
       rates: () => this.rateMonitor?.snapshot().accounts ?? [],
+      history: range => this.rateMonitor?.readHistory(range) ?? Promise.resolve([]),
       stored: () => configStore.readSection(AccountsSection.spec),
       store: value => {
         const result = configStore.saveSection(AccountsSection.spec, value)
@@ -749,7 +754,11 @@ export class OrchestratorHub {
     }), () => this.broadcast('usage:changed'), workerPerf('tokenUsage'))
     new TokenUsageOperations(this.tokenUsage, accounts).register(remoteControl.registry)
     new RateMonitorOperations(this.rateMonitor, this.accounts).register(remoteControl.registry)
-    new AccountsOperations(accounts).register(remoteControl.registry)
+    this.callerLog = new AccountCallerLog(OrchestratorPaths.accountCallersDirectory(configIdentity, channel))
+    const broker = new AccountBroker({ accounts, mainConfigDir: process.env.CLAUDE_CONFIG_DIR || null, log: this.callerLog, now: Date.now,
+      onLogged: () => this.broadcast('usage:callers-changed'), onError: message => this.report(message) })
+    new AccountsOperations(accounts, broker, () => AccountBrokerCommand.of(this.skillLinks.roots()[0]!, configIdentity, channel))
+      .register(remoteControl.registry)
     sessionModel.register(remoteControl.registry)
     sessionTasks.register(remoteControl.registry)
     this.directoryNotes.register(remoteControl.registry)
@@ -1113,6 +1122,7 @@ export class OrchestratorHub {
     this.cliUpdates.start()
     this.sessionNotifier.start()
     this.snapins.wake()
+    void this.callerLog.prune(Date.now()).catch(error => this.report(`Caller log prune failed: ${ErrorText.of(error)}`))
   }
 
   private openSnapin(kind: string): void {

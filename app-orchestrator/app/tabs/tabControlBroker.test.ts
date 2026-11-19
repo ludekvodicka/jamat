@@ -762,36 +762,19 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
     h.acknowledge('holder', command, { kind: 'focused', panelId: 'original' })
   })
 
-  it("opens an agent's session tab behind the active one and brings it forward through the queue", async () => {
+  it("opens an agent's session tab behind the active one and never brings it forward, and opens a person's tab at once", async () => {
     const h = new TabControlHarness()
     h.session('original')
-    const opened = h.broker.open('agent-session', 'Agent', 'agent')
-    const command = await h.command()
-    expect(command).toMatchObject({ kind: 'open-session', sessionId: 'agent-session', activate: false })
-    h.index.claimOpen('main', { panelId: 'agent-panel', key: 'terminal', title: 'Agent', sessionId: 'agent-session', params: { sessionId: 'agent-session' } })
-    h.acknowledge('main', command, { kind: 'opened', panelId: 'agent-panel' })
-    expect(await opened).toMatchObject({ ok: true })
-    const shown = await h.command(1)
-    expect(shown).toMatchObject({ kind: 'focus-panel', panelId: 'agent-panel' })
-    h.acknowledge('main', shown, { kind: 'focused', panelId: 'agent-panel' })
-    expect(h.windows.focused).toEqual(['main'])
-    await h.settled()
-    expect(h.attention.snapshot().items).toEqual([])
-  })
-
-  it("keeps an agent's session tab waiting while the person types, and opens a person's tab at once", async () => {
-    const h = new TabControlHarness()
-    h.idleMilliseconds = 20_000
-    h.session('original')
-    h.attention.personActive()
     const agent = h.broker.open('agent-session', 'Agent', 'agent')
     const command = await h.command()
+    expect(command).toMatchObject({ kind: 'open-session', sessionId: 'agent-session', activate: false })
     h.index.claimOpen('main', { panelId: 'agent-panel', key: 'terminal', title: 'Agent', sessionId: 'agent-session', params: { sessionId: 'agent-session' } })
     h.acknowledge('main', command, { kind: 'opened', panelId: 'agent-panel' })
     expect(await agent).toMatchObject({ ok: true })
     await h.settled()
     expect(h.windows.published).toHaveLength(1)
-    expect(h.attention.snapshot().items).toMatchObject([{ kind: 'session-opened', sessionId: 'agent-session', title: 'Agent', automatic: true }])
+    expect(h.windows.focused).toEqual([])
+    expect(h.attention.snapshot().items).toEqual([])
 
     const person = h.broker.open('person-session', 'Person', 'person')
     const open = await h.command(1)

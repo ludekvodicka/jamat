@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
 import { FileTail } from '../../shared/fileTail'
+import { WindowsHeldFile } from '../../shared/windowsHeldFile'
 
 /** Saved run logs, `<directory>/<parentId>/<runId>.log`, so one parent's removal takes all of its logs. */
 export class ScriptLogStore {
@@ -75,9 +76,9 @@ export class ScriptLogStore {
     try {
       const file = fileOf()
       await mkdir(this.parentDirectory(parentId), { recursive: true })
-      temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
-      await writeFile(temporaryFile, text, { encoding: 'utf-8', mode: ScriptLogStore.ownerOnlyFileConst })
-      await rename(temporaryFile, file)
+      const staging = temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
+      await writeFile(staging, text, { encoding: 'utf-8', mode: ScriptLogStore.ownerOnlyFileConst })
+      await WindowsHeldFile.retried(() => rename(staging, file))
       committed = true
       return { ok: true, bytes: Buffer.byteLength(text, 'utf8') }
     } catch (error) {

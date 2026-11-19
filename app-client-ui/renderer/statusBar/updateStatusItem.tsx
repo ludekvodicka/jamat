@@ -7,6 +7,28 @@ import { AutoUpdateIndicator } from '../../shared/electron/autoUpdateWidgets/aut
 import { AutoUpdatePanel } from '../../shared/electron/autoUpdateWidgets/autoUpdatePanel'
 
 /**
+ * The running version, and a manual update check on a click: the same check as the panel's Check
+ * now, so a failure is shown on the update item beside it instead of only logged, as a background
+ * check's is. Where the updater admits no check (off in a development run, busy checking or
+ * downloading) the click does nothing and the tooltip says why.
+ */
+export function VersionStatusItem(props: { version: string; api: AutoUpdateApi }): React.JSX.Element {
+  const update = useAutoUpdate(props.api)
+  const checks = update.view?.actions.includes('check') === true
+  return (
+    <button
+      type="button"
+      className="jamat-version-status"
+      aria-disabled={!checks}
+      title={checks ? 'Check for updates' : update.view?.detail ?? update.view?.text ?? 'Reading update status'}
+      onClick={() => { if (checks) update.check() }}
+    >
+      {`v${props.version}`}
+    </button>
+  )
+}
+
+/**
  * The shared updater's state on the bar, and its panel on a click. The panel is portalled to the
  * body: inside the bar it would inherit the strip's `nowrap` and its pinned 11px text.
  */

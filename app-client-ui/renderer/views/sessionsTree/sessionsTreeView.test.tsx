@@ -93,6 +93,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(rowOf(container, 'second').querySelector('[data-account-badge]')?.textContent).toBe('Work subscription')
     expect(rowOf(container, 'main').querySelector('[data-account-badge]')).toBeNull()
     expect(rowOf(container, 'legacy').querySelector('[data-account-badge]')).toBeNull()
+    // A long name squeezes the pill out of the row, so the agent mark names the account as well.
+    expect(rowOf(container, 'second').querySelector('.jamat-sessions__agent')?.getAttribute('title')).toBe('claude · Work subscription')
+    expect(rowOf(container, 'main').querySelector('.jamat-sessions__agent')?.getAttribute('title')).toBe('claude')
   })
 
   it.each(['together', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {

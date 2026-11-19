@@ -279,6 +279,26 @@ try {
     $stored = Read-Installation $root
     Assert ($stored.task.path -ceq $script:legacyTaskPath -and $stored.runtime.directory -ceq $legacy.runtime.directory) 'Failed migration preserves legacy metadata'
     Write-Output 'PASS failed registration during migration restores the legacy task'
+
+    $held = Join-Path $root 'held.json'
+    $ready = Join-Path $root 'held.ready'
+    & $writeJson $held @{ value = 'old' }
+    # A reader without delete sharing, as a real-time scanner opens a file it has just seen written.
+    $hold = "`$f = [IO.File]::Open('$held', 'Open', 'Read', 'Read'); [IO.File]::WriteAllText('$ready', ''); Start-Sleep -Milliseconds 400; `$f.Dispose()"
+    $holder = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -WindowStyle Hidden -PassThru `
+        -ArgumentList ('-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($hold)))
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $ready)) {
+        Assert ([DateTime]::UtcNow -lt $deadline) 'The holder did not open the file'
+        Start-Sleep -Milliseconds 20
+    }
+    $started = [Diagnostics.Stopwatch]::StartNew()
+    & $writeJson $held @{ value = 'new' }
+    Assert ($started.ElapsedMilliseconds -ge 100) 'The write met the hold'
+    Assert ((Get-Content -LiteralPath $held -Raw | ConvertFrom-Json).value -ceq 'new') 'A held file is replaced once released'
+    Assert (@(Get-ChildItem -LiteralPath $root -Filter 'held.json.*.tmp').Count -eq 0) 'No staging file remains'
+    $holder.WaitForExit(); $holder.Dispose()
+    Write-Output 'PASS a file another program briefly holds is replaced once it is released'
 } catch {
     $Error | Select-Object -First 5 | ForEach-Object { Write-Output $_.Exception.Message }
     throw

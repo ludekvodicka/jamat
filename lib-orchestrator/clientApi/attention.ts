@@ -2,7 +2,7 @@
  * What wants the person, as the status bar reads it. A name rather than text: the bar words it,
  * and the queue never branches on it.
  */
-export type AttentionKind = 'commit-review' | 'finish-wait' | 'session-opened' | 'session-mark'
+export type AttentionKind = 'commit-review' | 'finish-wait' | 'session-mark'
 
 export interface AttentionItemView {
   key: string

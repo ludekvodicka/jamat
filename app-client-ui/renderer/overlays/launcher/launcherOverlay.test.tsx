@@ -1,5 +1,5 @@
 import type { AccountView } from '../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -1625,8 +1625,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         { agentId: 'claude', accountId: 'work', label: 'Work', isMain: false, state: 'active', identity: null, profileProblem: null },
       ]))
       fireEvent.keyDown(card(view.container), { key: 'Escape' })
-      const picker = view.getByRole('combobox', { name: 'Account' })
-      fireEvent.change(picker, { target: { value: 'work' } })
+      fireEvent.click(within(view.getByRole('group', { name: 'Account' })).getByRole('button', { name: /Work/ }))
       fireEvent.keyDown(card(view.container), { key: 'Enter' })
       fireEvent.change(view.getByRole('textbox', { name: 'Summary' }), { target: { value: 'Use the selected account' } })
       fireEvent.keyDown(card(view.container), { key: 'Enter' })

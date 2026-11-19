@@ -1,5 +1,6 @@
 import { projectPool } from '../../../lib-orchestrator/rateMonitor/poolProjection'
 import { usageSummary } from '../../../lib-orchestrator/rateMonitor/usageSummary'
+import { PlanWeight } from '../../../lib-orchestrator/agentAccounts/planWeight'
 import type { AgentAccounts } from '../../../lib-orchestrator/agentAccounts/agentAccounts'
 import { z } from 'zod'
 
@@ -27,7 +28,8 @@ export class RateMonitorOperations {
         const now = Date.now()
         const accounts = (await this.accounts.list()).filter(account => account.agentId === request.agentId && account.state !== 'disabled')
         const samples = await this.rateMonitor.readHistory({ from: Math.min(request.from, now - 90 * 86_400_000), to: now })
-        const series = projectPool(samples, accounts, now, Math.min(request.to, now + 31 * 86_400_000), request.burnHours,
+        const series = projectPool(samples, accounts.map(account => ({ agentId: account.agentId, accountId: account.accountId,
+          weight: PlanWeight.of(account) })), now, Math.min(request.to, now + 31 * 86_400_000), request.burnHours,
           { from: request.from, to: request.to })
         return { ok: true, value: series }
       },

@@ -35,10 +35,10 @@ export class GitFinishWorkflow {
       state: run.failed === true ? 'failed' : run.endedAt === undefined ? 'running' : 'done',
       startedAt: run.startedAt, endedAt: run.endedAt ?? null, target: { kind: 'run', runId: run.runId },
     }))
-    const resolver = mergeSteps.find((step) => step.key === 'merge:resolving')
-    if (resolver !== undefined && recorded.some((run) => run.phase === 'main-merging')) {
-      commands.splice(recorded.findIndex((run) => run.phase === 'main-merging'), 0, resolver)
-      mergeSteps.splice(mergeSteps.indexOf(resolver), 1)
+    const resolverStep = mergeSteps.find((step) => step.key === 'merge:resolving')
+    if (resolverStep !== undefined && recorded.some((run) => run.phase === 'main-merging')) {
+      commands.splice(recorded.findIndex((run) => run.phase === 'main-merging'), 0, resolverStep)
+      mergeSteps.splice(mergeSteps.indexOf(resolverStep), 1)
     }
     const changes: SessionWorkflowStep[] = merge?.changes === true && record.worktree !== undefined ? [{
       key: 'changes', title: 'Changes', detail: 'Review the selected files and enter a commit message', state: 'waits',
@@ -46,25 +46,33 @@ export class GitFinishWorkflow {
       body: { kind: 'commit', vcs: 'git', scopeRoot: record.worktree.worktreePath },
     }] : []
     const failure = checks?.result?.kind === 'failed' ? checks.result.reason : merge?.failure
+    const resolver = merge?.phase === 'resolving' && failure === undefined && merge.resolveSessionId !== undefined ? runs(merge.resolveSessionId) : null
+    const resolving = resolver?.life === 'live' || resolver?.life === 'starting'
     return {
       kind: merge?.discard === true ? 'discard' : 'git-finish',
       ...(merge?.revisions ? { revisions: [...merge.revisions, ...merge.mergedRevision ? [merge.mergedRevision] : []] } : {}),
       workflowId: `git-${merge?.discard === true ? 'discard' : 'finish'}:${record.sessionId}:${merge?.startedAt ?? checks?.startedAt ?? 0}`,
       title: `${merge?.discard === true ? 'Discard' : 'Finish'} of ${record.title}`,
       badge: changes.length > 0 ? 'changes need you' : merge?.endedAt !== undefined ? 'finished' : failure === undefined ? GitFinishWorkflow.runningBadgeOf(checks, merge) : merge === undefined ? 'check failed' : 'merge failed',
-      summary: changes.length > 0 ? 'Review the changes and press Commit & merge' : merge?.endedAt !== undefined ? 'The worktree was removed' : failure === undefined ? GitFinishWorkflow.runningSummaryOf(checks, merge) : `${failure}; press Finish to continue`,
+      summary: changes.length > 0 ? 'Review the changes and press Commit & merge' : merge?.endedAt !== undefined ? 'The worktree was removed' : failure === undefined ? GitFinishWorkflow.runningSummaryOf(checks, merge)
+        // A merge failure already says what to do; a check failure names only the check.
+        : checks?.result?.kind === 'failed' ? `${failure}; fix it, then press Try again` : failure,
       open: merge?.endedAt === undefined,
       rounds: [{ title: 'Finish', steps: [...changes, ...checkSteps, ...commands, ...mergeSteps].map((step) => ({ ...step,
         ...step.target.kind === 'run' ? { body: { kind: 'log' as const, runId: step.target.runId } } : {} })) }],
       actions: changes.length > 0 ? [
         ...record.pendingSetup === undefined ? [{ id: 'finish-again' as const, label: 'Commit & merge', primary: true, place: 'step' as const, requiresCommit: true as const }] : [],
         { id: 'discard', label: 'Discard', primary: false, place: 'step', confirm: 'Discard this worktree and its uncommitted changes?' },
-        { id: 'keep', label: 'Keep', primary: false, place: 'step' },
-      ] : failure === undefined ? [] : [
-        merge?.discard === true
-          ? { id: 'discard', label: 'Retry discard', primary: true, confirm: 'Discard this worktree and its uncommitted changes?' }
-          : { id: 'finish-again', label: 'Review changes', primary: true },
-        { id: 'keep', label: 'Keep', primary: false },
+        { id: 'keep', label: 'Keep worktree', primary: false, place: 'step' },
+      // Keep and Discard refuse while the resolver stands in the worktree; its stop ends the merge gate with the manual path open.
+      ] : resolving ? [{ id: 'stop-agent', label: 'Stop agent', primary: false, place: 'step', runId: merge!.resolveSessionId! }]
+      : failure === undefined ? [] : merge?.discard === true ? [
+        { id: 'discard', label: 'Retry discard', primary: true, confirm: 'Discard this worktree and its uncommitted changes?' },
+        { id: 'keep', label: 'Keep worktree', primary: false },
+      ] : [
+        { id: 'finish-again', label: 'Try again', primary: true },
+        { id: 'keep', label: 'Keep worktree', primary: false },
+        { id: 'discard', label: 'Discard', primary: false, confirm: 'Discard this worktree and its uncommitted changes?' },
       ],
     }
   }
@@ -104,7 +112,7 @@ export class GitFinishWorkflow {
       const resolver = phase === 'resolving' && merge?.resolveSessionId !== undefined ? merge.resolveSessionId : null
       return [{
         key: `merge:${phase}`,
-        title: GitFinishWorkflow.titleOf(phase),
+        title: phase === 'resolving' && resolver === null ? 'Resolve the conflicts' : GitFinishWorkflow.titleOf(phase),
         detail: state === 'failed' ? merge?.failure ?? '' : '',
         state,
         startedAt: null,
@@ -145,7 +153,7 @@ export class GitFinishWorkflow {
     const phase = merge.phase
     switch (phase) {
       case 'base-merging': return 'Merging the base into the branch'
-      case 'resolving': return 'Claude resolves the conflicts'
+      case 'resolving': return 'Claude resolves the conflicts; Jamat stops it after 20 minutes'
       case 'main-merging': return 'Merging into the base'
       case 'tearing-down': return 'Removing the worktree'
       default: throw new Error(`Unknown merge phase: ${JSON.stringify(phase satisfies never)}`)

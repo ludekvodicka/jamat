@@ -356,8 +356,8 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   'sessions.backToWork': z.strictObject({ session: RemoteControlZod.sessionSelector, confirmStoppedRunId: RemoteControlZod.text().optional() }),
   'sessions.finishMain': z.strictObject({
     session: RemoteControlZod.sessionSelector,
-    mainChoice: z.enum(['commit-close', 'commit-continue', 'close', 'cancel'],
-      { error: 'mainChoice must be commit-close, commit-continue, close or cancel' }).optional(),
+    mainChoice: z.enum(['commit-close', 'commit-continue', 'close', 'cancel', 'check'],
+      { error: 'mainChoice must be commit-close, commit-continue, close, cancel or check' }).optional(),
   }),
   'sessions.children': z.strictObject({ sessionId: RemoteControlZod.text() }),
   'sessions.worktreeResults': z.strictObject({

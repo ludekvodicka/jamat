@@ -66,7 +66,7 @@ const execution = z.strictObject({ root: z.string().min(1), requestedBy: z.enum(
   removal: z.enum(['removed', 'kept', 'in-use', 'undeleted']).optional(), removalAt: time.optional(), removalLines: z.array(z.string()).optional(),
   neverStartedReason: z.string().optional(), marked: z.array(z.string()).optional(), mergeBrief: z.string().optional(),
   conflicts: z.strictObject({ paths: z.array(z.string()), before: z.array(z.string()), at: time }).optional(),
-  merger: z.strictObject({ runId: z.string().min(1), setAt: time, startedAt: time, endedAt: time.optional(), checkedAt: time.optional() }).optional(),
+  merger: z.strictObject({ runId: z.string().min(1), setAt: time, startedAt: time, startedBy: z.enum(['idle-limit', 'worker-lost', 'person']).optional(), endedAt: time.optional(), checkedAt: time.optional() }).optional(),
   notice: z.strictObject({ id: z.string(), at: time, attempts: count, state: z.enum(['pending', 'delivered', 'expired']), settledAt: time.optional() }).optional(),
   checksPassed: z.strictObject({ fingerprint: z.string(), at: time }).optional(),
   verdict: z.discriminatedUnion('kind', [z.strictObject({ kind: z.literal('succeeded'), exitCode: z.number().optional() }),

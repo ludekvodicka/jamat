@@ -184,6 +184,18 @@
   --auto-update-notes-bg: var(--color-surface-sunken);
   --auto-update-font: var(--fs-base) var(--font-ui);
 }
+/* Reads as the plain version text it replaced; only the pointer says it acts. */
+.jamat-version-status {
+  all: unset;
+  cursor: pointer;
+}
+.jamat-version-status[aria-disabled='true'] {
+  cursor: default;
+}
+.jamat-version-status:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
 /* The bar's control size, the same as the Host item's Start button: a default button is taller than
    the strip. */
 .jamat-update-status .auto-update-button {

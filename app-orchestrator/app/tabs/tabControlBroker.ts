@@ -212,18 +212,14 @@ export class TabControlBroker implements RemoteControlTabsPort {
   }
 
   /**
-   * The port's open. A person's click is in front at once; an agent's tab opens behind the one in
-   * front and waits in the attention queue, so it never lands in the middle of what the person types.
+   * The port's open. A person's click is in front at once. An agent's tab opens behind the one in
+   * front and stays there: the person switches to it when they want it. Bringing it forward after
+   * the quiet time took the person out of their own session for work they had not asked to see.
    */
   async open(sessionId: string, tabTitle: string, requestedBy: RemoteControlTabRequester): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>> {
     if (requestedBy === 'person') return this.openTab(sessionId, tabTitle)
-    else if (requestedBy === 'agent') {
-      const opened = await this.openTab(sessionId, tabTitle, { activate: false })
-      if (opened.ok) this.attention.add({ key: `session-opened:${sessionId}`, kind: 'session-opened', sessionId, title: tabTitle,
-        automatic: true, holds: false, wanted: () => this.tabs.panelsOfSession(sessionId).length > 0,
-        show: () => this.showSession(sessionId, tabTitle) })
-      return opened
-    } else throw new Error(`Unknown tab requester: ${JSON.stringify(requestedBy satisfies never)}`)
+    else if (requestedBy === 'agent') return this.openTab(sessionId, tabTitle, { activate: false })
+    else throw new Error(`Unknown tab requester: ${JSON.stringify(requestedBy satisfies never)}`)
   }
 
   /** The session's tab in front, opened first when it has none: the panel that shows it, or null. */

@@ -620,7 +620,10 @@ export class SvnActionWorkflow {
       ? [{ id: 'solve-with-agent', label: 'Solve with agent', primary: false, place: 'step' }] : []
     if (action.needs === undefined) {
       const runId = SvnActionStages.agentRunOf(action)
-      if (runId === null || action.kind !== 'finish') return []
+      if (runId === null) return []
+      // An UPDATE's resolver had no button for its 20 minutes; its stop sends the conflicts to the person.
+      if (action.kind === 'update-main') return [{ id: 'stop-agent', label: 'Stop agent', primary: false, runId, place: 'step' }]
+      if (action.kind !== 'finish') return []
       if (action.stage === 'merging') return [
         { id: 'finish-again', label: SvnConflictWords.checkAgainConst, primary: true, place: 'step' },
         { id: 'open-merger', label: 'Open merger', primary: false, runId, place: 'step' },
@@ -702,6 +705,9 @@ export class SvnActionWorkflow {
     }
   }
 
+  /** What ends the merger without the person, so a running merger never reads as an open-ended wait. */
+  static readonly mergerLimitsConst = 'Jamat stops it if it does not start within 5 minutes or settles nothing for 20 minutes'
+
   private static runningSummaryOf(action: SessionRecordSvnAction): string {
     const stage = action.stage
     switch (stage) {
@@ -714,7 +720,7 @@ export class SvnActionWorkflow {
       case 'updating': return action.retryAt === undefined ? 'Running svn update' : 'Waiting for the svn lock'
       case 'cleaning': return 'Running svn cleanup'
       case 'resolving': return 'Claude resolves the conflicts'
-      case 'merging': return 'The merger settles the conflicts the rules left'
+      case 'merging': return `The merger settles the conflicts the rules left; ${SvnActionWorkflow.mergerLimitsConst}`
       case 'verifying': return 'Verifying the resolution'
       case 'fixing': return 'Checking the conflicts'
       case 'diffing': return 'Showing the merge as svn diff'

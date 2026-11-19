@@ -1,11 +1,12 @@
 # autoUpdateWidgets
 
 Plain React widgets for the `autoUpdate` member: a compact status indicator and a panel with the release notes and
-the update actions. They use no component library; one CSS file with prefixed class names and CSS custom properties
+the update actions. A neutral member: no UI library; one CSS file with prefixed class names and CSS custom properties
 lets each app match its own look.
 
 **Framework-neutral on purpose:** apps with MUI, with Fluent UI or with their own CSS mount the same widgets. They
-import only React and the sibling `autoUpdate` member.
+import only React and the sibling `autoUpdate` member. A unified UI app sets the custom properties with
+`AppThemeBuilder.neutralWidgetVars(theme)` of `electron/appUi`; an app with its own UI sets them from its own tokens.
 
 ## Components
 

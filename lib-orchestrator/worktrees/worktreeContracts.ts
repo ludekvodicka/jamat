@@ -167,6 +167,8 @@ export interface SvnActionMerger {
   runId: string
   setAt: number
   startedAt: number
+  /** Why it runs: the worker's idle limit, a lost worker, or the person's Resolve with agent. */
+  startedBy?: 'idle-limit' | 'worker-lost' | 'person'
   endedAt?: number
   checkedAt?: number
 }

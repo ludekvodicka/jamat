@@ -2246,6 +2246,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
         agent: { agentId: 'claude', launchMode: 'fork', oneShot: true },
         scriptOf: { sessionId: 'merging', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' },
         life: 'live',
+        // Started now: a Git resolver past its 20 minutes is stopped by the reconciler.
+        createdAt: Date.now(),
         binding: { hostInstanceId: 'fake-host-1', generation: 1 },
       }),
       recordOf(context, 'settled', {

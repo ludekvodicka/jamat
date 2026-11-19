@@ -1,4 +1,5 @@
 import type { RateWindow } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
+import type { AccountCapacity } from '../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import type { PoolSeries, UsageAccount } from '../../../lib-orchestrator/rateMonitor/usageApi.types'
 
 export type PoolRangePreset = 'forecast' | 'week' | 'month' | 'custom'
@@ -160,6 +161,11 @@ export class UsageModel {
   /** The remaining share of the accounts that have a reading, or null when none has. */
   static remainingShare(remaining: number, known: number): number | null {
     return known === 0 ? null : remaining / known
+  }
+
+  /** What an account's weight in the weekly pool stands for. */
+  static planTitle(capacity: AccountCapacity): string {
+    return `${capacity.tier ?? 'Plan unknown'}: weight ${capacity.weight} in the weekly pool and the account choice`
   }
 
   /** `ok` above half, `warn` above a fifth, `danger` below: the colour of a remaining quota. */

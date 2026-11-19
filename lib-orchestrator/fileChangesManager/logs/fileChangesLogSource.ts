@@ -10,6 +10,7 @@ import type { FileChangesAgentId } from '../fileChangesManagerApi.types'
 import type {
   FileChangesLogGroup,
   FileChangesLogMutation,
+  FileChangesShellRun,
   RawFileChangesLogGroup,
   RawFileChangesLogMutation,
 } from './fileChangesLogSource.types'
@@ -19,12 +20,14 @@ export interface ParsedFileChangesLog {
   groups: readonly RawFileChangesLogGroup[]
   /** Spawn key (Claude `Agent` tool_use id, Codex child thread id) to its index in `groups`. */
   spawns: ReadonlyMap<string, number>
+  shellRuns: readonly FileChangesShellRun[]
 }
 
 /** A sub-agent's own file: its confirmed mutations and the time of its first record. */
 export interface ParsedSubagentLog {
   startedAt: number | null
   mutations: readonly RawFileChangesLogMutation[]
+  shellRuns: readonly FileChangesShellRun[]
 }
 
 interface CacheEntry<T> {
@@ -57,31 +60,11 @@ export abstract class FileChangesLogSource {
     cwd: string,
     subagents: readonly ProviderSubagentFileRef[],
   ): Promise<readonly FileChangesLogGroup[]> {
-    if (ref.agentId !== this.agentId)
-      throw new Error(`Transcript ${ref.agentId} was handed to ${this.agentId}`)
-    const parent = await FileChangesLogSource.cached(
-      this.cache,
-      FileChangesLogSource.maxCacheEntriesConst,
-      ref,
-      (content) => this.parse(content),
-    )
+    const parent = await this.parent(ref)
     const added = parent.groups.map((): RawFileChangesLogMutation[] => [])
-    for (const subagent of FileChangesLogSource.newest(subagents)) {
-      if (subagent.agentId !== this.agentId)
-        throw new Error(`Sub-agent ${subagent.agentId} was handed to ${this.agentId}`)
-      let log: ParsedSubagentLog
-      // One sub-agent file that vanished or cannot be read must not cost the session its history.
-      try {
-        log = await FileChangesLogSource.cached(
-          this.subagentCache,
-          FileChangesLogSource.maxSubagentCacheEntriesConst,
-          subagent,
-          (content) => FileChangesLogSource.prefixed(this.parseSubagent(content), subagent.subagentId),
-        )
-      }
-      catch { continue }
+    for await (const log of this.subagentLogs(subagents)) {
       if (log.mutations.length === 0) continue
-      const index = (subagent.spawnKey === null ? undefined : parent.spawns.get(subagent.spawnKey))
+      const index = (log.spawnKey === null ? undefined : parent.spawns.get(log.spawnKey))
         ?? FileChangesLogSource.groupAt(parent.groups, log.startedAt)
       if (index !== undefined) added[index].push(...log.mutations)
     }
@@ -92,6 +75,17 @@ export abstract class FileChangesLogSource {
       if (mutations.length === 0) return []
       return [{ ...group, mutations: mutations.map((mutation) => FileChangesLogSource.located(mutation, cwd)) }]
     })
+  }
+
+  /** The shell commands of the session and its sub-agents, read from the same cached parses as `load`. */
+  async shellRuns(
+    ref: ProviderTranscriptRef,
+    subagents: readonly ProviderSubagentFileRef[],
+  ): Promise<readonly FileChangesShellRun[]> {
+    const runs = [...(await this.parent(ref)).shellRuns]
+    for await (const log of this.subagentLogs(subagents))
+      runs.push(...log.shellRuns)
+    return runs
   }
 
   protected abstract parse(content: string): ParsedFileChangesLog
@@ -120,6 +114,38 @@ export abstract class FileChangesLogSource {
 
   protected static shortMessage(value: string): string {
     return value.replace(/\s+/g, ' ').trim().slice(0, 240)
+  }
+
+  private parent(ref: ProviderTranscriptRef): Promise<ParsedFileChangesLog> {
+    if (ref.agentId !== this.agentId)
+      throw new Error(`Transcript ${ref.agentId} was handed to ${this.agentId}`)
+    return FileChangesLogSource.cached(
+      this.cache,
+      FileChangesLogSource.maxCacheEntriesConst,
+      ref,
+      (content) => this.parse(content),
+    )
+  }
+
+  private async *subagentLogs(
+    subagents: readonly ProviderSubagentFileRef[],
+  ): AsyncGenerator<ParsedSubagentLog & { spawnKey: string | null }> {
+    for (const subagent of FileChangesLogSource.newest(subagents)) {
+      if (subagent.agentId !== this.agentId)
+        throw new Error(`Sub-agent ${subagent.agentId} was handed to ${this.agentId}`)
+      let log: ParsedSubagentLog
+      // One sub-agent file that vanished or cannot be read must not cost the session its history.
+      try {
+        log = await FileChangesLogSource.cached(
+          this.subagentCache,
+          FileChangesLogSource.maxSubagentCacheEntriesConst,
+          subagent,
+          (content) => FileChangesLogSource.prefixed(this.parseSubagent(content), subagent.subagentId),
+        )
+      }
+      catch { continue }
+      yield { ...log, spawnKey: subagent.spawnKey }
+    }
   }
 
   private static async cached<T>(
@@ -158,6 +184,7 @@ export abstract class FileChangesLogSource {
   private static prefixed(log: ParsedSubagentLog, subagentId: string): ParsedSubagentLog {
     return {
       startedAt: log.startedAt,
+      shellRuns: log.shellRuns,
       mutations: log.mutations.map((mutation) => ({
         ...mutation,
         mutationId: `${subagentId}:${mutation.mutationId}`,

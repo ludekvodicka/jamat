@@ -13,9 +13,7 @@ export function StepBody(props: {
   visible: boolean
   ports: Pick<WorkflowPorts, 'reviews' | 'tasks'>
   conflicts: ConflictListPorts
-  onReview?(): void
   onClose?(): void
-  busy?: boolean
 }): React.JSX.Element | null {
   const body = props.body
   switch (body.kind) {
@@ -24,10 +22,8 @@ export function StepBody(props: {
         : body.sessions.length === 0 ? 'No other live sessions work in the main copy.' : 'These sessions work in the main copy. The update changes files under them.'}</p>
       <ul aria-label="Live sessions in the main copy">{body.sessions.map((session) => <li key={session.sessionId}>{session.title || session.sessionId}</li>)}</ul>
     </>
-    case 'commit': return props.ports.reviews === undefined ? <p role="status">Finish review is unavailable for this session workspace. Update the source client to approve it here.</p>
-      : props.onReview === undefined ? null : <div className="workflow__step-actions">
-      <button type="button" className="workflow__action workflow__action--primary" disabled={props.busy} onClick={props.onReview}>Review changes</button>
-    </div>
+    // Review changes is drawn with the step's other presses.
+    case 'commit': return props.ports.reviews === undefined ? <p role="status">Finish review is unavailable for this session workspace. Update the source client to approve it here.</p> : null
     case 'commands': return <ul aria-label="Setup commands">{body.commands.map((command, index) => <li key={index}><code>{command}</code></li>)}</ul>
     case 'files': return <><ul aria-label="Changed files">{body.paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul>
       {body.more > 0 && <p>{body.more} more {body.more === 1 ? 'file' : 'files'}</p>}</>

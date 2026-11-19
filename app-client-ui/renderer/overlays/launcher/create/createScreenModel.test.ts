@@ -39,6 +39,19 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
     expect(CreateScreenModel.accountReasonOf(exhausted)).toBe('No account has free quota')
   })
 
+  it('notes each account card with the recommendation and its used share, and gives the chosen account its own reset', () => {
+    const second = { ...secondAccount, defaultChoice: { noFreeAccount: false, resetsAt: '2026-11-19T20:00:00Z' },
+      quota: { sessionUsedPercent: 1.4, weeklyUsedPercent: 6, weeklyResetsAt: '2026-11-19T20:00:00Z' } }
+    const main = { ...mainAccount, quota: { sessionUsedPercent: null, weeklyUsedPercent: 67, weeklyResetsAt: '2026-11-22T15:00:00Z' } }
+    expect(CreateScreenModel.accountNoteOf(second)).toBe('recommended · 5h 1% · W 6%')
+    expect(CreateScreenModel.accountNoteOf(main)).toBe('W 67%')
+    expect(CreateScreenModel.accountNoteOf(mainAccount)).toBeNull()
+    const opened = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' }).state
+    const ready = CreateScreenModel.transition(opened, { input: 'accountsLoaded', remoteEndpointId: null, accounts: [main, second] }).state
+    const onMain = CreateScreenModel.transition(ready, { input: 'chooseAccount', accountId: 'main' }).state
+    expect(CreateScreenModel.accountReasonOf(onMain)).toBe(`resets ${new Date('2026-11-22T15:00:00Z').toLocaleString()}`)
+  })
+
   it('accepts accounts only for the current target and leaves a refused peer on its default', () => {
     const state = CreateScreenModel.opened({ mode: 'adHoc', path: 'Q:/fixture' },
       { target: { kind: 'remote', remoteEndpointId: 'peer', displayName: 'Peer' } }).state

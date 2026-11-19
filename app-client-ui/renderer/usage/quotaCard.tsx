@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import type { PoolSeries, UsageAccount, UsagePool } from '../../../lib-orchestrator/rateMonitor/usageApi.types'
 import { AppControl } from '../ipc/appControl'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
-import { poolGraphSpec, poolReadout } from './poolGraphSpec'
+import { type PoolAccountLine, poolAccountLines, poolGraphSpec, poolReadout } from './poolGraphSpec'
 import { UsageChart, usageChartTheme } from './usageChart'
 import { type PoolRangePreset, UsageModel } from './usageModel'
-import { Meter, Segmented, Tile } from './usageParts'
+import { QuotaWindow, Segmented, Swatch, Tile } from './usageParts'
 
 type BurnHours = 1 | 3 | 6
 const burnOptionsConst: readonly { value: BurnHours; label: string }[] = [{ value: 1, label: '1h' }, { value: 3, label: '3h' }, { value: 6, label: '6h' }]
@@ -35,15 +35,17 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
       subscribe: changed => window.appClient.onUsageChanged(changed), reportError: message => console.error(message),
     }, setSeries, setError).start()
   }, [agentId, range, burnHours])
-  const spec = useMemo(() => series ? poolGraphSpec(series, usageChartTheme(), UsageModel.poolView(preset, series)) : null, [series, preset])
+  const theme = useMemo(usageChartTheme, [])
+  const lines = useMemo(() => poolAccountLines(accounts.map(account => ({ accountId: account.key.accountId, label: account.label })), theme), [accounts, theme])
+  const spec = useMemo(() => series ? poolGraphSpec(series, theme, UsageModel.poolView(preset, series), lines) : null, [series, preset, theme, lines])
   const historical = series !== null && (series.displayRange?.to ?? series.until) < series.now
   const label = (id: string): string => accounts.find(account => account.key.accountId === id)?.label ?? id
   const several = accounts.length > 1
   const single = several ? null : accounts[0] ?? null
   const notes = single ? [UsageModel.accountNote(single), UsageModel.readingNote(single)].filter((note): note is string => note !== null) : []
-  const weekly = UsageModel.remainingShare(pool.weeklyRemaining, pool.weeklyKnown)
+  const weekly = pool.weeklyLeftPercent
   const session = UsageModel.remainingShare(pool.sessionRemaining, pool.sessionKnown)
-  const accountCount = pool.weeklyCapacity / 100
+  const accountCount = pool.accountCount
   const runsOutFirst = series?.poolEmptyAt != null && series.nextReset !== null && series.poolEmptyAt < series.nextReset.at
 
   return <section className="jamat-usage__card" aria-label={`${UsageModel.agentLabels[agentId]} quota`}>
@@ -55,7 +57,7 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
 
     <div className="jamat-usage__tiles">
       {weekly !== null && <Tile label="Weekly left" value={`${weekly.toFixed(0)}%`} tone={UsageModel.level(weekly)}
-        detail={pool.weeklyKnown < accountCount ? `${pool.weeklyKnown} of ${accountCount} accounts read` : several ? `${pool.weeklyRemaining.toFixed(0)} of ${pool.weeklyCapacity}%` : undefined} />}
+        detail={pool.weeklyKnown < accountCount ? `${pool.weeklyKnown} of ${accountCount} accounts read` : several ? 'weighted by plan' : undefined} />}
       {session !== null && <Tile label="5-hour left" value={`${session.toFixed(0)}%`} tone={UsageModel.level(session)}
         detail={pool.sessionKnown < accountCount ? `${pool.sessionKnown} of ${accountCount} accounts read` : undefined} />}
       {series && !historical && <>
@@ -71,10 +73,10 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
       </>}
     </div>
 
-    {several && <AccountRows accounts={accounts} now={now} />}
+    {several && <AccountRows accounts={accounts} lines={lines} now={now} />}
 
     <div className="jamat-usage__toolbar">
-      <h3>Weekly pool</h3>
+      <h3>{several && <Swatch color={theme.accent} />}Weekly pool</h3>
       <Segmented label="Range" options={UsageModel.poolRangesConst} value={preset} onChange={setPreset} />
       {preset === 'custom' && <>
         <input type="datetime-local" aria-label="From" value={custom.from} onChange={event => setCustom({ ...custom, from: event.target.value })} />
@@ -86,12 +88,12 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
     </div>
     {error && <p role="alert" className="jamat-usage__alert">{error}</p>}
     {spec && series ? <UsageChart spec={spec} label={`${UsageModel.agentLabels[agentId]} ${historical ? 'recorded weekly pool' : 'recorded and projected weekly pool; projection begins at Now'}`}
-      readout={at => poolReadout(series, Number(at))} />
+      readout={at => poolReadout(series, Number(at), lines)} />
       : !error && <p role="status" className="jamat-usage__empty">{series ? 'No recorded quota in this range' : 'Reading pool history…'}</p>}
   </section>
 }
 
-function AccountRows({ accounts, now }: { accounts: readonly UsageAccount[]; now: number }): React.JSX.Element {
+function AccountRows({ accounts, lines, now }: { accounts: readonly UsageAccount[]; lines: readonly PoolAccountLine[]; now: number }): React.JSX.Element {
   const withSession = accounts.some(account => UsageModel.window(account, UsageModel.sessionMinutesConst) !== null)
   return <div className="jamat-usage__accounts" role="table" aria-label="Accounts"
     style={{ gridTemplateColumns: `minmax(80px, 1fr) repeat(${withSession ? 2 : 1}, max-content)` }}>
@@ -99,24 +101,13 @@ function AccountRows({ accounts, now }: { accounts: readonly UsageAccount[]; now
       const notes = [UsageModel.accountNote(account), UsageModel.readingNote(account)].filter((note): note is string => note !== null)
       const weekly = UsageModel.window(account, UsageModel.weeklyMinutesConst)
       const session = UsageModel.window(account, UsageModel.sessionMinutesConst)
+      const line = lines.find(value => value.accountId === account.key.accountId)
       return <div key={account.key.accountId} role="row" className={`jamat-usage__account${account.enabled ? '' : ' jamat-usage__account--off'}`}>
-        <span role="cell" className="jamat-usage__account-name">{account.label}{notes.map(note => <span key={note} className="jamat-usage__chip">{note}</span>)}</span>
-        {withSession && <WindowCell label={`${account.label} 5-hour used`} name="5h" window={session} now={now} />}
-        <WindowCell label={`${account.label} weekly used`} name="Week" window={weekly} now={now} />
+        <span role="cell" className="jamat-usage__account-name">{line && <Swatch color={line.color} />}{account.label}
+          <span className="jamat-usage__muted" title={UsageModel.planTitle(account.capacity)}>×{account.capacity.weight}</span>{notes.map(note => <span key={note} className="jamat-usage__chip">{note}</span>)}</span>
+        {withSession && <QuotaWindow role="cell" label={`${account.label} 5-hour used`} name="5h" window={session} now={now} />}
+        <QuotaWindow role="cell" label={`${account.label} weekly used`} name="Week" window={weekly} now={now} />
       </div>
     })}
   </div>
-}
-
-function WindowCell({ label, name, window, now }: { label: string; name: string; window: ReturnType<typeof UsageModel.window>; now: number }): React.JSX.Element {
-  if (!window)
-    return <span role="cell" className="jamat-usage__window jamat-usage__muted" title="No reading">{name}</span>
-  const reset = window.resetsAt === null ? null : new Date(window.resetsAt).getTime()
-  const title = `${window.usedPercent.toFixed(0)}% used${reset === null ? '' : `, resets ${new Date(reset).toLocaleString()}`}`
-  return <span role="cell" className="jamat-usage__window" title={title}>
-    <span className="jamat-usage__window-name">{name}</span>
-    <Meter usedPercent={window.usedPercent} label={label} />
-    <span className="jamat-usage__window-value">{window.usedPercent.toFixed(0)}%</span>
-    {reset !== null && <span className="jamat-usage__muted">{UsageModel.when(reset, now)}</span>}
-  </span>
 }

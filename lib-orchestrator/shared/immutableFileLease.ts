@@ -1,7 +1,7 @@
 import { link, mkdir, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { setTimeout } from 'node:timers/promises'
 import { ErrnoCode } from './errnoCode'
+import { WindowsHeldFile } from './windowsHeldFile'
 
 export type FileLeaseResult<T> = { ok: true; release(): Promise<void> } | { ok: false; heldBy: T }
 
@@ -58,16 +58,13 @@ export class ImmutableFileLease {
   }
 
   static async remove(file: string, read: (file: string) => Promise<{ token: string } | null>, token?: string): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
+    try {
+      await WindowsHeldFile.retried(async () => {
         if (token !== undefined && (await read(file))?.token !== token) return
         await unlink(file)
-        return
-      } catch (error) {
-        if (ErrnoCode.of(error) === 'ENOENT') return
-        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(ErrnoCode.of(error) ?? '') || attempt >= 5) throw error
-        await setTimeout(20 * 2 ** attempt)
-      }
+      })
+    } catch (error) {
+      if (ErrnoCode.of(error) !== 'ENOENT') throw error
     }
   }
 

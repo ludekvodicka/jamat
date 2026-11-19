@@ -1041,10 +1041,21 @@ export class CreateScreenModel {
     const type = CreateScreenModel.typeOf(state)
     if (type.kind === 'shell' || type.kind === 'existing') return null
     else if (type.kind !== 'raw' && type.kind !== 'flow') throw new Error(`Unknown create type: ${JSON.stringify(type satisfies never)}`)
-    const choice = state.accounts.find(account => account.agentId === state.agentId && account.accountId === state.accountId)?.defaultChoice
-    if (!choice) return null
-    if (choice.noFreeAccount) return 'No account has free quota'
-    return choice.resetsAt ? `resets ${new Date(choice.resetsAt).toLocaleString()}` : null
+    const chosen = state.accounts.find(account => account.agentId === state.agentId && account.accountId === state.accountId)
+    if (chosen?.defaultChoice?.noFreeAccount) return 'No account has free quota'
+    const resetsAt = chosen?.quota?.weeklyResetsAt ?? chosen?.defaultChoice?.resetsAt ?? null
+    return resetsAt ? `resets ${new Date(resetsAt).toLocaleString()}` : null
+  }
+
+  /** What an account card says under its name: the recommendation, then the used 5-hour and weekly share. */
+  static accountNoteOf(account: AccountView): string | null {
+    const quota = account.quota
+    const parts = [
+      account.defaultChoice !== undefined && !account.defaultChoice.noFreeAccount ? 'recommended' : null,
+      quota?.sessionUsedPercent == null ? null : `5h ${Math.round(quota.sessionUsedPercent)}%`,
+      quota?.weeklyUsedPercent == null ? null : `W ${Math.round(quota.weeklyUsedPercent)}%`,
+    ].filter((part): part is string => part !== null)
+    return parts.length === 0 ? null : parts.join(' · ')
   }
 
   private static defaultAccountOf(state: CreateScreenState): string {

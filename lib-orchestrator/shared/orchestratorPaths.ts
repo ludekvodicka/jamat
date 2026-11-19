@@ -139,6 +139,11 @@ export class OrchestratorPaths {
     return join(OrchestratorPaths.directory(configIdentity, channel), 'rate-history')
   }
 
+  /** The account broker's caller log: month files, read and kept for 30 days. */
+  static accountCallersDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), 'account-callers')
+  }
+
   /**
    * The rate limits both agents last reported. A cache and never a record: deleting it costs the next
    * client its first drawing of the widget and one read against an endpoint that counts them.

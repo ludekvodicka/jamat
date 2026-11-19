@@ -1,5 +1,6 @@
 import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../rateMonitor/rateMonitorApi.types'
 import type { AccountAgentId } from '../agentAccounts/agentAccountsApi.types'
+import type { AccountBrokerAnswer, AccountBrokerRequest, AccountCallersView } from '../agentAccounts/accountBrokerApi.types'
 import type { SnapinKindState, SnapinsSettings, SnapinsSettingsView, SnapinView } from '../snapins/snapinsApi.types'
 import type { RemoteControlOperationMap } from '../remoteControl/remoteControlApi.types'
 import type { SessionErasure, SessionScriptOutput } from '../sessionManager/sessionManagerApi.types'
@@ -40,11 +41,14 @@ export interface AppOperationMap {
   'usage.rescan': { request: Record<string, never>; response: Done }
   'usage.history': { request: { agentId: 'claude' | 'codex'; from: number; to: number; burnHours: 1 | 3 | 6 }; response: import('../rateMonitor/usageApi.types').PoolSeries }
   'usage.get': { request: Record<string, never>; response: import('../rateMonitor/usageApi.types').UsageSnapshot }
+  'usage.callers': { request: Record<string, never>; response: AccountCallersView }
   'accounts.add': { request: { agentId: AccountAgentId; label: string }; response: { accountId: string } }
   'accounts.login': { request: { accountId: string }; response: { sessionId: string } }
   'accounts.rename': { request: { accountId: string; label: string }; response: Done }
   'accounts.setEnabled': { request: { accountId: string; enabled: boolean }; response: Done }
   'accounts.remove': { request: { accountId: string }; response: Done }
+  /** Local only: never in `RemoteControlPeerConst.controlOperations`. */
+  'accounts.pick': { request: AccountBrokerRequest; response: AccountBrokerAnswer }
   'snapins.passWake': { request: { passDirectory: string }; response: { woken: true } }
   'snapins.list': { request: Record<string, never>; response: { kinds: { kind: string; title: string; state: SnapinKindState }[] } }
   'snapins.view': { request: { kind: string }; response: SnapinView }

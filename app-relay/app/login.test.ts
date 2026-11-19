@@ -129,7 +129,7 @@ test('relay login and protected HTTP routes', async t => {
     const pcs = await request('/api/pcs', { headers: { cookie } });
     assert.deepEqual(await pcs.json(), { pcs: [{ id: 'fixture', label: 'Fixture PC' }] });
     const version = await request('/api/system/version', { headers: { cookie } });
-    assert.deepEqual(await version.json(), { version: '1.5.1', buildTime: 'test-build' });
+    assert.deepEqual(await version.json(), { version: '1.5.2', buildTime: 'test-build' });
     assert.equal((await request('/.private/config-remote.json', { headers: { cookie } })).status, 404);
     for (const path of ['/computer.html', '/computer.js', '/computer.css'])
       assert.equal((await request(path, { headers: { cookie } })).status, 200);

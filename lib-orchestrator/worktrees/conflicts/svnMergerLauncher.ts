@@ -29,25 +29,60 @@ export interface SvnMergerBriefInput {
 export class SvnMergerLauncher {
   static readonly idleLimitMilliseconds = 20 * 60_000
 
-  static fallback(state: import('../worktreeState').WorktreeLifecycle, idle: boolean, at: number): {
-    action: 'wait' | 'merger' | 'person'; progress: NonNullable<import('../worktreeState').WorktreeLifecycle['conflictProgress']>
+  /**
+   * The longest gap between two looks of this client process that still continues the worker's idle
+   * stretch. A hidden window looks every 15 s and a slow session queue later; a 10 s bound never let
+   * the worker's time reach the merger while the window was hidden. A longer gap, or the first look of
+   * a new client process (`lastLookAt` undefined), starts a new stretch.
+   */
+  static readonly lookGapMilliseconds = 60_000
+  /** A merger whose Claude has not confirmed its conversation by then is held, by a startup dialog for example (008). */
+  static readonly startLimitMilliseconds = 5 * 60_000
+
+  /**
+   * Who works on the open conflicts and for how long, read from time stamps: `observedAt` starts the
+   * current stretch and `milliseconds` holds the time before it. The worker counts idle time only, the
+   * merger wall time since its start or its last settlement. `changed` is false while nothing but the
+   * clock moved, so a drive writes the record only on a change (a write each poll rewrote the records
+   * file every 2 s).
+   */
+  static fallback(state: import('../worktreeState').WorktreeLifecycle, idle: boolean, at: number, lastLookAt?: number): {
+    action: 'wait' | 'merger' | 'person'; progress: NonNullable<import('../worktreeState').WorktreeLifecycle['conflictProgress']>; changed: boolean
   } {
     const settled = state.syncConflictSet?.entries.filter((entry) => entry.state === 'settled').length ?? 0
     const generation = JSON.stringify([state.actionId, state.syncConflictSet?.baseRevision, state.syncConflictSet?.revision,
       state.syncConflictSet?.entries.map((entry) => entry.path).sort()])
+    const merger = state.execution?.merger
     const previous = state.conflictProgress?.generation === generation ? state.conflictProgress : undefined
-    const delta = previous === undefined ? 0 : at - previous.observedAt
-    const progress = { generation, owner: previous?.owner ?? 'worker' as const, settled, observedAt: at, idle,
-      milliseconds: previous === undefined || previous.settled !== settled ? 0
-        : previous.milliseconds + (delta > 0 && (previous.owner === 'merger' || (idle && previous.idle && delta < 10_000)) ? delta : 0) }
-    if (state.step !== 'worker-resolving' || !state.syncConflictSet?.entries.some((entry) => entry.state !== 'settled')) return { action: 'wait', progress }
+    // A live merger keeps its paths when a settlement adds new ones; only its end gives them back.
+    const owner = merger !== undefined && merger.endedAt === undefined ? 'merger' as const : previous?.owner ?? 'worker' as const
+    const continuous = lastLookAt !== undefined && at - lastLookAt <= SvnMergerLauncher.lookGapMilliseconds
+    let progress: NonNullable<import('../worktreeState').WorktreeLifecycle['conflictProgress']>
+    if (previous === undefined || previous.settled !== settled || previous.owner !== owner)
+      progress = { generation, owner, settled, observedAt: at, idle, milliseconds: 0 }
+    else if (owner === 'merger' || previous.idle && idle && continuous) progress = previous
+    else progress = { ...previous, observedAt: at, idle, milliseconds: previous.milliseconds + (previous.idle && continuous ? Math.max(0, at - previous.observedAt) : 0) }
+    const changed = progress !== previous
+    const elapsed = progress.milliseconds + (progress.owner === 'merger' || progress.idle ? Math.max(0, at - progress.observedAt) : 0)
+    if (state.step !== 'worker-resolving' || !state.syncConflictSet?.entries.some((entry) => entry.state !== 'settled')) return { action: 'wait', progress, changed }
     if (progress.owner === 'worker') {
-      if (state.wait?.kind === 'worker-lost' || progress.milliseconds >= SvnMergerLauncher.idleLimitMilliseconds)
-        return { action: 'merger', progress: { ...progress, owner: 'merger', milliseconds: 0 } }
-      return { action: 'wait', progress }
+      if (state.wait?.kind === 'worker-lost' || elapsed >= SvnMergerLauncher.idleLimitMilliseconds)
+        return { action: 'merger', progress: { ...progress, owner: 'merger', observedAt: at, milliseconds: 0 }, changed: true }
+      return { action: 'wait', progress, changed }
     }
-    else if (progress.owner === 'merger') return { action: progress.milliseconds >= SvnMergerLauncher.idleLimitMilliseconds ? 'person' : 'wait', progress }
+    else if (progress.owner === 'merger') return { action: elapsed >= SvnMergerLauncher.idleLimitMilliseconds ? 'person' : 'wait', progress, changed }
     else throw new Error(`Unknown conflict owner: ${JSON.stringify(progress.owner satisfies never)}`)
+  }
+
+  /**
+   * What a drive does with a live merger: stop one that has no path an agent may settle left (the
+   * worker or the person settled them), or that never confirmed its conversation within the start
+   * limit. Null leaves it working; its idle limit stays with `fallback`.
+   */
+  static supervise(set: SvnActionConflictSet | undefined, merger: { startedAt: number }, confirmed: boolean, at: number): 'spent' | 'unstarted' | null {
+    if (!(set?.entries ?? []).some((entry) => entry.state === 'agent')) return 'spent'
+    if (!confirmed && at - merger.startedAt >= SvnMergerLauncher.startLimitMilliseconds) return 'unstarted'
+    return null
   }
 
   /** The other commits' messages the brief quotes; the rest is counted. */

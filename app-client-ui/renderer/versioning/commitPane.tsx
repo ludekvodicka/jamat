@@ -113,6 +113,24 @@ export function CommitPane(props: {
   const close = useRef(props.onClose)
   close.current = props.onClose
   useEffect(() => { if (cancelled && !props.reviewOnly) close.current() }, [cancelled, draftId, props.reviewOnly])
+  const cancelReview = async (): Promise<string | null> => {
+    if (draft === null) return null
+    if (ports.versioning.decideCommit && draft.epoch)
+      return IpcFailure.of(await ports.versioning.decideCommit({ kind: 'cancel', draftId: draft.draftId, epoch: draft.epoch,
+        expectedRevision: draft.revision, operationId: crypto.randomUUID() }))
+    return ports.versioning.cancelCommit ? IpcFailure.of(await ports.versioning.cancelCommit(draft.draftId)) : null
+  }
+  // An empty review has nothing left to decide, yet closing its pane kept it pending: the agent's
+  // `openwait` never returned and a main-copy Finish waited for that agent for good (058,
+  // 2026-11-18). Closing it cancels it; a review Tortoise closed already has its outcome.
+  const closeEmptyReview = (): void => {
+    if (props.reviewOnly || draft === null || busy || done || draft.externalReview === 'closed') { close.current(); return }
+    void cancelReview().then((refusal) => { if (refusal !== null) ports.reportError(`The empty commit review stays pending: ${refusal}`) },
+      (error: unknown) => ports.reportError(`The empty commit review stays pending: ${String(error)}`))
+      .finally(() => close.current())
+  }
+  const closeEmptyRef = useRef(closeEmptyReview)
+  closeEmptyRef.current = closeEmptyReview
   const [closeEmpty, setCloseEmpty] = useState(false)
   const reload = async (closeIfEmpty: boolean): Promise<void> => {
     setCloseEmpty(closeIfEmpty)
@@ -128,7 +146,7 @@ export function CommitPane(props: {
     }
     if (props.reviewOnly || !closeEmpty || busy || done || snapshot.warnings.length > 0 || populatedDraft.current !== draftId) return
     populatedDraft.current = null
-    close.current()
+    closeEmptyRef.current()
   }, [draftId, snapshot, closeEmpty, busy, done, working.loading, working.requiredLoading,
     working.error, working.requiredError, model.error, props.reviewOnly])
   useEffect(() => {
@@ -275,6 +293,7 @@ export function CommitPane(props: {
   // came back with warnings may be empty because it failed, so only a clean read may say this.
   const nothingToCommit = snapshot !== null && !working.loading && snapshot.entries.length === 0
     && snapshot.warnings.length === 0 && snapshot.source.selected !== null
+  const closeView = (): void => { if (nothingToCommit) closeEmptyReview(); else props.onClose() }
   const checkedPaths = JSON.stringify(snapshot === null ? [] : CommitTargets.selected(CommitTargets.eligible(snapshot), checked)
     .flatMap((entry) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path]))
   const selectedIds = JSON.stringify([...checked])
@@ -302,7 +321,7 @@ export function CommitPane(props: {
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
-        if (!busy) props.onClose()
+        if (!busy) closeView()
       } else if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         event.stopPropagation()
@@ -346,18 +365,9 @@ export function CommitPane(props: {
     {props.footer !== undefined ? props.footer(footerState) : <div className="commit-actions">
       <div className="commit-actions-left">
         {!done && draft !== null && <button type="button" className="commit-submit" disabled={!canCommit} onClick={() => { void run() }}>Commit files</button>}
-        <button type="button" disabled={busy} onClick={props.onClose}>Close view</button>
+        <button type="button" disabled={busy} onClick={closeView}>Close view</button>
         {!done && draft !== null && (ports.versioning.cancelCommit || ports.versioning.decideCommit) && <button type="button" disabled={busy} onClick={() => {
-          if (ports.versioning.decideCommit && draft.epoch) {
-            void ports.versioning.decideCommit({ kind: 'cancel', draftId: draft.draftId, epoch: draft.epoch, expectedRevision: draft.revision, operationId: crypto.randomUUID() })
-              .then((answer) => { setNote(IpcFailure.of(answer)); model.refresh() })
-            return
-          }
-          void ports.versioning.cancelCommit!(draft.draftId).then((answer) => {
-            if (!answer.ok) setNote(answer.error)
-            else if (!answer.value.ok) setNote(answer.value.error.detail)
-            model.refresh()
-          })
+          void cancelReview().then((refusal) => { setNote(refusal); model.refresh() })
         }}>Cancel review</button>}
       </div>
       <div className="commit-actions-right">

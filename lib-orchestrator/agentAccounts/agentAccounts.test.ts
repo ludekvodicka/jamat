@@ -60,6 +60,40 @@ describe('AgentAccounts', () => {
     expect(existsSync(join(root, 'accounts'))).toBe(false)
   })
 
+  it('lists each account with the quota of its own reading and none without one', async () => {
+    accounts.stop()
+    accounts = new AgentAccounts({ mainHomes: { claude: main, codex: join(root, 'codex') }, specs: [],
+      stored: () => stored, store: value => { stored = value }, accountsRoot: join(root, 'accounts'),
+      hasRunningSession: () => busy, onChanged: () => {},
+      rates: () => [{ key: { agentId: 'claude', accountId: 'main' }, label: 'Main', estimated: null, source: 'poll',
+        state: { kind: 'ok', fetchedAt: 0, windows: [{ durationMinutes: 300, usedPercent: 12, resetsAt: null },
+          { durationMinutes: 10080, usedPercent: 67, resetsAt: '2026-11-22T15:00:00.000Z' }] } }] })
+    const views = await accounts.list()
+    expect(views.find(view => view.agentId === 'claude')?.quota)
+      .toEqual({ sessionUsedPercent: 12, weeklyUsedPercent: 67, weeklyResetsAt: '2026-11-22T15:00:00.000Z' })
+    expect(views.find(view => view.agentId === 'codex')?.quota).toBeUndefined()
+  })
+
+  it('recommends from the spend recorded in the quota history', async () => {
+    accounts.stop()
+    const now = Date.now(), hour = 3_600_000
+    const weekly = (resetIn: number, used: number) => [{ durationMinutes: 10080, usedPercent: used, resetsAt: new Date(now + resetIn).toISOString() }]
+    stored = [{ id: 'work', agentId: 'claude', label: 'Work', enabled: true, identity: { key: 'org/w@example.test', label: 'w@example.test' } }]
+    const history = vi.fn(async () => [6, 2, 0].map(ago => ({ at: now - ago * hour, agentId: 'claude' as const, accountId: 'main',
+      source: 'poll' as const, windows: weekly(2 * 24 * hour, 34 - 4 * ago) })))
+    accounts = new AgentAccounts({ mainHomes: { claude: main, codex: join(root, 'codex') }, specs: [],
+      stored: () => stored, store: value => { stored = value }, accountsRoot: join(root, 'accounts'),
+      hasRunningSession: () => busy, onChanged: () => {}, history,
+      rates: () => [['main', 2, 34], ['work', 4, 0]].map(([accountId, days, used]) => ({ key: { agentId: 'claude' as const, accountId: String(accountId) },
+        label: String(accountId), estimated: null, source: 'poll' as const,
+        state: { kind: 'ok' as const, fetchedAt: 0, windows: weekly(Number(days) * 24 * hour, Number(used)) } })) })
+    // Main spends 4%/h, twice what empties it at its reset, so the later reset gets a share now.
+    expect((await accounts.list()).find(view => view.agentId === 'claude' && view.defaultChoice)?.accountId).toBe('work')
+    expect((await accounts.defaultAccount('claude')).accountId).toBe('work')
+    expect((await accounts.defaultAccount('claude', 'soonest-reset')).accountId).toBe('main')
+    expect(history).toHaveBeenCalledTimes(1)
+  })
+
   it('creates pending profiles, seeds only onboarding and MCP, and keeps the id on rename', async () => {
     const a = await accounts.add('claude', 'Work')
     const b = await accounts.add('claude', 'Work')
@@ -114,6 +148,37 @@ describe('AgentAccounts', () => {
     expect(stored[0]!.identity).toEqual({ key: 'org/second', label: 'second' })
     expect((await accounts.list()).find(view => view.accountId === accountId)?.state).toBe('active')
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('hands a capturing login the link script and lists the captured link until the login ends', async () => {
+    vi.useFakeTimers()
+    const changed = vi.fn()
+    accounts.stop()
+    accounts = new AgentAccounts({ mainHomes: { claude: main, codex: join(root, 'codex') },
+      specs: [{ agentId: 'claude', mainHome: () => main, shareTable: claudeShareTable, homeVariable: 'CLAUDE_CONFIG_DIR',
+        extraEnv: () => ({}), loginCommand: 'claude auth login', loginLinkVariable: 'BROWSER', probe }],
+      stored: () => stored, store: value => { stored = value }, accountsRoot: join(root, 'accounts'),
+      login: { open: openLogin, result: () => terminal, stop: stopLogin }, hasRunningSession: () => busy, onChanged: changed })
+    const { accountId } = await accounts.add('claude', 'Brave')
+    const home = accounts.homeOf('claude', accountId)
+    openLogin.mockImplementationOnce(async request => {
+      expect(await request.prepare()).toEqual({ CLAUDE_CONFIG_DIR: home,
+        BROWSER: join(home, '.jamat-login-link', process.platform === 'win32' ? 'open-link.cmd' : 'open-link.sh') })
+      expect((await accounts.list()).find(view => view.accountId === accountId)?.loginLink).toBeUndefined()
+      writeFileSync(join(home, '.jamat-login-link', 'link.txt'), '"https://claude.com/cai/oauth/authorize?code=true&state=s"\r\n')
+      return { sessionId: 'login-terminal' }
+    })
+    changed.mockClear()
+    await accounts.login(accountId)
+    // The link file is read with real I/O, which fake timers do not wait for.
+    await vi.waitFor(async () => expect((await accounts.list()).find(view => view.accountId === accountId)?.loginLink)
+      .toBe('https://claude.com/cai/oauth/authorize?code=true&state=s'))
+    expect(changed).toHaveBeenCalledTimes(2)
+    probe.mockImplementation(async file => file === main ? { kind: 'logged-out' } : { kind: 'logged-in', identity: { key: 'org/brave', label: 'brave' } })
+    terminal = { ended: true, exitCode: 0 }
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect((await accounts.list()).find(view => view.accountId === accountId)).toMatchObject({ state: 'active' })
+    expect((await accounts.list()).find(view => view.accountId === accountId)?.loginLink).toBeUndefined()
   })
 
   it('retains duplicate pending accounts with the other account label', async () => {
@@ -225,6 +290,10 @@ describe('AgentAccounts', () => {
     expect(ClaudeIdentityProbe.parse(JSON.stringify({ oauthAccount: { emailAddress: 'a@example.test', organizationUuid: 'org' },
       accessToken: 'fixture-token', refreshToken: 'fixture-refresh' }))).toEqual({
       kind: 'logged-in', identity: { key: 'org/a@example.test', label: 'a@example.test' },
+    })
+    expect(ClaudeIdentityProbe.parse(JSON.stringify({ oauthAccount: { emailAddress: 'a@example.test', organizationUuid: 'org',
+      organizationRateLimitTier: 'default_claude_max_5x', userRateLimitTier: null } }))).toEqual({
+      kind: 'logged-in', identity: { key: 'org/a@example.test', label: 'a@example.test' }, rateLimitTier: 'default_claude_max_5x',
     })
     expect(ClaudeIdentityProbe.parse('{}')).toEqual({ kind: 'logged-out' })
     expect(ClaudeIdentityProbe.parse('broken')).toMatchObject({ kind: 'failed' })

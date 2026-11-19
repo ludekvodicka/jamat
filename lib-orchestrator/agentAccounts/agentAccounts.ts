@@ -1,11 +1,14 @@
-import { chooseDefault, type DefaultAccountChoice } from './defaultAccount'
-import type { RateAccountState } from '../rateMonitor/rateMonitorApi.types'
+import { accountQuota, chooseDefault, type AccountBurn, type AccountChoiceRule, type DefaultAccountChoice } from './defaultAccount'
+import type { RateAccountState, RateSample } from '../rateMonitor/rateMonitorApi.types'
+import { accountBurn } from '../rateMonitor/accountBurn'
+import { PlanWeight } from './planWeight'
 import { AccountProblem } from './accountProblem'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { Slug } from '../shared/slug'
 import { ErrorText } from '../shared/errorText'
 import type { AccountAgentId, AccountId, AccountIdentity, AccountLaunchSettings, AccountView, RetainProfile } from './agentAccountsApi.types'
+import { LoginLinkCapture } from './profiles/loginLinkCapture'
 import { ProfileProvisioner } from './profiles/profileProvisioner'
 import type { AgentProfileSpec, IdentityProbe } from './profiles/profileShareTable'
 
@@ -25,6 +28,8 @@ export interface AgentAccountsDeps {
   accountsRoot: string
   hasRunningSession(agentId: AccountAgentId, accountId: AccountId): boolean
   rates?: () => readonly RateAccountState[]
+  /** Recorded quota samples; the account choice measures each account's recent spend from them. */
+  history?: (range: { from: number; to: number }) => Promise<readonly RateSample[]>
   onChanged(): void
   login?: {
     open(request: { agentId: AccountAgentId; accountId: AccountId; home: string; command: string; label: string; prepare: () => Promise<Record<string, string>> }): Promise<{ sessionId: string }>
@@ -37,6 +42,9 @@ interface LoginRun {
   sessionId: string | null
   deadline: number
   checking: boolean
+  /** The profile home whose captured sign-in link this login waits for; null when the CLI opens its browser itself. */
+  linkHome: string | null
+  link: string | null
 }
 
 export class AgentAccounts {
@@ -49,6 +57,7 @@ export class AgentAccounts {
   private loginTimer: ReturnType<typeof setInterval> | null = null
   private readonly problems = new Map<AccountId, string>()
   private readonly probes = new Map<string, { at: number; result: Promise<IdentityProbe> }>()
+  private spend: { at: number; samples: Promise<readonly RateSample[]> } | null = null
 
   constructor(deps: AgentAccountsDeps) {
     this.deps = deps
@@ -67,14 +76,22 @@ export class AgentAccounts {
       const result = account.identity === null ? null : await this.probe(account.agentId, account.id,
         join(this.deps.accountsRoot, account.agentId, account.id))
       const view = this.probeView(result, account.identity, false)
+      const loginLink = this.logins.get(account.id)?.link ?? null
       views.push({ agentId: account.agentId, accountId: account.id, label: account.label, isMain: false,
         ...view, state: account.enabled ? view.state : 'disabled',
-        profileProblem: this.problems.get(account.id) ?? view.profileProblem })
+        profileProblem: this.problems.get(account.id) ?? view.profileProblem,
+        ...(loginLink === null ? {} : { loginLink }) })
     }
     if (this.deps.rates) {
       const rates = this.deps.rates()
+      const now = Date.now()
+      const burns = await this.burns(views, now)
+      for (const view of views) {
+        const quota = accountQuota(rates.find(rate => rate.key.agentId === view.agentId && rate.key.accountId === view.accountId))
+        if (quota !== null) view.quota = quota
+      }
       for (const agentId of Object.keys(this.deps.mainHomes) as AccountAgentId[]) {
-        const choice = chooseDefault(agentId, views.filter(account => account.agentId !== exclude?.agentId || account.accountId !== exclude.accountId), rates)
+        const choice = chooseDefault(agentId, views.filter(account => account.agentId !== exclude?.agentId || account.accountId !== exclude.accountId), rates, burns, now)
         const selected = views.find(account => account.agentId === agentId && account.accountId === choice.accountId)
         if (selected) selected.defaultChoice = { noFreeAccount: choice.noFreeAccount, resetsAt: choice.resetsAt ?? null }
       }
@@ -113,22 +130,27 @@ export class AgentAccounts {
     const port = this.deps.login
     if (!port) throw new AccountProblem('Account login is not available')
     if (this.logins.has(accountId)) throw new AccountProblem('The account has a login in progress')
-    const run: LoginRun = { sessionId: null, deadline: Date.now() + 15 * 60_000, checking: false }
+    const run: LoginRun = { sessionId: null, deadline: Date.now() + 15 * 60_000, checking: false, linkHome: null, link: null }
     this.logins.set(accountId, run)
     try {
-      const request = await this.lock(accountId, async () => {
+      const { linkVariable, ...request } = await this.lock(accountId, async () => {
         const account = this.added(accountId)
         if (!account.enabled) throw new AccountProblem('Enable the account before logging in')
         const spec = this.specs.get(account.agentId)
         if (!spec) throw new AccountProblem('Account provider is not available')
         this.problems.delete(accountId)
-        return { agentId: account.agentId, accountId, home: this.homeOf(account.agentId, accountId), command: spec.loginCommand, label: account.label }
+        return { agentId: account.agentId, accountId, home: this.homeOf(account.agentId, accountId), command: spec.loginCommand,
+          label: account.label, linkVariable: spec.loginLinkVariable }
       })
       let prepared = false
       const opened = await port.open({ ...request, prepare: () => {
         if (prepared || this.logins.get(accountId) !== run) throw new AccountProblem('Login preparation is no longer available')
         prepared = true
-        return this.prepareProfile(request.agentId, accountId, false)
+        return this.prepareProfile(request.agentId, accountId, false).then(async environment => {
+          if (linkVariable === undefined) return environment
+          run.linkHome = request.home
+          return { ...environment, ...await LoginLinkCapture.prepare(request.home, linkVariable) }
+        })
       } })
       run.sessionId = opened.sessionId
       if (this.loginTimer === null) this.loginTimer = setInterval(() => this.sessionsChanged(), 5_000)
@@ -164,6 +186,10 @@ export class AgentAccounts {
   private async checkLogin(accountId: AccountId, run: LoginRun): Promise<void> {
     const port = this.deps.login!
     const sessionId = run.sessionId!
+    if (run.linkHome !== null && run.link === null) {
+      run.link = await LoginLinkCapture.read(run.linkHome)
+      if (run.link !== null && this.logins.get(accountId) === run) this.deps.onChanged()
+    }
     const timedOut = Date.now() >= run.deadline
     let terminal = port.result(sessionId)
     if (timedOut && !terminal.ended) {
@@ -266,8 +292,24 @@ export class AgentAccounts {
       .map(account => join(this.deps.accountsRoot, agentId, account.id))]
   }
 
-  defaultAccount(agentId: AccountAgentId): DefaultAccountChoice | Promise<DefaultAccountChoice> {
-    return this.list().then(accounts => chooseDefault(agentId, accounts, this.deps.rates?.() ?? []))
+  defaultAccount(agentId: AccountAgentId, rule?: AccountChoiceRule): DefaultAccountChoice | Promise<DefaultAccountChoice> {
+    return this.list().then(async accounts => {
+      const now = Date.now()
+      return chooseDefault(agentId, accounts, this.deps.rates?.() ?? [], await this.burns(accounts, now), now, rule)
+    })
+  }
+
+  /** Each account's weekly spend per hour over the last day and three hours; samples are read at most once a minute. */
+  private async burns(accounts: readonly AccountView[], now: number): Promise<readonly AccountBurn[]> {
+    if (!this.deps.history) return []
+    if (!this.spend || now - this.spend.at >= 60_000)
+      this.spend = { at: now, samples: this.deps.history({ from: now - 24 * 3_600_000, to: now })
+        .then(samples => [...samples].sort((a, b) => a.at - b.at)).catch((): readonly RateSample[] => []) }
+    const samples = await this.spend.samples
+    return accounts.map(account => {
+      const key = { agentId: account.agentId, accountId: account.accountId }
+      return { key, day: accountBurn(samples, key, now, 24), recent: accountBurn(samples, key, now, 3) }
+    })
   }
 
   async usable(agentId: AccountAgentId, accountId: AccountId): Promise<boolean> {
@@ -326,13 +368,14 @@ export class AgentAccounts {
   }
 
   private probeView(result: IdentityProbe | null, identity: AccountIdentity | null, main: boolean):
-    Pick<AccountView, 'state' | 'identity' | 'profileProblem'> {
-    if (result === null) return { state: main || identity !== null ? 'active' : 'pending-login', identity, profileProblem: null }
+    Pick<AccountView, 'state' | 'identity' | 'profileProblem' | 'capacity'> {
+    const capacity = PlanWeight.capacity(result?.kind === 'logged-in' ? result.rateLimitTier ?? null : null)
+    if (result === null) return { state: main || identity !== null ? 'active' : 'pending-login', identity, profileProblem: null, capacity }
     switch (result.kind) {
       case 'logged-in': return { state: identity !== null && identity.key !== result.identity.key ? 'needs-login' : 'active',
-        identity: main ? result.identity : identity, profileProblem: null }
-      case 'logged-out': return { state: 'needs-login', identity, profileProblem: null }
-      case 'failed': return { state: main || identity !== null ? 'active' : 'pending-login', identity, profileProblem: result.reason }
+        identity: main ? result.identity : identity, profileProblem: null, capacity }
+      case 'logged-out': return { state: 'needs-login', identity, profileProblem: null, capacity }
+      case 'failed': return { state: main || identity !== null ? 'active' : 'pending-login', identity, profileProblem: result.reason, capacity }
       default: throw new Error(`Unknown identity result: ${JSON.stringify(result)}`)
     }
   }

@@ -36,12 +36,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/mainFinishWorkflow', () => {
     expect(section.summary).toBe('The changes could not be read')
   })
 
-  it('runs the commit step while the agent commits, with Keep the session as the way out', () => {
+  it('runs the commit step while the agent commits, with Check again and Keep the session', () => {
     const section = MainFinishWorkflow.of(record({ ...choosing, phase: 'committing', command: '/commit-svn', sentAt: 20 }))!
     expect(section.badge).toBe('committing')
     expect(section.rounds[0]!.steps.map((step) => [step.key, step.state, step.detail])).toEqual([['changes', 'done', '3 changed files (SVN)'],
       ['commit', 'running', '/commit-svn']])
-    expect(section.actions.map((action) => action.id)).toEqual(['cancel-finish'])
+    expect(section.actions.map((action) => [action.id, action.command?.body])).toEqual([['check-finish', { mainChoice: 'check' }], ['cancel-finish', { mainChoice: 'cancel' }]])
+    expect(MainFinishWorkflow.of(record({ ...choosing, phase: 'committing', sentAt: 20, note: 'The agent still works.' }))!.summary).toBe('The agent still works.')
   })
 
   it('closes with no presses once the session was closed after its commit', () => {

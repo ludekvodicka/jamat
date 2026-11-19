@@ -36,7 +36,6 @@ export class AttentionStatusText {
   static kindOf(kind: AttentionKind): string {
     if (kind === 'commit-review') return 'Commit review'
     else if (kind === 'finish-wait') return 'Finish waits'
-    else if (kind === 'session-opened') return 'Opened by an agent'
     else if (kind === 'session-mark') return 'Needs a look'
     else throw new Error(`Unknown attention kind: ${JSON.stringify(kind satisfies never)}`)
   }

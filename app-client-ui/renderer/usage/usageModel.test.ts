@@ -3,7 +3,7 @@ import type { UsageAccount } from '../../../lib-orchestrator/rateMonitor/usageAp
 import { UsageModel } from './usageModel'
 
 const account: UsageAccount = { key: { agentId: 'claude', accountId: 'main' }, label: 'Main', enabled: true,
-  accountState: 'active', source: 'poll', estimated: null,
+  accountState: 'active', source: 'poll', estimated: null, capacity: { weight: 1, tier: null },
   state: { kind: 'ok', fetchedAt: 1, windows: [{ durationMinutes: 10080, usedPercent: 68, resetsAt: null },
     { durationMinutes: 10080, usedPercent: 10, resetsAt: null, model: 'opus' }] } }
 
@@ -70,7 +70,7 @@ describe('UsageModel', () => {
   it('draws a few projected days after 7 and 30 days, and enough to show the pool running empty', () => {
     const day = 86_400_000
     const series = { recorded: [], projected: [], burnPerHour: 1, poolEmptyAt: null, firstEmpty: null, nextReset: null,
-      now: 10 * day, until: 41 * day, knownAccounts: 1, totalAccounts: 1, displayRange: { from: 3 * day, to: 41 * day } }
+      now: 10 * day, until: 41 * day, knownAccounts: 1, totalAccounts: 1, accounts: [], displayRange: { from: 3 * day, to: 41 * day } }
     expect(UsageModel.poolView('week', series)).toEqual({ from: 3 * day, to: 12 * day })
     expect(UsageModel.poolView('month', { ...series, displayRange: { from: -20 * day, to: 41 * day } })).toEqual({ from: -20 * day, to: 17 * day })
     expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 11 * day })).toEqual({ from: 3 * day, to: 12 * day })

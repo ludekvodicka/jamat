@@ -791,6 +791,34 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     await waitFor(() => expect(close).toHaveBeenCalledOnce())
   })
 
+  it('cancels an empty review when the person closes it, so its waiting agent goes on', async () => {
+    const f = CommitPaneTest.fixture()
+    f.setDraft({ ...f.getDraft(), epoch: 'source' })
+    const decide = vi.fn(async () => ({ ok: true as const, value: { ok: true as const, revision: '' } }))
+    Object.assign(f.ports.versioning, { decideCommit: decide })
+    const close = vi.fn()
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: { ...f.snapshot, entries: [] } } })
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Nothing to commit: this scope has no changes'))
+    fireEvent.click(screen.getByRole('button', { name: 'Close view' }))
+    await waitFor(() => expect(close).toHaveBeenCalled())
+    expect(decide).toHaveBeenCalledWith(expect.objectContaining({ kind: 'cancel', draftId: 'draft', epoch: 'source' }))
+    expect(f.ports.reportError).not.toHaveBeenCalled()
+  })
+
+  it('cancels a review that Reload emptied before it closes the pane', async () => {
+    const f = CommitPaneTest.fixture()
+    const cancel = vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: {} } }))
+    Object.assign(f.ports.versioning, { cancelCommit: cancel })
+    const close = vi.fn()
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={close} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: { ...f.snapshot, snapshotId: 'empty', entries: [] } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(close).toHaveBeenCalled())
+    expect(cancel).toHaveBeenCalledWith('draft')
+  })
+
   it('does not call a list that its read could not complete empty', async () => {
     const f = CommitPaneTest.fixture()
     vi.mocked(f.ports.versioning.commitFiles).mockResolvedValue({ ok: true, value: { ok: true, value: {

@@ -22,7 +22,7 @@ import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
-import { FileViewerScrollTop, useFileViewerScrollRestore } from './fileViewerScrollRestore'
+import { FileViewerPlace, FileViewerScrollTop, useFileViewerPlaceRestore } from './fileViewerScrollRestore'
 import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
@@ -50,15 +50,6 @@ export function FileViewerPane(props: {
     props.workingTree,
     props.ports,
   )
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload, props.ports.viewer)
-  // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
-  const servedReload = useRef(props.reloadRequest)
-  const reload = model.reload
-  useEffect(() => {
-    if (servedReload.current === props.reloadRequest) return
-    servedReload.current = props.reloadRequest
-    reload()
-  }, [props.reloadRequest, reload])
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   const onClose = props.onClose
   useEffect(() => { if (model.sourceMissing) onClose() }, [model.sourceMissing, onClose])
@@ -83,8 +74,22 @@ export function FileViewerPane(props: {
     if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
   })
   // The pane mounts once per shown item, so the offset it mounted with is restored once.
-  const [restoreTop, setRestoreTop] = useState(props.item.scrollTop)
-  useFileViewerScrollRestore(body, restoreTop, model.textReady, () => setRestoreTop(undefined))
+  const [restore, setRestore] = useState(() => FileViewerPlace.at(props.item.scrollTop))
+  useFileViewerPlaceRestore(body, restore, model.textReady, () => setRestore(undefined))
+  const modelReload = model.reload
+  // A place still being restored is where the reader is: the body may not show it yet.
+  const reload = useCallback((): void => {
+    setRestore((current) => current ?? FileViewerPlace.of(body.current))
+    modelReload()
+  }, [body, modelReload])
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, props.ports.viewer)
+  // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
+  const servedReload = useRef(props.reloadRequest)
+  useEffect(() => {
+    if (servedReload.current === props.reloadRequest) return
+    servedReload.current = props.reloadRequest
+    reload()
+  }, [props.reloadRequest, reload])
   const openSource = useCallback((source: FileViewerDocumentSource): void => {
     model.openSource(source, (document) => {
       const refusal = onOpenItem({
@@ -145,7 +150,7 @@ export function FileViewerPane(props: {
             <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
             <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
             <FileViewerFindButton onFind={search.show} />
-            <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
+            <FileViewerReloadControl missing={freshness.missing} onReload={reload} />
             <FileViewerGetDocumentControl document={model.document} text={model.text} />
             <span className="file-viewer-toolbar-slot" ref={setToolbarSlot} />
           </>
@@ -167,7 +172,7 @@ export function FileViewerPane(props: {
               diff={model.diff}
               location={props.item.location}
               onOpenSource={openSource}
-              onReload={model.reload}
+              onReload={reload}
             />
         )}
       </div>

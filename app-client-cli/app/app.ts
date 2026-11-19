@@ -5,6 +5,8 @@ import { readFileSync, statSync } from 'node:fs'
 import { PassInbox, type PassEvent } from '../../lib-orchestrator/snapins/passInboxView'
 import { PerfReportView } from '../../lib-orchestrator/perfMonitor/perfReportView'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
+import { AccountBrokerAnswers } from '../../lib-orchestrator/agentAccounts/accountBrokerAnswer'
+import type { AccountBrokerAnswer, AccountBrokerPurpose, AccountBrokerReason } from '../../lib-orchestrator/agentAccounts/accountBrokerApi.types'
 
 import type {
   RemoteControlCatalogEntryDto,
@@ -95,6 +97,7 @@ type AppClientCliPlan =
   | CommitPlan
   | { kind: 'pass'; directory: string; event?: PassEvent }
   | { kind: 'perf'; since: number }
+  | { kind: 'pick'; args: CliArguments; caller: string; purpose: AccountBrokerPurpose }
   | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
@@ -169,6 +172,7 @@ export class AppClientCli {
       plan = this.plan(args)
       if (plan.kind === 'pass') return await this.runPass(plan)
       if (plan.kind === 'commit') return await this.runCommit(plan)
+      if (plan.kind === 'pick') return await this.runPick(plan)
       const config = this.deps.loadConfig(args)
       if (plan.kind === 'perf') {
         if (config.configIdentity === null || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.configIdentity) || config.runtimeChannel === null)
@@ -375,6 +379,53 @@ export class AppClientCli {
     return 0
   }
 
+  /**
+   * Every outcome with an answer exits 0 (`docs/architecture/account-broker.md`): a failed choice is
+   * a Main answer, and only a usage error, thrown before discovery, exits non-zero.
+   */
+  private async runPick(plan: Extract<AppClientCliPlan, { kind: 'pick' }>): Promise<number> {
+    let config: AppConfig
+    try { config = this.deps.loadConfig(plan.args) }
+    catch (error) {
+      // A selection that names no running instance, such as a config directory without an identity, is an answer.
+      if (!(error instanceof AppClientCliError) || error.code === 'invalid-request') throw error
+      this.write({ ok: true, value: AccountBrokerAnswers.main(AppClientCli.pickReasonsConst[error.code]) })
+      return 0
+    }
+    const stop = new AbortController()
+    const deadline = this.deps.pause(AppClientCli.pickDeadlineMsConst, stop.signal)
+      .then(() => AccountBrokerAnswers.main('timeout'), () => AccountBrokerAnswers.main('timeout'))
+    const answer = await Promise.race([this.pick(plan, config, stop.signal), deadline])
+    stop.abort()
+    this.write({ ok: true, value: answer })
+    return 0
+  }
+
+  private async pick(plan: Extract<AppClientCliPlan, { kind: 'pick' }>, config: AppConfig, signal: AbortSignal): Promise<AccountBrokerAnswer> {
+    try {
+      const descriptor = await this.deps.discover(config)
+      if (!descriptor.ok) return AccountBrokerAnswers.main(AppClientCli.pickReasonsConst[descriptor.error.code])
+      if (!RemoteControlCapabilities.of(descriptor.value).includes('accounts.pick')) return AccountBrokerAnswers.main('unsupported')
+      const operation: string = 'accounts.pick'
+      const response = await this.deps.client(descriptor.value, { timeoutMilliseconds: AppClientCli.pickDeadlineMsConst }).execute({
+        protocol: RemoteControlConst.protocol, requestId: this.deps.requestId(), operationId: this.deps.operationId(), operation,
+        body: { caller: plan.caller, purpose: plan.purpose } } as unknown as RemoteControlRequestUnion, signal)
+      if (response.ok && AccountBrokerAnswers.is(response.value)) return response.value
+      return AccountBrokerAnswers.main(!response.ok && response.error.code === 'timeout' ? 'timeout' : 'error')
+    } catch { return AccountBrokerAnswers.main('error') }
+  }
+
+  private pickPlan(args: CliArguments): AppClientCliPlan {
+    const caller = args.required('--caller')
+    if (!AccountBrokerAnswers.callerPatternConst.test(caller))
+      throw new AppClientCliError('invalid-request', '--caller must be 1 to 64 characters of A-Z a-z 0-9 . _ -')
+    const purpose = args.required('--purpose')
+    const purposes: readonly string[] = AccountBrokerAnswers.purposesConst
+    if (!purposes.includes(purpose))
+      throw new AppClientCliError('invalid-request', `--purpose must be one of ${AccountBrokerAnswers.purposesConst.join(', ')}`)
+    return { kind: 'pick', args, caller, purpose: purpose as AccountBrokerPurpose }
+  }
+
   private plan(args: CliArguments): AppClientCliPlan {
     if (args.command === 'perf report') {
       const duration = /^(\d+(?:\.\d+)?)(m|h|d)$/.exec(args.option('--since') ?? '2h')
@@ -386,6 +437,7 @@ export class AppClientCli {
     }
     if (args.command === 'snapins pass brief') return { kind: 'pass', directory: args.required('--pass') }
     if (args.command === 'snapins pass event') return this.passPlan(args)
+    if (args.command === 'accounts pick') return this.pickPlan(args)
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
     else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
     else if (args.command === 'commit status') {
@@ -1540,6 +1592,21 @@ export class AppClientCli {
   ]
 
   private static readonly deliverMarginMillisecondsConst = 5_000
+
+  /** Discovery plus the request of `accounts pick`; a normal call takes about 1.1 s. */
+  private static readonly pickDeadlineMsConst = 6_000
+
+  /** The broker reason of a discovery failure; a `Record`, so a new error code must be given one. */
+  private static readonly pickReasonsConst: Record<RemoteControlErrorCode, AccountBrokerReason> = {
+    'invalid-request': 'error',
+    'not-found': 'error',
+    conflict: 'instance-conflict',
+    timeout: 'timeout',
+    unavailable: 'jamat-unavailable',
+    'protocol-mismatch': 'error',
+    forbidden: 'error',
+    'operation-failed': 'error',
+  }
 
   /** How long `commit cancel` reads a review it cancelled before it reports that the window did not close. */
   private static readonly cancelCloseWaitMsConst = 10_000

@@ -2,7 +2,7 @@
 
 Auto-update for an Electron app published through GitHub Releases with `electron-updater`: it checks for a new
 version after start and periodically, downloads it in the background, shows the state in the renderer and installs
-it on "Restart and install" or on the next normal quit. The code has no UI library and no imports outside this
+it on "Restart and install" or on the next normal quit. A neutral member: no UI library and no imports outside this
 member, so any Electron app can mount it.
 
 ## Behavior

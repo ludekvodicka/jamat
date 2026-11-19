@@ -32,6 +32,8 @@ type MainFinishAnswer = SessionsOpResult<{ outcome: SessionMainFinishOutcome }>
  * left stops the session and removes its row, because nothing is left to come back to and the
  * conversation stays in Historic sessions; any left asks the person again. The stop and the Remove
  * are the only automatic acts, and they happen only when nothing of the session is left to commit.
+ * **Check again** reads the changes at once, without the wait for an idle agent: a commit turn that
+ * hangs on a review nobody will finish kept the section waiting with no way on (058, 2026-11-18).
  */
 export class MainFinishFlow {
   static readonly tickMillisecondsConst = 3_000
@@ -117,6 +119,10 @@ export class MainFinishFlow {
       case 'commit-close':
       case 'commit-continue':
         return this.commit(sessionId, current, choice)
+      case 'check':
+        if (current.phase !== 'committing') return { ok: false, code: 'invalid-spec', detail: 'No commit of this session runs now' }
+        this.idleSince.delete(sessionId)
+        return { ok: true, value: { outcome: await this.check(sessionId, true) } }
       default: throw new Error(`Unknown main Finish choice: ${JSON.stringify(choice satisfies never)}`)
     }
   }
@@ -171,26 +177,49 @@ export class MainFinishFlow {
     this.idleSince.set(sessionId, since)
     if (now - since < MainFinishFlow.settleMillisecondsConst || this.port.reviewPending(sessionId)) return
     this.idleSince.delete(sessionId)
+    await this.check(sessionId, false)
+  }
+
+  /**
+   * Reads the changes and goes on: none left stops the session and removes its row, any left asks
+   * the person again. `pressed` is Check again, which may come while the agent still works or a
+   * review is open; then a remainder keeps the commit waiting with a note, and an open review
+   * keeps the session, because stopping it would leave that review pending with no session.
+   */
+  private async check(sessionId: string, pressed: boolean): Promise<SessionMainFinishOutcome> {
+    const activity = this.sessions.info(sessionId)?.activity
+    const busy = pressed && (activity === 'working' || activity === 'waiting')
     const changes = await this.port.changes(sessionId)
     if (changes.ok && (changes.vcs === null || changes.paths.length === 0)) {
+      if (pressed && this.port.reviewPending(sessionId))
+        return this.note(sessionId, 'Nothing of this session is left to commit, but a commit review of it is still open. Close the review, then check again.')
       const stopped = await this.sessions.stop(sessionId)
       if (!stopped.ok) {
         await this.ask(sessionId, `The changes are committed, but the session did not stop: ${stopped.detail}`)
-        return
+        return 'choose'
       }
       await this.close(sessionId, 'closed')
       const removed = await this.sessions.remove(sessionId)
       if (!removed.ok) this.sessions.report(`Session ${sessionId} committed its changes and stopped, but its row stays: ${removed.detail}`)
-      return
+      return 'stopped'
     }
     if (!changes.ok) {
+      if (busy) return this.note(sessionId, `The changes could not be read: ${changes.detail}`)
       await this.ask(sessionId, `The commit turn ended, but the changes could not be read: ${changes.detail}`)
-      return
+      return 'choose'
     }
     const files = MainFinishFlow.filesOf(changes)
     const count = files.paths.length + files.more
-    await this.ask(sessionId, `The commit turn ended and ${count} ${count === 1 ? 'file' : 'files'} of this session ${count === 1 ? 'is' : 'are'} still changed. `
-      + 'Commit again, or close the session.', files)
+    const remain = `${count} ${count === 1 ? 'file' : 'files'} of this session ${count === 1 ? 'is' : 'are'} still changed`
+    if (busy) return this.note(sessionId, `${remain[0].toUpperCase()}${remain.slice(1)}; the agent still works on the commit.`)
+    await this.ask(sessionId, `The commit turn ended and ${remain}. Commit again, or close the session.`, files)
+    return 'choose'
+  }
+
+  /** A note on a commit that goes on waiting. */
+  private async note(sessionId: string, note: string): Promise<'committing'> {
+    await this.sessions.write(sessionId, (latest) => latest?.phase === 'committing' ? { ...latest, note } : null)
+    return 'committing'
   }
 
   /** Back to the choice, keeping the commit step drawn as done. */

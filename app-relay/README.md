@@ -1,5 +1,9 @@
 # Jamat mobile relay
 
+Relay 1.5.2 updates only the external Zod package to 4.6.7 while preserving the deployed
+application and runtime boundary. Use the [bounded release recipe](../docs/architecture/relay-zod-patch-2026-11-18.md)
+for this patch; a fresh HEAD source build includes later library changes outside its scope.
+
 Build the Linux amd64 image from the repository root with Docker BuildKit:
 
 ```sh

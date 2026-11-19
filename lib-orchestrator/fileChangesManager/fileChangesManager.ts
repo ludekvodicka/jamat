@@ -33,7 +33,8 @@ import { FileHistoryComposer } from './history/fileHistoryComposer'
 import { FileChangesListing, type FileChangesListingItem } from './listing/fileChangesListing'
 import { FileChangesLogSourceClaude } from './logs/fileChangesLogSourceClaude'
 import { FileChangesLogSourceCodex } from './logs/fileChangesLogSourceCodex'
-import type { FileChangesLogGroup, FileChangesLogMutation } from './logs/fileChangesLogSource.types'
+import type { FileChangesLogGroup, FileChangesLogMutation, FileChangesShellRun } from './logs/fileChangesLogSource.types'
+import { FileChangesShellRuns } from './logs/fileChangesShellRuns'
 import {
   FileChangesSnapshotStore,
   type SnapshotBaseline,
@@ -76,6 +77,8 @@ export interface FileChangesLogReader {
     cwd: string,
     subagents: readonly ProviderSubagentFileRef[],
   ): Promise<readonly FileChangesLogGroup[]>
+  /** The shell commands the session and its sub-agents ran. */
+  shellRuns(ref: ProviderTranscriptRef, subagents: readonly ProviderSubagentFileRef[]): Promise<readonly FileChangesShellRun[]>
 }
 
 export interface FileChangesManagerDeps {
@@ -335,35 +338,46 @@ export class FileChangesManager {
    * The current changes the session's own transcript made: every path its agent wrote, moved or
    * deleted that the working copy still shows changed, as paths relative to the session directory.
    * A changed directory the status did not expand (a new SVN directory) counts when the agent wrote
-   * inside it. The status is the authority, so a write the agent reverted is no change; a change made
-   * by a shell command alone is not in the transcript and is not counted. Main-only, like
-   * `readBaseline`: it issues no snapshot and no id.
+   * inside it. A path a shell command of the session names and that was last written while that
+   * command ran counts too (`FileChangesShellRuns`); a deletion by a shell command has no file time
+   * and does not. The status is the authority, so a write the agent reverted is no change.
+   * Main-only, like `readBaseline`: it issues no snapshot and no id.
    */
   async sessionChanges(context: FileChangesContext, preferredVcs: FileChangesVcsId): Promise<FileChangesSessionResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, detail: invalid }
     const warnings: string[] = []
-    const [selection, logGroups] = await Promise.all([
+    const [selection, log] = await Promise.all([
       this.detector.select(context.cwd, preferredVcs),
-      this.readLogGroups(context, warnings),
+      this.readLog(context, warnings, true),
     ])
     if (warnings.length > 0) return { ok: false, detail: warnings.join('; ') }
     const selected = selection.selected
     if (selected === null) return { ok: true, value: { vcs: null, paths: [] } }
     const touched = new Set<string>()
-    for (const group of logGroups)
+    for (const group of log.groups)
       for (const mutation of group.mutations) {
         touched.add(PathCompare.comparable(mutation.path))
         if (mutation.previousPath !== null) touched.add(PathCompare.comparable(mutation.previousPath))
       }
-    if (touched.size === 0) return { ok: true, value: { vcs: selected.adapter.id, paths: [] } }
+    const shells = new FileChangesShellRuns(log.shellRuns)
+    if (touched.size === 0 && shells.empty) return { ok: true, value: { vcs: selected.adapter.id, paths: [] } }
     let status: Awaited<ReturnType<FileChangesVcs['status']>>
     try { status = await selected.adapter.status(selected.detection) }
     catch (error) { return { ok: false, detail: `${selected.adapter.id} status: ${ErrorText.of(error)}` } }
     if (!status.ok) return { ok: false, detail: `${selected.adapter.id} status: ${status.detail}` }
-    const paths = status.value.entries.filter((entry) => touched.has(PathCompare.comparable(entry.absolutePath))
-      || entry.previousAbsolutePath !== null && touched.has(PathCompare.comparable(entry.previousAbsolutePath))
-      || entry.nodeKind === 'directory' && [...touched].some((path) => PathCompare.isInside(entry.absolutePath, path)))
+    const bases = [context.cwd, selected.detection.root]
+    const own = await Promise.all(status.value.entries.map(async (entry) => {
+      if (touched.has(PathCompare.comparable(entry.absolutePath))
+        || entry.previousAbsolutePath !== null && touched.has(PathCompare.comparable(entry.previousAbsolutePath))
+        || entry.nodeKind === 'directory' && [...touched].some((path) => PathCompare.isInside(entry.absolutePath, path)))
+        return true
+      const runs = shells.named(entry.absolutePath, bases, entry.nodeKind === 'directory')
+      if (runs.length === 0) return false
+      const modifiedAt = await lstat(entry.absolutePath).then((stats) => stats.mtimeMs, () => null)
+      return modifiedAt !== null && FileChangesShellRuns.ranAt(runs, modifiedAt)
+    }))
+    const paths = status.value.entries.filter((_entry, index) => own[index])
       .map((entry) => FileChangesListing.displayPath(context.cwd, entry.absolutePath))
     return { ok: true, value: { vcs: selected.adapter.id, paths } }
   }
@@ -503,22 +517,32 @@ export class FileChangesManager {
     context: FileChangesContext,
     warnings: string[],
   ): Promise<readonly FileChangesLogGroup[]> {
-    if (context.agent === null) return []
+    return (await this.readLog(context, warnings, false)).groups
+  }
+
+  private async readLog(
+    context: FileChangesContext,
+    warnings: string[],
+    withShellRuns: boolean,
+  ): Promise<{ groups: readonly FileChangesLogGroup[]; shellRuns: readonly FileChangesShellRun[] }> {
+    const none = { groups: [], shellRuns: [] }
+    if (context.agent === null) return none
     const source = this.logReaders.get(context.agent.agentId)
     if (!source) throw new Error(`No log source for ${context.agent.agentId}`)
     try {
       const agent = { ...context.agent, cwd: context.cwd }
       const ref = await this.transcriptResolver.resolve(agent)
-      if (ref === null) return []
+      if (ref === null) return none
       const since = source.subagentsSince(ref)
       const subagents = since === null
         ? []
         : await this.transcriptResolver.subagentFiles({ ...agent, since })
-      return await source.load(ref, context.cwd, subagents)
+      const groups = await source.load(ref, context.cwd, subagents)
+      return { groups, shellRuns: withShellRuns ? await source.shellRuns(ref, subagents) : [] }
     }
     catch (error) {
       warnings.push(`Transcript history: ${ErrorText.of(error)}`)
-      return []
+      return none
     }
   }
 

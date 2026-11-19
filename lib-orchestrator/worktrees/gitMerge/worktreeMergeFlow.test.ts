@@ -83,6 +83,12 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       return this.answer('isMerged', this.merged)
     }
 
+    /** Not recorded in `calls`: the order tests are about the merge, these two only guard it. */
+    baseContained = true
+    marked: string[] = []
+    contains(): Promise<GitResult<boolean>> { return this.answer('contains', this.baseContained) }
+    markedFiles(): Promise<GitResult<string[]>> { return this.answer('markedFiles', this.marked) }
+
     mergeToMain(repositoryRoot: string, branch: string): Promise<GitResult<{ conflict: boolean }>> {
       this.calls.push(['mergeToMain', repositoryRoot, branch])
       return this.answer('mergeToMain', { conflict: this.mainConflict })
@@ -603,10 +609,34 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
 
     const refusal = refusalOf(await it_.flow.mergeSession('s1'))
     expect(refusal.code).toBe('merge-conflict')
-    expect(refusal.detail).toMatch(/run Merge again/)
+    expect(refusal.detail).toMatch(/press Try again/)
     expect(it_.record()?.worktreeMerge?.phase).toBe('resolving')
+    // No resolver here: the manual path is a failure, so Session actions draws Try again, Keep and Discard.
+    expect(it_.record()?.worktreeMerge?.failure).toBe(refusal.detail)
     expect(it_.record()?.worktree).toBeTruthy()
     expect(it_.ended).toEqual([])
+  })
+
+  it('refuses to land into a main copy whose branch does not contain the commit the worktree was cut from', async () => {
+    const it_ = await harness()
+    it_.merge.baseContained = false
+    const refusal = refusalOf(await it_.flow.mergeSession('s1'))
+    expect(refusal.detail).toMatch(/does not contain .*the commit this worktree was cut from/)
+    expect(it_.merge.names).not.toContain('mergeToMain')
+    expect(it_.record()?.worktreeMerge?.failure).toBe(refusal.detail)
+  })
+
+  it('stops before the merge into the base when the commit that settled the conflicts holds markers', async () => {
+    const it_ = await harness({ worktreeMerge: { phase: 'resolving', startedAt: 1, resolveSessionId: 'r1' } })
+    it_.merge.marked = ['src/a.ts']
+    const refusal = refusalOf(await it_.flow.mergeSession('s1'))
+    expect(refusal.code).toBe('merge-conflict')
+    expect(refusal.detail).toMatch(/conflict markers in src\/a\.ts/)
+    expect(it_.merge.names).not.toContain('mergeToMain')
+    it_.merge.marked = []
+    await it_.store.update('s1', (record) => ({ ...record, worktreeMerge: { ...record.worktreeMerge!, phase: 'resolving', failure: undefined } }))
+    expect((await it_.flow.mergeSession('s1')).ok).toBe(true)
+    expect(it_.merge.names).toContain('mergeToMain')
   })
 
   it('finds a merge already in progress and goes straight back to resolving', async () => {
@@ -980,6 +1010,8 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       for (const answer of [
         await it_.flow.discard('s1'),
         await it_.flow.mergeSession('s1'),
+        // Keep dropped the resolver's pointer, so the next Merge started a second resolver beside it.
+        await it_.flow.keep('s1'),
       ]) {
         expect(refusalOf(answer).code).toBe('live-refused')
         expect(refusalOf(answer).detail).toMatch(/r1 is resolving/)

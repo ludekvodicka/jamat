@@ -509,7 +509,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
     ] })
   })
 
-  it('admits Stop agent, Keep worktree and Discard while the resolver works, and nothing during any other running stage', () => {
+  it('admits Stop agent, Keep worktree and Discard while the resolver works, Stop agent for an UPDATE resolver, and nothing during any other running stage', () => {
     const current = action({ stage: 'resolving', runId: 'cl', passes: [pass('updating', 200, 300, { runId: 'u1' })] })
     const workflow = SvnActionWorkflow.of(record(current), current, runs({ cl: 'Resolve conflicts 014' }))
     expect(workflow.summary).toBe('Claude resolves the conflicts')
@@ -521,7 +521,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
       { id: 'discard', label: 'Discard', primary: false, confirm: 'Discard this worktree and its uncommitted changes?' },
     ])
     const update = action({ kind: 'update-main', stage: 'resolving', runId: 'cl' })
-    expect(SvnActionWorkflow.of(record(update), update, runs({})).actions).toEqual([])
+    expect(SvnActionWorkflow.of(record(update), update, runs({})).actions).toEqual([{ id: 'stop-agent', label: 'Stop agent', primary: false, runId: 'cl', place: 'step' }])
     const reviewing = action({ stage: 'reviewing', runId: 'r1', roots: [{ path: worktreeConst, own: '', changed: ['a'] }] })
     expect(SvnActionWorkflow.of(record(reviewing), reviewing, runs({})).actions).toEqual([])
   })
@@ -535,7 +535,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
       ['Update 2, after the merger', 'svn update: pending', 'Commit: pending', 'Remove the worktree: pending'],
     ])
     expect(workflow.rounds[0].steps[2]).toMatchObject({ detail: 'Merge conflicts 014-fix-login', target: { kind: 'agent', runId: 'm1' } })
-    expect(workflow).toMatchObject({ badge: 'merging', summary: 'The merger settles the conflicts the rules left' })
+    expect(workflow).toMatchObject({ badge: 'merging', summary: `The merger settles the conflicts the rules left; ${SvnActionWorkflow.mergerLimitsConst}` })
     expect(workflow.actions).toEqual([
       { id: 'finish-again', label: 'Check again', primary: true, place: 'step' },
       { id: 'open-merger', label: 'Open merger', primary: false, runId: 'm1', place: 'step' },

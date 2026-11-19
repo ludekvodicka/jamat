@@ -75,7 +75,7 @@ export class SessionsSnapshotValidation {
   private static readonly conflictLossesConst: readonly string[] =
     ['nothing', 'mine', 'incoming'] satisfies readonly SvnConflictLoss[]
   private static readonly workflowActionsConst: readonly string[] =
-    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker', 'commit-close', 'commit-continue', 'close-session', 'cancel-finish'] satisfies readonly SessionWorkflowActionId[]
+    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker', 'commit-close', 'commit-continue', 'close-session', 'cancel-finish', 'check-finish'] satisfies readonly SessionWorkflowActionId[]
 
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)

@@ -1817,6 +1817,7 @@ function SessionRow(props: {
             note={node.note}
             worktree={node.worktreeLine}
             landing={node.badges.landing?.title ?? null}
+            account={node.badges.accountLabel}
           />
         )}
         <Badges badges={node.badges} />
@@ -1994,7 +1995,8 @@ function Badges(props: { badges: SessionBadges }): React.JSX.Element {
   return (
     <>
       {badges.agentId !== null && (
-        <span className="jamat-sessions__agent" title={badges.agentId}>
+        <span className="jamat-sessions__agent"
+          title={badges.accountLabel === undefined ? badges.agentId : `${badges.agentId} · ${badges.accountLabel}`}>
           {AgentGlyph.markOf(badges.agentId)}
         </span>
       )}

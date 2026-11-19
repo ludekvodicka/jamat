@@ -119,9 +119,11 @@ export class WorkerHandoffs implements NotifySource {
   private static applies(record: SessionRecord): boolean {
     const state = record.worktreeLifecycle
     const handoff = state?.handoff
+    // A live merger holds the paths: a handoff typed into the worker later set two agents on one file.
     if (handoff?.key.startsWith('conflicts:')) return state?.step === 'worker-resolving'
       && handoff.key.startsWith(`conflicts:${state.actionId}:`)
       && state.syncConflictSet?.entries.some((entry) => entry.state !== 'settled') === true
+      && (state.execution?.merger === undefined || state.execution.merger.endedAt !== undefined)
     if (handoff?.key.startsWith('checks:')) return state?.phase === 'active' && state.checks?.passed === false
       && !state.checks.overridden && handoff.key === `checks:${state.checks.at}`
     if (handoff?.key.startsWith('message:')) return state?.step === 'reviewing' && handoff.key === `message:${state.actionId}`

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { poolGraphSpec, poolReadout } from './poolGraphSpec'
+import { poolAccountLines, poolGraphSpec, poolReadout } from './poolGraphSpec'
 
 const dateTime = (at: number) => {
   const date = new Date(at)
@@ -8,8 +8,8 @@ const dateTime = (at: number) => {
 }
 
 describe('poolGraphSpec', () => {
-  const theme = { text: 'text', grid: 'grid', accent: 'accent' }
-  const series = { recorded: [], projected: [], now: 1, until: 2, burnPerHour: 0, poolEmptyAt: null,
+  const theme = { text: 'text', grid: 'grid', accent: 'accent', series: ['one', 'two'] }
+  const series = { recorded: [], projected: [], accounts: [], now: 1, until: 2, burnPerHour: 0, poolEmptyAt: null,
     firstEmpty: null, nextReset: null, knownAccounts: 0, totalAccounts: 1 }
   it('returns an empty state without samples', () => { expect(poolGraphSpec(series, theme)).toBeNull() })
   it('draws a solid recorded line, dashed projection and Now rule', () => {
@@ -50,6 +50,24 @@ describe('poolGraphSpec', () => {
     theme, { from: 0, to: 10 })
     expect(spec).toMatchObject({ layer: [{}, { data: { values: [{ at: 1, remaining: 90 }, { at: 5, remaining: 0 }, { at: 50, remaining: 0 }] } }, {}] })
     expect(spec && 'layer' in spec ? spec.layer[0] : null).toMatchObject({ encoding: { x: { scale: { domain: [dateTime(0), dateTime(10)] } } } })
+  })
+  it('draws one line per account beneath the pool, coloured by its place, and none for a lone account', () => {
+    const lines = poolAccountLines([{ accountId: 'a', label: 'A' }, { accountId: 'b', label: 'B' }, { accountId: 'c', label: 'C' }], theme)
+    expect(lines.map(line => line.color)).toEqual(['one', 'two', 'text'])
+    expect(poolAccountLines([{ accountId: 'a', label: 'A' }], theme)).toEqual([])
+    const spec = poolGraphSpec({ ...series, recorded: [{ at: 1, remaining: 150 }],
+      accounts: [{ accountId: 'a', recorded: [{ at: 1, remaining: 90 }], projected: [] }, { accountId: 'b', recorded: [{ at: 1, remaining: 60 }], projected: [] }] },
+    theme, undefined, lines)
+    expect(spec).toMatchObject({ layer: [
+      { mark: { color: 'one' }, data: { values: [{ at: 1, remaining: 90 }] } }, { mark: { color: 'one', strokeDash: [6, 4] } },
+      { mark: { color: 'two' }, data: { values: [{ at: 1, remaining: 60 }] } }, { mark: { color: 'two', strokeDash: [6, 4] } },
+      { mark: { color: 'accent' } }, { mark: { strokeDash: [6, 4] } }, { mark: { type: 'rule' } },
+    ] })
+    // The pool is percent of the weighted capacity, so two accounts share one 0-100% axis with it.
+    expect(spec && 'layer' in spec ? spec.layer[0] : null).toMatchObject({ encoding: { y: { scale: { domain: [0, 100] } } } })
+    expect(poolReadout({ ...series, recorded: [{ at: 1, remaining: 150 }],
+      accounts: [{ accountId: 'a', recorded: [], projected: [{ at: 0, remaining: 90 }, { at: 2, remaining: 70 }] }] }, 1, lines).rows)
+      .toEqual([{ label: 'Recorded', value: '150.0%' }, { label: 'A', value: '80.0%', color: 'one' }])
   })
   it('reads both lines at a moment by interpolating between their points', () => {
     const readout = poolReadout({ ...series, now: 2 * 3_600_000, recorded: [{ at: 0, remaining: 100 }, { at: 2 * 3_600_000, remaining: 80 }],

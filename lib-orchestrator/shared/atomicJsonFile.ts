@@ -2,21 +2,22 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { mkdir, open, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { setTimeout } from 'node:timers/promises'
-import { ErrnoCode } from './errnoCode'
+import { WindowsHeldFile } from './windowsHeldFile'
 
 /**
  * Canonical home of the helper both app-host and app-client-ui carried a copy of. The Host's version
  * used to differ by an ACL half that guarded its token; that mechanism was deleted on 2026-08-10.
  *
- * **Three differences are left, and a fix here reaches the Host only by hand**, since no import may
+ * **Four differences are left, and a fix here reaches the Host only by hand**, since no import may
  * leave that package. This copy takes a file mode per call, which the Host has no use for; the
  * Host's copy instead pins `0o700` on the directory it creates and exposes `ownerOnlyFileMode()`,
  * which two of its files call. This copy also has the asynchronous pair below, which the client's
  * main process needs and the Host does not: the Host writes its descriptor once per boot, while the
- * client rewrites the session records from a timer that shares a loop with every keystroke. None of
- * the three is accidental, and this paragraph is the only thing keeping the two in step - so it is
- * the first thing to update when any of them changes.
+ * client rewrites the session records from a timer that shares a loop with every keystroke. That
+ * rewrite rate is also why this copy retries a rename onto a file a scanner still holds
+ * (`WindowsHeldFile`): the Host's single boot write has not met that refusal. None of the four is
+ * accidental, and this paragraph is the only thing keeping the two in step - so it is the first
+ * thing to update when any of them changes.
  */
 export class AtomicJsonFile {
   /** Machine state: nobody but this user has any business reading it. */
@@ -38,7 +39,7 @@ export class AtomicJsonFile {
     let committed = false
     try {
       writeFileSync(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
-      renameSync(temporaryFile, file)
+      WindowsHeldFile.retriedSync(() => renameSync(temporaryFile, file))
       if (process.platform !== 'win32') {
         const directory = openSync(dirname(file), 'r')
         try { fsyncSync(directory) } finally { closeSync(directory) }
@@ -77,14 +78,7 @@ export class AtomicJsonFile {
     try {
       const text = options.compact === true ? JSON.stringify(value) : JSON.stringify(value, null, 2)
       await writeFile(temporaryFile, text, { encoding: 'utf-8', mode: options.mode ?? AtomicJsonFile.ownerOnlyFileConst, flush: true })
-      for (let attempt = 0; ; attempt++) {
-        try { await rename(temporaryFile, file); break }
-        catch (error) {
-          // Windows readers/scanners can briefly deny replacement. Retry only the same atomic rename.
-          if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(ErrnoCode.of(error) ?? '') || attempt >= 5) throw error
-          await setTimeout(20 * 2 ** attempt)
-        }
-      }
+      await WindowsHeldFile.retried(() => rename(temporaryFile, file))
       if (process.platform !== 'win32') {
         const directory = await open(dirname(file), 'r')
         try { await directory.sync() } finally { await directory.close() }

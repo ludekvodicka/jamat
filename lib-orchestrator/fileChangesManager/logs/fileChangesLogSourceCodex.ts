@@ -9,6 +9,7 @@ import {
   type ParsedSubagentLog,
 } from './fileChangesLogSource'
 import type {
+  FileChangesShellRun,
   RawFileChangesLogGroup,
   RawFileChangesLogMutation,
 } from './fileChangesLogSource.types'
@@ -32,6 +33,13 @@ interface CodexItem {
   status?: unknown
   changes?: unknown
   receiver_thread_ids?: unknown
+  command?: unknown
+  duration?: unknown
+}
+
+interface CodexDuration {
+  secs?: unknown
+  nanos?: unknown
 }
 
 interface CodexChange {
@@ -71,6 +79,7 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
   protected parse(content: string): ParsedFileChangesLog {
     const groups: CodexGroup[] = []
     const spawns = new Map<string, number>()
+    const shellRuns: FileChangesShellRun[] = []
     let current: CodexGroup | null = null
     let fallback: PendingFallback | null = null
     let sequence = 0
@@ -84,6 +93,8 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
       const record = FileChangesLogSourceCodex.recordOf(raw)
       const createdAt = FileChangesLogSource.timestamp(record.timestamp, lastCreatedAt)
       lastCreatedAt = createdAt
+      const shellRun = FileChangesLogSourceCodex.shellRunOf(record, createdAt)
+      if (shellRun !== null) shellRuns.push(shellRun)
       if (message?.kind === 'explicit') {
         current = FileChangesLogSourceCodex.openGroup(groups, message.text, createdAt, sequence)
         fallback = null
@@ -120,12 +131,13 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
       if (patch !== null)
         current.mutations.push(...FileChangesLogSourceCodex.mutationsOf(patch, createdAt, sequence))
     }
-    return { groups, spawns }
+    return { groups, spawns, shellRuns }
   }
 
   /** A child rollout opens no group: its prompt came from the parent's `spawn_agent` call. */
   protected parseSubagent(content: string): ParsedSubagentLog {
     const mutations: RawFileChangesLogMutation[] = []
+    const shellRuns: FileChangesShellRun[] = []
     let startedAt: number | null = null
     let sequence = 0
     let lastCreatedAt = 0
@@ -135,11 +147,28 @@ export class FileChangesLogSourceCodex extends FileChangesLogSource {
       const createdAt = FileChangesLogSource.timestamp(record.timestamp, lastCreatedAt)
       lastCreatedAt = createdAt
       if (startedAt === null && createdAt > 0) startedAt = createdAt
+      const shellRun = FileChangesLogSourceCodex.shellRunOf(record, createdAt)
+      if (shellRun !== null) shellRuns.push(shellRun)
       const patch = FileChangesLogSourceCodex.appliedPatchOf(record)
       if (patch !== null)
         mutations.push(...FileChangesLogSourceCodex.mutationsOf(patch, createdAt, sequence))
     }
-    return { startedAt, mutations }
+    return { startedAt, mutations, shellRuns }
+  }
+
+  /**
+   * A finished `CommandExecution` item, failed ones too: a failed command can have written files
+   * before it failed. The record is written at its end, so the start is that time less its duration.
+   */
+  private static shellRunOf(record: CodexRecord, endedAt: number): FileChangesShellRun | null {
+    if (record.type !== 'event_msg' || record.payload?.type !== 'item_completed') return null
+    const item = FileChangesLogSourceCodex.itemOf(record.payload.item)
+    if (item.type !== 'CommandExecution' || !Array.isArray(item.command)) return null
+    const command = item.command.filter((part): part is string => typeof part === 'string').join(' ')
+    const duration = (JsonShape.record(item.duration) ?? {}) as CodexDuration
+    const milliseconds = (typeof duration.secs === 'number' ? duration.secs * 1_000 : 0)
+      + (typeof duration.nanos === 'number' ? duration.nanos / 1_000_000 : 0)
+    return command === '' ? null : { command, startedAt: endedAt - milliseconds, endedAt }
   }
 
   /**

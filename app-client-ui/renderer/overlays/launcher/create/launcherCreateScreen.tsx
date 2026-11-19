@@ -228,12 +228,22 @@ export function LauncherCreateScreen(props: {
 
       {accountOptions.length > 1 && (
         <ChoiceRow label="Account" current={state.field === 'account'}>
-          <select className="jamat-launcher-create__model" aria-label="Account" value={state.accountId}
-            onFocus={() => dispatch({ input: 'setField', field: 'account' })}
-            onChange={event => dispatch({ input: 'chooseAccount', accountId: event.currentTarget.value })}>
-            {!accountOptions.some(account => account.accountId === state.accountId) && <option value="main" disabled>Main (default)</option>}
-            {accountOptions.map(account => <option key={account.accountId} value={account.accountId}>{account.label}</option>)}
-          </select>
+          <div className="jamat-choice__cards" role="group" aria-label="Account">
+            {accountOptions.map(account => (
+              <ChoiceCard
+                key={account.accountId}
+                title={account.label}
+                note={CreateScreenModel.accountNoteOf(account)}
+                glyph={account.isMain ? '★' : '●'}
+                chosen={account.accountId === state.accountId}
+                refusal={null}
+                onChoose={() => dispatch({ input: 'chooseAccount', accountId: account.accountId })}
+              />
+            ))}
+          </div>
+          {!accountOptions.some(account => account.accountId === state.accountId) && (
+            <p className="jamat-launcher-create__note">No account chosen: Main (default)</p>
+          )}
         </ChoiceRow>
       )}
 

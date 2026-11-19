@@ -33,7 +33,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/gitFinishWorkflow', () => {
     expect(waiting?.actions).toEqual([
       { id: 'finish-again', label: 'Commit & merge', primary: true, place: 'step', requiresCommit: true },
       { id: 'discard', label: 'Discard', primary: false, place: 'step', confirm: expect.any(String) },
-      { id: 'keep', label: 'Keep', primary: false, place: 'step' },
+      { id: 'keep', label: 'Keep worktree', primary: false, place: 'step' },
     ])
     const ended = SessionWorkflows.of(record({ worktree: undefined, worktreeMerge: { phase: 'tearing-down', startedAt: 1, endedAt: 9,
       runs: [{ phase: 'commit', runId: 'commit-1', startedAt: 1, endedAt: 2 },
@@ -64,6 +64,15 @@ describe('lib-orchestrator/sessionManager/lifecycle/gitFinishWorkflow', () => {
       .toEqual(['Merge the base into the branch: done', 'Merge into the base: done', 'Remove the worktree: running'])
   })
 
+  it('offers Stop agent while the resolver runs, and names a manual resolution without one', () => {
+    const resolving = SessionWorkflows.of(record({ worktreeMerge: { phase: 'resolving', resolveSessionId: 'resolver-1', startedAt: 13 } }), runs({ 'resolver-1': { life: 'live' } }))
+    expect(resolving?.actions).toEqual([{ id: 'stop-agent', label: 'Stop agent', primary: false, place: 'step', runId: 'resolver-1' }])
+    expect(resolving?.summary).toBe('Claude resolves the conflicts; Jamat stops it after 20 minutes')
+    const manual = SessionWorkflows.of(record({ worktreeMerge: { phase: 'resolving', startedAt: 13, failure: 'main conflicts with this session' } }), runs({}))
+    expect(steps(manual)).toContain('Resolve the conflicts: failed')
+    expect(manual?.actions.map((action) => action.id)).toEqual(['finish-again', 'keep', 'discard'])
+  })
+
   it('shows the resolver as an agent step that opens its tab', () => {
     const workflow = SessionWorkflows.of(record({ worktreeMerge: { phase: 'resolving', resolveSessionId: 'resolver-1', startedAt: 13 } }), runs({}))
     expect(steps(workflow)).toEqual(['Merge the base into the branch: done', 'Claude resolves the conflicts: running',
@@ -72,18 +81,19 @@ describe('lib-orchestrator/sessionManager/lifecycle/gitFinishWorkflow', () => {
     expect(workflow?.badge).toBe('resolving')
   })
 
-  it('shows a merge failure as failed with its words, says to press Finish, and admits no action', () => {
+  it('shows a merge failure as failed with its words and offers Try again, Keep worktree and Discard', () => {
     const failure = 'Q:/Work/App holds uncommitted changes to tracked files; commit or stash them first'
     const workflow = SessionWorkflows.of(record({ worktreeMerge: { phase: 'main-merging', startedAt: 13, failure } }), runs({}))
     expect(steps(workflow)).toEqual(['Merge the base into the branch: done', 'Merge into the base: failed', 'Remove the worktree: pending'])
     expect(workflow?.rounds[0]?.steps[1]?.detail).toBe(failure)
-    expect(workflow).toMatchObject({ badge: 'merge failed', summary: `${failure}; press Finish to continue`, open: true, actions: [{ id: 'finish-again', label: 'Review changes', primary: true }, { id: 'keep', label: 'Keep', primary: false }] })
+    expect(workflow).toMatchObject({ badge: 'merge failed', summary: failure, open: true, actions: [{ id: 'finish-again', label: 'Try again', primary: true },
+      { id: 'keep', label: 'Keep worktree', primary: false }, { id: 'discard', label: 'Discard', primary: false }] })
 
     const checkFailed = SessionWorkflows.of(record({ finishChecks: { runId: 'r-lint', steps: [lint], cursor: 0, startedAt: 5,
       result: { kind: 'failed', reason: 'the lint check exited with 1', at: 8 } } }), runs({}))
     expect(steps(checkFailed)).toEqual(['Check lint: failed', 'Merge the base into the branch: skipped', 'Merge into the base: skipped',
       'Remove the worktree: skipped'])
-    expect(checkFailed).toMatchObject({ badge: 'check failed', summary: 'the lint check exited with 1; press Finish to continue' })
+    expect(checkFailed).toMatchObject({ badge: 'check failed', summary: 'the lint check exited with 1; fix it, then press Try again' })
   })
 
   it('has no Git workflow for passed checks with no merge, nor for an SVN record', () => {

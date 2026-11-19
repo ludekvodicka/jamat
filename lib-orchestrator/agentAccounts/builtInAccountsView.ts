@@ -19,7 +19,7 @@ export function builtInAccountProfiles(environment: NodeJS.ProcessEnv): Pick<Age
   return {
     mainHomes: { claude: claudeHome, codex: codexHome },
     specs: [{ agentId: 'claude', mainHome: () => claudeHome, shareTable: claudeShareTable,
-      homeVariable: 'CLAUDE_CONFIG_DIR', extraEnv: () => ({}), loginCommand: 'claude auth login',
+      homeVariable: 'CLAUDE_CONFIG_DIR', extraEnv: () => ({}), loginCommand: 'claude auth login', loginLinkVariable: 'BROWSER',
       probe: home => probe.read(home === claudeHome ? mainJsonPath : join(home, '.claude.json')),
       beforeLaunch: async home => mergeClaudeJson(home, mainJsonPath),
     }, { agentId: 'codex', mainHome: () => codexHome, shareTable: codexShareTable,

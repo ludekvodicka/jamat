@@ -113,6 +113,8 @@ export interface WorktreeLifecycleDeps {
 }
 
 export type WorktreeDueChange = { kind: 'clean-worktree' | 'svn-action-due' | 'retry-removal'; sessionId: string }
+  /** A Git merge resolver past its time limit: its stop ends the merge gate as failed, with the manual path open. */
+  | { kind: 'stop-script-run'; runId: string }
 
 export interface WorktreeActions {
   resolveConflict(sessionId: string, request: SvnConflictResolveRequest & { by: SvnConflictActor }): Promise<SessionsOpResult<SessionConflictResolved>>

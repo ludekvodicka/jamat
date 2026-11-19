@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { rename } from 'node:fs/promises'
@@ -14,6 +15,7 @@ import { rename } from 'node:fs/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AtomicJsonFile } from './atomicJsonFile'
+import { WindowsHeldFile } from './windowsHeldFile'
 
 vi.mock('node:fs/promises', async (original) => {
   const fs = await original<typeof import('node:fs/promises')>()
@@ -78,10 +80,24 @@ describe('lib-orchestrator/shared/atomicJsonFile', () => {
     AtomicJsonFile.write(file, { value: 'old' })
     vi.mocked(rename).mockRejectedValue(Object.assign(new Error('denied'), { code: 'EPERM' }))
     await expect(AtomicJsonFile.writeAsync(file, { value: 'new' })).rejects.toMatchObject({ code: 'EPERM' })
-    expect(rename).toHaveBeenCalledTimes(6)
+    expect(rename).toHaveBeenCalledTimes(WindowsHeldFile.pausesMsConst.length + 1)
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ value: 'old' })
     expect(readdirSync(root)).toEqual(['document.json'])
   })
+
+  it.skipIf(process.platform !== 'win32')('replaces a document another program holds without delete sharing once it is released', async () => {
+    const root = AtomicJsonFileTest.root(roots), file = join(root, 'document.json'), ready = join(root, 'held.ready')
+    AtomicJsonFile.write(file, { value: 'old' })
+    const holder = AtomicJsonFileTest.hold(file, ready, 400)
+    try {
+      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 15_000, interval: 20 })
+      const started = Date.now()
+      AtomicJsonFile.write(file, { value: 'new' })
+      expect(Date.now() - started).toBeGreaterThanOrEqual(100)
+      expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ value: 'new' })
+      expect(readdirSync(root).sort()).toEqual(['document.json', 'held.ready'])
+    } finally { await AtomicJsonFileTest.exited(holder) }
+  }, 30_000)
 
   it('writes indented JSON by default and one line when asked for compact', async () => {
     const root = AtomicJsonFileTest.root(roots)
@@ -102,6 +118,18 @@ describe('lib-orchestrator/shared/atomicJsonFile', () => {
 })
 
 class AtomicJsonFileTest {
+  /** A second process opens the file for reading without delete sharing, as a real-time scanner does. */
+  static hold(file: string, ready: string, milliseconds: number): ChildProcess {
+    const script = `$f = [IO.File]::Open('${file}', 'Open', 'Read', 'Read'); [IO.File]::WriteAllText('${ready}', ''); Start-Sleep -Milliseconds ${milliseconds}; $f.Dispose()`
+    return spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' })
+  }
+
+  static async exited(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    await new Promise((resolve) => child.once('exit', resolve))
+  }
+
   static root(roots: string[]): string {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-atomic-json-'))
     roots.push(root)

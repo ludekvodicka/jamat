@@ -45,8 +45,19 @@ function Write-Json([string]$Path, $Value) {
     $temporary = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
     try {
         [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
-        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
-        else { [IO.File]::Move($temporary, $Path) }
+        # A scanner or indexer that still reads the previous file refuses its replacement for a moment
+        # ("Unable to remove the file to be replaced"); the same pauses as lib-orchestrator WindowsHeldFile.
+        foreach ($pause in @(20, 40, 80, 160, 320, 640, 1280, $null)) {
+            try {
+                if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
+                else { [IO.File]::Move($temporary, $Path) }
+                break
+            } catch {
+                $held = $_.Exception.GetBaseException()
+                if ($null -eq $pause -or -not ($held -is [IO.IOException] -or $held -is [UnauthorizedAccessException])) { throw }
+                Start-Sleep -Milliseconds $pause
+            }
+        }
     } finally {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
     }

@@ -48,11 +48,63 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnMergerLauncher', () => {
     const state: WorktreeLifecycle = { version: 0, actionId: 'a', phase: 'finishing', step: 'worker-resolving', outOfDate: 0, journal: [],
       facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, syncConflictSet: set([brief]) }
     for (let at = 0; at < 20 * 60_000; at += 5000) {
-      const next = SvnMergerLauncher.fallback(state, true, at)
+      const next = SvnMergerLauncher.fallback(state, true, at, at === 0 ? undefined : at - 5000)
       expect(next.action).toBe('wait')
       state.conflictProgress = next.progress
     }
-    expect(SvnMergerLauncher.fallback(state, true, 20 * 60_000).action).toBe('merger')
+    expect(SvnMergerLauncher.fallback(state, true, 20 * 60_000, 20 * 60_000 - 5000).action).toBe('merger')
+  })
+
+  // A hidden window looks every 15 s; the 10 s bound never let its worker time reach the merger.
+  it('reaches the merger with looks 15 s apart and writes the progress only when it changes', () => {
+    const state: WorktreeLifecycle = { version: 0, actionId: 'a', phase: 'finishing', step: 'worker-resolving', outOfDate: 0, journal: [],
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, syncConflictSet: set([brief]) }
+    let writes = 0
+    for (let at = 0; at < 20 * 60_000; at += 15_000) {
+      const next = SvnMergerLauncher.fallback(state, true, at, at === 0 ? undefined : at - 15_000)
+      expect(next.action).toBe('wait')
+      if (next.changed) { writes++; state.conflictProgress = next.progress }
+    }
+    expect(writes).toBe(1)
+    expect(SvnMergerLauncher.fallback(state, true, 20 * 60_000, 20 * 60_000 - 15_000).action).toBe('merger')
+  })
+
+  it('keeps the worker time across a busy spell and starts a new stretch after a gap or a new client process', () => {
+    const state: WorktreeLifecycle = { version: 0, actionId: 'a', phase: 'finishing', step: 'worker-resolving', outOfDate: 0, journal: [],
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, syncConflictSet: set([brief]) }
+    const look = (idle: boolean, at: number, last?: number) => {
+      const next = SvnMergerLauncher.fallback(state, idle, at, last)
+      if (next.changed) state.conflictProgress = next.progress
+      return next
+    }
+    look(true, 0)
+    look(false, 10 * 60_000, 10 * 60_000 - 15_000)
+    expect(state.conflictProgress).toMatchObject({ milliseconds: 10 * 60_000, idle: false })
+    look(true, 11 * 60_000, 11 * 60_000 - 15_000)
+    // A client restart: no last look, so neither the downtime nor the unproven stretch before it counts.
+    expect(look(true, 60 * 60_000).action).toBe('wait')
+    expect(state.conflictProgress).toMatchObject({ milliseconds: 10 * 60_000, observedAt: 60 * 60_000 })
+    expect(look(true, 69 * 60_000, 69 * 60_000 - 15_000).action).toBe('wait')
+    expect(look(true, 70 * 60_000, 70 * 60_000 - 15_000).action).toBe('merger')
+  })
+
+  it('keeps a live merger as the owner when a settlement adds a path', () => {
+    const state: WorktreeLifecycle = { version: 0, actionId: 'a', phase: 'finishing', step: 'worker-resolving', outOfDate: 0, journal: [],
+      facts: { worker: { liveness: 'alive', resumeFailures: 0 } }, syncConflictSet: set([catalog]),
+      execution: { root: 'R:/w', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window', startedAt: 0,
+        runId: 'm', merger: { runId: 'm', setAt: 5, startedAt: 0 } } }
+    state.conflictProgress = { generation: 'old', owner: 'merger', settled: 0, observedAt: 0, idle: false, milliseconds: 0 }
+    state.syncConflictSet = set([catalog, brief])
+    expect(SvnMergerLauncher.fallback(state, true, 60_000)).toMatchObject({ action: 'wait', progress: { owner: 'merger' } })
+  })
+
+  it('stops a live merger with no agent path left, and one that never confirmed its start within five minutes', () => {
+    const agent: SvnActionConflictEntry = { ...catalog, state: 'agent' }
+    expect(SvnMergerLauncher.supervise(set([{ ...catalog, state: 'settled' }]), { startedAt: 0 }, true, 1)).toBe('spent')
+    expect(SvnMergerLauncher.supervise(set([catalog]), { startedAt: 0 }, true, 1)).toBe('spent')
+    expect(SvnMergerLauncher.supervise(set([agent]), { startedAt: 0 }, false, 5 * 60_000 - 1)).toBeNull()
+    expect(SvnMergerLauncher.supervise(set([agent]), { startedAt: 0 }, false, 5 * 60_000)).toBe('unstarted')
+    expect(SvnMergerLauncher.supervise(set([agent]), { startedAt: 0 }, true, 60 * 60_000)).toBeNull()
   })
 
   it('resets the timer and merger owner for a new action or conflict generation', () => {

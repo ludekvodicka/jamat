@@ -39,8 +39,11 @@ export class MainFinishWorkflow {
           confirm: 'Close the session without a commit? Its changes stay in the working copy.' },
         MainFinishWorkflow.press('cancel-finish', 'Back to work', 'cancel', false, false),
       ]
-      case 'committing': return [{ ...MainFinishWorkflow.press('cancel-finish', 'Keep the session', 'cancel', false, false),
-        note: 'The commit goes on; Jamat no longer closes the session.' }]
+      case 'committing': return [
+        { ...MainFinishWorkflow.press('check-finish', 'Check again', 'check', false),
+          note: 'Read the changes now; with none left, the session closes.' },
+        { ...MainFinishWorkflow.press('cancel-finish', 'Keep the session', 'cancel', false, false),
+          note: 'The commit goes on; Jamat no longer closes the session.' }]
       case 'closed': return []
       default: throw new Error(`Unknown main Finish phase: ${JSON.stringify(phase satisfies never)}`)
     }
@@ -65,7 +68,7 @@ export class MainFinishWorkflow {
     switch (phase) {
       case 'choosing': return finish.note ?? (finish.vcs === null ? `This session has ${files}.`
         : `This session has ${files}. Commit them through the session's agent, or close the session.`)
-      case 'committing': return 'The session commits its changes. Jamat closes it when its turn ends and none of its changes remain.'
+      case 'committing': return finish.note ?? 'The session commits its changes. Jamat closes it when its turn ends and none of its changes remain.'
       case 'closed': {
         const result = finish.result
         switch (result) {

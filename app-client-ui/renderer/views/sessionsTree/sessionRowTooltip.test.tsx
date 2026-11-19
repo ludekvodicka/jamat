@@ -51,6 +51,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionRowTooltip', () => {
     expect(screen.getByRole('tooltip').querySelector('.jamat-sessions__tooltip-worktree')).toBeNull()
   })
 
+  it('names an added account under the title, which a long title pushes out of the row', () => {
+    render(<Row title="002 - UI: admin shell, lišta a patička panelu" note={null} account="MHC-Claude" />)
+    hoverOpen()
+    expect(screen.getByRole('tooltip').querySelector('[data-tooltip-account]')?.textContent).toBe('Account: MHC-Claude')
+    cleanup()
+
+    render(<Row title="On Main" note={null} />)
+    hoverOpen()
+    expect(screen.getByRole('tooltip').querySelector('[data-tooltip-account]')).toBeNull()
+  })
+
   it('never opens for a pointer that left before the delay, and closes when it leaves', () => {
     render(<Row title="Alpha" note="n" />)
     fireEvent.pointerEnter(title())
@@ -150,7 +161,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionRowTooltip', () => {
   })
 })
 
-function Row(props: { title: string; note: string | null; worktree?: string }): React.JSX.Element {
+function Row(props: { title: string; note: string | null; worktree?: string; account?: string }): React.JSX.Element {
   const tooltip = useSessionRowTooltip()
   return (
     <div>
@@ -162,6 +173,7 @@ function Row(props: { title: string; note: string | null; worktree?: string }): 
           title={props.title}
           note={props.note}
           worktree={props.worktree ?? null}
+          account={props.account}
         />
       )}
     </div>

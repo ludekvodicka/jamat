@@ -1,7 +1,7 @@
 import { SessionWorkspaceTargets, type SessionFilePorts } from '../../shared/sessionWorkspace'
 import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { IDockviewPanelProps } from 'dockview'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import type {
   FileViewerDocument,
@@ -39,7 +39,7 @@ import { useFileChanges } from './useFileChanges'
 import { useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
-import { FileViewerScrollTop, useFileViewerScrollRestore } from './fileViewerScrollRestore'
+import { FileViewerPlace, FileViewerScrollTop, useFileViewerPlaceRestore } from './fileViewerScrollRestore'
 import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 import './fileViewerPanel.css'
 
@@ -128,7 +128,6 @@ function FileViewerPanelBody(
   )
   // A document that failed to replace this one is not on screen as the source, so it has no offset.
   useLayoutEffect(() => { shown.current = model.error ? null : model.document })
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, model.reload, ports.viewer)
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   useEffect(() => { if (model.sourceMissing) props.api.close() }, [model.sourceMissing, props.api])
   // Held here as well as written, the way the split beside it holds its own: the parameters are
@@ -143,9 +142,27 @@ function FileViewerPanelBody(
   }, [currentParameters, updateParameters])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
   const restore = params.restoreScroll
-  useFileViewerScrollRestore(body, restore?.scrollTop,
-    model.textReady && model.document?.documentKey === restore?.documentKey,
-    () => updateParameters({ ...currentParameters(), restoreScroll: undefined }))
+  // A visit's offset waits for its own document; a reload's place belongs to the document on screen.
+  const visitReady = restore !== undefined && model.document?.documentKey === restore.documentKey
+  const visitPlace = useMemo(() => FileViewerPlace.at(restore?.scrollTop), [restore?.scrollTop])
+  const [reloadPlace, setReloadPlace] = useState<{ documentKey: string; place: FileViewerPlace } | undefined>(undefined)
+  const shownKey = model.document?.documentKey
+  const reloadReady = reloadPlace !== undefined && shownKey === reloadPlace.documentKey
+  // A reload that never landed must not put a later document, or a later visit of this one, there.
+  useEffect(() => { if (reloadPlace !== undefined && shownKey !== reloadPlace.documentKey) setReloadPlace(undefined) }, [reloadPlace, shownKey])
+  const place = reloadReady ? reloadPlace.place : visitReady ? visitPlace : undefined
+  useFileViewerPlaceRestore(body, place, model.textReady, () => {
+    setReloadPlace(undefined)
+    if (visitReady) updateParameters({ ...currentParameters(), restoreScroll: undefined })
+  })
+  const modelReload = model.reload
+  // A place still being restored is where the reader is: the body may not show it yet.
+  const reload = useCallback((): void => {
+    const captured = place ?? FileViewerPlace.of(body.current)
+    if (shownKey !== undefined && captured !== undefined) setReloadPlace({ documentKey: shownKey, place: captured })
+    modelReload()
+  }, [body, modelReload, place, shownKey])
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, ports.viewer)
   const step = useCallback((direction: PanelHistoryDirection): void => {
     const current = currentParameters()
     const leaving = FileViewerPanelState.visitOf(current, shown.current, FileViewerScrollTop.of(body.current))
@@ -244,7 +261,7 @@ function FileViewerPanelBody(
               <FileViewerZoomControl percent={zoomPercent} onChange={changeZoom} />
               <FileViewerWrapControl wrap={wrapLines} onChange={changeWrap} />
               <FileViewerFindButton onFind={search.show} />
-              <FileViewerReloadControl missing={freshness.missing} onReload={model.reload} />
+              <FileViewerReloadControl missing={freshness.missing} onReload={reload} />
               <FileViewerGetDocumentControl document={model.document} text={model.text} />
               <span className="file-viewer-toolbar-slot" ref={setToolbarSlot} />
             </div>
@@ -272,7 +289,7 @@ function FileViewerPanelBody(
                 diff={model.diff}
                 location={params.location}
                 onOpenSource={openSource}
-                onReload={model.reload}
+                onReload={reload}
               />
           )}
         </div>

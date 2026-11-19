@@ -50,7 +50,9 @@ registry entry. All are lazy-loaded (the engine's code only loads when a diagram
   [svg-style.md](./svg-style.md).
 - ` ```mermaid ` — Mermaid, rendered client-side for existing documents. Do not author new
   Mermaid fences ([USAGE.md](./USAGE.md)).
-- ` ```dot ` / ` ```gv ` / ` ```graphviz ` — Graphviz DOT via viz-js → SVG.
+- ` ```dot ` / ` ```gv ` / ` ```graphviz ` — Graphviz DOT via viz-js → SVG. Text, line colours and
+  the transparent background follow the theme. A node or cluster label in that default text colour
+  on a `fillcolor` it cannot be read on changes to dark or white text. A `fontcolor` you set stays.
 - ` ```vega-lite ` (alias ` ```vegalite `) — Vega-Lite JSON spec → headless SVG.
 - ` ```archify ` — vendored deterministic spec→SVG renderer, five `diagram_type`s (see below).
 

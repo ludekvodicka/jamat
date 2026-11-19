@@ -1,0 +1,6 @@
+{"type":"user","uuid":"m1","timestamp":"2026-11-18T08:00:00.000Z","message":{"content":"Fix it"}}
+{"type":"assistant","timestamp":"2026-11-18T08:00:01.000Z","message":{"content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"python3 edit.py src/a.ts"}}]}}
+{"type":"user","timestamp":"2026-11-18T08:00:04.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"bash-1","is_error":true,"content":"exit 1"}]}}
+{"type":"assistant","timestamp":"2026-11-18T08:00:05.000Z","message":{"content":[{"type":"tool_use","id":"ps-1","name":"PowerShell","input":{"command":"Set-Content b.ts x"}},{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"c.ts"}}]}}
+{"type":"user","timestamp":"2026-11-18T08:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"ps-1","content":""},{"type":"tool_result","tool_use_id":"read-1","content":"x"}]}}
+{"type":"assistant","timestamp":"2026-11-18T08:00:07.000Z","message":{"content":[{"type":"tool_use","id":"bash-open","name":"Bash","input":{"command":"sleep 100"}}]}}

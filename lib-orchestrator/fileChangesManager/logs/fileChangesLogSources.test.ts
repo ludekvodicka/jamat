@@ -144,6 +144,25 @@ describe('lib-orchestrator/fileChangesManager/logs/fileChangesLogSources', () =>
       }))
     }
 
+    it('reads the shell commands of Claude and its sub-agents, a failed one too, from call to result', async () => {
+      const runs = await new FileChangesLogSourceClaude().shellRuns(ref('claude', 'claude-shell-runs.jsonl'),
+        [subagent('claude', 'claude-shell-runs.jsonl', 's', null)])
+      const own = [
+        { command: 'python3 edit.py src/a.ts', startedAt: Date.parse('2026-11-18T08:00:01.000Z'), endedAt: Date.parse('2026-11-18T08:00:04.000Z') },
+        { command: 'Set-Content b.ts x', startedAt: Date.parse('2026-11-18T08:00:05.000Z'), endedAt: Date.parse('2026-11-18T08:00:06.000Z') },
+      ]
+
+      // The Read is no shell command, and the Bash call with no result yet has no end.
+      expect(runs).to.deep.equal([...own, ...own])
+    })
+
+    it('reads a finished Codex command, its start being its end less its duration', async () => {
+      const runs = await new FileChangesLogSourceCodex().shellRuns(ref('codex', 'codex-shell-runs.jsonl'), [])
+
+      expect(runs).to.deep.equal([{ command: 'pwsh.exe -Command Set-Content src/a.ts x',
+        startedAt: Date.parse('2026-11-18T08:00:07.500Z'), endedAt: Date.parse('2026-11-18T08:00:10.000Z') }])
+    })
+
     it('files a confirmed sub-agent Edit under the message that called Agent, and not its failed Write', async () => {
       const groups = await new FileChangesLogSourceClaude().load(claudeParent(), 'Q:/Project', [agentA()])
 

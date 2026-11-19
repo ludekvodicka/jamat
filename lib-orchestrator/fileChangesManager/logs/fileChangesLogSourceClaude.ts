@@ -5,6 +5,7 @@ import {
   type ParsedSubagentLog,
 } from './fileChangesLogSource'
 import type {
+  FileChangesShellRun,
   RawFileChangesLogGroup,
   RawFileChangesLogMutation,
 } from './fileChangesLogSource.types'
@@ -36,6 +37,7 @@ interface ClaudeToolInput {
   new_string?: unknown
   replace_all?: unknown
   content?: unknown
+  command?: unknown
 }
 
 interface PendingClaudeMutation {
@@ -43,8 +45,16 @@ interface PendingClaudeMutation {
   mutation: RawFileChangesLogMutation
 }
 
+/** The tool calls of one file waiting for their results. */
+interface ClaudeCalls {
+  mutations: Map<string, PendingClaudeMutation>
+  shells: Map<string, { command: string; startedAt: number }>
+  shellRuns: FileChangesShellRun[]
+}
+
 export class FileChangesLogSourceClaude extends FileChangesLogSource {
   private static readonly spawnToolNameConst = 'Agent'
+  private static readonly shellToolNamesConst: readonly unknown[] = ['Bash', 'PowerShell']
 
   readonly agentId = 'claude' as const
 
@@ -55,7 +65,7 @@ export class FileChangesLogSourceClaude extends FileChangesLogSource {
   protected parse(content: string): ParsedFileChangesLog {
     const groups: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] })[] = []
     const spawns = new Map<string, number>()
-    const pending = new Map<string, PendingClaudeMutation>()
+    const calls = FileChangesLogSourceClaude.calls()
     let current: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] }) | null = null
     let sequence = 0
     // The last time this file gave us, so a record whose own timestamp is missing or unreadable
@@ -85,16 +95,16 @@ export class FileChangesLogSourceClaude extends FileChangesLogSource {
           && typeof block.id === 'string'
           && current !== null)
           spawns.set(block.id, groups.length - 1)
-        FileChangesLogSourceClaude.collect(block, current, pending, createdAt, sequence)
+        FileChangesLogSourceClaude.collect(block, current, calls, createdAt, sequence)
       }
     }
-    return { groups, spawns }
+    return { groups, spawns, shellRuns: calls.shellRuns }
   }
 
   /** A sidechain file opens no group: its prompt is the parent's `Agent` call, not a user message. */
   protected parseSubagent(content: string): ParsedSubagentLog {
     const target = { mutations: [] as RawFileChangesLogMutation[] }
-    const pending = new Map<string, PendingClaudeMutation>()
+    const calls = FileChangesLogSourceClaude.calls()
     let startedAt: number | null = null
     let sequence = 0
     let lastCreatedAt = 0
@@ -106,27 +116,40 @@ export class FileChangesLogSourceClaude extends FileChangesLogSource {
       lastCreatedAt = createdAt
       if (startedAt === null && createdAt > 0) startedAt = createdAt
       for (const block of FileChangesLogSourceClaude.blocks(record.message?.content))
-        FileChangesLogSourceClaude.collect(block, target, pending, createdAt, sequence)
+        FileChangesLogSourceClaude.collect(block, target, calls, createdAt, sequence)
     }
-    return { startedAt, mutations: target.mutations }
+    return { startedAt, mutations: target.mutations, shellRuns: calls.shellRuns }
   }
 
-  /** An `Edit` or `Write` counts only once its tool_result came back without an error. */
+  private static calls(): ClaudeCalls {
+    return { mutations: new Map(), shells: new Map(), shellRuns: [] }
+  }
+
+  /**
+   * An `Edit` or `Write` counts only once its tool_result came back without an error. A shell call
+   * counts with any result, because a failed command can have written files before it failed.
+   */
   private static collect(
     block: ClaudeContentBlock,
     group: { mutations: RawFileChangesLogMutation[] } | null,
-    pending: Map<string, PendingClaudeMutation>,
+    calls: ClaudeCalls,
     createdAt: number,
     sequence: number,
   ): void {
-    if (block.type === 'tool_use' && group !== null) {
-      const mutation = FileChangesLogSourceClaude.mutationOf(block, createdAt, sequence)
-      if (mutation !== null && typeof block.id === 'string')
-        pending.set(block.id, { group, mutation })
+    if (block.type === 'tool_use' && typeof block.id === 'string') {
+      const command = FileChangesLogSourceClaude.inputOf(block.input).command
+      if (FileChangesLogSourceClaude.shellToolNamesConst.includes(block.name) && typeof command === 'string')
+        calls.shells.set(block.id, { command, startedAt: createdAt })
+      const mutation = group === null ? null : FileChangesLogSourceClaude.mutationOf(block, createdAt, sequence)
+      if (mutation !== null && group !== null)
+        calls.mutations.set(block.id, { group, mutation })
     }
     else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-      const found = pending.get(block.tool_use_id)
-      pending.delete(block.tool_use_id)
+      const shell = calls.shells.get(block.tool_use_id)
+      calls.shells.delete(block.tool_use_id)
+      if (shell !== undefined) calls.shellRuns.push({ ...shell, endedAt: createdAt })
+      const found = calls.mutations.get(block.tool_use_id)
+      calls.mutations.delete(block.tool_use_id)
       if (found && block.is_error !== true) found.group.mutations.push(found.mutation)
     }
   }

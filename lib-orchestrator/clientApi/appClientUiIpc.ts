@@ -522,6 +522,8 @@ export interface AppClientUiIpcEventMap {
    */
   'rate:changed': () => void
   'usage:changed': () => void
+  /** A broker pick was logged; only the Callers tab of Usage reads again, never the quota cards. */
+  'usage:callers-changed': () => void
   'snapins:changed': (change: { kind: string }) => void
   /** Published to every workspace window, read by the Debug tab: the answer to a ping the main process asked on its own. */
   'debug:host-ping-result': (result: HostPingResult) => void
@@ -816,6 +818,7 @@ export const AppClientUiBridgeEventsConst = {
   onAgentCliUpdatesChanged: 'agentCliUpdates:changed',
   onAttentionChanged: 'attention:changed',
   onUsageChanged: 'usage:changed',
+  onUsageCallersChanged: 'usage:callers-changed',
   onSnapinsChanged: 'snapins:changed',
   onHostPingResult: 'debug:host-ping-result',
   onTerminalFrame: 'terminal:frame',
@@ -1202,6 +1205,7 @@ export const AppClientUiChannelOwnersConst = {
   'agents:settings-changed': 'orchestrator',
   'rate:changed': 'orchestrator',
   'usage:changed': 'orchestrator',
+  'usage:callers-changed': 'orchestrator',
   'snapins:changed': 'orchestrator',
   'debug:host-ping-result': 'main',
   'terminal:frame': 'gateway',

@@ -3,6 +3,7 @@ import type { RenderOptions } from '@viz-js/viz'
 import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewerLimits'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
+import { MdExtGraphvizInk } from './mdExtGraphvizInk'
 
 /** `screen` follows the workspace theme; `paper` is light, for a saved page, a PDF or a mail. */
 export type MdExtDiagramSurface = 'screen' | 'paper'
@@ -138,18 +139,20 @@ export class MdExtDiagramEngine {
   /**
    * Graphviz paints black ink on a white page unless told otherwise, which on the dark workspace is
    * a white slab. The theme's colours go in as DEFAULT attributes, so a colour the source sets wins.
+   * A label in that default ink over a fill it cannot be read on takes a contrasting ink afterwards.
    */
   private static async dot(source: string, surface: MdExtDiagramSurface): Promise<string> {
     if (MdExtDiagramEngine.viz === null)
       MdExtDiagramEngine.viz = import('@viz-js/viz').then(({ instance }) => instance())
     const ink = MdExtDiagramEngine.surfaceToken(surface, '--color-text-1')
     const line = MdExtDiagramEngine.surfaceToken(surface, '--color-text-3')
-    return (await MdExtDiagramEngine.viz).renderString(source, {
+    const svg = (await MdExtDiagramEngine.viz).renderString(source, {
       format: 'svg',
       graphAttributes: { bgcolor: 'transparent', color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
       nodeAttributes: { color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
       edgeAttributes: { color: line, fontcolor: ink, fontname: 'Helvetica,Arial,sans-serif' },
     })
+    return MdExtGraphvizInk.apply(svg, ink)
   }
 
   private static async vegaLite(source: string, surface: MdExtDiagramSurface): Promise<string> {

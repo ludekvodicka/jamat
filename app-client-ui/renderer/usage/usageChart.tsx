@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { View } from 'vega'
 import type { TopLevelSpec } from 'vega-lite'
 import type { UsageChartTheme } from './poolGraphSpec'
+import { Swatch } from './usageParts'
 
 /** What the hover line says about one x value. */
-export interface ChartReadout { title: string; detail?: string; rows: readonly { label: string; value: string }[] }
+export interface ChartReadout { title: string; detail?: string; rows: readonly { label: string; value: string; color?: string }[] }
 export type ChartReadoutOf = (x: number | string) => ChartReadout | null
 
 /** The part of a Vega scale this chart reads: continuous (time, quantity) or band (ordinal bars). */
@@ -22,7 +23,8 @@ interface Hover { left: number; top: number; height: number; flip: boolean; read
 export function usageChartTheme(): UsageChartTheme {
   const style = getComputedStyle(document.documentElement)
   return { text: style.getPropertyValue('--color-text-2').trim(), grid: style.getPropertyValue('--color-border-frame').trim(),
-    accent: style.getPropertyValue('--color-accent').trim() }
+    accent: style.getPropertyValue('--color-accent').trim(),
+    series: [1, 2, 3].map(slot => style.getPropertyValue(`--color-series-${slot}`).trim()) }
 }
 
 /**
@@ -99,7 +101,7 @@ export function UsageChart({ spec, label, readout }: { spec: TopLevelSpec; label
         <div className="jamat-usage__hover-rule" style={{ left: hover.left, top: hover.top, height: hover.height }} />
         <div role="tooltip" className={`jamat-usage__hover-box${hover.flip ? ' jamat-usage__hover-box--flip' : ''}`} style={{ left: hover.left, top: hover.top }}>
           <div className="jamat-usage__hover-title">{hover.readout.title}{hover.readout.detail && <span className="jamat-usage__muted"> · {hover.readout.detail}</span>}</div>
-          {hover.readout.rows.map(row => <div key={row.label} className="jamat-usage__hover-row"><span className="jamat-usage__muted">{row.label}</span><span>{row.value}</span></div>)}
+          {hover.readout.rows.map(row => <div key={row.label} className="jamat-usage__hover-row"><span className="jamat-usage__muted">{row.color && <Swatch color={row.color} />}{row.label}</span><span>{row.value}</span></div>)}
         </div>
       </>}
     </div>

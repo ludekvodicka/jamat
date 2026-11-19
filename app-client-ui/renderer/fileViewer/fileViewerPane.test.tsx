@@ -456,4 +456,41 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(fileViewer.release).toHaveBeenCalledWith(document.documentId)
   })
 
+  it('keeps the open sections and the offset when a reload draws the document again', async () => {
+    const current = FileViewerPaneHarness.document()
+    const reloaded = FileViewerPaneHarness.document({ documentId: 'document-a2' })
+    const { fileViewer } = FileViewerPaneHarness.install([current, reloaded],
+      ':::details[Guide]\nStep one\n:::\n\n:::details[Other]\nStep two\n:::\n')
+    Object.assign(fileViewer, { version: vi.fn(async () => ({ ok: true, value: { ok: true, kind: 'unchanged' } })) })
+    // Held across renders as the split holds them: a new callback is a new link handler, which
+    // remounts the rendered tree on its own and would hide what the reload does.
+    const ports = { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }
+    const item = FileViewerPaneHarness.item(current)
+    const changes = FileViewerPaneHarness.changes()
+    const workingTree = FileViewerPaneHarness.workingTree()
+    const onBack = vi.fn()
+    const onClose = vi.fn()
+    const onOpenItem = vi.fn(() => null)
+    const onRefused = vi.fn()
+    const pane = (reloadRequest: number) => (
+      <FileViewerPane ports={ports} reloadRequest={reloadRequest} backPath={null} onBack={onBack} onClose={onClose}
+        item={item} changes={changes} workingTree={workingTree} onOpenItem={onOpenItem} onRefused={onRefused} />
+    )
+    const view = render(pane(0))
+    await screen.findByText('Guide')
+    const sections = () => [...view.container.querySelectorAll<HTMLDetailsElement>('details.mdext-details')]
+    const before = sections()
+    before[0]!.open = true
+    const bodyOf = () => view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    bodyOf().scrollTop = 320
+
+    view.rerender(pane(1))
+
+    await waitFor(() => expect(fileViewer.release).toHaveBeenCalledWith('document-a'))
+    // The new grant remounts the rendered tree, which is what used to close every section.
+    await waitFor(() => expect(sections()[0]).not.toBe(before[0]))
+    await waitFor(() => expect(sections().map((details) => details.open)).toEqual([true, false]))
+    expect(bodyOf().scrollTop).toBe(320)
+  })
+
 })

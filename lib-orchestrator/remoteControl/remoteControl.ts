@@ -696,6 +696,9 @@ export class RemoteControl {
         label: account.label, isMain: account.isMain, state: account.state, profileProblem: account.profileProblem,
         ...(account.defaultChoice === undefined ? {} : { defaultChoice: {
           noFreeAccount: account.defaultChoice.noFreeAccount, resetsAt: account.defaultChoice.resetsAt } }),
+        ...(account.loginLink === undefined ? {} : { loginLink: account.loginLink }),
+        ...(account.quota === undefined ? {} : { quota: { sessionUsedPercent: account.quota.sessionUsedPercent,
+          weeklyUsedPercent: account.quota.weeklyUsedPercent, weeklyResetsAt: account.quota.weeklyResetsAt } }),
         identity: account.identity === null ? null : { key: account.identity.key, label: account.identity.label } })))
     })
     define('tabs.list', 'The open panels of every window, with the commit reviews they hold.', async () =>

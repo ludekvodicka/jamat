@@ -12,7 +12,7 @@ import { RateStatusItem, type RateStatusPorts } from './rateStatusItem'
 import { SessionModelItem } from './sessionModelItem'
 import type { SessionModelCurrent } from '../sessionModel/sessionModelStore'
 import type { StatusBarItem } from './statusBar'
-import { UpdateStatusItem } from './updateStatusItem'
+import { UpdateStatusItem, VersionStatusItem } from './updateStatusItem'
 import { AgentCliUpdateStatusItem, type AgentCliUpdatePorts } from './agentCliUpdateStatusItem'
 import { AttentionStatusItem, type AttentionStatusPorts } from './attentionStatusItem'
 import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
@@ -39,7 +39,7 @@ export class AppShellItems {
     const items: StatusBarItem[] = []
     // Before app:info answers there is no version to draw, rather than a placeholder reading.
     if (appInfo)
-      items.push({ key: 'version', node: <span>{`v${appInfo.appVersion}`}</span> })
+      items.push({ key: 'version', node: <VersionStatusItem version={appInfo.appVersion} api={update} /> })
     items.push({ key: 'update', node: <UpdateStatusItem api={update} /> })
     items.push({ key: 'cli-updates', node: <AgentCliUpdateStatusItem ports={cliUpdates} /> })
     if (hostStatus !== null)

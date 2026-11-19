@@ -31,7 +31,7 @@ import type { WorktreeEnded, WorktreeFinisher } from '../finish/worktreeFinish.t
 
 /** The git calls this flow makes, named so a test can hand it a scripted set instead. */
 export type SessionMergePort = Pick<GitMergeManager, 'currentBranch' | 'mergeStatus' | 'commitAll'
-  | 'revision' | 'mergeIntoWorktree' | 'isMerged' | 'mergeToMain' | 'removeWorktreeForced' | 'deleteBranch'>
+  | 'revision' | 'mergeIntoWorktree' | 'isMerged' | 'contains' | 'markedFiles' | 'mergeToMain' | 'removeWorktreeForced' | 'deleteBranch'>
 
 /** What launching a resolve session takes, kept narrow so the flow never sees the whole lifecycle. */
 export type ResolveLauncher = (
@@ -227,6 +227,11 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
     const record = this.records.get(sessionId)
     if (record?.finishChecks !== undefined && record.finishChecks.result === undefined)
       return { ok: false, code: 'merge-pending', detail: 'The Finish checks are still running' }
+    // Keep drops the resolver's pointer, and the next Merge would then start a second resolver beside the first.
+    const resolver = record?.worktreeMerge?.resolveSessionId
+    const resolving = resolver === undefined ? null : this.records.get(resolver)
+    if (resolving?.life === 'live' || resolving?.life === 'starting')
+      return { ok: false, code: 'live-refused', detail: `Session ${resolver} is resolving the conflicts in this worktree; stop it first` }
     if (record?.worktree && this.repositories.has(record.worktree.repositoryRoot))
       return { ok: false, code: 'merge-pending', detail: 'A merge is already running in this repository' }
     const written = await this.records.update(sessionId, (current) => {
@@ -412,6 +417,27 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
     if (!merged.ok) return this.failed(record, merged.detail, merged.code)
     if (merged.value) return this.teardown(record)
 
+    // A main copy switched to another branch since the worktree was cut would take the feature unasked.
+    const contained = await this.merge.contains(worktree.repositoryRoot, worktree.baseCommit)
+    if (!contained.ok) return this.failed(record, contained.detail, contained.code)
+    if (!contained.value) {
+      const detail = `${worktree.repositoryRoot} is on ${baseBranch}, which does not contain ${worktree.baseCommit.slice(0, 12)}, `
+        + 'the commit this worktree was cut from. Switch it back to the branch the worktree came from, then press Try again.'
+      // Before the first phase write there may be no merge state yet; the failure needs one to draw its buttons.
+      if (!await this.records.update(record.sessionId, (current) => ({ ...current, worktreeMerge: { ...this.finishStateOf(current), failure: detail } })))
+        return WorktreeMergeFlow.latched()
+      this.changed()
+      return { ok: false, code: 'invalid-spec', detail }
+    }
+    // The commit that settled the conflicts lands in the person's copy next; a marker line in it must not.
+    if (record.worktreeMerge?.phase === 'resolving') {
+      const marked = await this.merge.markedFiles(worktree.worktreePath)
+      if (!marked.ok) return this.failed(record, marked.detail, marked.code)
+      if (marked.value.length > 0)
+        return this.stopped(record, 'merge-conflict', `The commit that settled the conflicts still holds conflict markers in ${marked.value.slice(0, 10).join(', ')}`
+          + `${marked.value.length > 10 ? ` and ${marked.value.length - 10} more` : ''}. Fix them in ${worktree.worktreePath}, commit, and press Try again.`)
+    }
+
     if (!await this.phase(record, 'base-merging')) return WorktreeMergeFlow.latched()
     const intoWorktree = await this.logged(record, 'base-merging', (output) => this.merge.mergeIntoWorktree(worktree.worktreePath, baseBranch, output))
     if (!intoWorktree.ok) return this.failed(record, intoWorktree.detail, intoWorktree.code)
@@ -460,7 +486,7 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
         record,
         'merge-pending',
         `${worktree.branch} conflicts with ${baseBranch} in ${worktree.repositoryRoot}. `
-        + 'Resolve it there, commit, and run Merge again.',
+        + 'Resolve it there, commit, and press Try again.',
       )
     return this.teardown(record)
   }
@@ -509,12 +535,10 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
     if (!spent) {
       const launched = await this.launchResolver(record, baseBranch)
       if (launched !== null) return launched
-      return {
-        ok: false,
-        code: 'merge-conflict',
-        detail: `${baseBranch} conflicts with this session's work. Resolve it in ${where}, `
-          + 'commit, and run Merge again.',
-      }
+      const detail = `${baseBranch} conflicts with this session's work. Resolve it in ${where}, commit, and press Try again.`
+      // Without a failure the step read "Claude resolves the conflicts", running, with no button (a shell or Codex session).
+      await this.noteFailure(record, detail)
+      return { ok: false, code: 'merge-conflict', detail }
     }
     /*
      * One automatic attempt per merge, and this is where that is enforced. `script-succeeded` on
@@ -529,7 +553,7 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
      * same loop with a subprocess in it.
      */
     const detail = `${baseBranch} still conflicts with this session's work after the resolver ran. `
-      + `Resolve it in ${where}, commit, and run Merge again.`
+      + `Resolve it in ${where}, commit, and press Try again.`
     await this.noteFailure(record, 'the resolver finished and the conflict is still there')
     return { ok: false, code: 'merge-conflict', detail }
   }

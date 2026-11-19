@@ -344,6 +344,31 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     expect(fileViewer.text).toHaveBeenCalledWith('document-2')
   })
 
+  it('keeps the open sections and the offset of a rendered document across a reload', async () => {
+    const markdown = { kind: { kind: 'markdown' as const, flavor: 'markdown' as const }, modes: ['rendered' as const, 'raw' as const],
+      path: 'C:/work/a.md', name: 'a.md', source: { kind: 'workspace' as const, sessionId: 'session-1', path: 'C:/work/a.md' } }
+    const { fileViewer } = PanelHarness.install([
+      PanelHarness.document(markdown),
+      PanelHarness.document({ ...markdown, documentId: 'document-2' }),
+    ])
+    fileViewer.text.mockResolvedValue({ ok: true, value: { ok: true, kind: 'text',
+      text: ':::details[Guide]\nStep one\n:::\n\n:::details[Other]\nStep two\n:::\n', contentVersion: '24:1' } } as never)
+    const view = render(<FileViewerPanel {...PanelHarness.props({ ...PanelHarness.workspaceParams(), source: markdown.source })} />)
+    await screen.findByText('Guide')
+    const sections = () => [...view.container.querySelectorAll<HTMLDetailsElement>('details.mdext-details')]
+    const before = sections()
+    before[1]!.open = true
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    body.scrollTop = 210
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+
+    await waitFor(() => expect(fileViewer.release).toHaveBeenCalledWith('document-1'))
+    await waitFor(() => expect(sections()[1]).not.toBe(before[1]))
+    await waitFor(() => expect(sections().map((details) => details.open)).toEqual([false, true]))
+    expect(body.scrollTop).toBe(210)
+  })
+
   /*
    * A panel is rebuilt from what the layout file holds, so its source can be one this build does not
    * know - a kind added later, a kind removed again, a hand-edited file. Throwing takes the whole

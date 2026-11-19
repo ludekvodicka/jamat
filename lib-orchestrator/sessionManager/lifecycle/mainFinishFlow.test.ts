@@ -222,6 +222,48 @@ describe('lib-orchestrator/sessionManager/lifecycle/mainFinishFlow', () => {
     expect(await flow.press('s1', 'cancel')).toMatchObject({ ok: false, code: 'invalid-spec' })
   })
 
+  it('Check again stops and removes a session with nothing left, even while its agent still waits', async () => {
+    const world = new World()
+    const flow = flowOf(world)
+    await flow.press('s1')
+    expect(await flow.press('s1', 'check')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    await flow.press('s1', 'commit-close')
+    world.reads = [clean]
+    world.activity('working')
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'stopped' } })
+    expect(world.calls).toEqual(['read', 'deliver:/commit-svn', 'read', 'stop', 'remove'])
+    expect(world.finish).toMatchObject({ phase: 'closed', result: 'closed' })
+  })
+
+  it('Check again keeps the session while a commit review of it is open', async () => {
+    const world = new World()
+    const flow = flowOf(world)
+    await flow.press('s1')
+    await flow.press('s1', 'commit-close')
+    world.reads = [clean]
+    world.pending = true
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'committing' } })
+    expect(world.calls).not.toContain('stop')
+    expect(world.finish).toMatchObject({ phase: 'committing',
+      note: 'Nothing of this session is left to commit, but a commit review of it is still open. Close the review, then check again.' })
+  })
+
+  it('Check again keeps waiting on a working agent with changes left, and asks once the agent is idle', async () => {
+    const world = new World()
+    const flow = flowOf(world)
+    await flow.press('s1')
+    await flow.press('s1', 'commit-close')
+    world.reads = [{ ok: true, vcs: 'svn', paths: ['docs/b.md'] }]
+    world.activity('working')
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'committing' } })
+    expect(world.finish).toMatchObject({ phase: 'committing', note: '1 file of this session is still changed; the agent still works on the commit.' })
+    world.activity('idle')
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'choose' } })
+    expect(world.finish).toMatchObject({ phase: 'choosing', paths: ['docs/b.md'],
+      note: 'The commit turn ended and 1 file of this session is still changed. Commit again, or close the session.' })
+    expect(world.calls).not.toContain('stop')
+  })
+
   it('closes a commit whose session ended by itself', async () => {
     const world = new World()
     const flow = flowOf(world)

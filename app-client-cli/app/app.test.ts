@@ -31,6 +31,8 @@ import type {
   SessionsSnapshot,
 } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { AppConfig } from './appConfig'
+import { AccountBrokerAnswers } from '../../lib-orchestrator/agentAccounts/accountBrokerAnswer'
+import { AppClientCliError } from './appClientCliError'
 import type { CommitAsideRequest } from './commitAsideLauncher'
 import {
   AppClientCli,
@@ -2511,5 +2513,129 @@ describe('app-client-cli/app/app', () => {
       ok: false,
       error: { code: 'unavailable', detail: 'terminal.deliver is not exposed by this AppClientUI' },
     })
+  })
+})
+
+describe('accounts pick', () => {
+  const pickArgs = ['accounts', 'pick', '--caller', 'probe', '--purpose', 'interactive']
+  const chosen = { ...AccountBrokerAnswers.main('chosen'), account: { id: 'acc-1', label: 'Work', identityKey: 'org/a@b.c', tier: 'max' },
+    env: { set: { CLAUDE_CONFIG_DIR: 'C:/profiles/acc-1' }, unset: ['ANTHROPIC_API_KEY'] } }
+  type Respond = (request: RemoteControlRequestUnion, signal?: AbortSignal) => Promise<RemoteControlResponse>
+  const pickHarness = (respond: Respond) => {
+    const h = new CliHarness()
+    h.descriptor.registryOperations = ['accounts.pick']
+    const requests: RemoteControlRequestUnion[] = []
+    const client = { execute: (request: RemoteControlRequestUnion, signal?: AbortSignal) => { requests.push(request); return respond(request, signal) } }
+    // The deadline passes only when a test says so: an immediate pause would win every race.
+    const pause = (_milliseconds: number, signal?: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    return { h, requests, deps: { ...h.deps(), pause, client: () => client as unknown as AppClientCliClientPort } }
+  }
+  const answered = (value: unknown): Respond => async request => ({
+    protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
+    operationId: request.operationId ?? null, ok: true, value } as RemoteControlResponse)
+  const refused = (error: RemoteControlError): Respond => async request => ({
+    protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
+    operationId: request.operationId ?? null, ok: false, error })
+
+  it('prints the answer of a running instance and sends the operation with an operation id', async () => {
+    const { h, requests, deps } = pickHarness(answered(chosen))
+    expect(await new AppClientCli(pickArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: chosen })
+    expect(requests).toEqual([{ protocol: RemoteControlConst.protocol, requestId: 'request-1', operationId: 'operation-1',
+      operation: 'accounts.pick', body: { caller: 'probe', purpose: 'interactive' } }])
+    expect(h.output).toHaveLength(1)
+  })
+
+  it.each([
+    ['unavailable', 'jamat-unavailable'],
+    ['conflict', 'instance-conflict'],
+    ['timeout', 'timeout'],
+    ['protocol-mismatch', 'error'],
+  ] as const)('answers Main when discovery says %s', async (code, reason) => {
+    const { h, requests, deps } = pickHarness(answered(chosen))
+    h.discoveryError = { code, detail: 'fixture' }
+    expect(await new AppClientCli(pickArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: AccountBrokerAnswers.main(reason) })
+    expect(h.parsedOutput()).toMatchObject({ value: { account: { id: 'main' }, fallback: true, reuseSeconds: 60 } })
+    expect(requests).toEqual([])
+  })
+
+  it('answers unsupported without a request when the instance does not list the operation', async () => {
+    const { h, requests, deps } = pickHarness(answered(chosen))
+    delete h.descriptor.registryOperations
+    expect(await new AppClientCli(pickArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: AccountBrokerAnswers.main('unsupported') })
+    expect(requests).toEqual([])
+  })
+
+  it.each([
+    ['a refusal', refused({ code: 'operation-failed', detail: 'x' }), 'error'],
+    ['a client timeout', refused({ code: 'timeout', detail: 'x' }), 'timeout'],
+    ['a value that is no v1 answer', answered({ ...chosen, brokerVersion: 2 }), 'error'],
+    ['a thrown request', (async () => { throw new Error('fetch failed') }) as Respond, 'error'],
+  ] as const)('answers Main for %s with exit 0', async (_name, respond, reason) => {
+    const { h, deps } = pickHarness(respond)
+    expect(await new AppClientCli(pickArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: AccountBrokerAnswers.main(reason) })
+  })
+
+  it('answers Main with timeout when the deadline passes and aborts the request', async () => {
+    let seen: AbortSignal | undefined
+    const { h, deps } = pickHarness((_request, signal) => { seen = signal; return new Promise(() => {}) })
+    const pauses: number[] = []
+    expect(await new AppClientCli(pickArgs, { ...deps, pause: async milliseconds => { pauses.push(milliseconds) } }).run()).toBe(0)
+    expect(pauses).toEqual([6_000])
+    expect(h.parsedOutput()).toEqual({ ok: true, value: AccountBrokerAnswers.main('timeout') })
+    expect(seen?.aborted).toBe(true)
+  })
+
+  it('stops the deadline timer once the answer arrives', async () => {
+    let deadline: AbortSignal | undefined
+    const { deps } = pickHarness(answered(chosen))
+    const pause = (_milliseconds: number, signal?: AbortSignal) => {
+      deadline = signal
+      return new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    }
+    expect(await new AppClientCli(pickArgs, { ...deps, pause }).run()).toBe(0)
+    expect(deadline?.aborted).toBe(true)
+  })
+
+  it.each([
+    [['--caller', 'probe', '--purpose', 'nightly']],
+    [['--purpose', 'interactive']],
+    [['--caller', 'probe']],
+    [['--caller', 'a b', '--purpose', 'interactive']],
+    [['--caller', 'x'.repeat(65), '--purpose', 'interactive']],
+    [['--caller', 'probe', '--purpose', 'interactive', '--computer', 'x']],
+    [['--caller', 'probe', '--purpose', 'interactive', '--operation-id', 'x']],
+    [['--caller', 'probe', '--purpose', 'interactive', '--unknown', 'x']],
+  ])('exits 2 with invalid-request before discovery: %j', async (argv) => {
+    const { h, deps } = pickHarness(answered(chosen))
+    expect(await new AppClientCli(['accounts', 'pick', ...argv], deps).run()).toBe(2)
+    expect(h.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(h.discoveries).toBe(0)
+  })
+
+  it('exits 2 for a bad instance selection before discovery', async () => {
+    const { h, deps } = pickHarness(answered(chosen))
+    const cli = new AppClientCli(pickArgs, { ...deps, loadConfig: () => { throw new AppClientCliError('invalid-request', 'bad selection') } })
+    expect(await cli.run()).toBe(2)
+    expect(h.discoveries).toBe(0)
+  })
+
+  it('answers Main for a config directory that names no instance', async () => {
+    const { h, deps } = pickHarness(answered(chosen))
+    const cli = new AppClientCli(pickArgs, { ...deps, loadConfig: () => { throw new AppClientCliError('unavailable', 'No AppClientUI config identity') } })
+    expect(await cli.run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: AccountBrokerAnswers.main('jamat-unavailable') })
+    expect(h.discoveries).toBe(0)
+  })
+
+  it('lists accounts pick and its two options in the accounts help', async () => {
+    const { h, deps } = pickHarness(answered(chosen))
+    expect(await new AppClientCli(['accounts', '--help'], deps).run()).toBe(0)
+    expect(h.parsedOutput()).toMatchObject({ value: { commands: expect.arrayContaining([
+      { command: 'accounts pick', options: ['--caller', '--purpose'], flags: [] }]) } })
   })
 })

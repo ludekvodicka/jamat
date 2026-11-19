@@ -485,8 +485,11 @@ export interface SessionSvnConflictInfo {
   options: SessionSvnConflictOptionInfo[]
 }
 
-/** A press of a main-copy Finish: commit through the session's agent and close or go on, close without a commit, or leave it. */
-export type SessionMainFinishChoice = 'commit-close' | 'commit-continue' | 'close' | 'cancel'
+/**
+ * A press of a main-copy Finish: commit through the session's agent and close or go on, close without
+ * a commit, leave it, or, while the commit runs, `check` the changes again now.
+ */
+export type SessionMainFinishChoice = 'commit-close' | 'commit-continue' | 'close' | 'cancel' | 'check'
 
 /**
  * What a main-copy Finish did: `stopped` the session, `choose` waits in Session actions, `sent` the
@@ -514,7 +517,7 @@ export type SessionWorkflowTarget =
 /** A press a workflow admits now; each surface maps it onto an operation. */
 export type SessionWorkflowActionId = 'refresh-preparation' | 'prepare-worktree' | 'confirm-environment' | 'review-correction' | 'override-checks' | 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
   | 'resolve-with-agent' | 'open-merger' | 'solve-with-agent' | 'agree-setup' | 'cancel-setup' | 'update-main' | 'later' | 'back-to-work' | 'confirm-stopped' | 'stop-run' | 'remove-run'
-  | 'confirm-busy' | 'resume-worker' | 'commit-close' | 'commit-continue' | 'close-session' | 'cancel-finish'
+  | 'confirm-busy' | 'resume-worker' | 'commit-close' | 'commit-continue' | 'close-session' | 'cancel-finish' | 'check-finish'
 
 export interface SessionWorkflowStep {
   /** Stable within the workflow: `1:updating`, `1:check:lint`, `2:review:lib`. */

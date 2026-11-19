@@ -431,8 +431,8 @@ private async driveSteps(sessionId: string): Promise<void> {
 
 private async updated(parent: SessionRecord, action: SessionRecordSvnAction, verdict: SvnActionVerdict): Promise<void> {
     const mainCopy = true
-    const again = 'press UPDATE again'
-    const checkAgain = 'press UPDATE again'
+    const again = 'press Update again'
+    const checkAgain = 'press Update again'
     if (verdict.kind === 'failed') {
       const output = action.runId === undefined ? verdict.reason : (await this.logs.read(parent.sessionId, action.runId, 1024 * 1024))?.text ?? verdict.reason
       if (SvnFailures.classify(output, verdict.exitCode ?? null) === 'auth')
@@ -496,7 +496,7 @@ private async updated(parent: SessionRecord, action: SessionRecordSvnAction, ver
     const cwd = journal.find((entry) => entry.runId === action.runId)?.cwd ?? action.root
     const interrupted = journal.some((entry) => entry.kind === 'update' && entry.stepId.startsWith(`${action.actionId}-`) && entry.cwd !== undefined
       && PathCompare.comparable(entry.cwd) === PathCompare.comparable(cwd) && WorktreeRecovery.interrupted(record, entry.runId))
-    const again = 'press UPDATE again'
+    const again = 'press Update again'
     if (!interrupted) return `${cwd} is locked by another svn client; let it finish, or run svn cleanup there yourself, then ${again}`
     const own = relative(action.root, cwd).replace(/\\/g, '/') || '.'
     return `${own} in ${action.root} is still locked by Jamat's own svn update, which was interrupted when the client stopped. `
@@ -535,7 +535,7 @@ private async launchResolver(parent: SessionRecord, action: SessionRecordSvnActi
     const unsafe = paths.filter((path) => !SvnWorktreeEvidence.takesArgument(path))
     if (unsafe.length > 0)
       return this.needs(parent, action, 'conflict',
-        `${MainCopyUpdate.listed('svn cannot take the names of these conflicted files', unsafe)}; resolve them in an SVN client, then ${'press UPDATE again'}`)
+        `${MainCopyUpdate.listed('svn cannot take the names of these conflicted files', unsafe)}; resolve them in an SVN client, then ${'press Update again'}`)
     const unavailable = this.resolver.unavailable()
     if (unavailable !== null)
       return this.needs(parent, action, 'conflict',
@@ -576,13 +576,13 @@ private async launchResolver(parent: SessionRecord, action: SessionRecordSvnActi
     const now = latest?.svnAction
     if (!latest || now?.actionId !== action.actionId || now.runId !== runId || now.verdict !== undefined) return
     return this.needs(latest, now, 'resolver-failed',
-      `the conflict resolver could not start (${created.detail}); ${MainCopyUpdate.settleByHandConst}, then ${'press UPDATE again'}`)
+      `the conflict resolver could not start (${created.detail}); ${MainCopyUpdate.settleByHandConst}, then ${'press Update again'}`)
   }
 
 private async verifying(parent: SessionRecord, action: SessionRecordSvnAction): Promise<void> {
     const conflicts = action.conflicts
     if (conflicts === undefined) throw new Error(`The SVN ${action.kind} of session ${parent.sessionId} verifies a resolver it holds no conflicts of`)
-    const again = 'press UPDATE again'
+    const again = 'press Update again'
     this.steps.at(parent.sessionId, { kind: 'read', read: 'markers', count: conflicts.paths.length })
     const marked = await this.resolver.withMarkers(action.root, conflicts.paths)
     // svn still marks these files after a hand edit; an option of the conflict list settles them.
@@ -607,10 +607,13 @@ private async verifying(parent: SessionRecord, action: SessionRecordSvnAction): 
   }
 
 private async resolverOverdue(parent: SessionRecord, action: SessionRecordSvnAction): Promise<void> {
-    if (action.runId !== undefined) await this.stopRun(action.runId)
-    await this.needs(parent, action, 'resolver-failed',
-      `the conflict resolver ran longer than ${SvnResolverLauncher.limitMillisecondsConst / 60_000} minutes and was stopped; `
-      + `${MainCopyUpdate.settleByHandConst}, then ${'press UPDATE again'}`)
+    const minutes = SvnResolverLauncher.limitMillisecondsConst / 60_000
+    // A stop the Host refused leaves a resolver that can still edit the files the person is told to settle.
+    const stopped = action.runId === undefined || await this.stopRun(action.runId)
+    await this.needs(parent, action, 'resolver-failed', stopped
+      ? `the conflict resolver ran longer than ${minutes} minutes and was stopped; ${MainCopyUpdate.settleByHandConst}, then press Update again`
+      : `the conflict resolver ran longer than ${minutes} minutes and Jamat could not stop it, so it may still edit files; `
+        + `stop it in its tab first, then ${MainCopyUpdate.settleByHandConst} and press Update again`)
   }
 
 private async recordUpdate(parent: SessionRecord, action: SessionRecordSvnAction): Promise<void> {

@@ -189,7 +189,7 @@ describe('app-client-ui/app/attention/attentionQueue', () => {
 
   it('ends with an item that does not hold, and the next waits for the quiet time again', async () => {
     const h = new QueueHarness()
-    h.queue.add(h.entry('opened', { kind: 'session-opened', holds: false }))
+    h.queue.add(h.entry('opened', { kind: 'session-mark', holds: false }))
     h.queue.add(h.entry('review'))
     await h.settled()
     expect(h.shown).toEqual(['opened'])

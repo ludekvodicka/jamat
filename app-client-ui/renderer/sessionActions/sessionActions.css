@@ -2,13 +2,19 @@
 .session-actions__toolbar { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); background: var(--color-surface-raised); border-bottom: 1px solid var(--color-border-hairline); }
 .session-actions__toolbar[hidden] { display: none; }
 .session-actions__section { border-bottom: 1px solid var(--color-border-hairline); padding: var(--space-2); }
-.session-actions__heading { width: 100%; text-align: left; border: 0; padding: var(--space-1); color: inherit; background: var(--color-surface-control); font: inherit; font-weight: 600; cursor: pointer; }
-.session-actions__toggle { border: 0; background: transparent; color: var(--color-text-3); font: inherit; font-size: var(--fs-secondary); margin-left: var(--space-4); cursor: pointer; }
-.session-actions__body { height: auto; max-height: 50vh; min-height: 0; overflow: auto; margin: var(--space-1) var(--space-2); }
+/* The heading, the summary, the round titles, the step glyphs and the footer start on one line. */
+.session-actions__heading { width: 100%; text-align: left; border: 0; padding: var(--space-1) var(--space-2); color: inherit; background: var(--color-surface-control); font: inherit; font-weight: 600; cursor: pointer; }
+.session-actions__toggle { border: 0; padding: 0; background: transparent; color: var(--color-text-3); font: inherit; font-size: var(--fs-secondary); margin-left: calc(var(--space-2) * 2 + 1ch); cursor: pointer; }
+.session-actions__toggle:hover { color: var(--color-text-1); }
+.session-actions__body { height: auto; max-height: 50vh; min-height: 0; overflow: auto; margin: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) * 2 + 1ch); }
+.session-actions__section > div > .workflow__summary { padding: var(--space-1) var(--space-2) 0; }
+.session-actions__body .workflow__conflicts { margin-left: 0; }
 .session-actions__body .task-view { max-height: 45vh; }
 .session-actions__body .task-view__entries { flex: 0 1 auto; }
 
 .session-actions__danger { color: var(--color-danger); border-color: var(--color-danger); }
+/* The press that throws work away stands apart from the others, at the end of its row. */
+.workflow__footer > .session-actions__danger, .workflow__step-actions > .session-actions__danger { margin-left: auto; }
 .session-actions__confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .session-actions__confirm p { margin: 0; color: var(--color-text-2); font-size: var(--fs-secondary); }
 .session-actions--review { overflow: hidden; }

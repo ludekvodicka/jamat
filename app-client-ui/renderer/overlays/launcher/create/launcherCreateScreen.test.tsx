@@ -22,9 +22,10 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
       { ...main, accountId: 'second', label: 'Second', isMain: false },
       { ...main, accountId: 'pending', label: 'Pending', isMain: false, state: 'pending-login' },
       { ...main, accountId: 'disabled', label: 'Disabled', isMain: false, state: 'disabled' }] })} dispatch={dispatch} />)
-    const picker = view.getByLabelText('Account')
-    expect([...picker.querySelectorAll('option')].map(option => option.textContent)).toEqual(['Main', 'Second'])
-    fireEvent.change(picker, { target: { value: 'second' } })
+    const picker = view.getByRole('group', { name: 'Account' })
+    expect([...picker.querySelectorAll('.jamat-choice__card-title')].map(title => title.textContent)).toEqual(['Main', 'Second'])
+    expect(view.getByRole('button', { name: /Main/ }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(view.getByRole('button', { name: /Second/ }))
     expect(dispatch).toHaveBeenCalledWith({ input: 'chooseAccount', accountId: 'second' })
   })
 
@@ -39,14 +40,13 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
       view.rerender(<LauncherCreateScreen state={state} dispatch={dispatch} />)
     }
     const view = render(<LauncherCreateScreen state={state} dispatch={dispatch} />)
-    const picker = view.getByLabelText('Account')
-    if (!(picker instanceof HTMLSelectElement)) throw new Error('The card drew no account select')
-    expect(picker.value).toBe('main')
-    expect(picker.selectedOptions[0].textContent).toBe('Main (default)')
+    const picker = view.getByRole('group', { name: 'Account' })
+    expect(picker.querySelector('[aria-pressed="true"]')).toBeNull()
+    expect(view.getByText('No account chosen: Main (default)')).toBeTruthy()
     expect(CreateScreenModel.specOf(state, null).agent).toEqual({ agentId: 'claude', mode: 'new' })
-    fireEvent.change(picker, { target: { value: 'second' } })
-    expect(picker.value).toBe('second')
-    expect(picker.selectedOptions[0].textContent).toBe('Second')
+    fireEvent.click(view.getByRole('button', { name: /Second/ }))
+    expect(view.getByRole('button', { name: /Second/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(view.queryByText('No account chosen: Main (default)')).toBeNull()
     expect(CreateScreenModel.specOf(state, null).agent).toEqual({ agentId: 'claude', mode: 'new', accountId: 'second' })
   })
 

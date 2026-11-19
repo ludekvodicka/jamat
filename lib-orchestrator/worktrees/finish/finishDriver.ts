@@ -279,7 +279,10 @@ export class FinishDriver {
               checkCursor: 0, checkBefore: undefined, runId: undefined, verdict: undefined } }))
         }
         else if (state.step === 'worker-resolving') {
-          await this.conflictStep.checkConflicts(sessionId, press.agent === true, press.confirmWorking)
+          const refused = await this.conflictStep.checkConflicts(sessionId, press.agent === true, press.confirmWorking)
+          if (refused !== null) return { ok: false, code: 'svn-failed', detail: refused }
+          const stopRefused = await this.conflictStep.supervise(sessionId)
+          if (stopRefused !== null) return { ok: false, code: 'merge-pending', detail: stopRefused }
         }
         else {
           if (state.step === 'awaiting-idle' && press.confirmWorking === true) {
@@ -673,7 +676,8 @@ export class FinishDriver {
       if (resolved.ok && awaitingMerger) await this.state.write(sessionId, (latest) => ({ ...latest, step: 'worker-resolving' }))
       return resolved
     })
-    if (resolved.ok && !awaitingMerger) this.due(sessionId)
+    // The drive goes on after the answer: it stops a merger with nothing left to settle, which may be the caller itself.
+    if (resolved.ok) this.due(sessionId)
     return resolved
   }
 

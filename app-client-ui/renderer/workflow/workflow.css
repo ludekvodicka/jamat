@@ -24,12 +24,15 @@
 .workflow__step[data-state="failed"] .workflow__glyph, .workflow__step[data-state="failed"] .workflow__detail { color: var(--color-danger); }
 .workflow__step[data-state="waits"] .workflow__glyph, .workflow__step[data-state="waits"] .workflow__detail { color: var(--color-warn); }
 .workflow__step[data-state="pending"] .workflow__step-title, .workflow__step[data-state="skipped"] .workflow__step-title { color: var(--color-text-3); }
-.workflow__step-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-2) calc(var(--space-2) * 2 + 1ch); }
+/* What belongs to a step starts where its title starts: the row's padding, the glyph and the gap. */
+.workflow__step-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-2) calc(var(--space-2) * 2 + 1ch); }
+.workflow__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
 .workflow__footer { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); border-top: 1px solid var(--color-border-hairline); }
-.workflow__action { padding: 3px 10px; font: inherit; font-size: var(--fs-secondary); color: var(--color-text-2); background: var(--color-surface-control); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); cursor: pointer; }
-.workflow__action:hover:not(:disabled) { background: var(--color-surface-control-hover); color: var(--color-text-1); }
-.workflow__action:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }
-.workflow__action:disabled { color: var(--color-text-5); cursor: default; }
+.workflow__step-actions > .workflow__summary, .workflow__footer > .workflow__summary { flex-basis: 100%; }
+.workflow__action, .workflow__conflict-option, .workflow__conflict-action { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; min-height: 24px; padding: 2px 10px; white-space: nowrap; font: inherit; font-size: var(--fs-secondary); line-height: 1.4; color: var(--color-text-2); background: var(--color-surface-control); border: 1px solid var(--color-border-frame); border-radius: var(--radius-control); cursor: pointer; }
+.workflow__action:hover:not(:disabled), .workflow__conflict-option:hover:not(:disabled), .workflow__conflict-action:hover:not(:disabled) { background: var(--color-surface-control-hover); color: var(--color-text-1); }
+.workflow__action:focus-visible, .workflow__conflict-option:focus-visible, .workflow__conflict-action:focus-visible { outline: 1px solid var(--color-accent); outline-offset: 1px; }
+.workflow__action:disabled, .workflow__conflict-option:disabled, .workflow__conflict-action:disabled { color: var(--color-text-5); cursor: default; }
 .workflow__action--primary { border-color: var(--color-accent); color: var(--color-text-1); }
 .workflow__action-notes { flex-basis: 100%; margin: 2px 0 0; padding: 0; list-style: none; font-size: var(--fs-secondary); color: var(--color-text-4); }
 .workflow__refusal { flex-basis: 100%; margin: 0; color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
@@ -37,7 +40,7 @@
 .workflow__agreement p, .workflow__agreement ul { margin: 0; }
 .workflow__agreement code { font-family: var(--font-mono); overflow-wrap: anywhere; }
 .workflow__agreement .workflow__action { align-self: flex-start; }
-.workflow__conflicts { display: flex; flex-direction: column; gap: var(--space-1); margin: 0 var(--space-2) var(--space-1) var(--space-4); padding: var(--space-1) var(--space-2); border-left: 2px solid var(--color-warn); background: var(--color-surface-sunken); }
+.workflow__conflicts { display: flex; flex-direction: column; gap: var(--space-1); margin: 0 var(--space-2) var(--space-1) calc(var(--space-2) * 2 + 1ch); padding: var(--space-1) var(--space-2); border-left: 2px solid var(--color-warn); background: var(--color-surface-sunken); }
 .workflow__conflicts:focus { outline: none; }
 .workflow__conflicts-brief { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); color: var(--color-text-2); font-size: var(--fs-secondary); }
 .workflow__conflicts-summary { margin: 0; color: var(--color-text-2); font-size: var(--fs-secondary); font-weight: 600; }
@@ -50,11 +53,10 @@
 .workflow__conflict-description, .workflow__conflict-note { color: var(--color-text-3); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
 .workflow__conflict-note code, .workflow__conflicts-more code { font-family: var(--font-mono); }
 .workflow__conflicts-more { margin: 0; color: var(--color-text-4); font-size: var(--fs-secondary); }
-.workflow__conflict-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
-.workflow__conflict-action { font-size: var(--fs-secondary); }
+/* The options settle the path, the actions only open it: one row, the two groups apart. */
+.workflow__conflict-buttons { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--space-4); row-gap: var(--space-1); margin-top: var(--space-1); }
+.workflow__conflict-options, .workflow__conflict-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .workflow__conflict-refusal { color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
-.workflow__conflict-options { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
-.workflow__conflict-option { font-size: var(--fs-secondary); }
 .workflow__conflict-option[data-loses="incoming"] { color: var(--color-warn); }
 .workflow__conflict-option--armed { border-color: var(--color-danger); color: var(--color-danger); }
 .workflow__conflict-warning { color: var(--color-danger); font-size: var(--fs-secondary); overflow-wrap: anywhere; }
