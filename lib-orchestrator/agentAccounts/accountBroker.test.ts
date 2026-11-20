@@ -34,6 +34,12 @@ describe('AccountBroker', () => {
       reuseSeconds: 60, account: { id: 'main', identityKey: 'org/main@example.test' } })
   })
 
+  it('answers the least used added account when no account is eligible but it is not spent', async () => {
+    const { broker } = brokerOf({ accountId: 'work', noFreeAccount: true, resetsAt: null })
+    expect(await broker.pick({ caller: 'indexer', purpose: 'background' })).toMatchObject({ fallback: false, reason: 'chosen',
+      account: { id: 'work' }, env: { set: { CLAUDE_CONFIG_DIR: 'C:/accounts/claude/work' } } })
+  })
+
   it('answers an added account with its home and without the credential variables', async () => {
     const { broker, accounts } = brokerOf({ accountId: 'work', noFreeAccount: false, resetsAt: null })
     expect(await broker.pick({ caller: 'indexer', purpose: 'background' })).toEqual({ brokerVersion: 1, provider: 'claude',

@@ -30,6 +30,13 @@ describe('default account', () => {
     expect(chooseDefault('claude', accounts, [rate('main', 0, 100, 1), rate('b', 0, 100, 5)]))
       .toEqual({ accountId: 'main', noFreeAccount: true, resetsAt: null })
   })
+  it('falls back to the least used account that is not spent instead of a spent Main', () => {
+    expect(chooseDefault('claude', accounts, [rate('main', 0, 100, 1), rate('b', 92, 15, 5)], [], 0))
+      .toEqual({ accountId: 'b', noFreeAccount: true, resetsAt: new Date(5 * day).toISOString() })
+    expect(chooseDefault('claude', accounts, [rate('main', 95, 20, 1), rate('b', 92, 15, 5)]).accountId).toBe('b')
+    expect(chooseDefault('claude', accounts, [rate('main', 91, 20, 1), rate('b', 93, 15, 5)]).accountId).toBe('main')
+    expect(chooseDefault('claude', accounts, [rate('main', 92, 20, 1), rate('b', 92, 15, 5)]).accountId).toBe('main')
+  })
   it('breaks equal resets by session use and then main', () => {
     expect(chooseDefault('claude', accounts, [rate('main', 40, 20, 1), rate('b', 10, 20, 1)]).accountId).toBe('b')
     expect(chooseDefault('claude', accounts, [rate('main', 10, 20, 1), rate('b', 10, 20, 1)]).accountId).toBe('main')

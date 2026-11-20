@@ -53,7 +53,8 @@ export function weeklyReserve(hoursToReset: number): number {
  * spend beyond every pace splits by pace. The account furthest below its target share of the last
  * three hours wins. Without spend this is the soonest weekly reset. The rule `soonest-reset` takes the
  * soonest reset above its reserve at once. Accounts in their reserve come next, soonest reset first;
- * unknown quotas last.
+ * unknown quotas last. When no account is below 90% for five hours and below 100% weekly, the least
+ * used account with both windows below 100% is chosen with `noFreeAccount`; Main only when all are spent.
  */
 export function chooseDefault(agentId: AccountAgentId, accounts: readonly AccountView[], rates: readonly RateAccountState[],
   burns: readonly AccountBurn[] = [], now = Date.now(), rule: AccountChoiceRule = 'paced'): DefaultAccountChoice {
@@ -81,7 +82,11 @@ export function chooseDefault(agentId: AccountAgentId, accounts: readonly Accoun
   })
   const preferred = eligible.filter(candidate => candidate.known && candidate.free > 0)
   const chosen = preferred.length === 0 ? eligible[0] : preferred[preferredIndex(rule, preferred, active.reduce((sum, value) => sum + value.weight * value.day, 0))]
-  return chosen ? { accountId: chosen.account.accountId, noFreeAccount: false, resetsAt: chosen.weekly?.resetsAt ?? null }
+  if (chosen) return { accountId: chosen.account.accountId, noFreeAccount: false, resetsAt: chosen.weekly?.resetsAt ?? null }
+  const used = (candidate: typeof active[number]) => Math.max(candidate.session?.usedPercent ?? 0, candidate.weekly?.usedPercent ?? 0)
+  const leastUsed = active.filter(candidate => used(candidate) < 100)
+    .sort((a, b) => used(a) - used(b) || a.reset - b.reset || a.account.accountId.localeCompare(b.account.accountId))[0]
+  return leastUsed ? { accountId: leastUsed.account.accountId, noFreeAccount: true, resetsAt: leastUsed.weekly?.resetsAt ?? null }
     : { accountId: 'main', noFreeAccount: true, resetsAt: null }
 }
 
