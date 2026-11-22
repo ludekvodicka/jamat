@@ -103,13 +103,14 @@ export class UsageUiScenario {
       const ui = clients[0]
       await open(1)
       await open(2)
-      let seen = { tabs: 0, cards: 0, charts: 0, text: '' }
+      // A card per agent with an enabled account: the fixture's Claude and Codex accounts, and the
+      // built-in Antigravity account, which has no reading yet and so draws no pool chart.
+      let seen = { tabs: 0, cards: [] as string[], charts: 0, text: '' }
       await RemoteUiScenarios.until(async () => {
-        seen = JSON.parse(await ui.evaluate<string>('JSON.stringify({ tabs: document.querySelectorAll(".jamat-usage").length, cards: document.querySelectorAll(".jamat-usage__quotas > .jamat-usage__card").length, charts: document.querySelectorAll(".jamat-usage__graph svg").length, text: (document.querySelector(".jamat-usage")?.innerText ?? "").slice(0, 600) })'))
-        return seen.tabs === 1 && seen.cards === 2 && seen.charts >= 4
-      }, 'One Usage tab with quota cards and four Vega charts').catch((error: unknown) => { throw new Error(`${String(error)}; last seen ${JSON.stringify(seen)}`) })
+        seen = JSON.parse(await ui.evaluate<string>('JSON.stringify({ tabs: document.querySelectorAll(".jamat-usage").length, cards: Array.from(document.querySelectorAll(".jamat-usage__quotas > .jamat-usage__card h2")).map(title => title.innerText), charts: document.querySelectorAll(".jamat-usage__graph svg").length, text: (document.querySelector(".jamat-usage")?.innerText ?? "").slice(0, 600) })'))
+        return seen.tabs === 1 && seen.cards.join(',') === 'Claude,Codex,Antigravity' && seen.charts >= 2
+      }, 'One Usage tab on Quota with the Claude, Codex and Antigravity quota cards and their pool charts').catch((error: unknown) => { throw new Error(`${String(error)}; last seen ${JSON.stringify(seen)}`) })
       assert((await ui.evaluate<string>('document.body.innerText')).includes('weighted by plan'))
-      assert((await ui.evaluate<string>('document.body.innerText')).includes('JamatProof'))
       assert.equal((await open(3)).windows, 1)
       await ui.capture(join(screenshotRoot, 'phase3-usage-overview-1440x900.png'))
       // After the first capture: its viewport change resizes the charts, which clears a hover readout.
@@ -131,6 +132,11 @@ export class UsageUiScenario {
         && await ui.evaluate<boolean>(`!!${card}.querySelector(".jamat-usage__graph svg")`), 'Usage 7-day pool chart')
       assert.match(await hover(card, 0.9), /Projected\s+\d+\.\d%/)
       await ui.capture(join(screenshotRoot, 'usage-pool-hover-1440x900.png'))
+      // The token statistics live on the Consumption tab since the Usage tabs were split.
+      await ui.evaluate('Array.from(document.querySelectorAll(".jamat-usage__tabs [role=tab]")).find(tab => tab.innerText.trim() === "Consumption").click()')
+      await RemoteUiScenarios.until(async () => await ui.evaluate<number>('document.querySelectorAll(".jamat-usage__tokens .jamat-usage__graph svg").length') >= 2,
+        'Usage Consumption tab with the two token charts')
+      assert((await ui.evaluate<string>('document.body.innerText')).includes('JamatProof'))
       await ui.evaluate('document.querySelector(".jamat-usage__tokens").scrollIntoView()')
       assert.match(await hover('document.querySelector(".jamat-usage__tokens figure")', 0.5), /Total\s+[\d.]+k?/)
       await ui.capture(join(screenshotRoot, 'phase3-usage-tokens-1440x900.png'))
@@ -158,8 +164,11 @@ export class UsageUiScenario {
       await ui.evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))')
       console.log('[smoke:ui] FileViewer toolbar: View as, icon buttons, Get document and Send to agent 1/3')
       const tokens = await ui.bridge<any>(`window.appClient.control.call('usage.tokens', { from: '${new Date(now - 6 * 86_400_000).toISOString().slice(0, 10)}', to: '${new Date(now + 86_400_000).toISOString().slice(0, 10)}', groupBy: 'project' })`)
-      assert.equal(tokens.value.rows.length, 2)
-      assert.equal(tokens.value.rows.find((row: { agentId: string }) => row.agentId === 'codex').input, 2000)
+      // Antigravity transcripts are read from the user's own ~/.gemini/antigravity-cli, which this
+      // smoke cannot redirect, so only the agents of the fixture homes are counted here.
+      const fixtureRows = tokens.value.rows.filter((row: { agentId: string }) => row.agentId === 'claude' || row.agentId === 'codex')
+      assert.equal(fixtureRows.length, 2, JSON.stringify(fixtureRows))
+      assert.equal(fixtureRows.find((row: { agentId: string }) => row.agentId === 'codex').input, 2000)
       console.log('[smoke:ui] Tools > Usage opens one workspace tab however often it is chosen; account pools, reset projection and both agents token totals render')
     } catch (error) {
       console.error(log)
