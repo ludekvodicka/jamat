@@ -244,4 +244,36 @@ describe('app-client-ui/renderer/overlays/launcher/create/launcherCreateScreen',
     expect(card?.disabled).toBe(true)
     expect(card?.title).toBe('existing sessions need a catalog project')
   })
+
+  it('draws shortcut badges on Type, Isolation, Account and Continue/Fork All without duplicating agent marks', () => {
+    const main = { agentId: 'claude' as const, accountId: 'main', label: 'Main', isMain: true,
+      state: 'active' as const, identity: null, profileProblem: null }
+    const second = { ...main, accountId: 'second', label: 'MHC-Claude', isMain: false }
+    const view = draw(opened({ field: 'agent', accounts: [main, second] }))
+
+    const shortcutsByRow = [...view.container.querySelectorAll('.jamat-choice__row')].map((row) => [
+      row.querySelector('.jamat-choice__label')?.textContent,
+      [...row.querySelectorAll('.jamat-choice__card')]
+        .map((card) => card.querySelector('.jamat-choice__shortcut')?.textContent ?? null),
+    ])
+    expect(shortcutsByRow).toEqual([
+      ['Project', []],
+      ['Name', []],
+      ['Agent', [null, null, null]],
+      ['Type', ['R', 'F', 'O', 'S']],
+      ['Isolation', ['0', 'W']],
+      ['Account', ['1', '2']],
+    ])
+
+    const existingIndex = CreateScreenModel.typesOf({ target: { kind: 'local' }, source: null })
+      .findIndex((type) => type.kind === 'existing')
+    const existingView = draw(
+      CreateScreenModel.transition(opened(), { input: 'chooseType', index: existingIndex }).state,
+    )
+    const agentRow = [...existingView.container.querySelectorAll('.jamat-choice__row')]
+      .find((row) => row.querySelector('.jamat-choice__label')?.textContent === 'Agent')
+    expect([...agentRow?.querySelectorAll('.jamat-choice__card') ?? []]
+      .map((card) => card.querySelector('.jamat-choice__shortcut')?.textContent ?? null))
+      .toEqual([null, null, null, '*'])
+  })
 })

@@ -8,7 +8,7 @@ import { RemoteControl, type RemoteControlDeps } from '../../../lib-orchestrator
 import { RemoteControlConst } from '../../../lib-orchestrator/remoteControl/remoteControlProtocol'
 import { RemoteControlPeerConst } from '../../../lib-orchestrator/remoteControl/remoteControlPeerProtocol'
 import { AccountBrokerAnswers } from '../../../lib-orchestrator/agentAccounts/accountBrokerAnswer'
-import type { AccountBrokerRequest } from '../../../lib-orchestrator/agentAccounts/accountBrokerApi.types'
+import type { AccountBrokerRequest, AccountUsageReport } from '../../../lib-orchestrator/agentAccounts/accountBrokerApi.types'
 import { AccountBroker } from '../../../lib-orchestrator/agentAccounts/accountBroker'
 import type { AccountView } from '../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import { AccountCallerLog } from '../../../lib-orchestrator/agentAccounts/accountCallerLogView'
@@ -36,7 +36,7 @@ describe('AccountsOperations', () => {
     })
     try {
       const bench = new RegistryBench()
-      new AccountsOperations(accounts, { pick: async () => AccountBrokerAnswers.main('chosen'),
+      new AccountsOperations(accounts, { pick: async () => AccountBrokerAnswers.main('chosen'), report: async () => {},
         callers: async () => ({ capturedAt: 0, windowDays: 30, callers: [], recent: [] }) }, () => null).register(bench.registry)
       const deps: Pick<RemoteControlDeps, 'accounts' | 'onError'> = {
         accounts, onError: message => { throw new Error(message) },
@@ -77,7 +77,7 @@ describe('AccountsOperations', () => {
     const answer = AccountBrokerAnswers.main('no-eligible-account')
     const bench = new RegistryBench()
     new AccountsOperations({} as AgentAccounts, { pick: async request => { picks.push(request); return answer },
-      callers: async () => { throw new Error('not read') } }, () => null).register(bench.registry)
+      report: async () => { throw new Error('not reported') }, callers: async () => { throw new Error('not read') } }, () => null).register(bench.registry)
     expect(bench.registry.isWrite('accounts.pick')).toBe(true)
     expect(await bench.call('accounts.pick', { caller: 'probe.v1_x-2', purpose: 'background' })).toEqual({ ok: true, value: answer })
     expect(picks).toEqual([{ caller: 'probe.v1_x-2', purpose: 'background' }])
@@ -94,8 +94,34 @@ describe('AccountsOperations', () => {
     expect(bench.errors).toEqual([])
   })
 
-  it('keeps accounts.pick off the paired-computer allowlist', () => {
+  it('records accounts.report through the broker and refuses a malformed body', async () => {
+    const reports: AccountUsageReport[] = []
+    const bench = new RegistryBench()
+    new AccountsOperations({} as AgentAccounts, { pick: async () => { throw new Error('not picked') },
+      report: async report => { reports.push(report) }, callers: async () => { throw new Error('not read') } }, () => null).register(bench.registry)
+    expect(bench.registry.isWrite('accounts.report')).toBe(true)
+    const counts = { input: 3, output: 40, cacheRead: 600, cacheWrite: 9_000 }
+    const valid = { caller: 'indexer', purpose: 'background', accountId: 'mhc-claude-1fbcc96f', models: { 'claude-opus-5-5': counts } }
+    expect(await bench.call('accounts.report', valid)).toEqual({ ok: true, value: { recorded: true } })
+    expect(reports).toEqual([valid])
+    for (const body of [
+      { ...valid, accountId: 'a b' },
+      { ...valid, purpose: 'nightly' },
+      { ...valid, models: {} },
+      { ...valid, models: { 'claude opus': counts } },
+      { ...valid, models: { m: { ...counts, input: -1 } } },
+      { ...valid, models: { m: { ...counts, output: 1.5 } } },
+      { ...valid, models: { m: { ...counts, extra: 1 } } },
+      { ...valid, models: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`m${index}`, counts])) },
+      { ...valid, extra: 1 },
+    ]) expect(await bench.call('accounts.report', body)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(reports).toHaveLength(1)
+    expect(bench.errors).toEqual([])
+  })
+
+  it('keeps accounts.pick and accounts.report off the paired-computer allowlist', () => {
     expect(RemoteControlPeerConst.controlOperations).not.toContain('accounts.pick')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('accounts.report')
   })
 
   it('lists the caller of a pick made just before through usage.callers', async () => {
@@ -107,7 +133,8 @@ describe('AccountsOperations', () => {
         launchEnv: async () => ({}) }
       let logged = 0
       const broker = new AccountBroker({ accounts, mainConfigDir: null, log: new AccountCallerLog(join(root, 'account-callers')),
-        now: Date.now, onLogged: () => { logged++ }, onError: message => { throw new Error(message) } })
+        usage: { append: async () => {} }, reportCommand: () => null,
+        now: Date.now, onLogged: () => { logged++ }, onReported: () => {}, onError: message => { throw new Error(message) } })
       const bench = new RegistryBench()
       let command: string | null = null
       new AccountsOperations({} as AgentAccounts, broker, () => command).register(bench.registry)

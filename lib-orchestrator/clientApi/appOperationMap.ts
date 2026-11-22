@@ -1,6 +1,5 @@
 import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../rateMonitor/rateMonitorApi.types'
-import type { AccountAgentId } from '../agentAccounts/agentAccountsApi.types'
-import type { AccountBrokerAnswer, AccountBrokerRequest, AccountCallersView } from '../agentAccounts/accountBrokerApi.types'
+import type { AccountBrokerAnswer, AccountBrokerRequest, AccountCallersView, AccountUsageReport } from '../agentAccounts/accountBrokerApi.types'
 import type { SnapinKindState, SnapinsSettings, SnapinsSettingsView, SnapinView } from '../snapins/snapinsApi.types'
 import type { RemoteControlOperationMap } from '../remoteControl/remoteControlApi.types'
 import type { SessionErasure, SessionScriptOutput } from '../sessionManager/sessionManagerApi.types'
@@ -16,6 +15,9 @@ import type {
   DirectoryNotesImportResult,
   DirectoryNotesSnapshot,
 } from './directoryNotes'
+import type { ProjectTodoOperation, ProjectTodosPlace, ProjectTodosQuery, ProjectTodosSnapshot } from './projectTodos'
+import type { RemoteControlSessionSelector } from '../remoteControl/remoteControlApi.types'
+import type { TabControlTodosOpenedDto } from '../shared/tabRequestPort.types'
 import type { AgentSettingsAgentId, AgentSettingsValue } from './agentSettings'
 import type { FileChangesSettingsValue } from './fileChangesSettings'
 import type { HistoricSession, HistoricSessionGroup } from './historicSessions'
@@ -39,16 +41,17 @@ type Done = Record<string, never>
 export interface AppOperationMap {
   'usage.tokens': { request: import('../tokenUsage/tokenUsageApi.types').TokenUsageQuery; response: import('../tokenUsage/tokenUsageApi.types').TokenUsageResult }
   'usage.rescan': { request: Record<string, never>; response: Done }
-  'usage.history': { request: { agentId: 'claude' | 'codex'; from: number; to: number; burnHours: 1 | 3 | 6 }; response: import('../rateMonitor/usageApi.types').PoolSeries }
+  'usage.history': { request: { agentId: 'claude' | 'codex' | 'antigravity'; from: number; to: number; burnHours: 1 | 3 | 6 }; response: import('../rateMonitor/usageApi.types').PoolSeries }
   'usage.get': { request: Record<string, never>; response: import('../rateMonitor/usageApi.types').UsageSnapshot }
   'usage.callers': { request: Record<string, never>; response: AccountCallersView }
-  'accounts.add': { request: { agentId: AccountAgentId; label: string }; response: { accountId: string } }
+  'accounts.add': { request: { agentId: 'claude' | 'codex'; label: string }; response: { accountId: string } }
   'accounts.login': { request: { accountId: string }; response: { sessionId: string } }
   'accounts.rename': { request: { accountId: string; label: string }; response: Done }
   'accounts.setEnabled': { request: { accountId: string; enabled: boolean }; response: Done }
   'accounts.remove': { request: { accountId: string }; response: Done }
   /** Local only: never in `RemoteControlPeerConst.controlOperations`. */
   'accounts.pick': { request: AccountBrokerRequest; response: AccountBrokerAnswer }
+  'accounts.report': { request: AccountUsageReport; response: { recorded: true } }
   'snapins.passWake': { request: { passDirectory: string }; response: { woken: true } }
   'snapins.list': { request: Record<string, never>; response: { kinds: { kind: string; title: string; state: SnapinKindState }[] } }
   'snapins.view': { request: { kind: string }; response: SnapinView }
@@ -65,7 +68,7 @@ export interface AppOperationMap {
   }
   /** Prune: erase a conversation of the history, every Jamat record naming it included; local only. */
   'historicSessions.prune': {
-    request: { agentId: 'claude' | 'codex'; nativeSessionId: string; projectPath: string; createdAt: number }
+    request: { agentId: AgentSettingsAgentId; nativeSessionId: string; projectPath: string; createdAt: number }
     response: SessionErasure
   }
   'agentMemory.list': { request: { target: AgentMemoryTarget }; response: AgentMemoryListing }
@@ -91,6 +94,8 @@ export interface AppOperationMap {
   'rate.refresh': { request: Record<string, never>; response: RateMonitorSnapshot }
   'rate.debugStatus': { request: Record<string, never>; response: RateMonitorDebugStatus }
   'sessions.model': { request: { sessionId: string }; response: SessionModelReading }
+  /** Local only: the owning computer runs the recovery; never in `RemoteControlPeerConst.controlOperations`. */
+  'sessions.limitRecovery': { request: { sessionId: string; action: import('../limitRecovery/limitRecoveryApi.types').LimitRecoveryAction }; response: Done }
   'sessions.scriptOutput': { request: { sessionId: string; runId: string }; response: SessionScriptOutput }
   'sessionTasks.list': { request: { sessionIds: string[] }; response: Record<string, SessionTaskListing> }
   'sessionTasks.transcript': {
@@ -115,6 +120,20 @@ export interface AppOperationMap {
   }
   'directoryNotes.save': { request: { sessionId: string; notes: readonly DirectoryNote[] }; response: Done }
   'directoryNotes.importPrompt': { request: { sessionId: string }; response: DirectoryNotesImportResult }
+  /** Exactly one of `session` and `project` (any directory inside a catalog project). */
+  'projectTodos.list': {
+    request: { session?: RemoteControlSessionSelector; project?: string; filter?: ProjectTodosQuery }
+    response: ProjectTodosSnapshot
+  }
+  'projectTodos.apply': {
+    request: { session?: RemoteControlSessionSelector; project?: string; operation: ProjectTodoOperation }
+    response: ProjectTodosSnapshot
+  }
+  'projectTodos.restore': {
+    request: { session?: RemoteControlSessionSelector; project?: string; id: string }
+    response: ProjectTodosSnapshot
+  }
+  'projectTodos.open': { request: { session: RemoteControlSessionSelector; view?: ProjectTodosPlace }; response: TabControlTodosOpenedDto }
 }
 
 /** Everything the window can call: the protocol's operations and the client's own. */

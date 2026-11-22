@@ -7,7 +7,11 @@ import { RegistryBench } from '../remoteControl/fixtures/registryBench'
 import { AgentSettingsOperations } from './agentSettingsOperations'
 
 describe('app-client-ui/app/agents/agentSettingsOperations', () => {
-  const storedConst: AgentSettingsValue = { claude: { yolo: true }, codex: { yolo: false } }
+  const storedConst: AgentSettingsValue = {
+    claude: { yolo: true },
+    codex: { yolo: false },
+    antigravity: { yolo: false },
+  }
   let answer: ConfigOpResult
   let written: AgentSettingsValue[]
   let stored: AgentSettingsValue
@@ -32,7 +36,11 @@ describe('app-client-ui/app/agents/agentSettingsOperations', () => {
 
   it('reads and writes only its config section', async () => {
     expect(await bench.call('agentSettings.get')).toEqual({ ok: true, value: storedConst })
-    const saving: AgentSettingsValue = { claude: { yolo: false }, codex: { yolo: true } }
+    const saving: AgentSettingsValue = {
+      claude: { yolo: false },
+      codex: { yolo: true },
+      antigravity: { yolo: true },
+    }
     expect(await bench.call('agentSettings.save', { value: saving })).toEqual({ ok: true, value: {} })
     expect(written).toEqual([saving])
     expect(changed).toBe(1)
@@ -42,6 +50,7 @@ describe('app-client-ui/app/agents/agentSettingsOperations', () => {
     stored = {
       claude: { yolo: true, model: 'opus', autoCompactPercent: 90 },
       codex: { yolo: false, effort: 'max', autoCompactEnabled: true },
+      antigravity: { yolo: false },
     }
 
     expect(await bench.call('agentSettings.setAutoCompact', { agentId: 'claude', enabled: true }))
@@ -54,6 +63,7 @@ describe('app-client-ui/app/agents/agentSettingsOperations', () => {
         autoCompactEnabled: true,
       },
       codex: { yolo: false, effort: 'max', autoCompactEnabled: true },
+      antigravity: { yolo: false },
     }])
     expect(changed).toBe(1)
   })

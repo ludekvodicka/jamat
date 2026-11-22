@@ -64,13 +64,16 @@ describe('UsagePanel', () => {
     expect(screen.queryByText(/Unknown|No reading|measured/)).toBeNull()
   })
 
-  it('opens on Quota with both tabs in the strip and switches to Callers on a click', async () => {
+  it('opens on Quota with the three tabs in the strip, keeps tokens on Consumption and switches to Callers on a click', async () => {
     render(<UsagePanel />)
     expect(await screen.findByText('85%')).toBeTruthy()
     const strip = screen.getByRole('tablist', { name: 'Usage' })
     expect([...strip.querySelectorAll('[role="tab"]')].map(tab => [tab.textContent, tab.getAttribute('aria-selected')]))
-      .toEqual([['Quota', 'true'], ['Callers', 'false']])
+      .toEqual([['Quota', 'true'], ['Consumption', 'false'], ['Callers', 'false']])
+    expect(screen.queryByText('Tokens')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Consumption' }))
     expect(screen.getByText('Tokens')).toBeTruthy()
+    expect(screen.queryByText('85%')).toBeNull()
     expect(read).not.toHaveBeenCalledWith('usage.callers', {})
     fireEvent.click(screen.getByRole('tab', { name: 'Callers' }))
     expect(screen.getByRole('tab', { name: 'Callers' })).toHaveAttribute('aria-selected', 'true')

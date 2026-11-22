@@ -4,10 +4,14 @@ import { AgentModels, type AgentModelOption } from './agentModels'
 import { AgentSettings } from './agentSettings'
 
 describe('app-client-ui/shared/agentModels', () => {
-  const agentsConst = ['claude', 'codex'] as const
+  const agentsConst = ['claude', 'codex', 'antigravity'] as const
 
   function storable(model: string): boolean {
-    return AgentSettings.isValid({ claude: { yolo: false, model }, codex: { yolo: false } })
+    return AgentSettings.isValid({
+      claude: { yolo: false, model },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+    })
   }
 
   it('offers both agents something and refuses an agent it does not know', () => {
@@ -78,6 +82,8 @@ describe('app-client-ui/shared/agentModels', () => {
     expect(AgentModels.effortsFor('codex')).toEqual([
       'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
     ])
+    expect(AgentModels.effortsFor('antigravity')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(AgentModels.optionOf('antigravity', 'gemini-4-neon-high')?.label).toBe('Gemini 4 Neon (High)')
     for (const agentId of agentsConst)
       for (const option of AgentModels.optionsFor(agentId))
         for (const effort of option.efforts)

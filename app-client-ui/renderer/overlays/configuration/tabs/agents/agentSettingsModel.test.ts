@@ -4,7 +4,7 @@ import type { AgentSettingsValue } from '../../../../../shared/agentSettings'
 import { AgentSettingsModel, type AgentSettingsModelState } from './agentSettingsModel'
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSettingsModel', () => {
-  const storedConst = { claude: { yolo: false }, codex: { yolo: true } }
+  const storedConst = { claude: { yolo: false }, codex: { yolo: true }, antigravity: { yolo: false } }
 
   function loaded(): AgentSettingsModelState {
     return AgentSettingsModel.transition(AgentSettingsModel.initial().state, {
@@ -28,7 +28,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       value: true,
     }).state
 
-    expect(flipped.buffer).toEqual({ claude: { yolo: true }, codex: { yolo: true } })
+    expect(flipped.buffer).toEqual({ claude: { yolo: true }, codex: { yolo: true }, antigravity: { yolo: false } })
     expect(flipped.loaded).toEqual(storedConst)
     expect(AgentSettingsModel.isModified(flipped)).toBe(true)
   })
@@ -48,10 +48,14 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     expect(AgentSettingsModel.isModified(back)).toBe(false)
   })
 
-  it('resets both agents without writing anything', () => {
+  it('resets all agents without writing anything', () => {
     const reset = AgentSettingsModel.transition(loaded(), { input: 'reset' })
 
-    expect(reset.state.buffer).toEqual({ claude: { yolo: false }, codex: { yolo: false } })
+    expect(reset.state.buffer).toEqual({
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+    })
     expect(reset.effects).toEqual([])
   })
 
@@ -61,6 +65,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     const stored = {
       claude: { yolo: true, model: 'opus', note: 'for merge sessions' },
       codex: { yolo: true },
+      antigravity: { yolo: true },
     } as unknown as AgentSettingsValue
     const start = AgentSettingsModel.transition(AgentSettingsModel.initial().state, {
       input: 'loaded',
@@ -72,6 +77,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     expect(reset.buffer).toEqual({
       claude: { yolo: false, note: 'for merge sessions' },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     })
   })
 
@@ -105,7 +111,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     }).state
 
     expect(refused.problem).toBe('section-damaged: repair it by hand')
-    expect(refused.buffer).toEqual({ claude: { yolo: true }, codex: { yolo: true } })
+    expect(refused.buffer).toEqual({ claude: { yolo: true }, codex: { yolo: true }, antigravity: { yolo: false } })
     expect(refused.loaded).toEqual(storedConst)
     expect(AgentSettingsModel.isModified(refused)).toBe(true)
   })
@@ -140,6 +146,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
         autoCompactEnabled: true,
       },
       codex: { yolo: true },
+      antigravity: { yolo: false },
     })
     expect(AgentSettingsModel.isModified(enabled)).toBe(true)
     expect(AgentSettingsModel.isModified({ ...enabled, loaded: enabled.buffer })).toBe(false)
@@ -149,6 +156,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     const withModelConst = {
       claude: { yolo: false, model: 'opus' },
       codex: { yolo: true, model: 'gpt-5.5' },
+      antigravity: { yolo: false },
     }
 
     function loadedWith(value: typeof withModelConst): AgentSettingsModelState {
@@ -168,6 +176,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       expect(typed.buffer).toEqual({
         claude: { yolo: false, model: 'claude-fable-5' },
         codex: { yolo: true },
+        antigravity: { yolo: false },
       })
       expect(typed.loaded).toEqual(storedConst)
       expect(AgentSettingsModel.isModified(typed)).toBe(true)
@@ -227,7 +236,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const reset = AgentSettingsModel.transition(loadedWith(withModelConst), { input: 'reset' })
         .state
 
-      expect(reset.buffer).toEqual({ claude: { yolo: false }, codex: { yolo: false } })
+      expect(reset.buffer).toEqual({
+        claude: { yolo: false },
+        codex: { yolo: false },
+        antigravity: { yolo: false },
+      })
       expect(AgentSettingsModel.isModified(reset)).toBe(true)
     })
 
@@ -251,6 +264,20 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     const back = AgentSettingsModel.transition(normal, { input: 'processPriority', value: 'below-normal' }).state
     expect(back.buffer).toEqual(storedConst)
     expect(AgentSettingsModel.isModified(back)).toBe(false)
+  })
+
+  it('edits antigravity settings independently and marks dirty', () => {
+    const moved = AgentSettingsModel.transition(
+      AgentSettingsModel.transition(loaded(), { input: 'yolo', agentId: 'antigravity', value: true }).state,
+      { input: 'model', agentId: 'antigravity', value: 'gemini-3-pro' },
+    ).state
+
+    expect(moved.buffer).toEqual({
+      claude: { yolo: false },
+      codex: { yolo: true },
+      antigravity: { yolo: true, model: 'gemini-3-pro' },
+    })
+    expect(AgentSettingsModel.isModified(moved)).toBe(true)
   })
 
 })

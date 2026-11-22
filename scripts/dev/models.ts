@@ -67,12 +67,15 @@ class DevModels {
   static async run(): Promise<void> {
     const claude = await DevModels.claudeOptions()
     const codex = await DevModels.codexOptions()
+    const antigravity = await DevModels.antigravityOptions()
     console.log('// Measured ' + new Date().toISOString().slice(0, 10)
-      + ` against ${DevModels.userAgentConst} and ${await DevModels.codexVersion()}.`)
+      + ` against ${DevModels.userAgentConst}, ${await DevModels.codexVersion()}, and ${await DevModels.antigravityVersion()}.`)
     console.log('')
     DevModels.printSection('claudeConst', claude)
     console.log('')
     DevModels.printSection('codexConst', codex)
+    console.log('')
+    DevModels.printSection('antigravityConst', antigravity)
   }
 
   private static printSection(name: string, options: readonly PrintedOption[] | string): void {
@@ -254,22 +257,48 @@ class DevModels {
   }
 
   private static async codexVersion(): Promise<string> {
-    const answer = await DevModels.runCodex(['--version'])
+    const answer = await DevModels.runCli('codex', ['--version'])
     return answer.ok ? answer.text.trim() : 'an unknown Codex CLI'
   }
 
+  private static async antigravityOptions(): Promise<readonly PrintedOption[] | string> {
+    const answer = await DevModels.runCli('agy', ['models'])
+    if (!answer.ok) return `not printed - ${answer.reason}`
+    const options: PrintedOption[] = []
+    for (const line of answer.text.split(/\r?\n/)) {
+      const tab = line.indexOf('\t')
+      if (tab <= 0) continue
+      const id = line.slice(0, tab).trim()
+      const label = line.slice(tab + 1).trim() || id
+      if (id.length === 0) continue
+      const context = id.startsWith('claude-') ? DevModels.twoHundredThousandTokensConst
+        : id.startsWith('gpt-') ? 128_000 : 1_048_576
+      options.push({ id, label, kind: 'version', context, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] })
+    }
+    return options.length > 0 ? options : 'not printed - agy models returned no model rows'
+  }
+
+  private static async antigravityVersion(): Promise<string> {
+    const answer = await DevModels.runCli('agy', ['--version'])
+    return answer.ok ? `Antigravity CLI ${answer.text.trim()}` : 'an unknown Antigravity CLI'
+  }
+
+  private static runCodex(args: readonly string[]): Promise<CommandAnswer> {
+    return DevModels.runCli('codex', args)
+  }
+
   /**
-   * Windows is why the wrap exists: `codex` installs as a `.cmd` shim there, which no spawn can
-   * execute directly. `cwd` is the home directory rather than this repository, because `cmd /c`
+   * Windows is why the wrap exists: CLIs install as `.cmd`/`.exe` shims there, which no bare spawn
+   * executes uniformly. `cwd` is the home directory rather than this repository, because `cmd /c`
    * searches the CURRENT directory before PATH. The environment loses every `JAMAT*` variable, the
    * same filter `LaunchPlanner` uses, so a terminal opened inside another generation of Jamat does
    * not reach this child.
    */
-  private static runCodex(args: readonly string[]): Promise<CommandAnswer> {
+  private static runCli(executable: string, args: readonly string[]): Promise<CommandAnswer> {
     return new Promise<CommandAnswer>((settle) => {
       const win32 = process.platform === 'win32'
-      const command = win32 ? process.env.ComSpec ?? 'cmd.exe' : 'codex'
-      const spawnArgs = win32 ? ['/d', '/q', '/c', 'codex', ...args] : [...args]
+      const command = win32 ? process.env.ComSpec ?? 'cmd.exe' : executable
+      const spawnArgs = win32 ? ['/d', '/q', '/c', executable, ...args] : [...args]
       const child = spawn(command, spawnArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
@@ -289,23 +318,23 @@ class DevModels {
       const failed = (reason: string): void => finish({ ok: false, reason })
       const timer = setTimeout(() => {
         child.kill()
-        failed(`codex ${args.join(' ')} did not answer in `
+        failed(`${executable} ${args.join(' ')} did not answer in `
           + `${DevModels.spawnTimeoutMillisecondsConst / 1000}s`)
       }, DevModels.spawnTimeoutMillisecondsConst)
       child.stdout.on('data', (chunk: Buffer) => {
         bytes += chunk.length
         if (bytes > DevModels.maximumBytesConst) {
           child.kill()
-          failed(`codex ${args.join(' ')} wrote more than a catalog can be`)
+          failed(`${executable} ${args.join(' ')} wrote more than a catalog can be`)
           return
         }
         out += chunk.toString('utf8')
       })
       child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
-      child.once('error', (error) => failed(`codex could not be started (${ErrorText.of(error)})`))
+      child.once('error', (error) => failed(`${executable} could not be started (${ErrorText.of(error)})`))
       child.once('exit', (code) => {
         if (code === 0) finish({ ok: true, text: out })
-        else failed(`codex ${args.join(' ')} exited ${code}: ${stderr.trim() || 'no message'}`)
+        else failed(`${executable} ${args.join(' ')} exited ${code}: ${stderr.trim() || 'no message'}`)
       })
     })
   }

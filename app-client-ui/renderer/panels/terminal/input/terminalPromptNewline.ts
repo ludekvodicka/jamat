@@ -53,8 +53,8 @@ export class TerminalPromptNewline {
     // Ctrl+Shift+Enter and its like are somebody else's key, and not one this may answer for.
     if (event.ctrlKey || event.altKey || event.metaKey) return null
     if (agentId === null) return null
-    else if (agentId === 'claude') return TerminalPromptNewline.claudeSequenceConst
+    else if (agentId === 'claude' || agentId === 'antigravity') return TerminalPromptNewline.claudeSequenceConst
     else if (agentId === 'codex') return TerminalPromptNewline.codexSequenceConst
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

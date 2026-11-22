@@ -81,6 +81,8 @@ export interface OrchestratorApi {
   stopAccounts(): void | Promise<void>
   stopRateMonitor(): void | Promise<void>
   stopSessionNotifier(): void | Promise<void>
+  stopLimitRecovery(): void | Promise<void>
+  stopProjectTodos(): void
   stopSnapins(): void | Promise<void>
   stopSessions(): void | Promise<void>
   stopSvnAssemblyWorker(): void | Promise<void>

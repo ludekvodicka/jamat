@@ -4,7 +4,8 @@ import type {
   SessionColorName,
   SessionOperation,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { AppCommands, type CommandDescriptor } from '../../../shared/commands'
+import { AppCommands, type CommandDescriptor, type CommandId } from '../../../shared/commands'
+import { LauncherLabels } from '../../overlays/launcher/launcherLabels'
 import { PanelKeysConst } from '../../../shared/tabTransfer'
 import type { CommandRegistry } from '../../commands/commandRegistry'
 import { SessionCommandRun } from '../../commands/sessionCommandRun'
@@ -36,6 +37,17 @@ export interface TabSessionFacts {
   admits: readonly SessionOperation[]
   /** Whether the sessions tree row offers Finish for this worktree session; the tab runs that same Finish. */
   finish: boolean
+}
+
+/** Labels that name the session's own agent, shared by the tab menu and the sessions tree's menu. */
+export class SessionMenuLabels {
+  /**
+   * `session.newBeside` keeps the session's agent, so inside `New session` it reads as that agent; a
+   * shell session has none, and the create card then asks for one.
+   */
+  static of(agentId: SessionAgentId | null): (id: CommandId) => string | undefined {
+    return (id) => id !== 'session.newBeside' ? undefined : agentId === null ? 'Choose agent…' : LauncherLabels.agentLabelOf(agentId)
+  }
 }
 
 /**
@@ -90,6 +102,7 @@ export function TabContextMenu(props: {
             }
             SessionCommandRun.at(props.commands, id, sessionId, endpoint ?? undefined)
           },
+          labelOf: SessionMenuLabels.of(props.facts?.agentId ?? null),
           setColor: (color) => props.commands.execute('session.setColor', {
             color,
             ...(target ? { sessionId: target.sessionId, ...(endpoint ? { remoteEndpointId: endpoint } : {}) } : {}),
@@ -127,11 +140,13 @@ class TabContextMenuItems {
       .filter((descriptor) => descriptor.id !== 'session.setColor' || onSession)
       .filter((descriptor) => descriptor.id !== 'session.newBeside'
         || onSession && placed && admits('newBeside'))
-      // Only ever the OTHER agent: the one this tab already runs is not an alternative to itself.
+      // Only ever OTHER agents: the one this tab already runs is not an alternative to itself.
       .filter((descriptor) => descriptor.id !== 'session.newInClaude'
-        || onSession && placed && admits('newBeside') && facts?.agentId === 'codex')
+        || onSession && placed && admits('newBeside') && facts?.agentId !== null && facts?.agentId !== undefined && facts.agentId !== 'claude')
       .filter((descriptor) => descriptor.id !== 'session.newInCodex'
-        || onSession && placed && admits('newBeside') && facts?.agentId === 'claude')
+        || onSession && placed && admits('newBeside') && facts?.agentId !== null && facts?.agentId !== undefined && facts.agentId !== 'codex')
+      .filter((descriptor) => descriptor.id !== 'session.newInAntigravity'
+        || onSession && placed && admits('newBeside') && facts?.agentId !== null && facts?.agentId !== undefined && facts.agentId !== 'antigravity')
       .filter((descriptor) => descriptor.id !== 'session.fork'
         || onSession && placed && admits('fork'))
       // Resume uses the selected record directly; only creation commands need a launcher binding.
@@ -141,6 +156,9 @@ class TabContextMenuItems {
         || onSession && admits('restart') && facts?.ended === false)
       .filter((descriptor) => descriptor.id !== 'session.compact' || onSession && admits('compact'))
       .filter((descriptor) => descriptor.id !== 'session.showActions' || onSession)
+      // The todo list is a file of this computer's project; a paired computer's tab has none here.
+      .filter((descriptor) => descriptor.id !== 'session.showTodos'
+        || onSession && TerminalTargetCodec.read(params)?.target.kind !== 'remote')
       // The row's Finish runs on this computer's tree, so a paired computer's tab has none here.
       .filter((descriptor) => descriptor.id !== 'session.finish'
         || onSession && facts?.finish === true && TerminalTargetCodec.read(params)?.target.kind !== 'remote')

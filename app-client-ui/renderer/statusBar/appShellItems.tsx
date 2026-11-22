@@ -98,7 +98,7 @@ export class AppShellItems {
           key: 'session-model',
           node: <SessionModelItem reading={widgets.sessionModel} compact={widgets.compact} />,
         })
-      if (!focus.remoteEndpointId) items.push({
+      if (!focus.remoteEndpointId && (focus.agentId === 'claude' || focus.agentId === 'codex' || focus.agentId === 'antigravity')) items.push({
         key: 'rate',
         node: (
           <RateStatusItem

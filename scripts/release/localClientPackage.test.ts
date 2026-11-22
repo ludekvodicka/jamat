@@ -25,7 +25,7 @@ class FixturePackage extends LocalClientPackage {
     for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs', 'resources/codex/start.cjs', 'resources/gateway/start.cjs',
       'resources/remarkable-sidecar/manifest.json', 'resources/cli/jamat-v3.cjs',
       ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => 'resources/orchestrator/' + name + '.cjs'),
-      ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
+      ...['claude', 'codex', 'antigravity'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => `resources/skills/${agent}/${skill}/SKILL.md`)),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',
         'LICENSE', 'NODE-LICENSE.txt', 'WS-LICENSE.txt'].map(name => `resources/launcher/${name}`)])

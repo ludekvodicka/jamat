@@ -2514,8 +2514,7 @@ class RemoteSessionMenu {
     const endpointId = TerminalTargetCodec.endpointOf(node.target)
     if (endpointId === null)
       throw new Error(`A remote row was drawn for a local session: ${node.sessionId}`)
-    if (facts) items.push(...SessionsTreeMenuItems.forNode(commands, node.sessionId, facts, [], () => {}, endpointId)
-      .filter((entry) => entry.key !== 'session.showActions' && entry.key !== 'session.copyReference'))
+    if (facts) items.push(...SessionsTreeMenuItems.forNode(commands, node.sessionId, facts, [], () => {}, endpointId))
     items.push({ key: 'session-actions', label: 'Session actions', disabled: !chrome.supportsActions(node.target), onSelect: () => chrome.openActions(node) })
     items.push({ key: 'disconnect', label: 'Disconnect',
       onSelect: () => chrome.disconnect(endpointId, [node.sessionId]) })

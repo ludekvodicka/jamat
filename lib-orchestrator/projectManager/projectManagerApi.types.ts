@@ -89,6 +89,7 @@ export type ProjectsOpErrorCode =
   | 'invalid-name'
   | 'claude-store-conflict'
   | 'codex-store-conflict'
+  | 'antigravity-store-conflict'
   | 'relocation-in-progress'
   | 'locked'
   | 'not-contained'
@@ -107,14 +108,14 @@ export interface RelocationReport {
   /** Null when no operation was ever opened: nothing was journalled, so no sweep can find one. */
   operationId: string | null
   directoryRenamed: boolean
-  providers: { claude: ProviderOutcome; codex: ProviderOutcome }
+  providers: { claude: ProviderOutcome; codex: ProviderOutcome; antigravity?: ProviderOutcome }
   leftoverCount: number
 }
 
 export interface ProviderSessionSummary {
-  agentId: 'claude' | 'codex'
+  agentId: 'claude' | 'codex' | 'antigravity'
   nativeSessionId: string
-  /** Claude: custom title, else slug. Codex: thread name. */
+  /** Claude: custom title, else slug. Codex: thread name. Antigravity: conversation title. */
   title: string | null
   firstUserMessage: string | null
   createdAt: number
@@ -126,6 +127,7 @@ export interface ProviderSessionSummary {
 export interface ProjectSessionsResult {
   claude: ProviderSessionSummary[]
   codex: ProviderSessionSummary[]
+  antigravity?: ProviderSessionSummary[]
   merged: ProviderSessionSummary[]
 }
 
@@ -136,6 +138,7 @@ export interface DeletePreview {
   projectFileCount: number
   claude: { encodedDirectory: string | null; transcriptFiles: string[] }
   codex: { rolloutFiles: string[] }
+  antigravity?: { conversationFiles: string[] }
 }
 
 export interface DeleteReport {

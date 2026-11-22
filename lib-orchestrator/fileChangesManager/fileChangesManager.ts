@@ -31,6 +31,7 @@ import type {
 } from './fileChangesManagerApi.types'
 import { FileHistoryComposer } from './history/fileHistoryComposer'
 import { FileChangesListing, type FileChangesListingItem } from './listing/fileChangesListing'
+import { FileChangesLogSourceAntigravity } from './logs/fileChangesLogSourceAntigravity'
 import { FileChangesLogSourceClaude } from './logs/fileChangesLogSourceClaude'
 import { FileChangesLogSourceCodex } from './logs/fileChangesLogSourceCodex'
 import type { FileChangesLogGroup, FileChangesLogMutation, FileChangesShellRun } from './logs/fileChangesLogSource.types'
@@ -149,7 +150,11 @@ export class FileChangesManager {
     )
     this.transcriptResolver = deps.transcriptResolver ?? new ProviderTranscriptView()
     const logReaders = deps.logReaders
-      ?? [new FileChangesLogSourceClaude(), new FileChangesLogSourceCodex()]
+      ?? [
+        new FileChangesLogSourceClaude(),
+        new FileChangesLogSourceCodex(),
+        new FileChangesLogSourceAntigravity(),
+      ]
     this.logReaders = new Map(logReaders.map((source) => [source.agentId, source]))
     this.snapshots = deps.snapshotStore ?? new FileChangesSnapshotStore()
     this.diffBuilder = new FileDiffBuilder(deps.diffExecutor)

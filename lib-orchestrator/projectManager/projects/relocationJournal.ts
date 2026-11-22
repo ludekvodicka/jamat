@@ -165,7 +165,7 @@ export class RelocationJournal implements RelocationJournalWriter {
   private static coerceStep(candidate: unknown): RelocationStep | null {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null
     const step = candidate as Partial<RelocationStep>
-    if (step.provider !== 'claude' && step.provider !== 'codex') return null
+    if (step.provider !== 'claude' && step.provider !== 'codex' && step.provider !== 'antigravity') return null
     if (!RelocationJournal.isFilledString(step.file)) return null
     if (typeof step.state !== 'string' || !RelocationJournal.stepStatesConst.has(step.state))
       return null

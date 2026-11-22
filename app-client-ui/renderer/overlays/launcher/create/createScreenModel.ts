@@ -13,6 +13,7 @@ import type {
   SessionWorktreeDirectory,
   SessionWorktreePreview,
 } from '../../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import { AgentGlyph } from '../../../sessions/agentGlyph'
 import { FlowCatalog } from '../flows/flowCatalog'
 import type { LauncherBinding } from '../launcherBinding'
 import type { LauncherSessionPrefill } from '../launcherIntentStore'
@@ -1085,6 +1086,134 @@ export class CreateScreenModel {
   }
 
   /**
+   * The shortcut letter drawn on each type card, in the same order as `types`: built-in types keep
+   * fixed letters (`R`, `O`, `S`) that never collide with the agent marks (`C`/`X`/`A`) or global
+   * `W`/`N`/`D`, and each flow claims the first unused ASCII letter of its title.
+   */
+  static typeShortcutsOf(types: readonly CreateType[]): readonly (string | null)[] {
+    const used = new Set<string>([
+      'W',
+      'N',
+      'D',
+      ...CreateScreenModel.agentOrderConst.map((agentId) => AgentGlyph.markOf(agentId).toUpperCase()),
+    ])
+    const fixed = (type: CreateType): string | null => {
+      if (type.kind === 'raw') return 'R'
+      if (type.kind === 'existing') return 'O'
+      if (type.kind === 'shell') return 'S'
+      return null
+    }
+    for (const type of types) {
+      const letter = fixed(type)
+      if (letter !== null) used.add(letter)
+    }
+    return types.map((type) => {
+      if (type.kind === 'raw') return 'R'
+      else if (type.kind === 'existing') return 'O'
+      else if (type.kind === 'shell') return 'S'
+      else if (type.kind === 'flow') {
+        const title = FlowCatalog.byId(type.flowId).title
+        for (const character of title) {
+          if (!/^[A-Za-z]$/.test(character)) continue
+          const upper = character.toUpperCase()
+          if (used.has(upper)) continue
+          used.add(upper)
+          return upper
+        }
+        return null
+      }
+      else
+        throw new Error(`Unknown create type: ${JSON.stringify(type satisfies never)}`)
+    })
+  }
+
+  static isolationShortcutOf(worktree: boolean): string {
+    return worktree ? 'W' : '0'
+  }
+
+  static accountShortcutOf(index: number): string | null {
+    return index >= 0 && index < 9 ? String(index + 1) : null
+  }
+
+  /**
+   * Globally unique keyboard shortcuts across the whole New Session dialog so every choice can be
+   * picked from any non-name row without stepping between rows first:
+   * - Agent: `C` / `X` / `A` (from `AgentGlyph.markOf`), plus `*` for `All` in Continue/Fork
+   * - Type: `R` (Raw), `F` (Feature request), `O` (Continue/Fork), `S` (Shell)
+   * - Isolation: `0` (None), `W` (toggle Worktree)
+   * - Account: `1`..`9` (when multiple active accounts are offered)
+   * - Model (remote): `D` (Target default), plus `1`..`9` when standing on the Model row or when
+   *   no Account row is shown
+   * - Name: `N`
+   */
+  static shortcutInputOf(
+    state: CreateScreenState,
+    key: string,
+    options?: { code?: string; shiftKey?: boolean },
+  ): CreateScreenInput | null {
+    const letter = key.length === 1 ? key.toLowerCase() : null
+    const digit = CreateScreenModel.digitOf(key, options?.code, options?.shiftKey)
+    const existing = CreateScreenModel.typeOf(state).kind === 'existing'
+    const remote = CreateScreenModel.endpointOf(state.target) !== null
+
+    if (letter !== null) {
+      const matchedAgent = CreateScreenModel.agentOrderConst.find(
+        (agentId) => AgentGlyph.markOf(agentId).toLowerCase() === letter,
+      )
+      if (matchedAgent !== undefined)
+        return existing
+          ? { input: 'chooseExistingAgent', agentId: matchedAgent }
+          : { input: 'chooseAgent', agentId: matchedAgent }
+      if (existing && key === '*')
+        return { input: 'chooseExistingAgent', agentId: 'all' }
+
+      const types = CreateScreenModel.typesOf(state)
+      const typeIndex = CreateScreenModel.typeShortcutsOf(types)
+        .findIndex((shortcut) => shortcut?.toLowerCase() === letter)
+      if (typeIndex >= 0) return { input: 'chooseType', index: typeIndex }
+    }
+
+    if (!remote && !existing && digit === 0)
+      return { input: 'chooseIsolation', worktree: false }
+
+    const models = remote && !existing ? CreateScreenModel.modelOptionsOf(state) : []
+    if (letter === 'd' && models.length > 0)
+      return { input: 'chooseModel', modelId: null }
+
+    if (digit !== null && digit >= 1) {
+      const accounts = CreateScreenModel.accountOptionsOf(state)
+      if (state.field === 'model' && models.length > 0) {
+        const chosen = models[digit - 1]
+        return chosen === undefined ? null : { input: 'chooseModel', modelId: chosen.id }
+      }
+      if (accounts.length > 1) {
+        const chosen = accounts[digit - 1]
+        return chosen === undefined ? null : { input: 'chooseAccount', accountId: chosen.accountId }
+      }
+      if (models.length > 0) {
+        const chosen = models[digit - 1]
+        return chosen === undefined ? null : { input: 'chooseModel', modelId: chosen.id }
+      }
+    }
+
+    if (letter === 'w') return { input: 'toggleWorktree' }
+    if (letter === 'n') return { input: 'nameFocus' }
+    return null
+  }
+
+  /**
+   * 0..9 from either the typed character (US top row, numpad, or shifted Czech top row) or the
+   * unshifted physical `Digit0`..`Digit9` key (Czech QWERTZ top row where unshifted keys produce
+   * accented letters). Shifted symbols like `*` (`Shift+8`) stay symbols and never turn into `8`.
+   */
+  private static digitOf(key: string, code?: string, shiftKey?: boolean): number | null {
+    if (key.length === 1 && key >= '0' && key <= '9') return Number(key)
+    if (shiftKey !== true && code !== undefined && /^Digit[0-9]$/.test(code))
+      return Number(code.slice(5))
+    return null
+  }
+
+  /**
    * `←→` belongs to the row, not to one control: the same keystroke picks a type, an isolation or an
    * agent depending on where the cursor is. On the name row it does nothing, because there the
    * arrows belong to the text.
@@ -1098,7 +1227,7 @@ export class CreateScreenModel {
     else if (state.field === 'agent')
       return CreateScreenModel.typeOf(state).kind === 'existing'
         ? CreateScreenModel.steppedExistingAgent(state, delta)
-        : CreateScreenModel.agented(state, delta > 0 ? 'codex' : 'claude')
+        : CreateScreenModel.steppedAgent(state, delta)
     else if (state.field === 'model') return CreateScreenModel.steppedModel(state, delta)
     else if (state.field === 'account') {
       const options = CreateScreenModel.accountOptionsOf(state)
@@ -1204,16 +1333,28 @@ export class CreateScreenModel {
       { ...state, existingAgentFilter: agentId, field: 'agent' }, 0)
   }
 
+  private static readonly agentOrderConst: readonly SessionAgentId[] = ['claude', 'codex', 'antigravity']
+
+  private static steppedAgent(state: CreateScreenState, delta: number): CreateScreenStep {
+    const agents = CreateScreenModel.agentOrderConst
+    const at = agents.indexOf(state.agentId)
+    const next = Math.min(Math.max(at + delta, 0), agents.length - 1)
+    return CreateScreenModel.agented(state, agents[next] ?? 'claude')
+  }
+
   private static cycledAgent(state: CreateScreenState): CreateScreenStep {
-    if (CreateScreenModel.typeOf(state).kind !== 'existing')
-      return CreateScreenModel.agented(state, state.agentId === 'claude' ? 'codex' : 'claude')
-    const filters: readonly ExistingAgentFilter[] = ['claude', 'codex', 'all']
+    if (CreateScreenModel.typeOf(state).kind !== 'existing') {
+      const agents = CreateScreenModel.agentOrderConst
+      const at = agents.indexOf(state.agentId)
+      return CreateScreenModel.agented(state, agents[(at + 1) % agents.length] ?? 'claude')
+    }
+    const filters: readonly ExistingAgentFilter[] = [...CreateScreenModel.agentOrderConst, 'all']
     const at = filters.indexOf(state.existingAgentFilter)
     return CreateScreenModel.existingAgented(state, filters[(at + 1) % filters.length] ?? 'all')
   }
 
   private static steppedExistingAgent(state: CreateScreenState, delta: number): CreateScreenStep {
-    const filters: readonly ExistingAgentFilter[] = ['claude', 'codex', 'all']
+    const filters: readonly ExistingAgentFilter[] = [...CreateScreenModel.agentOrderConst, 'all']
     const at = filters.indexOf(state.existingAgentFilter)
     const next = Math.min(Math.max(at + delta, 0), filters.length - 1)
     return CreateScreenModel.existingAgented(state, filters[next] ?? 'all')

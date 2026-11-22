@@ -15,7 +15,8 @@ export class AgentGlyph {
   static markOf(agentId: SessionAgentId): string {
     if (agentId === 'claude') return 'C'
     else if (agentId === 'codex') return 'X'
+    else if (agentId === 'antigravity') return 'A'
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

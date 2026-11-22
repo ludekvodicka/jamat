@@ -35,6 +35,7 @@ import { WorktreeLease } from '../worktrees/worktreeLease'
 import type { WorktreeResultRecord } from '../worktrees/worktreeResults'
 import type { SessionRecord, SessionRecordsDocument } from './records/sessionRecord.types'
 import type { SessionInfo, SessionsOpResult, WorktreeResultsFilter } from './sessionManagerApi.types'
+import type { SessionLimitRecoveryInfo } from '../limitRecovery/limitRecoveryApi.types'
 import { SessionLifecycle } from './lifecycle/sessionLifecycle'
 import { RunTools } from './launch/runTools'
 import { TerminalGateway, type TerminalGatewayDeps } from './terminalGateway'
@@ -236,6 +237,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     options?: {
       accounts?: SessionManagerDeps['accounts']
       rates?: SessionManagerDeps['rates']
+      limitRecovery?: SessionManagerDeps['limitRecovery']
       autoStartHost?: boolean
       spawnPublishes?: boolean
       codexHome?: string
@@ -268,6 +270,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       closeTerminals: options?.closeTerminals ?? (async () => terminals.closeAll()),
       accounts: options?.accounts,
       rates: options?.rates,
+      limitRecovery: options?.limitRecovery,
       applicationRoot: join(import.meta.dirname, '..', '..'),
       resourcesRoot: null,
       configDir: context.configDir,
@@ -1170,6 +1173,28 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(storedRecord(context, 'codex-old')?.agent?.nativeSessionId).toBe(captured ? conversationId : undefined)
     expect(client.errors).toEqual([])
   }, 20_000)
+
+  it('answers the catalog project of a session, the main copy for a worktree and null outside the catalog', async () => {
+    const context = await world()
+    const projectPath = join(context.categoryRoot, 'Alpha')
+    seedRecords(context, [
+      recordOf(context, 'inside', { directory: { mode: 'adHoc', path: join(projectPath, 'docs') } }),
+      recordOf(context, 'worktree', {
+        directory: { mode: 'project', categoryId: 'code', projectPath },
+        worktree: { kind: 'svn', worktreePath: join(context.root, 'trees', 'alpha-1'), repositoryRoot: projectPath, branch: 'url', baseCommit: 'r1' },
+      }),
+      recordOf(context, 'outside', {}),
+    ])
+    const client = clientOf(context)
+
+    expect(await client.manager.catalogProject('inside')).toEqual({ ok: true, value: projectPath })
+    expect(await client.manager.catalogProject('worktree')).toEqual({ ok: true, value: projectPath })
+    expect(await client.manager.catalogProject('outside')).toEqual({ ok: true, value: null })
+    expect(await client.manager.catalogProject('unknown')).toMatchObject({ ok: false, code: 'unknown-session' })
+    expect(await client.manager.catalogProjectOf(join(projectPath, 'docs', 'architecture'))).toBe(projectPath)
+    expect(await client.manager.catalogProjectOf(context.root)).toBeNull()
+    expect(client.spawns()).toBe(0)
+  })
 
   it('lists recorded agent history without finding transcripts or starting the Host', async () => {
     const context = await world()
@@ -3659,6 +3684,18 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     usedPercent = 10
     client.manager.ratesChanged()
     expect(sessionOf(client, 'b')?.agent?.accountExhausted).toBeUndefined()
+  })
+
+  it('draws the limit recovery of an agent session and recomposes when it moves', async () => {
+    const context = await world()
+    seedRecords(context, [recordOf(context, 'b', { kind: 'agent', agent: { agentId: 'claude', launchMode: 'new', accountId: 'b' } })])
+    let recovery: SessionLimitRecoveryInfo | null = null
+    const client = clientOf(context, { limitRecovery: () => recovery })
+    await client.start()
+    expect(sessionOf(client, 'b')?.limitRecovery).toBeUndefined()
+    recovery = { state: 'failed', limit: { account: { accountId: 'b', label: 'B' }, window: 'session', resetsAt: null }, detail: 'gone' }
+    client.manager.limitRecoveryChanged()
+    expect(sessionOf(client, 'b')?.limitRecovery).toEqual(recovery)
   })
 
   it('recomposes on a rate change only when an account becomes or stops being exhausted', async () => {

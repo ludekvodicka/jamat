@@ -1,5 +1,11 @@
 import type { ProviderSubagentFileRef, ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import { ErrorText } from '../shared/errorText'
+import { AntigravityShellScan } from './antigravity/antigravityShellScan'
+import { AntigravitySubagentTranscript } from './antigravity/antigravitySubagentTranscript'
+import {
+  type AntigravitySubagentMemo,
+  SessionTasksSourceAntigravity,
+} from './antigravity/sessionTasksSourceAntigravity'
 import { ClaudeShellOutput } from './claude/claudeShellOutput'
 import { ClaudeShellScan } from './claude/claudeShellScan'
 import { ClaudeSubagentTranscript } from './claude/claudeSubagentTranscript'
@@ -66,15 +72,21 @@ export class SessionTasks {
   private static readonly noShellsConst: SessionShellRows = { rows: [], olderFinished: 0, catchingUp: false }
 
   private readonly files: Pick<ProviderTranscriptView, 'subagentFiles' | 'resolve' | 'claudeShellOutputFile'>
+    & Partial<Pick<ProviderTranscriptView, 'antigravityShellOutputFile'>>
   private readonly claude = new SessionTasksSourceClaude()
   private readonly codex = new SessionTasksSourceCodex()
+  private readonly antigravity = new SessionTasksSourceAntigravity()
   private readonly shells = new ClaudeShellScan()
+  private readonly antigravityShells = new AntigravityShellScan()
   private readonly memos = new Map<string, ClaudeSubagentMemo>()
   private readonly codexMemos = new Map<string, CodexSubagentMemo>()
+  private readonly antigravityMemos = new Map<string, AntigravitySubagentMemo>()
   private readonly transcripts = new ClaudeSubagentTranscript()
   private readonly codexTranscripts = new CodexSubagentTranscript()
+  private readonly antigravityTranscripts = new AntigravitySubagentTranscript()
 
-  constructor(files: Pick<ProviderTranscriptView, 'subagentFiles' | 'resolve' | 'claudeShellOutputFile'>) {
+  constructor(files: Pick<ProviderTranscriptView, 'subagentFiles' | 'resolve' | 'claudeShellOutputFile'>
+    & Partial<Pick<ProviderTranscriptView, 'antigravityShellOutputFile'>>) {
     this.files = files
   }
 
@@ -123,6 +135,11 @@ export class SessionTasks {
         source = async (files) => ({ ...await this.codex.list(files, parent, memo), shells: SessionTasks.noShellsConst })
         break
       }
+      case 'antigravity': {
+        const memo = SessionTasks.memoOf(this.antigravityMemos, context)
+        source = (files) => this.antigravityListed(context, files, parent, memo)
+        break
+      }
       default:
         throw new Error(`Unknown session task agent: ${JSON.stringify(context.agentId satisfies never)}`)
     }
@@ -166,6 +183,33 @@ export class SessionTasks {
     }
   }
 
+  private async antigravityListed(
+    context: SessionTasksContext,
+    files: readonly ProviderSubagentFileRef[],
+    parent: SessionTaskParentState,
+    memo: AntigravitySubagentMemo,
+  ): Promise<ListedSource> {
+    const transcript = await this.files.resolve({
+      agentId: 'antigravity',
+      cwd: context.cwd,
+      nativeSessionId: context.nativeSessionId,
+    })
+    const [scanned, listed] = await Promise.all([
+      transcript === null ? Promise.resolve(null) : this.antigravityShells.scan(transcript),
+      this.antigravity.list(files, parent, memo),
+    ])
+    return {
+      ...listed,
+      shells: scanned === null
+        ? SessionTasks.noShellsConst
+        : {
+          rows: scanned.shells.map((facts) => AntigravityShellScan.rowOf(facts, parent)),
+          olderFinished: scanned.olderFinished,
+          catchingUp: scanned.catchingUp,
+        },
+    }
+  }
+
   /** Two lists, each newest first, into one in which each keeps its own order. */
   private static merged(
     subagents: readonly SessionSubagentRow[],
@@ -201,7 +245,7 @@ export class SessionTasks {
   ): Promise<SessionSubagentTranscript> {
     if (!SessionTasks.idPatternConst.test(context.nativeSessionId))
       return { kind: 'none', code: 'transcript-not-found', reason: 'the native session id is not a plain id' }
-    let reader: ClaudeSubagentTranscript | CodexSubagentTranscript
+    let reader: ClaudeSubagentTranscript | CodexSubagentTranscript | AntigravitySubagentTranscript
     switch (context.agentId) {
       case 'claude':
         reader = this.transcripts
@@ -210,6 +254,9 @@ export class SessionTasks {
         if (context.startedAt === undefined)
           return { kind: 'none', code: 'unreadable', reason: 'the session start is not known' }
         reader = this.codexTranscripts
+        break
+      case 'antigravity':
+        reader = this.antigravityTranscripts
         break
       default:
         throw new Error(`Unknown session task agent: ${JSON.stringify(context.agentId satisfies never)}`)
@@ -251,6 +298,8 @@ export class SessionTasks {
         break
       case 'codex':
         return { kind: 'none', code: 'unknown-task', reason: 'Codex background shells are not read' }
+      case 'antigravity':
+        return this.antigravityShellOutput(context, shellId, parent, known)
       default:
         throw new Error(`Unknown session task agent: ${JSON.stringify(context.agentId satisfies never)}`)
     }
@@ -282,6 +331,48 @@ export class SessionTasks {
       if (row.state !== 'running')
         return { kind: 'none', code: 'unreadable', reason: `the output file of shell ${shellId} is gone` }
       // Claude Code may not have created the file yet: an empty output keeps the view following it.
+      const revision = `missing:${row.state}`
+      if (known === revision) return { kind: 'unchanged', revision }
+      return {
+        kind: 'output', revision, command: row.command, state: row.state, startedAt: row.startedAt, endedAt: row.endedAt,
+        text: '', earlierOutputOmitted: false,
+      }
+    }
+    catch (error) {
+      return { kind: 'none', code: 'unreadable', reason: `shell output unreadable: ${ErrorText.of(error)}` }
+    }
+  }
+
+  private async antigravityShellOutput(
+    context: SessionTasksContext,
+    shellId: string,
+    parent: SessionTaskParentState,
+    known: string | null,
+  ): Promise<SessionShellOutput> {
+    if (!SessionTasks.idPatternConst.test(shellId))
+      return { kind: 'none', code: 'unknown-task', reason: 'the shell id is not a plain id' }
+    try {
+      const transcript = await this.files.resolve({
+        agentId: 'antigravity',
+        cwd: context.cwd,
+        nativeSessionId: context.nativeSessionId,
+      })
+      if (transcript === null)
+        return { kind: 'none', code: 'transcript-not-found', reason: 'the session transcript was not found' }
+      let scanned = await this.antigravityShells.scan(transcript)
+      for (let calls = 1; calls < SessionTasks.shellScanCallsMaxConst && scanned.catchingUp
+        && !scanned.shells.some((one) => one.shellId === shellId); calls += 1)
+        scanned = await this.antigravityShells.scan(transcript)
+      const facts = scanned.shells.find((one) => one.shellId === shellId)
+      if (facts === undefined)
+        return { kind: 'none', code: 'unknown-task', reason: `the session has no background shell ${shellId}` }
+      const row = AntigravityShellScan.rowOf(facts, parent)
+      const file = this.files.antigravityShellOutputFile
+        ? await this.files.antigravityShellOutputFile({ nativeSessionId: context.nativeSessionId, shellId })
+        : null
+      if (file !== null) return await ClaudeShellOutput.read(file, row, known)
+      if (row.state !== 'running')
+        return { kind: 'none', code: 'unreadable', reason: `the output file of shell ${shellId} is gone` }
       const revision = `missing:${row.state}`
       if (known === revision) return { kind: 'unchanged', revision }
       return {

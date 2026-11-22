@@ -198,7 +198,7 @@ describe('lib-orchestrator/projectManager/projects/projectLifecycle', () => {
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.value.providers).toEqual({ claude: 'done', codex: 'done' })
+    expect(result.value.providers).toEqual({ claude: 'done', codex: 'done', antigravity: 'done' })
     expect(result.value.leftoverCount).toBe(0)
     expect(existsSync(oldPath)).toBe(false)
     expect(existsSync(join(newPath, 'readme.md'))).toBe(true)

@@ -129,10 +129,11 @@ test('paired V3 endpoint uses authenticated encrypted calls, reconnects and allo
     assert.equal((await fetch(url + '/api/update')).status, 404);
     assert.equal(requests.length, count);
   });
-  await t.test('launcher reads target projects and models, then forwards both agent choices with worktree and model', async () => {
+  await t.test('launcher reads target projects and models, then forwards all agent choices with worktree and model', async () => {
     assert.deepEqual(await (await fetch(url + '/api/launch-options')).json(), { projects: { categories: [] }, agents: { agents: [] }, createAvailable: true });
-    for (const agentId of ['codex', 'claude']) {
-      const input = { ...launch, operationId: randomUUID(), agentId, model: agentId === 'claude' ? 'opus' : 'gpt-5', worktree: agentId === 'claude' };
+    for (const agentId of ['codex', 'claude', 'antigravity']) {
+      const model = agentId === 'claude' ? 'opus' : agentId === 'antigravity' ? 'gemini-4-neon-high' : 'gpt-5';
+      const input = { ...launch, operationId: randomUUID(), agentId, model, worktree: agentId === 'claude' };
       const response = await post(input);
       assert.equal(response.status, 201);
       assert.equal((await response.json() as { session: { callerOperationId: string } }).session.callerOperationId, input.operationId);

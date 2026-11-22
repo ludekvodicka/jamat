@@ -20,11 +20,13 @@ export type CommandId =
   | 'session.newBeside'
   | 'session.newInClaude'
   | 'session.newInCodex'
+  | 'session.newInAntigravity'
   | 'session.fork'
   | 'session.resume'
   | 'session.restart'
   | 'session.compact'
   | 'session.showActions'
+  | 'session.showTodos'
   | 'session.finish'
   | 'session.commitSvn'
   | 'session.commitGit'
@@ -50,6 +52,7 @@ export type CommandId =
   | 'view.toggleRightSidebar'
   | 'view.toggleTabSidebar'
   | 'view.fileChanges'
+  | 'view.projectTodos'
   | 'view.fileBack'
   | 'view.fileForward'
   | 'view.maximizeToggle'
@@ -66,6 +69,9 @@ export type CommandMenuSection = 'file' | 'tab' | 'view' | 'tools' | 'window' | 
  * in, and no command of either is meaningful on the other.
  */
 export type CommandSurface = 'menu' | 'contextMenu' | 'sessionsTree' | 'sessionsTreeGroup'
+
+/** A parent row of a session's context menu; `AppCommands.submenuTitleOf` names it. */
+export type CommandContextSubmenu = 'new' | 'show' | 'commit' | 'open'
 
 /**
  * How much the surface that asked for a new session already knew. A project row knows both, so the
@@ -95,11 +101,13 @@ export interface CommandArgById {
   'session.newBeside': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.newInClaude': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.newInCodex': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.newInAntigravity': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.fork': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.resume': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.restart': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.compact': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.showActions': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.showTodos': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.finish': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.commitSvn': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.commitGit': { sessionId?: string; remoteEndpointId?: string } | undefined
@@ -157,6 +165,12 @@ export interface CommandDescriptor {
    * both have something in them, so a command filtered out takes no separator with it.
    */
   contextMenuGroup?: number
+  /**
+   * The parent row this command sits under in a context menu, and its block inside that submenu.
+   * The commands of one submenu form one row, at the place of the first of them that survived the
+   * menu's filter; a submenu whose every command was filtered out has no row.
+   */
+  contextSubmenu?: { id: CommandContextSubmenu; group: number }
   /**
    * This command is only meaningful with a value. The native menu can send an id and nothing else,
    * so such a command must not declare the `menu` surface; `commands.test.ts` holds that.

@@ -187,7 +187,7 @@ export class LocalClientPackage {
       join(directory, 'resources', 'gateway', 'start.cjs'),
       ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => join(directory, 'resources', 'orchestrator', name + '.cjs')),
       join(directory, 'resources', 'cli', 'jamat-v3.cjs'),
-      ...['claude', 'codex'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
+      ...['claude', 'codex', 'antigravity'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => join(directory, 'resources', 'skills', agent, skill, 'SKILL.md'))),
       join(directory, 'resources', 'remarkable-sidecar', 'manifest.json'),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',

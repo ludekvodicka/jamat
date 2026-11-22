@@ -25,7 +25,7 @@ class SkillLinkWorld {
 
   constructor() {
     for (const skill of ['appjamat-v3', 'mdext-renderer', 'session-automation-groups'])
-      for (const agent of ['claude', 'codex']) {
+      for (const agent of ['claude', 'codex', 'antigravity']) {
         const source = this.source(agent, skill)
         mkdirSync(source, { recursive: true })
         writeFileSync(join(source, 'SKILL.md'), agent, 'utf8')
@@ -41,10 +41,10 @@ class SkillLinkWorld {
     return join(this.repo, 'skills', agent, skill)
   }
 
-  target(agent: 'claude' | 'codex', skill = 'appjamat-v3'): string {
-    return agent === 'claude'
-      ? join(this.home, '.claude', 'skills', skill)
-      : join(this.home, '.codex', 'skills', skill)
+  target(agent: 'claude' | 'codex' | 'antigravity', skill = 'appjamat-v3'): string {
+    if (agent === 'claude') return join(this.home, '.claude', 'skills', skill)
+    else if (agent === 'codex') return join(this.home, '.codex', 'skills', skill)
+    else return join(this.home, '.gemini', 'config', 'skills', skill)
   }
 
   cleanup(): void {
@@ -98,8 +98,13 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     const installer = new SkillLinkInstaller({ repoRoot: world.repo, homeRoot: world.home, privateStateRoot: false, report: () => {},
       realpath: (path) => path })
     expect(installer.skipReason()).toBeNull()
-    expect(installer.install().map((result) => result.kind)).toEqual(Array(6).fill('created'))
+    expect(installer.install().map((result) => result.kind)).toEqual(Array(9).fill('created'))
     expect(lstatSync(world.target('claude')).isSymbolicLink()).toBe(true)
+    const manifest = JSON.parse(readFileSync(join(world.home, '.gemini', 'config', 'skills.json'), 'utf8')) as {
+      entries: Array<{ path: string }>
+    }
+    expect(manifest.entries).toHaveLength(1)
+    expect(realpathSync(manifest.entries[0]!.path)).toBe(realpathSync(join(world.repo, 'skills', 'antigravity')))
   })
 
   it('skips all links when the environment opt-out is supplied', () => {
@@ -129,7 +134,11 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     worlds.push(world)
     const codexHome = join(world.root, 'custom-codex')
     const deps = { repoRoot: world.repo, homeRoot: world.home, codexHome, report: () => {} }
-    expect(new SkillLinkInstaller(deps).roots()).toEqual([join(world.home, '.claude', 'skills'), join(codexHome, 'skills')])
+    expect(new SkillLinkInstaller(deps).roots()).toEqual([
+      join(world.home, '.claude', 'skills'),
+      join(codexHome, 'skills'),
+      join(world.home, '.gemini', 'config', 'skills'),
+    ])
     const initial = new SkillLinkInstaller(deps).install()
     const target = join(codexHome, 'skills', 'session-automation-groups')
     expect(initial.find(result => result.target === target)?.kind).toBe('created')
@@ -140,7 +149,7 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
       writeFileSync(join(source, 'SKILL.md'), 'new release')
     }
     const next = new SkillLinkInstaller({ ...deps, repoRoot: nextRoot }).install()
-    expect(next.map(result => result.kind)).toEqual(Array(6).fill('repointed'))
+    expect(next.map(result => result.kind)).toEqual(Array(9).fill('repointed'))
     expect(readFileSync(join(target, 'SKILL.md'), 'utf8')).toBe('new release')
   })
 
@@ -157,22 +166,49 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     expect(realpathSync(target)).toBe(realpathSync(foreign))
   })
 
-  it('creates all junctions and leaves correct links untouched', () => {
+  it('creates all links, registers Antigravity in skills.json, and leaves correct installs untouched', () => {
     const world = new SkillLinkWorld()
     worlds.push(world)
 
-    expect(world.installer.install().map((result) => result.kind)).toEqual([
-      'created', 'created', 'created', 'created', 'created', 'created',
-    ])
+    expect(world.installer.install().map((result) => result.kind)).toEqual(Array(9).fill('created'))
     for (const skill of ['appjamat-v3', 'mdext-renderer', 'session-automation-groups'])
       for (const agent of ['claude', 'codex'] as const) {
         expect(lstatSync(world.target(agent, skill)).isSymbolicLink()).toBe(true)
         expect(realpathSync(world.target(agent, skill))).toBe(realpathSync(world.source(agent, skill)))
       }
-    expect(world.installer.install().map((result) => result.kind)).toEqual([
-      'current', 'current', 'current', 'current', 'current', 'current',
-    ])
+    const manifestPath = join(world.home, '.gemini', 'config', 'skills.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { entries: Array<{ path: string }> }
+    expect(manifest.entries).toHaveLength(1)
+    expect(realpathSync(manifest.entries[0]!.path)).toBe(realpathSync(join(world.repo, 'skills', 'antigravity')))
+    expect(world.installer.install().map((result) => result.kind)).toEqual(Array(9).fill('current'))
     expect(world.reports).toEqual([])
+  })
+
+  it('preserves user entries in ~/.gemini/config/skills.json and removes legacy Antigravity junctions', () => {
+    const world = new SkillLinkWorld()
+    worlds.push(world)
+    const configDir = join(world.home, '.gemini', 'config')
+    const legacyTarget = world.target('antigravity', 'appjamat-v3')
+    mkdirSync(join(legacyTarget, '..'), { recursive: true })
+    symlinkSync(world.source('antigravity', 'appjamat-v3'), legacyTarget, 'junction')
+    writeFileSync(`${legacyTarget}.jamat-link.json`, JSON.stringify({ source: world.source('antigravity', 'appjamat-v3') }))
+    writeFileSync(join(configDir, 'skills.json'), JSON.stringify({
+      inherits: [{ path: 'Q:/Tooling/agent_extensions/skills.json' }],
+      entries: [{ path: 'Q:/Tooling/agent_extensions/skills-antigravity' }],
+    }), 'utf8')
+
+    expect(world.installer.install().filter(r => r.agent === 'antigravity').map(r => r.kind))
+      .toEqual(['created', 'created', 'created'])
+    expect(existsSync(legacyTarget)).toBe(false)
+    expect(existsSync(`${legacyTarget}.jamat-link.json`)).toBe(false)
+    const manifest = JSON.parse(readFileSync(join(configDir, 'skills.json'), 'utf8')) as {
+      inherits: Array<{ path: string }>
+      entries: Array<{ path: string }>
+    }
+    expect(manifest.inherits).toEqual([{ path: 'Q:/Tooling/agent_extensions/skills.json' }])
+    expect(manifest.entries).toHaveLength(2)
+    expect(manifest.entries[0]!.path).toBe('Q:/Tooling/agent_extensions/skills-antigravity')
+    expect(realpathSync(manifest.entries[1]!.path)).toBe(realpathSync(join(world.repo, 'skills', 'antigravity')))
   })
 
   it('repoints an owned wrong junction without touching the other agent', () => {
@@ -184,11 +220,7 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
 
     expect(world.installer.install().map((result) => result.kind)).toEqual([
       'repointed',
-      'created',
-      'created',
-      'created',
-      'created',
-      'created',
+      ...Array(8).fill('created'),
     ])
     expect(realpathSync(target)).toBe(realpathSync(world.source('claude')))
   })
@@ -209,10 +241,7 @@ describe('app-client-ui/app/skills/skillLinkInstaller', () => {
     expect(world.installer.install().map((result) => result.kind)).toEqual([
       'repointed',
       'refused',
-      'created',
-      'created',
-      'created',
-      'created',
+      ...Array(7).fill('created'),
     ])
     expect(realpathSync(claudeTarget)).toBe(realpathSync(world.source('claude')))
     expect(existsSync(join(codexTarget, 'keep.txt'))).toBe(true)

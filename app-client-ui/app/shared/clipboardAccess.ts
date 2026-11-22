@@ -68,6 +68,19 @@ export class ClipboardAccess {
     return false
   }
 
+  /** false = the PNG does not decode, or another process held the clipboard for the whole window. */
+  static async writeImage(png: NativeImage): Promise<boolean> {
+    if (png.isEmpty()) return false
+    const size = png.getSize()
+    for (let attempt = 0; attempt < ClipboardAccess.attemptsConst; attempt++) {
+      clipboard.writeImage(png)
+      const written = clipboard.readImage().getSize()
+      if (written.width === size.width && written.height === size.height) return true
+      await new Promise((resolve) => setTimeout(resolve, ClipboardAccess.backoffMillisecondsConst))
+    }
+    return false
+  }
+
   /** Text and HTML as one clipboard entry, checked by its text the way `writeText` checks. */
   static async writeRich(text: string, html: string): Promise<boolean> {
     for (let attempt = 0; attempt < ClipboardAccess.attemptsConst; attempt++) {

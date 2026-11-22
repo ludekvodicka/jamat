@@ -1301,6 +1301,33 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       await expect(opened).resolves.toMatchObject({ ok: false, error: { code: 'operation-failed' } })
     })
   })
+
+  describe('openTodos', () => {
+    it('opens a missing tab first, then sends open-todos where it landed', async () => {
+      const harness = new TabControlHarness()
+      const opened = harness.broker.openTodos('session-1', 'Project - 001', 'split')
+
+      const sessionCommand = await harness.command(0)
+      expect(sessionCommand).toMatchObject({ kind: 'open-session', sessionId: 'session-1', activate: true })
+      harness.acknowledge('main', sessionCommand, { kind: 'opened', panelId: 'terminal:session-1' })
+      const todosCommand = await harness.command(1)
+      expect(todosCommand).toEqual({ kind: 'open-todos', requestId: 'request-2', panelId: 'terminal:session-1', sessionId: 'session-1', view: 'split' })
+      harness.acknowledge('main', todosCommand, { kind: 'todos-opened', panelId: 'terminal:session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'todos-opened', panelId: 'terminal:session-1', windowId: 'main' } })
+    })
+
+    it("sends open-todos to the window that holds the session's local tab", async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1', 'holder')
+      const opened = harness.broker.openTodos('session-1', 'Project - 001', 'sidebar')
+
+      const command = await harness.command()
+      expect(command).toEqual({ kind: 'open-todos', requestId: 'request-1', panelId: 'session-1', sessionId: 'session-1', view: 'sidebar' })
+      harness.acknowledge('holder', command, { kind: 'todos-opened', panelId: 'session-1' })
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'todos-opened', panelId: 'session-1', windowId: 'holder' } })
+    })
+  })
 })
 
 

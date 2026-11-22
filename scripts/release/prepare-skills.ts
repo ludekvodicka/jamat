@@ -12,7 +12,7 @@ export async function prepareSkills(root: string, output = resolve(root, 'out/sk
   })
   if (result.warnings.length)
     throw new Error(`skill CLI bundle warnings: ${result.warnings.map(warning => warning.text).join('; ')}`)
-  for (const agent of ['claude', 'codex'])
+  for (const agent of ['claude', 'codex', 'antigravity'])
     cpSync(resolve(root, 'skills', agent), resolve(output, 'skills', agent), { recursive: true })
   mkdirSync(resolve(output, 'mdext-renderer'), { recursive: true })
   for (const name of ['USAGE.md', 'reference.md', 'svg-style.md', 'examples'])

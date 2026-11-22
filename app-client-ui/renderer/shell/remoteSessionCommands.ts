@@ -58,13 +58,17 @@ export class RemoteSessionCommands {
       }
       case 'session.newBeside':
       case 'session.newInClaude':
-      case 'session.newInCodex': {
+      case 'session.newInCodex':
+      case 'session.newInAntigravity': {
         const path = SessionFolder.ofSession(info)
         if (!path) throw new Error('This source session has no project directory')
         const project = info.project
         const binding = project.kind === 'project' ? { mode: 'project' as const, categoryId: project.categoryId, projectName: project.projectName, projectPath: project.projectPath }
           : { mode: 'adHoc' as const, path }
-        const agentId = id === 'session.newInClaude' ? 'claude' : id === 'session.newInCodex' ? 'codex' : info.agent?.agentId
+        const agentId = id === 'session.newInClaude' ? 'claude'
+          : id === 'session.newInCodex' ? 'codex'
+          : id === 'session.newInAntigravity' ? 'antigravity'
+          : info.agent?.agentId
         this.ports.launch({ purpose: 'remote', remote: { remoteEndpointId: target.remoteEndpointId, displayName: endpoint.displayName },
           prefill: { binding, name: info.titleParts.name, ...(agentId ? { agentId } : {}) } }); return
       }
@@ -94,6 +98,7 @@ export class RemoteSessionCommands {
         if (!result.ok) throw new Error(result.error)
         return
       }
+      case 'session.showTodos': throw new Error(`The project todo list is a file on ${endpoint.displayName}; open it there`)
       case 'session.commitSvn': await this.ports.review(target, 'svn'); return
       case 'session.commitGit': await this.ports.review(target, 'git'); return
       case 'tab.openProjectFolder': {

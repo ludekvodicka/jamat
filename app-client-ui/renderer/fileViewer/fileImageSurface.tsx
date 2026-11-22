@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
+import { ErrorText } from '../../shared/errorText'
 import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 import { FileImageSource } from './fileImageSource'
+import { FileImageTransfer } from './fileImageTransfer'
 import { useImageViewer, type ImageViewerSource } from './imageViewer'
 
 export function FileImageSurface(props: {
@@ -12,7 +14,17 @@ export function FileImageSurface(props: {
   const image = useImageViewer()
   const [menu, setMenu] = useState<{ source: ImageViewerSource; position: ContextMenuPosition; origin: HTMLElement | null } | null>(null)
   const [askMenu, setAskMenu] = useState<{ line: number; text: string; position: ContextMenuPosition } | null>(null)
+  const status = useFileImageStatus()
   return <div className="file-image-surface"
+    onDragStart={(event) => {
+      // Without this the browser drags the image's protocol URL, which another application gets as text.
+      // An image document's own preview starts its drag first and stops it reaching here.
+      const resourceId = FileImageTransfer.resourceId(event.target)
+      if (resourceId === null) return
+      event.preventDefault()
+      event.stopPropagation()
+      void FileImageTransfer.startDrag(resourceId).catch((error: unknown) => status.show({ kind: 'error', text: ErrorText.of(error) }))
+    }}
     onClickCapture={(event) => {
       if (event.target instanceof Element && event.target.closest('a')
         && FileImageSource.element(event.target, event.currentTarget, props.name)) {
@@ -53,11 +65,35 @@ export function FileImageSurface(props: {
     }}>
     {props.children}
     {menu && <ContextMenu ariaLabel="Image actions" position={menu.position}
-      items={[{ key: 'fullscreen', label: 'Open image full screen', onSelect: () => { menu.origin?.focus(); image.open(menu.source) } }]}
+      items={[
+        { key: 'fullscreen', label: 'Open image full screen', onSelect: () => { menu.origin?.focus(); image.open(menu.source) } },
+        { key: 'copy', label: 'Copy image to clipboard', onSelect: () => {
+          void FileImageTransfer.copySource(menu.source).then(
+            () => status.show({ kind: 'done', text: 'Image copied to clipboard' }),
+            (error: unknown) => status.show({ kind: 'error', text: `Image not copied: ${ErrorText.of(error)}` }))
+        } },
+      ]}
       onClose={() => setMenu(null)} />}
     {askMenu && props.onAskSelection && <ContextMenu ariaLabel="Selection actions" position={askMenu.position}
       items={[{ key: 'ask', label: 'Ask', onSelect: () => props.onAskSelection?.(askMenu.line, askMenu.text) }]}
       onClose={() => setAskMenu(null)} />}
+    {status.element}
     {image.viewer}
   </div>
+}
+
+type FileImageStatus = { kind: 'done' | 'error'; text: string }
+
+function useFileImageStatus(): { show(status: FileImageStatus): void; element: React.JSX.Element | null } {
+  const [status, setStatus] = useState<FileImageStatus | null>(null)
+  useEffect(() => {
+    if (status === null) return
+    const timer = window.setTimeout(() => setStatus(null), status.kind === 'done' ? 2_000 : 6_000)
+    return () => window.clearTimeout(timer)
+  }, [status])
+  return {
+    show: setStatus,
+    element: status === null ? null
+      : <p className={`file-image-status file-image-status--${status.kind}`} role={status.kind === 'error' ? 'alert' : 'status'}>{status.text}</p>,
+  }
 }

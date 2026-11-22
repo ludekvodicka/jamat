@@ -67,7 +67,7 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
       },
       source: {
         agentId,
-        minimumIntervalMilliseconds: { claude: 180_000, codex: 0 }[agentId],
+        minimumIntervalMilliseconds: { claude: 180_000, codex: 0, antigravity: 0 }[agentId],
         async read(): Promise<RateSourceReading> {
           fake.reads += 1
           if (fake.gated) await new Promise<void>((resolve) => { open = resolve })
@@ -843,6 +843,83 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     context.claude.reading = okReading([rateWindow(300, 15)])
     await context.elapse(pollMillisecondsConst)
     expect(context.rate.snapshot().accounts![0].estimated).toBeNull()
+  })
+
+  it('keeps passive extraSources across account syncs, never polls them, and feeds them from statusLine readings', async () => {
+    const file = cacheFile()
+    const main = fakeSource('claude', [rateWindow(300, 20)])
+    let passiveReads = 0
+    const antigravitySource: RateLimitSource = {
+      agentId: 'antigravity',
+      accountId: 'main',
+      label: 'Main',
+      passive: true,
+      read: async () => { passiveReads += 1; return okReading([]) },
+      stop: () => undefined,
+    }
+    let readingAt: number | null = null
+    const rawQuota = { 'gemini-weekly': { remaining_fraction: 0.9, reset_time: '2026-11-28T00:00:00Z' } }
+    const rate = new RateMonitor({
+      configIdentity: 'agy-passive',
+      channel: 'development',
+      cacheFile: file,
+      now: () => startClockConst,
+      onChanged: () => {},
+      onError: () => {},
+      accounts: async () => [{
+        agentId: 'claude', accountId: 'main', label: 'Main', state: 'active',
+        isMain: true, identity: null, profileProblem: null,
+      }],
+      sourceForAccount: () => main.source,
+      extraSources: [antigravitySource],
+      readings: async () => readingAt === null ? [] : [{
+        key: { agentId: 'antigravity', accountId: 'main' },
+        at: readingAt,
+        source: 'statusline',
+        windows: [rateWindow(10_080, 10)],
+        extras: [{ label: 'Plan', detail: 'Pro' }],
+        raw: rawQuota,
+      }],
+    })
+    monitors.push(rate)
+    await rate.start()
+    await rate.refresh()
+    expect(passiveReads).toBe(0)
+    expect(rate.snapshot().providers.antigravity).toEqual({ kind: 'never-read' })
+
+    readingAt = startClockConst - 1_000
+    await rate.refresh()
+    expect(passiveReads).toBe(0)
+    expect(rate.snapshot().providers.antigravity).toEqual({
+      kind: 'ok',
+      fetchedAt: readingAt,
+      windows: [rateWindow(10_080, 10)],
+    })
+    expect(rate.debugStatus().providers.antigravity?.extras).toEqual([{ label: 'Plan', detail: 'Pro' }])
+    expect(rate.debugStatus().providers.antigravity?.raw).toEqual(rawQuota)
+
+    await rate.stop()
+    const reloaded = new RateMonitor({
+      configIdentity: 'agy-passive',
+      channel: 'development',
+      cacheFile: file,
+      now: () => startClockConst + 60_000,
+      onChanged: () => {},
+      onError: () => {},
+      accounts: async () => [{
+        agentId: 'claude', accountId: 'main', label: 'Main', state: 'active',
+        isMain: true, identity: null, profileProblem: null,
+      }],
+      sourceForAccount: () => main.source,
+      extraSources: [antigravitySource],
+    })
+    monitors.push(reloaded)
+    await reloaded.start()
+    expect(reloaded.snapshot().providers.antigravity).toEqual({
+      kind: 'ok',
+      fetchedAt: readingAt,
+      windows: [rateWindow(10_080, 10)],
+    })
   })
 
 })

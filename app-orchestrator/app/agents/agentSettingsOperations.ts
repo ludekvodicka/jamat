@@ -44,7 +44,7 @@ export class AgentSettingsOperations {
       kind: 'write',
       description: "Turn one agent's automatic compaction on or off, leaving every other setting as it is.",
       input: z.strictObject({
-        agentId: z.enum(['claude', 'codex'], { error: 'agentId must be claude or codex' }),
+        agentId: z.enum(['claude', 'codex', 'antigravity'], { error: 'agentId must be claude, codex or antigravity' }),
         enabled: RemoteControlZod.boolean(),
       }),
       run: async (body) => RemoteControlOutcome.of(this.setAutoCompact(body.agentId, body.enabled)),

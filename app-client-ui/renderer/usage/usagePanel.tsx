@@ -7,13 +7,14 @@ import { QuotaCard } from './quotaCard'
 import { TokensSection } from './tokensSection'
 import './usagePanel.css'
 
-type UsageTab = 'quota' | 'callers'
+type UsageTab = 'quota' | 'consumption' | 'callers'
 
-const usageTabsConst: readonly (readonly [UsageTab, string])[] = [['quota', 'Quota'], ['callers', 'Callers']]
+const usageTabsConst: readonly (readonly [UsageTab, string])[] = [['quota', 'Quota'], ['consumption', 'Consumption'], ['callers', 'Callers']]
 
 /**
- * The Tools > Usage tab: Quota holds one quota card per agent that has an enabled account, then
- * token statistics; Callers lists who asked the account broker.
+ * The Tools > Usage tab: Quota holds one quota card per agent that has an enabled account;
+ * Consumption holds the token statistics of sessions and of reported third-party runs; Callers
+ * lists who asked the account broker.
  */
 export function UsagePanel(): React.JSX.Element {
   const [tab, setTab] = useState<UsageTab>('quota')
@@ -39,6 +40,7 @@ export function UsagePanel(): React.JSX.Element {
 function usageBody(tab: UsageTab, snapshot: UsageSnapshot | null, error: string | null): React.JSX.Element {
   switch (tab) {
     case 'quota': return <QuotaBody snapshot={snapshot} error={error} />
+    case 'consumption': return <TokensSection />
     case 'callers': return <CallersTab />
     default: throw new Error(`Unknown usage tab: ${JSON.stringify(tab)}`)
   }
@@ -54,6 +56,5 @@ function QuotaBody({ snapshot, error }: { snapshot: UsageSnapshot | null; error:
       {pools.map(pool => <QuotaCard key={pool.agentId} pool={pool} now={snapshot.capturedAt}
         accounts={snapshot.accounts.filter(account => account.key.agentId === pool.agentId)} />)}
     </div>}
-    <TokensSection />
   </>
 }

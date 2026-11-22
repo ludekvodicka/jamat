@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { DebugSectionId } from '../../shared/debugSections.types'
 import type { DebugSectionDescriptor } from './debugSection.types'
 import { DebugSections } from './debugSections'
-import { RateClaudeSection, RateCodexSection } from './sections/rate/rateDebugSection'
+import { RateAntigravitySection, RateClaudeSection, RateCodexSection } from './sections/rate/rateDebugSection'
 
 describe('app-client-ui/renderer/debug/debugSections', () => {
   /** The catalog is data; what a descriptor draws is nothing this file needs to render. */
@@ -29,9 +29,11 @@ describe('app-client-ui/renderer/debug/debugSections', () => {
     ])).toEqual([
       ['rate-codex', 'Codex', 0],
       ['rate-claude', 'Claude', 1],
+      ['rate-antigravity', 'Antigravity', 2],
     ])
     expect(DebugSections.nodeOf('rate-codex', sections).Component).toBe(RateCodexSection)
     expect(DebugSections.nodeOf('rate-claude', sections).Component).toBe(RateClaudeSection)
+    expect(DebugSections.nodeOf('rate-antigravity', sections).Component).toBe(RateAntigravitySection)
   })
 
   it('returns the sections in the order they declare, not the order they were written', () => {

@@ -36,10 +36,15 @@ import { FileViewerSourceShape } from './fileViewerSourceShape'
 import { PanelFileToolsRegistry } from './panelFileToolsRegistry'
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
 import { useFileChanges } from './useFileChanges'
-import { useFileViewerDocument } from './useFileViewerDocument'
+import { FileViewerDocumentState, useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
-import { FileViewerPlace, FileViewerScrollTop, useFileViewerPlaceRestore } from './fileViewerScrollRestore'
+import {
+  FileViewerPlace,
+  FileViewerScrollTop,
+  useFileViewerPlaceRestore,
+  useFileViewerScrollSave,
+} from './fileViewerScrollRestore'
 import { useWorkingTreeChanges } from './useWorkingTreeChanges'
 import './fileViewerPanel.css'
 
@@ -100,6 +105,7 @@ function FileViewerPanelBody(
   // The document on screen, which a link, File Tools, Back or Forward leaves behind. It and the
   // body's offset are read before the next document is drawn.
   const shown = useRef<FileViewerDocument | null>(null)
+  const [consumedRestore, setConsumedRestore] = useState<string | null>(null)
   const onDocument = useCallback((
     next: FileViewerDocument,
     hint: FileViewerBaselineHint | undefined,
@@ -107,6 +113,7 @@ function FileViewerPanelBody(
   ): void => {
     props.api.setTitle(next.name)
     if (!persist) return
+    setConsumedRestore(null)
     const current = currentParameters()
     updateParameters({
       ...current,
@@ -142,32 +149,73 @@ function FileViewerPanelBody(
   }, [currentParameters, updateParameters])
   const body = useFileViewerZoomWheel(zoomPercent, changeZoom)
   const restore = params.restoreScroll
-  // A visit's offset waits for its own document; a reload's place belongs to the document on screen.
-  const visitReady = restore !== undefined && model.document?.documentKey === restore.documentKey
-  const visitPlace = useMemo(() => FileViewerPlace.at(restore?.scrollTop), [restore?.scrollTop])
-  const [reloadPlace, setReloadPlace] = useState<{ documentKey: string; place: FileViewerPlace } | undefined>(undefined)
+  const restoreKey = restore === undefined ? null : `${restore.documentKey}:${restore.scrollTop}`
   const shownKey = model.document?.documentKey
-  const reloadReady = reloadPlace !== undefined && shownKey === reloadPlace.documentKey
+  const shownDocumentId = model.document?.documentId
+  // A visit's offset waits for its own document; a reload's place waits for the new grant id.
+  const visitReady = restore !== undefined && restoreKey !== consumedRestore && shownKey === restore.documentKey
+  const visitPlace = useMemo(() => FileViewerPlace.at(restore?.scrollTop), [restore?.scrollTop])
+  const [reloadPlace, setReloadPlace] = useState<{
+    documentKey: string
+    afterDocumentId: string | undefined
+    place: FileViewerPlace
+  } | undefined>(undefined)
+  const [dismissedLocation, setDismissedLocation] = useState<FileViewerPanelParams['location']>(undefined)
+  const reloadReady = reloadPlace !== undefined
+    && shownKey === reloadPlace.documentKey
+    && shownDocumentId !== reloadPlace.afterDocumentId
   // A reload that never landed must not put a later document, or a later visit of this one, there.
   useEffect(() => { if (reloadPlace !== undefined && shownKey !== reloadPlace.documentKey) setReloadPlace(undefined) }, [reloadPlace, shownKey])
-  const place = reloadReady ? reloadPlace.place : visitReady ? visitPlace : undefined
-  useFileViewerPlaceRestore(body, place, model.textReady, () => {
+  const contentReady = model.document !== null && (
+    model.mode === 'diff'
+      ? model.diff !== null
+      : FileViewerDocumentState.hasText(model.document) ? model.textReady : true
+  )
+  const place = reloadPlace !== undefined ? (reloadReady ? reloadPlace.place : undefined) : visitReady ? visitPlace : undefined
+  useFileViewerPlaceRestore(body, place, contentReady, () => {
     setReloadPlace(undefined)
-    if (visitReady) updateParameters({ ...currentParameters(), restoreScroll: undefined })
+    if (visitReady) setConsumedRestore(restoreKey)
   })
+  const rememberReading = useCallback((scrollTop: number | undefined): void => {
+    if (shownKey === undefined) return
+    const next = scrollTop === undefined ? undefined : { documentKey: shownKey, scrollTop }
+    const nextKey = next === undefined ? null : `${next.documentKey}:${next.scrollTop}`
+    setConsumedRestore(nextKey)
+    const current = currentParameters()
+    const currentRestore = FileViewerPanelState.read(current)
+    const sameRestore = currentRestore.ok
+      && currentRestore.value.restoreScroll?.documentKey === next?.documentKey
+      && currentRestore.value.restoreScroll?.scrollTop === next?.scrollTop
+      && currentRestore.value.location === undefined
+    if (sameRestore) return
+    updateParameters({ ...current, location: undefined, restoreScroll: next })
+  }, [currentParameters, shownKey, updateParameters])
+  useFileViewerScrollSave(body, contentReady && reloadPlace === undefined && !visitReady, rememberReading)
   const modelReload = model.reload
-  // A place still being restored is where the reader is: the body may not show it yet.
+  const paramLocation = params.location
+  // A place still being restored on a newer grant is where the reader is: the body may not show it yet.
   const reload = useCallback((): void => {
-    const captured = place ?? FileViewerPlace.of(body.current)
-    if (shownKey !== undefined && captured !== undefined) setReloadPlace({ documentKey: shownKey, place: captured })
+    if (paramLocation !== undefined) setDismissedLocation(paramLocation)
+    if (shownKey === undefined) { modelReload(); return }
+    setReloadPlace((current) => {
+      const captured = current !== undefined && current.documentKey === shownKey && current.afterDocumentId !== shownDocumentId
+        ? current.place
+        : visitReady && visitPlace !== undefined
+          ? visitPlace
+          : FileViewerPlace.of(body.current)
+      return captured === undefined ? undefined : { documentKey: shownKey, afterDocumentId: shownDocumentId, place: captured }
+    })
     modelReload()
-  }, [body, modelReload, place, shownKey])
+  }, [body, modelReload, paramLocation, shownDocumentId, shownKey, visitPlace, visitReady])
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, ports.viewer)
   const step = useCallback((direction: PanelHistoryDirection): void => {
     const current = currentParameters()
     const leaving = FileViewerPanelState.visitOf(current, shown.current, FileViewerScrollTop.of(body.current))
     const next = FileViewerPanelState.stepped(current, direction, leaving)
-    if (next !== null) updateParameters(next)
+    if (next !== null) {
+      setConsumedRestore(null)
+      updateParameters(next)
+    }
   }, [body, currentParameters, updateParameters])
   useEffect(() => props.history.register(props.api.id, step), [props.api.id, props.history, step])
   const backTo = params.history.at(-1)
@@ -287,7 +335,7 @@ function FileViewerPanelBody(
                 text={model.text}
                 textReady={model.textReady}
                 diff={model.diff}
-                location={params.location}
+                location={params.location === dismissedLocation ? undefined : params.location}
                 onOpenSource={openSource}
                 onReload={reload}
               />

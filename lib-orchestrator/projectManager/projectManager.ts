@@ -3,6 +3,8 @@ import { join } from 'node:path'
 
 import type { RuntimeCategory } from './catalog/catalog.types'
 import { CatalogStore } from './catalog/catalogStore'
+import { AntigravityHistoryMigrator } from './providers/antigravity/antigravityHistoryMigrator'
+import { AntigravitySessionSource } from './providers/antigravity/antigravitySessionSource'
 import { ClaudeHistoryMigrator } from './providers/claude/claudeHistoryMigrator'
 import { ClaudeProjectsLocator } from './providers/claude/claudeProjectsLocator'
 import { ClaudeSessionSource } from './providers/claude/claudeSessionSource'
@@ -17,6 +19,7 @@ import type {
   ProviderSessionSource,
 } from './providers/providerContract.types'
 import type { ConfigStore } from '../configStore/configStore'
+import { AntigravityConfigHome } from '../shared/antigravityConfigHome'
 import { ClaudeConfigHome } from '../shared/claudeConfigHome'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
 import { ErrorText } from '../shared/errorText'
@@ -53,6 +56,7 @@ export interface ProjectManagerDeps {
   claudeHome?: string
   claudeHomes?: () => readonly string[]
   codexHome?: string
+  antigravityHome?: string
   /** How a project directory or a relocation leftover goes; Node's own `rm` when absent (`TreeRemoval`). */
   removeTree?: TreeRemove
 }
@@ -79,6 +83,7 @@ export class ProjectManager {
   readonly transcripts: ProviderTranscriptView
   private readonly claudeSource: ProviderSessionSource
   private readonly codexSource: ProviderSessionSource
+  private readonly antigravitySource: ProviderSessionSource
   private readonly lifecycle: ProjectLifecycle
   private readonly deletion: ProjectDeletion
   /** Only the `recent` listing fills it, so an alphabetical one never pays for a provider read. */
@@ -93,6 +98,7 @@ export class ProjectManager {
     // the migrator deleting from that same store.
     const claudeHome = ClaudeConfigHome.resolve(deps.claudeHome)
     const codexHome = deps.codexHome ?? CodexSessionSource.defaultHome()
+    const antigravityHome = AntigravityConfigHome.resolve(deps.antigravityHome)
     this.catalog = new CatalogStore(deps.configStore)
     this.scanner = new ProjectScanner()
     this.locator = new ClaudeProjectsLocator(claudeHome)
@@ -112,15 +118,18 @@ export class ProjectManager {
     this.transcripts = new ProviderTranscriptView({
       claudeHome,
       codexHome,
+      antigravityHome,
       claudeLocator: this.locator,
       codexIndex: this.codexIndex,
       report,
     })
     this.claudeSource = new ClaudeSessionSource({ claudeHome, homes: deps.claudeHomes, locator: this.locator })
     this.codexSource = new CodexSessionSource({ codexHome, index: this.codexIndex })
+    this.antigravitySource = new AntigravitySessionSource({ antigravityHome })
     const migrators: readonly ProviderHistoryMigrator[] = [
       new ClaudeHistoryMigrator({ claudeHome, locator: this.locator, report }),
       new CodexHistoryMigrator({ index: this.codexIndex, report }),
+      new AntigravityHistoryMigrator({ antigravityHome }),
     ]
     const leftovers = new RelocationLeftovers(
       OrchestratorPaths.relocationLeftoversFile(deps.configIdentity, deps.channel),
@@ -145,6 +154,7 @@ export class ProjectManager {
     this.deletion = new ProjectDeletion({
       claudeHome,
       codexHome,
+      antigravityHome,
       locator: this.locator,
       migrators,
       leftovers,
@@ -250,11 +260,12 @@ export class ProjectManager {
     if (!check.ok) return { ok: false, code: 'invalid-name', detail: check.detail }
     const limit = options?.limit ?? ProjectManager.sessionLimitConst
     const projectDir = join(category.path, projectName)
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, antigravity] = await Promise.all([
       this.claudeSource.listProjectSessions(projectDir, { limit, signal: options?.signal }),
       this.codexSource.listProjectSessions(projectDir, { limit, signal: options?.signal }),
+      this.antigravitySource.listProjectSessions(projectDir, { limit, signal: options?.signal }),
     ])
-    return { ok: true, value: { claude, codex, merged: ProjectManager.merged(claude, codex, limit) } }
+    return { ok: true, value: { claude, codex, antigravity, merged: ProjectManager.merged(claude, codex, antigravity, limit) } }
   }
 
   async createProject(
@@ -321,15 +332,16 @@ export class ProjectManager {
    */
   private forgetRewritten(provider: ProviderAgentId, file: string): void {
     if (provider === 'codex') this.codexIndex.forgetFile(file)
-    else if (provider === 'claude') return
+    else if (provider === 'claude' || provider === 'antigravity') return
     else
-      throw new Error(`Unknown rewrite provider: ${JSON.stringify(provider)}`)
+      throw new Error(`Unknown rewrite provider: ${JSON.stringify(provider satisfies never)}`)
   }
 
   private invalidateAll(): void {
     this.scanner.invalidate()
     this.claudeSource.invalidate()
     this.codexSource.invalidate()
+    this.antigravitySource.invalidate()
     this.locator.invalidate()
     this.codexIndex.invalidate()
     this.activity.clear()
@@ -387,11 +399,12 @@ export class ProjectManager {
     const cached = this.activity.get(key)
     if (cached !== undefined) return cached
     const generation = this.activityGeneration
-    const [claude, codex] = await Promise.all([
+    const [claude, codex, antigravity] = await Promise.all([
       this.claudeSource.latestActivity(projectPath),
       this.codexSource.latestActivity(projectPath),
+      this.antigravitySource.latestActivity(projectPath),
     ])
-    const latest = ProjectManager.newer(claude, codex)
+    const latest = ProjectManager.newer(ProjectManager.newer(claude, codex), antigravity)
     // A listing that started before a rename would otherwise put its pre-rename reading back into the
     // map that rename just emptied, where nothing removes it until the next lifecycle operation. The
     // scanner and both drivers guard their caches the same way.
@@ -408,9 +421,10 @@ export class ProjectManager {
   private static merged(
     claude: readonly ProviderSessionSummary[],
     codex: readonly ProviderSessionSummary[],
+    antigravity: readonly ProviderSessionSummary[],
     limit: number,
   ): ProviderSessionSummary[] {
-    return [...claude, ...codex]
+    return [...claude, ...codex, ...antigravity]
       .sort((left, right) => right.lastActivity - left.lastActivity)
       .slice(0, limit)
   }

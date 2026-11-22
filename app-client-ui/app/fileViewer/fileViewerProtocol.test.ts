@@ -82,6 +82,7 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
           secure: true,
           supportFetchAPI: true,
           stream: true,
+          corsEnabled: true,
         },
       },
     ]])

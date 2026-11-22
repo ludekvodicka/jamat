@@ -185,9 +185,10 @@ export class LaunchPlanner {
       // A worker only: a merger or a resolver has rights of its own and never gains these.
       const args = record.worktree?.kind === 'svn' && agent.permission === undefined && options?.workerCli !== undefined
         ? AgentPresets.workerRightsOf(agent.agentId, [...front, ...modeArgs], options.workerCli) : [...front, ...modeArgs]
+      const executable = LaunchPlanner.executableOf(agent.agentId)
       const native = platform === 'win32'
-        ? { ...LaunchPlanner.win32Agent(agent.agentId, args, environment, options), ...common }
-        : { command: agent.agentId, args, ...common }
+        ? { ...LaunchPlanner.win32Agent(executable, args, environment, options), ...common }
+        : { command: executable, args, ...common }
       return agent.agentId === 'codex' && options?.codexBridge
         ? options.codexBridge(native, args) : native
     }
@@ -217,8 +218,15 @@ export class LaunchPlanner {
    * which of two installations cmd.exe would have picked, and a guess is only worth making where
    * the answer today is already wrong.
    */
+  private static executableOf(agentId: SessionRecordAgent['agentId']): string {
+    if (agentId === 'claude') return 'claude'
+    else if (agentId === 'codex') return 'codex'
+    else if (agentId === 'antigravity') return 'agy'
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+  }
+
   private static win32Agent(
-    agentId: SessionRecordAgent['agentId'],
+    executable: string,
     args: string[],
     environment: NodeJS.ProcessEnv,
     options: LaunchPlanOptions | undefined,
@@ -226,9 +234,9 @@ export class LaunchPlanner {
     if (!args.some((value) => LaunchPlanner.spansLines(value)))
       return {
         command: environment.ComSpec ?? 'cmd.exe',
-        args: ['/d', '/q', '/c', agentId, ...args],
+        args: ['/d', '/q', '/c', executable, ...args],
       }
-    const spanning = LaunchPlanner.spanningLaunchOf(agentId, args, environment, options)
+    const spanning = LaunchPlanner.spanningLaunchOf(executable, args, environment, options)
     // An invariant rather than a refusal a caller meets here: `SessionLifecycle` asks
     // `argumentProblem` before it writes a record, and before the reconciler replays one.
     if (spanning.problem !== null) throw new Error(spanning.problem)
@@ -248,7 +256,7 @@ export class LaunchPlanner {
     const platform = options?.platform ?? process.platform
     const environment = options?.environment ?? process.env
     if (platform !== 'win32' || !LaunchPlanner.spansLines(value)) return null
-    return LaunchPlanner.spanningLaunchOf(agentId, [value], environment, options).problem
+    return LaunchPlanner.spanningLaunchOf(LaunchPlanner.executableOf(agentId), [value], environment, options).problem
   }
 
   /**
@@ -257,20 +265,20 @@ export class LaunchPlanner {
    * would have thrown.
    */
   private static spanningLaunchOf(
-    agentId: SessionRecordAgent['agentId'],
+    executable: string,
     args: string[],
     environment: NodeJS.ProcessEnv,
     options: Pick<LaunchPlanOptions, 'spanningLaunch'> | undefined,
   ): SpanningLaunchOutcome {
     const resolve = options?.spanningLaunch
       ?? ((command: string) => LaunchPlanner.machineSpanningLaunch(command, environment))
-    const spanning = resolve(agentId)
-    if (spanning === null) return { launch: null, problem: LaunchPlanner.spanningProblemOf(agentId) }
+    const spanning = resolve(executable)
+    if (spanning === null) return { launch: null, problem: LaunchPlanner.spanningProblemOf(executable) }
     if (spanning.kind === 'image')
       return { launch: { command: spanning.imagePath, args }, problem: null }
     else if (spanning.kind === 'powershellScript') {
       if (args.some((value) => LaunchPlanner.powershellSplits(value)))
-        return { launch: null, problem: LaunchPlanner.powershellProblemOf(agentId) }
+        return { launch: null, problem: LaunchPlanner.powershellProblemOf(executable) }
       return {
         launch: {
           command: spanning.hostPath,
@@ -312,13 +320,13 @@ export class LaunchPlanner {
     return value.startsWith('-') && value.includes(':')
   }
 
-  private static spanningProblemOf(agentId: SessionRecordAgent['agentId']): string {
-    return `this machine reaches ${agentId} only through cmd.exe, which cuts a command line at its `
+  private static spanningProblemOf(executable: string): string {
+    return `this machine reaches ${executable} only through cmd.exe, which cuts a command line at its `
       + 'first newline, so a prompt that spans lines cannot be delivered to it'
   }
 
-  private static powershellProblemOf(agentId: SessionRecordAgent['agentId']): string {
-    return `this machine reaches ${agentId} through PowerShell, which reads an argument that starts `
+  private static powershellProblemOf(executable: string): string {
+    return `this machine reaches ${executable} through PowerShell, which reads an argument that starts `
       + 'with a dash and holds a colon as a parameter and its value, so a prompt of that shape '
       + 'would arrive as two arguments'
   }
@@ -344,32 +352,35 @@ export class LaunchPlanner {
         '--dangerously-bypass-approvals-and-sandbox',
         '-c', `projects={${JSON.stringify(cwd)}={trust_level="trusted"}}`,
       ]
+    else if (agentId === 'antigravity')
+      return ['--dangerously-skip-permissions']
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
    * Which flag each agent names its model with. Read off the installed CLIs on 2026-08-19 rather
    * than assumed, the same way `AgentPresets` records its own: Claude Code 2.1.235 says
    * "--model <model> ... Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet')
-   * or a model's full name (e.g. 'claude-fable-5')", and Codex CLI 0.146.0 says
-   * "-m, --model <MODEL> Model the agent should use".
+   * or a model's full name (e.g. 'claude-fable-5')", Codex CLI 0.146.0 says
+   * "-m, --model <MODEL> Model the agent should use", and `agy --help` says
+   * "--model Model for the current CLI session".
    *
    * The value is not quoted or escaped here on purpose: `AgentSettings` already refuses anything
    * that could be read as a flag or acted on by cmd.exe, and this array is handed to a spawn rather
    * than to a shell.
    */
   private static modelArgsOf(agentId: SessionRecordAgent['agentId'], model: string): string[] {
-    if (agentId === 'claude') return ['--model', model]
+    if (agentId === 'claude' || agentId === 'antigravity') return ['--model', model]
     else if (agentId === 'codex') return ['-m', model]
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
-   * Measured 2026-08-24 against Claude Code 2.1.241 and Codex CLI 0.149.0. Claude names the flag
-   * `--effort <level>` with "low, medium, high, xhigh, max" and IGNORES a level it does not know,
-   * with a warning. Codex has no flag at all: the level is a config key, handed over inline, and
+   * Measured 2026-08-24 against Claude Code 2.1.241 and Codex CLI 0.149.0, and against `agy --help`.
+   * Claude and Antigravity both take `--effort <level>` with "low, medium, high, xhigh, max".
+   * Codex has no flag at all: the level is a config key, handed over inline, and
    * an unsupported one ends the run with a 400 before any work - which is why the tab offers
    * Codex only the levels of the model that was chosen.
    *
@@ -377,11 +388,11 @@ export class LaunchPlanner {
    * override two methods up. `AgentSettings` has already refused anything cmd.exe would act on.
    */
   private static effortArgsOf(agentId: SessionRecordAgent['agentId'], effort: string): string[] {
-    if (agentId === 'claude') return ['--effort', effort]
+    if (agentId === 'claude' || agentId === 'antigravity') return ['--effort', effort]
     else if (agentId === 'codex')
       return ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`]
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
@@ -390,10 +401,10 @@ export class LaunchPlanner {
    * quotes and a `|`, which the cmd.exe wrap would read as its own.
    */
   private static settingsArgsOf(agentId: SessionRecordAgent['agentId'], file: string): string[] {
-    if (agentId === 'claude') return ['--settings', file]
-    else if (agentId === 'codex') throw new Error('Codex has no --settings flag; only a Claude launch takes a settings file')
+    if (agentId === 'claude' || agentId === 'antigravity') return ['--settings', file]
+    else if (agentId === 'codex') throw new Error('Codex has no --settings flag; only a Claude or Antigravity launch takes a settings file')
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**

@@ -46,7 +46,7 @@ export class FileViewerPrompts {
     let detail: string
     switch (reason) {
       case 'not-live': detail = 'the session is not live'; break
-      case 'no-agent': detail = 'the session is not running Claude or Codex'; break
+      case 'no-agent': detail = 'the session is not running an AI agent'; break
       case 'agent-waiting': detail = 'the agent is waiting for a choice or permission'; break
       case 'not-writable': detail = 'the terminal does not accept input'; break
       default: throw new Error(`Unknown prompt insert refusal: ${reason satisfies never}`)

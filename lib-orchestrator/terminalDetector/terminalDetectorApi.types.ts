@@ -1,4 +1,4 @@
-export type TerminalDetectorAgentId = 'claude' | 'codex'
+export type TerminalDetectorAgentId = 'claude' | 'codex' | 'antigravity'
 
 export type TerminalDetectionOrigin = 'direct' | 'changed' | 'search'
 

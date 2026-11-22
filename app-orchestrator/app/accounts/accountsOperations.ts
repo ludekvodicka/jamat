@@ -10,10 +10,10 @@ import { AccountBrokerAnswers } from '../../../lib-orchestrator/agentAccounts/ac
 
 export class AccountsOperations {
   private readonly accounts: AgentAccounts
-  private readonly broker: Pick<AccountBroker, 'pick' | 'callers'>
+  private readonly broker: Pick<AccountBroker, 'pick' | 'report' | 'callers'>
   private readonly brokerCommand: () => string | null
 
-  constructor(accounts: AgentAccounts, broker: Pick<AccountBroker, 'pick' | 'callers'>, brokerCommand: () => string | null) {
+  constructor(accounts: AgentAccounts, broker: Pick<AccountBroker, 'pick' | 'report' | 'callers'>, brokerCommand: () => string | null) {
     this.accounts = accounts
     this.broker = broker
     this.brokerCommand = brokerCommand
@@ -36,10 +36,18 @@ export class AccountsOperations {
     op('accounts.remove', { kind: 'write', description: 'Remove an idle added profile without following its links.',
       input: z.strictObject({ accountId: RemoteControlZod.text() }),
       run: body => this.perform(async () => { await this.accounts.remove(body.accountId); return {} }) })
+    const id = z.string().regex(AccountBrokerAnswers.callerPatternConst, { error: 'must be 1 to 64 characters of A-Z a-z 0-9 . _ -' })
     op('accounts.pick', { kind: 'write', description: 'Choose the Claude account a local caller runs on; Main when the choice fails.',
-      input: z.strictObject({ caller: z.string().regex(AccountBrokerAnswers.callerPatternConst, { error: 'must be 1 to 64 characters of A-Z a-z 0-9 . _ -' }),
-        purpose: z.enum(AccountBrokerAnswers.purposesConst) }),
+      input: z.strictObject({ caller: id, purpose: z.enum(AccountBrokerAnswers.purposesConst) }),
       run: async body => ({ ok: true, value: await this.broker.pick(body) }) })
+    const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+    op('accounts.report', { kind: 'write', description: 'Record the token usage of one finished run of a local broker caller.',
+      input: z.strictObject({ caller: id, purpose: z.enum(AccountBrokerAnswers.purposesConst), accountId: id,
+        models: z.record(z.string().regex(AccountBrokerAnswers.modelPatternConst),
+          z.strictObject({ input: count, output: count, cacheRead: count, cacheWrite: count }))
+          .refine(models => { const size = Object.keys(models).length; return size > 0 && size <= AccountBrokerAnswers.maxModelsConst },
+            { error: `must name 1 to ${AccountBrokerAnswers.maxModelsConst} models` }) }),
+      run: async body => { await this.broker.report(body); return { ok: true, value: { recorded: true } } } })
     op('usage.callers', { kind: 'read', description: 'Callers of the Claude account broker in the last 30 days.', input: z.strictObject({}),
       run: async () => ({ ok: true, value: { ...await this.broker.callers(), command: this.brokerCommand() } }) })
   }

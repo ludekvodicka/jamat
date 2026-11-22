@@ -12,6 +12,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanelModel',
   const defaultsConst: AgentSettingsValue = {
     claude: { yolo: false },
     codex: { yolo: false },
+    antigravity: { yolo: false },
   }
 
   function sessionOf(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -65,6 +66,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanelModel',
         autoCompactPercent: 70,
         autoCompactEnabled: true,
       },
+      antigravity: { yolo: false },
     }
     const session = sessionOf({ agent: { agentId: 'codex' } })
     const reading = readingOf({ model: 'gpt-5.6-sol', modelLabel: 'GPT-5.6 Sol' })

@@ -6,6 +6,7 @@ import { HostDebugSection } from './sections/host/hostDebugSection'
 import { HostLaunchSection } from './sections/host/hostLaunchSection'
 import { HostRuntimesSection } from './sections/host/hostRuntimesSection'
 import {
+  RateAntigravitySection,
   RateClaudeSection,
   RateCodexSection,
   RateDebugSection,
@@ -42,6 +43,7 @@ export class DebugSections {
       children: [
         { id: 'rate-codex', title: 'Codex', order: 0, Component: RateCodexSection },
         { id: 'rate-claude', title: 'Claude', order: 1, Component: RateClaudeSection },
+        { id: 'rate-antigravity', title: 'Antigravity', order: 2, Component: RateAntigravitySection },
       ],
     },
   ]

@@ -18,7 +18,7 @@ export function usageSummary(snapshot: RateMonitorSnapshot, accounts: readonly A
   return {
     capturedAt: now,
     accounts: cards,
-    pools: (['claude', 'codex'] as const).map(agentId => {
+    pools: (['claude', 'codex', 'antigravity'] as const).map(agentId => {
       const enabled = cards.filter(card => card.key.agentId === agentId && card.enabled)
       const values = (duration: number): { remaining: number; weight: number }[] => enabled.flatMap(card => {
         const windows = card.estimated?.windows ?? ('windows' in card.state ? card.state.windows : [])

@@ -144,9 +144,11 @@ function Preview(props: {
   dispatch(input: ManageInput): void
 }): React.JSX.Element {
   const preview = props.preview
+  const agyCount = preview.antigravity?.conversationFiles.length ?? 0
   const total = preview.projectFileCount
     + preview.claude.transcriptFiles.length
     + preview.codex.rolloutFiles.length
+    + agyCount
   return (
     <div className="jamat-launcher-manage__delete">
       <p className="jamat-launcher-manage__path">{preview.projectPath}</p>
@@ -154,6 +156,7 @@ function Preview(props: {
         <span>{`${preview.projectFileCount} project files`}</span>
         <span>{`${preview.claude.transcriptFiles.length} Claude transcripts`}</span>
         <span>{`${preview.codex.rolloutFiles.length} Codex rollouts`}</span>
+        {agyCount > 0 && <span>{`${agyCount} Antigravity files`}</span>}
       </div>
       <p className="jamat-launcher-manage__hint">
         {`This cannot be undone. The preview ${ManageText.expiryOf(preview.expiresAt, props.now)

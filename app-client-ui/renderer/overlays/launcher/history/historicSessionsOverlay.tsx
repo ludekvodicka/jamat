@@ -195,7 +195,7 @@ export function HistoricSessionsOverlay(props: {
                 {/* The id on the hover, because it is what a search by id was typed from: a row
                     found that way has to be confirmable as the right one without opening it. */}
                 <span title={`${row.label}\n${row.nativeSessionId}`}>{row.label}</span>
-                <span title={displayedSource === 'AppJamat' ? `Model saved at launch: ${row.model ?? 'Unknown'}` : row.model ?? 'Model was not recorded'}>{row.model ?? 'Unknown'}<small>{row.agentId === 'claude' ? 'Claude' : 'Codex'}</small></span>
+                <span title={displayedSource === 'AppJamat' ? `Model saved at launch: ${row.model ?? 'Unknown'}` : row.model ?? 'Model was not recorded'}>{row.model ?? 'Unknown'}<small>{row.agentId === 'claude' ? 'Claude' : row.agentId === 'codex' ? 'Codex' : 'Antigravity'}</small></span>
                 <time dateTime={new Date(row.createdAt).toISOString()}>{row.createdLabel}</time>
                 <time dateTime={row.lastActivity === null ? undefined : new Date(row.lastActivity).toISOString()} title={displayedSource === 'AppJamat' ? row.lastActivity === null ? 'User input time was not recorded. Older sessions are available with the all time range.' : 'Last user input recorded by AppJamat' : 'Transcript last modified'}>{row.lastUsedLabel}</time>
                 <time dateTime={row.endedInstant === null ? undefined : new Date(row.endedInstant).toISOString()} title={row.endedTitle}>{row.endedLabel}</time>
@@ -214,7 +214,7 @@ export function HistoricSessionsOverlay(props: {
         {menu !== null && <ContextMenu position={menu.position} ariaLabel="Historic session actions" className="jamat-tab-menu"
           items={[
             { key: 'memory', label: 'Memory files…', onSelect: () => setMemoryOf(menu.row) },
-            { kind: 'separator', key: 'prune-separator' },
+            { kind: 'separator' as const, key: 'prune-separator' },
             { key: 'prune', label: 'Prune session…', title: 'Deletes the transcript, prompt history and Jamat records of this conversation from this computer', onSelect: () => setPruning(menu.row) },
           ]}
           onClose={() => setMenu(null)} />}

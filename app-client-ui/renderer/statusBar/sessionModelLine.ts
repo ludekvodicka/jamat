@@ -1,7 +1,7 @@
 import type {
-  SessionModelAgentId,
   SessionModelInfo,
 } from '../../../lib-orchestrator/sessionModelReader/sessionModelReaderApi.types'
+import type { SessionAgentId } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { ActiveAgentTerminal } from './useActiveAgentTerminal'
 import { SessionContextUsage } from '../sessionModel/sessionContextUsage'
 
@@ -81,7 +81,7 @@ export class SessionModelLine {
   /** The exact numbers the line rounds away, and where the Claude effort says what it is. */
   static tooltipOf(
     info: SessionModelInfo,
-    agentId: SessionModelAgentId,
+    agentId: SessionAgentId,
     age: number | null = null,
   ): string {
     const lines = [`Model: ${info.model}`, SessionModelLine.contextLineOf(info)]
@@ -126,12 +126,12 @@ export class SessionModelLine {
    * its own effort into the transcript, so what is drawn for it is the session's own answer and it
    * carries no such caveat.
    */
-  private static effortLineOf(effortLevel: string, agentId: SessionModelAgentId): string {
+  private static effortLineOf(effortLevel: string, agentId: SessionAgentId): string {
     if (agentId === 'claude')
       return `Effort: ${effortLevel} · the project's setting, not the running agent's live state`
-    else if (agentId === 'codex')
+    else if (agentId === 'codex' || agentId === 'antigravity')
       return `Effort: ${effortLevel}`
     else
-      throw new Error(`Unknown session model agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown session model agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

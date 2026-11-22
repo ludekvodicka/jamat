@@ -376,10 +376,11 @@ export type RemoteControlEventKind = 'sessions.changed' | 'tabs.changed'
 
 /**
  * What the activity log carries. `operation.completed` is every successful write, from any caller;
- * the others are the same changes the WebSocket stream names, plus commit reviews.
+ * the others are the same changes the WebSocket stream names, plus commit reviews and a project todo
+ * list that changed (`data.project`), also when the file changed on disk.
  */
 export type RemoteControlActivityKind =
-  | 'operation.completed' | 'sessions.changed' | 'tabs.changed' | 'commits.changed'
+  | 'operation.completed' | 'sessions.changed' | 'tabs.changed' | 'commits.changed' | 'projectTodos.changed'
 
 export interface RemoteControlActivityEntry {
   revision: number
@@ -1039,7 +1040,7 @@ export interface RemoteControlOperationMap {
     response: RemoteControlAgentsDto
   }
   'accounts.list': {
-    request: { excludeAccount?: { agentId: 'claude' | 'codex'; accountId: string } }
+    request: { excludeAccount?: { agentId: 'claude' | 'codex' | 'antigravity'; accountId: string } }
     response: readonly AccountView[]
   }
   'tabs.list': {

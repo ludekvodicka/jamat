@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TabControlCommand } from '../../shared/tabControl'
 import { PanelKeysConst } from '../../shared/tabTransfer'
 import { PanelSplitParams } from '../widgets/tabs/panelSplit'
+import { PanelSidebarParams } from '../widgets/tabs/panelSidebar'
 import type { TabsController } from '../widgets/tabs/tabsController'
 import { WorkspacePanels } from './workspacePanels'
 
@@ -88,7 +89,7 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
     expect([...WorkspacePanels.openTaskKeys(controller)]).toEqual([active.key, inactive.key, background.key])
   })
 
-  it('offers Escape only for a full file viewer or the active file or task view in a terminal split', () => {
+  it('offers Escape only for a full file viewer or the active file, task or todo view in a terminal split', () => {
     const controller = new WorkspacePanelsTestController()
     const file = WorkspacePanelsTest.item('one')
     const commit = { kind: 'commit' as const, key: 'commit', title: 'Commit', vcs: 'svn' as const, scopeRoot: 'Q:/app' }
@@ -106,6 +107,10 @@ describe('app-client-ui/renderer/shell/workspacePanels', () => {
       ...PanelSplitParams.of(controller.params), active: commit.key,
     })
     expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(false)
+    controller.params = PanelSplitParams.merged(controller.params, {
+      ...PanelSplitParams.of(controller.params), items: [file, commit, shell, PanelSplitParams.todosItemOf('session-one')], active: 'todos:session-one',
+    })
+    expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(true)
     controller.params = {}
     expect(WorkspacePanels.hasActiveViewer(controller.asController())).toBe(false)
     controller.key = PanelKeysConst.fileViewer
@@ -437,6 +442,29 @@ describe('Session actions panel routing', () => {
     expect(openSessionTask).toHaveBeenCalledExactlyOnceWith(target, task, 'Shell')
     expect(openSharedItem).toHaveBeenCalledExactlyOnceWith(target.remoteEndpointId, 'view', { openId: expect.any(String), item: { kind: 'task', task } })
     expect(closeView).toHaveBeenCalledOnce()
+  })
+
+  it('opens the todo list in a local tab and refuses a remote or foreign one', async () => {
+    let params: Record<string, unknown> = { sessionId: 'session' }
+    const activatePanel = vi.fn()
+    const controller = {
+      keyOf: () => 'terminal', activatePanel, focusPanelContent: vi.fn(),
+      applyPanelParameters: (_id: string, merge: (value: Record<string, unknown>) => Record<string, unknown>) => {
+        params = merge(params)
+        return true
+      },
+    } as unknown as TabsController
+    const command = { kind: 'open-todos', requestId: 'one', panelId: 'panel', sessionId: 'session', view: 'split' } as const
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toEqual({ kind: 'todos-opened', panelId: 'panel' })
+    expect(PanelSplitParams.of(params).items).toEqual([PanelSplitParams.todosItemOf('session')])
+    expect(PanelSidebarParams.of(params).visible).toBe(false)
+    expect(await WorkspacePanels.tabControlResult(controller, { ...command, view: 'sidebar' })).toEqual({ kind: 'todos-opened', panelId: 'panel' })
+    expect(PanelSidebarParams.of(params)).toMatchObject({ visible: true, activeView: 'todos' })
+    expect(await WorkspacePanels.tabControlResult(controller, { ...command, sessionId: 'other' }))
+      .toEqual({ kind: 'failed', detail: 'The session terminal target has changed' })
+    params = { target }
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toMatchObject({ kind: 'failed' })
+    expect(activatePanel).toHaveBeenCalledTimes(2)
   })
 
   it('opens the qualified workflow in the owning window and refuses a foreign target', async () => {

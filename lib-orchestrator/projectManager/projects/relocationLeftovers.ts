@@ -153,7 +153,7 @@ export class RelocationLeftovers implements RelocationLeftoversWriter {
   private static rewriteProblem(entry: Partial<Extract<LeftoverEntry, { kind: 'rewrite' }>>): string | null {
     // Without the provider the sweep cannot know whether the replay includes the encoded shape of the
     // path, and guessing it either misses a rewrite or edits text the format never held.
-    if (entry.provider !== 'claude' && entry.provider !== 'codex')
+    if (entry.provider !== 'claude' && entry.provider !== 'codex' && entry.provider !== 'antigravity')
       return `unknown provider ${JSON.stringify(entry.provider)}`
     if (!RelocationLeftovers.isFilledString(entry.oldPath)
       || !RelocationLeftovers.isFilledString(entry.newPath))

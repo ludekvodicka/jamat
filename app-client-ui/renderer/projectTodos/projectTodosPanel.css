@@ -1,0 +1,301 @@
+/* The split pane draws it in its own rectangle; the sidebar inherits `.file-tools` button rules. */
+.project-todos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  padding: var(--space-2);
+  color: var(--color-text-2);
+  font-size: var(--fs-base);
+}
+.project-todos--pane {
+  padding: var(--space-3);
+  overflow: auto;
+}
+.project-todos--pane:focus { outline: none; }
+.project-todos button {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.project-todos button:hover { background: var(--color-surface-control-hover); }
+.project-todos button[aria-pressed='true'] {
+  border-color: var(--color-accent);
+  color: var(--color-text-1);
+}
+.project-todos input:not([type='checkbox']),
+.project-todos select,
+.project-todos textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 3px var(--space-2);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-1);
+  font: inherit;
+}
+.project-todos input:focus-visible,
+.project-todos select:focus-visible,
+.project-todos textarea:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+.project-todos input[type='checkbox'] {
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--color-ok);
+}
+
+.project-todos__toolbar,
+.project-todos__add-row,
+.project-todos__chips,
+.project-todos__editor-head,
+.project-todos__editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.project-todos__chips { flex-wrap: wrap; }
+.project-todos__add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.project-todos__add-comment {
+  width: 100%;
+  max-height: 40vh;
+  resize: vertical;
+}
+.project-todos__add-comment::placeholder { color: var(--color-text-4); }
+.project-todos__search,
+.project-todos__add-title { flex: 1 1 auto; }
+.project-todos__category-select { flex: 0 1 30%; }
+.project-todos__add-category { flex: 0 0 9em; }
+.project-todos__add-title::placeholder,
+.project-todos__search::placeholder { color: var(--color-text-4); }
+.project-todos__add-title { border-style: dashed; }
+.project-todos__icon-button {
+  display: inline-flex;
+  align-items: center;
+}
+.project-todos__icon {
+  display: block;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+.project-todos__comment { color: var(--color-text-4); }
+
+.project-todos__chip {
+  border-radius: 999px;
+  font-size: var(--fs-chip);
+}
+.project-todos__count {
+  color: var(--color-text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.project-todos__status,
+.project-todos__error,
+.project-todos__footer {
+  margin: 0;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+}
+.project-todos__error { color: var(--color-danger); }
+.project-todos__footer {
+  margin-top: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-todos__list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.project-todos--sidebar .project-todos__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.project-todos__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 30px;
+  padding: 0 var(--space-1);
+  border-bottom: 1px solid var(--color-border-hairline);
+}
+.project-todos--sidebar .project-todos__row {
+  gap: var(--space-1);
+  min-height: 26px;
+}
+.project-todos__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-todos .project-todos__title {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--color-text-1);
+}
+.project-todos .project-todos__title:hover {
+  background: none;
+  text-decoration: underline;
+}
+.project-todos__row--done .project-todos__title {
+  color: var(--color-text-4);
+  text-decoration: line-through;
+}
+
+.project-todos__row--open {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
+  margin: var(--space-1) 0;
+  padding: var(--space-2);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+}
+.project-todos__edit-title { flex: 1 1 auto; }
+.project-todos__edit-comment {
+  width: 100%;
+  /* The field grows with its text (useAutoHeight) up to most of the window; only beyond it scrolls. */
+  max-height: 75vh;
+  resize: vertical;
+}
+.project-todos__editor-actions { justify-content: space-between; }
+.project-todos__editor-fields {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.project-todos__edit-category { flex: 1 1 auto; min-width: 0; }
+
+/* A task's colour is a dot before its title, apart from the category's tinted label. */
+.project-todos__row--done .project-todos__task-color { opacity: 0.5; }
+
+.project-todos__picker {
+  position: relative;
+  display: flex;
+  /* The row centres its items; the combo takes the row's height so it lines up with the fields. */
+  align-self: stretch;
+  flex-shrink: 0;
+}
+.project-todos .project-todos__picker-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.project-todos__caret {
+  width: 8px;
+  height: 8px;
+  color: var(--color-text-4);
+}
+.project-todos__picker-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 9em;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-surface);
+  background: var(--color-surface-raised);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-1) 18%, transparent);
+}
+.project-todos .project-todos__picker-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-color: transparent;
+  background: none;
+  text-align: left;
+  white-space: nowrap;
+}
+.project-todos .project-todos__picker-option:hover,
+.project-todos .project-todos__picker-option[aria-selected='true'] { background: var(--color-surface-control-hover); }
+.project-todos__picker-label { flex: 1 1 auto; }
+.project-todos__swatch {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.project-todos__swatch--none {
+  border: 1px dashed var(--color-text-4);
+  background: none;
+}
+.project-todos__swatch--all {
+  background: conic-gradient(var(--session-color-red), var(--session-color-amber), var(--session-color-green),
+    var(--session-color-teal), var(--session-color-blue), var(--session-color-violet), var(--session-color-magenta), var(--session-color-red));
+}
+.project-todos .project-todos__remove { color: var(--color-danger); }
+
+.project-todos__chip-label {
+  flex-shrink: 0;
+  max-width: 40%;
+  padding: 0 var(--space-2);
+  overflow: hidden;
+  border-radius: 999px;
+  font-size: var(--fs-chip);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-todos__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.project-todos__chip-label,
+.project-todos .project-todos__chip[class*='project-todos__tone--'] {
+  border-color: color-mix(in srgb, var(--tone, var(--color-border-frame)) 55%, transparent);
+  background: color-mix(in srgb, var(--tone, var(--color-surface-control)) 18%, transparent);
+  color: var(--color-text-1);
+}
+.project-todos__row--done .project-todos__chip-label,
+.project-todos__row--done .project-todos__dot { opacity: 0.5; }
+
+.project-todos__tone--red { --tone: var(--session-color-red); }
+.project-todos__tone--magenta { --tone: var(--session-color-magenta); }
+.project-todos__tone--blue { --tone: var(--session-color-blue); }
+.project-todos__tone--green { --tone: var(--session-color-green); }
+.project-todos__tone--amber { --tone: var(--session-color-amber); }
+.project-todos__tone--violet { --tone: var(--session-color-violet); }
+.project-todos__tone--teal { --tone: var(--session-color-teal); }
+.project-todos__tone--rose { --tone: var(--session-color-rose); }
+.project-todos__tone--orange { --tone: var(--session-color-orange); }
+.project-todos__tone--cyan { --tone: var(--session-color-cyan); }
+.project-todos__author-select { flex: 0 1 30%; }
+.project-todos__author {
+  flex-shrink: 0;
+  max-width: 25%;
+  overflow: hidden;
+  color: var(--color-text-4);
+  font-size: var(--fs-status);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

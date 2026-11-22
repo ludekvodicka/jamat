@@ -34,7 +34,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionPanel', () =
       .find((candidate) => candidate.sessionId === 's-working')
     if (source === undefined) throw new Error('The fixture has no working session')
     session = source
-    settingsValue = { claude: { yolo: false }, codex: { yolo: false } }
+    settingsValue = { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }
     saveAnswer = { ok: true, value: { ok: true } }
     settingsChanged = []
     status = { reason: 'Waiting for the pause after the last compact request to end.',

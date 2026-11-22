@@ -92,8 +92,9 @@ export class SessionDetailsModel {
   private static agentLabelOf(agentId: SessionAgentId | null): string {
     if (agentId === 'claude') return 'Claude'
     else if (agentId === 'codex') return 'Codex'
+    else if (agentId === 'antigravity') return 'Antigravity'
     else if (agentId === null) return 'Shell'
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

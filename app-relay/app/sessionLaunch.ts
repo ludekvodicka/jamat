@@ -14,7 +14,7 @@ const input = z.strictObject({
   categoryId: z.string().trim().min(1).max(256),
   projectPath: z.string().trim().min(1).max(4096),
   title: z.string().trim().min(1).max(256).regex(/^[^\x00-\x1f\x7f\u2028\u2029]+$/),
-  agentId: z.enum(['codex', 'claude']),
+  agentId: z.enum(['codex', 'claude', 'antigravity']),
   model: z.string().min(1).max(128).nullable(),
   worktree: z.boolean(),
 });

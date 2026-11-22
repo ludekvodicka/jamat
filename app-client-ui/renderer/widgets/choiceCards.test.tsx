@@ -52,4 +52,23 @@ describe('app-client-ui/renderer/widgets/choiceCards', () => {
     expect(screen.getByRole('button', { name: /Discard worktree/ }))
       .toHaveClass('jamat-choice__card--danger')
   })
+
+  it('draws an optional shortcut badge hidden from the accessible name', () => {
+    const view = render(
+      <ChoiceCard
+        title="Raw"
+        note="start the agent"
+        glyph="❯_"
+        shortcut="R"
+        chosen={false}
+        refusal={null}
+        onChoose={vi.fn()}
+      />,
+    )
+
+    const badge = view.container.querySelector('.jamat-choice__shortcut')
+    expect(badge?.textContent).toBe('R')
+    expect(badge?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.getByRole('button', { name: /Raw/ })).toBeTruthy()
+  })
 })

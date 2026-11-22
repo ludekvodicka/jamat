@@ -1,5 +1,5 @@
 import type { AccountView } from './agentAccountsApi.types'
-import type { AccountBrokerAnswer, AccountBrokerReason } from './accountBrokerApi.types'
+import type { AccountBrokerAnswer, AccountBrokerReason, AccountUsageCounts } from './accountBrokerApi.types'
 
 /** Main's own login facts as the orchestrator knows them; the CLI side has none. */
 export interface AccountBrokerMain { configDir: string | null; identityKey: string | null; tier: string | null }
@@ -9,7 +9,10 @@ export interface AccountBrokerMain { configDir: string | null; identityKey: stri
  * answers and the shape check, and nothing behind it.
  */
 export class AccountBrokerAnswers {
+  /** Also the pattern of an account id in `accounts report`, so neither needs shell quoting. */
   static readonly callerPatternConst = /^[A-Za-z0-9._-]{1,64}$/
+  static readonly modelPatternConst = /^[A-Za-z0-9._:@/-]{1,128}$/
+  static readonly maxModelsConst = 16
   static readonly purposesConst = ['interactive', 'background'] as const
   static readonly reuseSecondsConst = 300
   static readonly fallbackReuseSecondsConst = 60
@@ -52,6 +55,30 @@ export class AccountBrokerAnswers {
       || !Array.isArray(env.unset) || !env.unset.every(item => typeof item === 'string')) return false
     return typeof value.fallback === 'boolean' && typeof value.reason === 'string'
       && typeof value.reuseSeconds === 'number' && Number.isFinite(value.reuseSeconds) && value.reuseSeconds >= 0
+      && (value.reportCommand === undefined || typeof value.reportCommand === 'string')
+  }
+
+  /**
+   * The per-model counters of Claude's result JSON (`modelUsage`, the same shape from `claude -p
+   * --output-format json` and from the Agent SDK result); null when it holds no valid model.
+   */
+  static usageModels(result: unknown): Record<string, AccountUsageCounts> | null {
+    if (!AccountBrokerAnswers.record(result) || !AccountBrokerAnswers.record(result.modelUsage)) return null
+    const entries = Object.entries(result.modelUsage)
+    if (entries.length === 0 || entries.length > AccountBrokerAnswers.maxModelsConst) return null
+    const models: Record<string, AccountUsageCounts> = {}
+    for (const [model, usage] of entries) {
+      if (!AccountBrokerAnswers.modelPatternConst.test(model) || !AccountBrokerAnswers.record(usage)) return null
+      const counts = [usage.inputTokens, usage.outputTokens, usage.cacheReadInputTokens, usage.cacheCreationInputTokens]
+      if (!counts.every(AccountBrokerAnswers.count)) return null
+      const [input, output, cacheRead, cacheWrite] = counts as number[]
+      models[model] = { input: input!, output: output!, cacheRead: cacheRead!, cacheWrite: cacheWrite! }
+    }
+    return models
+  }
+
+  static count(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
   }
 
   private static record(value: unknown): value is Record<string, unknown> {

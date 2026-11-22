@@ -12,6 +12,6 @@ export class AgentSettingsSection {
     validate: (value) => AgentSettings.isValid(value)
       ? null
       : 'agents must hold { claude: { yolo: boolean, model?: string, effort?: string }, '
-        + 'codex: the same, processPriority?: "below-normal" | "normal" }',
+        + 'codex: the same, antigravity: the same, processPriority?: "below-normal" | "normal" }',
   }
 }

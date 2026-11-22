@@ -158,11 +158,43 @@ export class AgentModels {
       note: 'Ultra-fast coding model.' },
   ]
 
+  /**
+   * Measured 2026-11-21 against `agy models` (Antigravity CLI 1.5.14). `pnpm dev:models` reprints
+   * this block; the free-text field beside the picker still accepts any custom or newly released id.
+   */
+  private static readonly antigravityConst: readonly AgentModelOption[] = [
+    { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-4-hydrogen-xhigh', label: 'Gemini 4 Hydrogen (XHigh)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-4-hydrogen-medium', label: 'Gemini 4 Hydrogen (Medium)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh'] },
+    { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)', kind: 'version', context: 1_048_576, efforts: [] },
+    { id: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)', kind: 'version', context: 1_048_576, efforts: [] },
+    { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)', kind: 'version', context: 200_000, efforts: ['low', 'medium', 'high'] },
+    { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)', kind: 'version', context: 128_000, efforts: ['medium'] },
+  ]
+  private static readonly antigravityEffortsConst: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
   static optionsFor(agentId: AgentSettingsAgentId): readonly AgentModelOption[] {
     if (agentId === 'claude') return AgentModels.claudeConst
     else if (agentId === 'codex') return AgentModels.codexConst
+    else if (agentId === 'antigravity') return AgentModels.antigravityConst
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /** An exact id or nothing: a model that left the list simply shows no detail line. */
@@ -175,6 +207,7 @@ export class AgentModels {
    * name them. The default the agent starts on is one of those models, and which one is its answer.
    */
   static effortsFor(agentId: AgentSettingsAgentId): readonly string[] {
+    if (agentId === 'antigravity') return AgentModels.antigravityEffortsConst
     const levels: string[] = []
     for (const option of AgentModels.optionsFor(agentId))
       for (const effort of option.efforts)

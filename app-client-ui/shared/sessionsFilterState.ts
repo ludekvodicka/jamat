@@ -38,7 +38,7 @@ export class SessionsFilterState {
      */
     closedRecently: `Last ${SessionsFilterState.closedWithinHoursConst}h closed`,
   } as const satisfies Record<SessionFilterStatus, string>
-  static readonly agentChoicesConst = ['claude', 'codex', null] as const satisfies readonly (SessionAgentId | null)[]
+  static readonly agentChoicesConst = ['claude', 'codex', 'antigravity', null] as const satisfies readonly (SessionAgentId | null)[]
 
   static isAll(value: SessionsFilterValue, text: string): boolean {
     return value.colors.length === 0 && value.states.length === 0

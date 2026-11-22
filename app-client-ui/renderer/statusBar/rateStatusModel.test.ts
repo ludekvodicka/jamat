@@ -237,4 +237,37 @@ describe('app-client-ui/renderer/statusBar/rateStatusModel', () => {
     expect(RateStatusModel.readingOf(snapshot, 'claude', Rates.nowConst, 'missing').text).toBe('S:? W:?')
   })
 
+  it('draws Antigravity readings with no external usage page and degrades cleanly when unread', () => {
+    const unread = RateStatusModel.readingOf(Rates.snapshot(Rates.ok()), 'antigravity', Rates.nowConst)
+    expect(unread.name).toBe('Antigravity')
+    expect(unread.text).toBe('S:? W:?')
+    expect(unread.dim).toBe(true)
+    expect(unread.usageUrl).toBeNull()
+
+    const read: RateMonitorSnapshot = {
+      revision: 8,
+      providers: {
+        claude: Rates.ok(),
+        codex: { kind: 'never-read' },
+        antigravity: Rates.ok([
+          { durationMinutes: 300, usedPercent: 25, resetsAt: null },
+          { durationMinutes: 10_080, usedPercent: 6.2, resetsAt: null },
+        ]),
+      },
+    }
+    const reading = RateStatusModel.readingOf(read, 'antigravity', Rates.nowConst)
+    expect(reading.text).toBe('S: 25% [███░░░░░░░], W:  6% [█░░░░░░░░░]')
+    expect(reading.dim).toBe(false)
+    expect(reading.usageUrl).toBeNull()
+
+    const scopedLetters = Rates.letters(Rates.ok([
+      { durationMinutes: 300, usedPercent: 10, resetsAt: null },
+      { durationMinutes: 10_080, usedPercent: 5, resetsAt: null },
+      { durationMinutes: 10_080, usedPercent: 2, resetsAt: null, model: 'gemini-argon-wtu' },
+      { durationMinutes: 300, usedPercent: 0, resetsAt: null, model: '3p' },
+      { durationMinutes: 10_080, usedPercent: 0, resetsAt: null, model: '3p' },
+    ]))
+    expect(scopedLetters).toEqual(['S', 'W', 'G', '3pS', '3pW'])
+  })
+
 })

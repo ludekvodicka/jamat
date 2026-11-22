@@ -1109,4 +1109,58 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
         .toThrow('Session s1 runs a tool, and no run tools were given')
     })
   })
+
+  describe('Antigravity launches', () => {
+    it('maps antigravity to the agy executable on both platforms with model, effort and yolo flags', () => {
+      const value = record({
+        kind: 'agent',
+        agent: { agentId: 'antigravity', launchMode: 'new' },
+      })
+      const modeArgs = AgentPresets.createArgs({ agentId: 'antigravity', mode: 'new', initialPrompt: 'hello' }, undefined)
+      const win = LaunchPlanner.plan(value, {
+        platform: 'win32',
+        environment: environmentConst,
+        agentArgs: modeArgs,
+        yolo: true,
+        model: 'gemini-3-pro',
+        effort: 'high',
+      })
+      expect(win.command).toBe(environmentConst.ComSpec)
+      expect(win.args).toEqual([
+        '/d', '/q', '/c', 'agy', '--dangerously-skip-permissions', '--model', 'gemini-3-pro', '--effort', 'high', '-i', 'hello',
+      ])
+      const linux = LaunchPlanner.plan(value, {
+        platform: 'linux',
+        environment: environmentConst,
+        agentArgs: modeArgs,
+        yolo: true,
+        model: 'gemini-3-pro',
+        effort: 'high',
+      })
+      expect(linux.command).toBe('agy')
+      expect(linux.args).toEqual([
+        '--dangerously-skip-permissions', '--model', 'gemini-3-pro', '--effort', 'high', '-i', 'hello',
+      ])
+    })
+
+    it('resolves spanning launch against the agy executable name on Windows', () => {
+      const seen: string[] = []
+      const value = record({
+        kind: 'agent',
+        agent: { agentId: 'antigravity', launchMode: 'new' },
+      })
+      const launch = LaunchPlanner.plan(value, {
+        platform: 'win32',
+        environment: environmentConst,
+        agentArgs: ['-i', 'line 1\nline 2'],
+        spanningLaunch: (command) => {
+          seen.push(command)
+          return { kind: 'image', imagePath: 'C:\\bin\\agy.exe' }
+        },
+      })
+      expect(seen).toEqual(['agy'])
+      expect(launch.command).toBe('C:\\bin\\agy.exe')
+      expect(launch.args).toEqual(['-i', 'line 1\nline 2'])
+    })
+  })
 })

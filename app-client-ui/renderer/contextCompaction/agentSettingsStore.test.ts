@@ -8,10 +8,12 @@ describe('app-client-ui/renderer/contextCompaction/agentSettingsStore', () => {
   const firstConst: AgentSettingsValue = {
     claude: { yolo: false },
     codex: { yolo: false },
+    antigravity: { yolo: false },
   }
   const secondConst: AgentSettingsValue = {
     claude: { yolo: false, autoCompactEnabled: true },
     codex: { yolo: false },
+    antigravity: { yolo: false },
   }
   let value: AgentSettingsValue
   let notify: (() => void) | null

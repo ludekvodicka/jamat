@@ -10,7 +10,7 @@ import type { RemoteConnectionsSnapshot } from '../../../lib-orchestrator/remote
 import type { SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import type { TabControlCommand, TabControlCommandResult } from '../../shared/tabControl'
-import { PanelKeysConst } from '../../shared/tabTransfer'
+import { PanelKeysConst, type WorkspacePanelPresence } from '../../shared/tabTransfer'
 import { type TerminalTarget, TerminalTargetCodec } from '../../shared/terminalTarget'
 import { ErrorText } from '../../shared/errorText'
 import type { FileViewerBaselineHint } from '../fileViewer/fileViewerPanel.types'
@@ -18,6 +18,7 @@ import type { SnapshotStore } from '../ipc/snapshotStore'
 import type { SessionOpenIntent } from '../views/sessionsTree/sessionsTreeView'
 import { TabsController } from '../widgets/tabs/tabsController'
 import { PanelSplitParams } from '../widgets/tabs/panelSplit'
+import { PanelSidebarParams } from '../widgets/tabs/panelSidebar'
 import type { ActiveTerminalReading } from './activeTerminalStore'
 import type { PanelOpenOutcome } from './appShell.types'
 
@@ -39,7 +40,8 @@ export class WorkspacePanels {
             case 'task': return [item.key]
             case 'file':
             case 'commit':
-            case 'workflow': return []
+            case 'workflow':
+            case 'todos': return []
             default: throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
           }
         })
@@ -166,7 +168,7 @@ export class WorkspacePanels {
     if (key === PanelKeysConst.fileViewer) return true
     if (key !== PanelKeysConst.terminal) return false
     const split = PanelSplitParams.of(controller.transferPayload(panelId).params)
-    return split.items.some((item) => item.key === split.active && (item.kind === 'file' || item.kind === 'task'))
+    return split.items.some((item) => item.key === split.active && (item.kind === 'file' || item.kind === 'task' || item.kind === 'todos'))
   }
 
   /** `workflowOpen` answers whether a session's workflow is open; such an item stays like a pinned one. */
@@ -222,6 +224,22 @@ export class WorkspacePanels {
       if (!forwarded.ok) { AppClientUiReport.error(forwarded.error); return }
     }
     await WorkspacePanels.shareItem(target, { kind: 'task', task })
+  }
+
+  /** The project todo list in the split of the local terminal in front; a sentence when it cannot open. */
+  static openProjectTodos(controller: TabsController): string | null {
+    const active = WorkspacePanels.activeTerminalOf(controller.activePanelId())
+    if (active === null || active.target.kind !== 'local') return 'The project todo list opens beside a local terminal; activate one first.'
+    const sessionId = active.target.sessionId
+    let refusal: string | null = null
+    const applied = controller.applyPanelParameters(active.panelId, (params) => {
+      const opened = PanelSplitParams.opened(PanelSplitParams.of(params), PanelSplitParams.todosItemOf(sessionId))
+      if (!opened.ok) { refusal = opened.refusal; return params }
+      return PanelSplitParams.merged(params, opened.state)
+    })
+    if (!applied) return `Unknown panel: ${active.panelId}`
+    if (refusal === null) requestAnimationFrame(() => controller.focusPanelContent(active.panelId))
+    return refusal
   }
 
   static async openSessionActions(controller: TabsController, target: TerminalTarget, title: string): Promise<void> {
@@ -388,6 +406,30 @@ export class WorkspacePanels {
       controller.activatePanel(command.panelId)
       requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
       return { kind: 'workflow-opened', panelId: command.panelId }
+    } else if (command.kind === 'open-todos') {
+      if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
+        return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
+      let refusal: string | null = null
+      const applied = controller.applyPanelParameters(command.panelId, (params) => {
+        const reading = TerminalTargetCodec.read(params)
+        if (reading === null || reading.target.kind !== 'local' || reading.target.sessionId !== command.sessionId) {
+          refusal = 'The session terminal target has changed'
+          return params
+        }
+        if (command.view === 'sidebar')
+          return PanelSidebarParams.merged(params, { ...PanelSidebarParams.of(params), visible: true, activeView: 'todos' })
+        else if (command.view === 'split') {
+          const result = PanelSplitParams.opened(PanelSplitParams.of(params), PanelSplitParams.todosItemOf(command.sessionId))
+          if (!result.ok) { refusal = result.refusal; return params }
+          return PanelSplitParams.merged(params, result.state)
+        }
+        else throw new Error(`Unknown todo list place: ${JSON.stringify(command.view satisfies never)}`)
+      })
+      if (!applied) return { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
+      if (refusal !== null) return { kind: 'failed', detail: refusal }
+      controller.activatePanel(command.panelId)
+      requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
+      return { kind: 'todos-opened', panelId: command.panelId }
     } else if (command.kind === 'open-commit') {
       if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
@@ -452,6 +494,26 @@ export class WorkspacePanels {
       return undefined
     else
       throw new Error(`Unknown session open intent: ${JSON.stringify(intent)}`)
+  }
+
+  /** A replaced preview comes back only while its session is still in the snapshot that draws it. */
+  static mayReopen(
+    panel: WorkspacePanelPresence,
+    sessions: SessionsSnapshot | null,
+    remote: RemoteConnectionsSnapshot | null,
+  ): boolean {
+    if (panel.key !== PanelKeysConst.terminal)
+      return true
+    const target = TerminalTargetCodec.read(panel.params)?.target
+    if (target === undefined)
+      return false
+    else if (target.kind === 'local')
+      return sessions?.sessions.some((session) => session.sessionId === target.sessionId) ?? false
+    else if (target.kind === 'remote')
+      return remote?.outbound.find((endpoint) => endpoint.remoteEndpointId === target.remoteEndpointId)
+        ?.sessions?.sessions.some((session) => session.sessionId === target.sessionId) ?? false
+    else
+      throw new Error(`Unknown terminal target: ${JSON.stringify(target satisfies never)}`)
   }
 
   /** The terminal behind the active tab: what the widgets that read this are about is its session. */

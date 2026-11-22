@@ -22,6 +22,7 @@ import type { SetupResolution, SetupScope } from '../../projectSetup/projectSetu
 import type { WorktreeConfigRead } from '../../projectSetup/worktreeConfig'
 import { AgentPresets, type SessionAgentSpec } from '../launch/agentPresets'
 import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTrustSeed'
+import type { AntigravityStatusLine } from '../launch/antigravityStatusLine'
 import type { ClaudeStatusLine } from '../launch/claudeStatusLine'
 import type { CodexSessionFiles } from '../launch/codexSessionFiles'
 import { PathCompare } from '../../shared/pathCompare'
@@ -146,6 +147,8 @@ export interface SessionLifecycleDeps {
   codexSessions: Pick<CodexSessionFiles, 'launch' | 'identity'>
   /** The status line relay an interactive Claude launch is started with; null leaves it out. */
   claudeStatusLine: Pick<ClaudeStatusLine, 'settingsFileFor' | 'identity'>
+  /** The status line relay an interactive Antigravity launch is started with; absent leaves it out. */
+  antigravityStatusLine?: Pick<AntigravityStatusLine, 'settingsFileFor' | 'identity'>
   /** Where the tool of a direct-process run is on this machine, asked at every launch of one. */
   tools: Pick<RunTools, 'resolve'> & Partial<Pick<RunTools, 'node' | 'agentCli'>>
   claudeTitles: SessionClaudeTitlesPort
@@ -238,6 +241,7 @@ export class SessionLifecycle {
   private readonly numbers: SessionNumbersPort
   private readonly codexSessions: SessionLifecycleDeps['codexSessions']
   private readonly claudeStatusLine: SessionLifecycleDeps['claudeStatusLine']
+  private readonly antigravityStatusLine: SessionLifecycleDeps['antigravityStatusLine']
   private readonly tools: SessionLifecycleDeps['tools']
   private readonly localStateDir: string | undefined
   private readonly claudeTitles: SessionClaudeTitlesPort
@@ -285,6 +289,7 @@ export class SessionLifecycle {
     this.numbers = deps.numbers
     this.codexSessions = deps.codexSessions
     this.claudeStatusLine = deps.claudeStatusLine
+    this.antigravityStatusLine = deps.antigravityStatusLine
     this.tools = deps.tools
     this.localStateDir = deps.localStateDir
     this.claudeTitles = deps.claudeTitles
@@ -422,7 +427,7 @@ export class SessionLifecycle {
     let accountEnv: Record<string, string> = {}
     try {
       if (prepareAccount) accountEnv = await prepareAccount()
-      else if (account !== null && this.accounts)
+      else if (account !== null && this.accounts && (account.agentId === 'claude' || account.agentId === 'codex'))
         accountEnv = await this.accounts.launchEnv(account.agentId, account.accountId, LaunchPlanner.cwdOf(record), settings)
     } catch (error) {
       await this.endRefused(record, `Account preflight failed: ${ErrorText.of(error)}`)
@@ -447,7 +452,10 @@ export class SessionLifecycle {
       const claudeSettingsFile = agentId === 'claude' && !record.agent?.oneShot
         ? this.claudeStatusLine.settingsFileFor(LaunchPlanner.cwdOf(record),
           launchId === undefined ? undefined : { sessionId: record.sessionId, launchId }) ?? undefined
-        : undefined
+        : agentId === 'antigravity' && !record.agent?.oneShot
+          ? this.antigravityStatusLine?.settingsFileFor(
+            launchId === undefined ? undefined : { sessionId: record.sessionId, launchId }) ?? undefined
+          : undefined
       const effective = { ...options, yolo, model, effort, claudeSettingsFile, jamatCli: this.agentCli(), workerCli: this.workerCli(record) }
       return LaunchPlanner.plan(record, { ...effective,
         codexBridge: (native, args) => this.codexSessions.launch(record, native, args, effective),
@@ -790,10 +798,19 @@ export class SessionLifecycle {
     const marks = options?.marks
     const problem = SessionLifecycle.specProblem(spec)
     if (problem) return { ok: false, code: 'invalid-spec', detail: problem }
+    const accountManaged = (agentId: SessionAgentId): agentId is 'claude' | 'codex' =>
+      agentId === 'claude' || agentId === 'codex'
     const selectedAccount = spec.kind === 'agent' && spec.agent
-      ? { agentId: spec.agent.agentId, accountId: spec.agent.accountId ?? (await this.accounts?.defaultAccount(spec.agent.agentId))?.accountId ?? 'main' }
+      ? {
+        agentId: spec.agent.agentId,
+        accountId: spec.agent.accountId
+          ?? (accountManaged(spec.agent.agentId) ? (await this.accounts?.defaultAccount(spec.agent.agentId))?.accountId : undefined)
+          ?? 'main',
+      }
       : spec.account
-    if (selectedAccount && !(this.accounts?.exists(selectedAccount.agentId, selectedAccount.accountId) ?? selectedAccount.accountId === 'main'))
+    if (selectedAccount && !(accountManaged(selectedAccount.agentId) && this.accounts
+      ? this.accounts.exists(selectedAccount.agentId, selectedAccount.accountId)
+      : selectedAccount.accountId === 'main'))
       return { ok: false, code: 'invalid-spec', detail: 'account not found' }
     if (spec.kind === 'agent' && spec.agent && selectedAccount)
       spec = { ...spec, agent: { ...spec.agent, accountId: selectedAccount.accountId } }
@@ -1606,7 +1623,7 @@ export class SessionLifecycle {
   }
 
   /** What the running agent of this launch generation reported, through the witness of its kind. */
-  private async confirmedIdOf(record: SessionRecord): Promise<{ nativeSessionId: string; sequence: number; source: 'codex-app-server' | 'claude-statusline' } | null> {
+  private async confirmedIdOf(record: SessionRecord): Promise<{ nativeSessionId: string; sequence: number; source: 'codex-app-server' | 'claude-statusline' | 'antigravity-statusline' } | null> {
     const agent = record.agent!
     if (agent.agentId === 'codex') {
       const receipt = await this.codexSessions.identity(record)
@@ -1615,6 +1632,10 @@ export class SessionLifecycle {
     else if (agent.agentId === 'claude') {
       const receipt = await this.claudeStatusLine.identity(record.sessionId, agent.identityLaunchId!)
       return receipt === null ? null : { ...receipt, source: 'claude-statusline' }
+    }
+    else if (agent.agentId === 'antigravity') {
+      const receipt = await this.antigravityStatusLine?.identity(record.sessionId, agent.identityLaunchId!) ?? null
+      return receipt === null ? null : { ...receipt, source: 'antigravity-statusline' }
     }
     else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
   }
@@ -2348,23 +2369,25 @@ export class SessionLifecycle {
   private static agentProblem(agent: SessionAgentSpec | undefined): string | null {
     if (!agent) return 'an agent session needs an agent'
     if (agent.accountId !== undefined && !SessionLifecycle.filled(agent.accountId)) return 'accountId must be non-empty'
-    if (agent.agentId !== 'claude' && agent.agentId !== 'codex')
+    if (agent.agentId !== 'claude' && agent.agentId !== 'codex' && agent.agentId !== 'antigravity')
       return `unknown agent ${JSON.stringify(agent.agentId)}`
     if (agent.mode !== 'new' && agent.mode !== 'continue'
       && agent.mode !== 'resume' && agent.mode !== 'fork')
       return `unknown launch mode ${JSON.stringify(agent.mode)}`
+    if (agent.agentId === 'antigravity' && agent.mode === 'fork')
+      return 'Antigravity CLI does not support forking a conversation'
     if (agent.mode === 'resume' && !SessionLifecycle.filled(agent.nativeSessionId))
       return 'resuming needs the id of the session to resume'
     if (agent.mode === 'fork' && !SessionLifecycle.filled(agent.forkParentId))
       return 'forking needs the id of the session to fork'
-    // Codex cannot be told an id before it starts, so one handed in with `new` or `fork` names a
-    // conversation nobody proved exists, and every reopen and every transcript reader would trust
-    // it. Only `resume` names one that already does. Claude is not refused: a caller minting the id
-    // is the same act this library performs.
-    if (agent.agentId === 'codex'
+    // Codex and Antigravity cannot be told an id before they start, so one handed in with `new` or
+    // `fork` names a conversation nobody proved exists, and every reopen and every transcript reader
+    // would trust it. Only `resume` names one that already does. Claude is not refused: a caller
+    // minting the id is the same act this library performs.
+    if ((agent.agentId === 'codex' || agent.agentId === 'antigravity')
       && (agent.mode === 'new' || agent.mode === 'fork')
       && agent.nativeSessionId !== undefined)
-      return 'a codex session started as new or fork cannot be given a conversation id; Codex reports it afterwards'
+      return `a ${agent.agentId} session started as new or fork cannot be given a conversation id`
     // Before anything is written, because the alternative is what this refusal replaces: a record
     // whose agent was started on the first line of its instruction and answered that instead.
     // `LaunchPlanner` owns the reason, so the caller reads the same sentence the launch would
@@ -2378,7 +2401,7 @@ export class SessionLifecycle {
     const directoryProblem = SessionLifecycle.directoryProblem(spec.directory)
     if (directoryProblem) return directoryProblem
     if (spec.directory.mode !== 'project') return 'history needs a catalog project'
-    if (spec.agentId !== 'claude' && spec.agentId !== 'codex')
+    if (spec.agentId !== 'claude' && spec.agentId !== 'codex' && spec.agentId !== 'antigravity')
       return `unknown agent ${JSON.stringify(spec.agentId)}`
     if (!SessionLifecycle.filled(spec.nativeSessionId))
       return 'opening history needs the id of the session to open'

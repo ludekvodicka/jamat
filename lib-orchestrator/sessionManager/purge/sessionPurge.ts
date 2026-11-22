@@ -56,8 +56,13 @@ export class SessionPurge {
     await ledger.remove(join(OrchestratorPaths.codexSessionsDirectory(configIdentity, channel), sessionId))
     await ledger.remove(join(OrchestratorPaths.claudeIdentitiesDirectory(configIdentity, channel), `${sessionId}.json`))
     await ledger.remove(join(OrchestratorPaths.claudeStatusLineDirectory(configIdentity, channel), `settings-${sessionId}.json`))
-    for (const id of conversations.filter((one) => ErasureLedger.conversationId(one)))
+    await ledger.remove(join(OrchestratorPaths.antigravityIdentitiesDirectory(configIdentity, channel), `${sessionId}.json`))
+    await ledger.remove(join(OrchestratorPaths.antigravityStatusLineDirectory(configIdentity, channel), `settings-${sessionId}.json`))
+    await ledger.remove(join(OrchestratorPaths.antigravityContextSnapshotsDirectory(configIdentity, channel), `session-${sessionId}.json`))
+    for (const id of conversations.filter((one) => ErasureLedger.conversationId(one))) {
       await ledger.remove(join(OrchestratorPaths.claudeContextSnapshotsDirectory(configIdentity, channel), `${id}.json`))
+      await ledger.remove(join(OrchestratorPaths.antigravityContextSnapshotsDirectory(configIdentity, channel), `${id}.json`))
+    }
     await SessionPurge.step(ledger, 'Script logs', () => this.deps.removeScriptLogs(sessionId))
     await SessionPurge.step(ledger, 'Session notifies', () => this.deps.forgetNotifies(sessionId))
     if (this.deps.sessionFiles !== undefined) {

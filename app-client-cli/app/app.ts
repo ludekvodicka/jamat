@@ -6,7 +6,7 @@ import { PassInbox, type PassEvent } from '../../lib-orchestrator/snapins/passIn
 import { PerfReportView } from '../../lib-orchestrator/perfMonitor/perfReportView'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 import { AccountBrokerAnswers } from '../../lib-orchestrator/agentAccounts/accountBrokerAnswer'
-import type { AccountBrokerAnswer, AccountBrokerPurpose, AccountBrokerReason } from '../../lib-orchestrator/agentAccounts/accountBrokerApi.types'
+import type { AccountBrokerAnswer, AccountBrokerCliReason, AccountBrokerPurpose, AccountUsageCounts, AccountUsageReportResult } from '../../lib-orchestrator/agentAccounts/accountBrokerApi.types'
 
 import type {
   RemoteControlCatalogEntryDto,
@@ -88,6 +88,8 @@ export interface AppClientCliDeps {
   requestId(): string
   write(value: string): void
   readJson(file: string): unknown
+  /** The whole standard input as text; only `accounts report` reads it. */
+  readStdin(): string
   signal?: AbortSignal
   now(): number
   pause(milliseconds: number, signal?: AbortSignal): Promise<void>
@@ -98,6 +100,7 @@ type AppClientCliPlan =
   | { kind: 'pass'; directory: string; event?: PassEvent }
   | { kind: 'perf'; since: number }
   | { kind: 'pick'; args: CliArguments; caller: string; purpose: AccountBrokerPurpose }
+  | { kind: 'report'; args: CliArguments; caller: string; purpose: AccountBrokerPurpose; accountId: string; models: Record<string, AccountUsageCounts> }
   | { kind: 'commit-status'; id: string; wait: boolean; timeoutMs: number }
   | {
       kind: 'request'
@@ -154,6 +157,7 @@ export class AppClientCli {
       requestId: deps?.requestId ?? randomUUID,
       write: deps?.write ?? ((value) => process.stdout.write(`${value}\n`)),
       readJson: deps?.readJson ?? CliJsonFile.read,
+      readStdin: deps?.readStdin ?? (() => readFileSync(0, 'utf8')),
       now: deps?.now ?? Date.now,
       pause: deps?.pause ?? CommitStatusReader.pause,
       ...(deps?.signal === undefined ? {} : { signal: deps.signal }),
@@ -173,6 +177,7 @@ export class AppClientCli {
       if (plan.kind === 'pass') return await this.runPass(plan)
       if (plan.kind === 'commit') return await this.runCommit(plan)
       if (plan.kind === 'pick') return await this.runPick(plan)
+      if (plan.kind === 'report') return await this.runReport(plan)
       const config = this.deps.loadConfig(args)
       if (plan.kind === 'perf') {
         if (config.configIdentity === null || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(config.configIdentity) || config.runtimeChannel === null)
@@ -401,6 +406,38 @@ export class AppClientCli {
     return 0
   }
 
+  /** Like `accounts pick`: every outcome exits 0, and only a usage error, thrown before discovery, exits non-zero. */
+  private async runReport(plan: Extract<AppClientCliPlan, { kind: 'report' }>): Promise<number> {
+    const missed = (reason: AccountBrokerCliReason): AccountUsageReportResult => ({ recorded: false, reason })
+    let config: AppConfig
+    try { config = this.deps.loadConfig(plan.args) }
+    catch (error) {
+      if (!(error instanceof AppClientCliError) || error.code === 'invalid-request') throw error
+      this.write({ ok: true, value: missed(AppClientCli.pickReasonsConst[error.code]) })
+      return 0
+    }
+    const stop = new AbortController()
+    const deadline = this.deps.pause(AppClientCli.pickDeadlineMsConst, stop.signal).then(() => missed('timeout'), () => missed('timeout'))
+    const result = await Promise.race([this.report(plan, config, stop.signal), deadline])
+    stop.abort()
+    this.write({ ok: true, value: result })
+    return 0
+  }
+
+  private async report(plan: Extract<AppClientCliPlan, { kind: 'report' }>, config: AppConfig, signal: AbortSignal): Promise<AccountUsageReportResult> {
+    try {
+      const descriptor = await this.deps.discover(config)
+      if (!descriptor.ok) return { recorded: false, reason: AppClientCli.pickReasonsConst[descriptor.error.code] }
+      if (!RemoteControlCapabilities.of(descriptor.value).includes('accounts.report')) return { recorded: false, reason: 'unsupported' }
+      const operation: string = 'accounts.report'
+      const response = await this.deps.client(descriptor.value, { timeoutMilliseconds: AppClientCli.pickDeadlineMsConst }).execute({
+        protocol: RemoteControlConst.protocol, requestId: this.deps.requestId(), operationId: this.deps.operationId(), operation,
+        body: { caller: plan.caller, purpose: plan.purpose, accountId: plan.accountId, models: plan.models } } as unknown as RemoteControlRequestUnion, signal)
+      if (response.ok) return { recorded: true }
+      return { recorded: false, reason: response.error.code === 'timeout' ? 'timeout' : 'error' }
+    } catch { return { recorded: false, reason: 'error' } }
+  }
+
   private async pick(plan: Extract<AppClientCliPlan, { kind: 'pick' }>, config: AppConfig, signal: AbortSignal): Promise<AccountBrokerAnswer> {
     try {
       const descriptor = await this.deps.discover(config)
@@ -416,6 +453,25 @@ export class AppClientCli {
   }
 
   private pickPlan(args: CliArguments): AppClientCliPlan {
+    return { kind: 'pick', args, ...this.brokerCaller(args) }
+  }
+
+  /** Arguments first, then stdin, all before discovery: a malformed report is a usage error. */
+  private reportPlan(args: CliArguments): AppClientCliPlan {
+    const caller = this.brokerCaller(args)
+    const accountId = args.required('--account')
+    if (!AccountBrokerAnswers.callerPatternConst.test(accountId))
+      throw new AppClientCliError('invalid-request', '--account must be 1 to 64 characters of A-Z a-z 0-9 . _ -')
+    let result: unknown
+    try { result = JSON.parse(this.deps.readStdin()) }
+    catch (error) { throw new AppClientCliError('invalid-request', `stdin must hold Claude's result JSON: ${ErrorText.of(error)}`) }
+    const models = AccountBrokerAnswers.usageModels(result)
+    if (models === null)
+      throw new AppClientCliError('invalid-request', `stdin must hold modelUsage with 1 to ${AccountBrokerAnswers.maxModelsConst} models and whole token counts`)
+    return { kind: 'report', args, ...caller, accountId, models }
+  }
+
+  private brokerCaller(args: CliArguments): { caller: string; purpose: AccountBrokerPurpose } {
     const caller = args.required('--caller')
     if (!AccountBrokerAnswers.callerPatternConst.test(caller))
       throw new AppClientCliError('invalid-request', '--caller must be 1 to 64 characters of A-Z a-z 0-9 . _ -')
@@ -423,7 +479,7 @@ export class AppClientCli {
     const purposes: readonly string[] = AccountBrokerAnswers.purposesConst
     if (!purposes.includes(purpose))
       throw new AppClientCliError('invalid-request', `--purpose must be one of ${AccountBrokerAnswers.purposesConst.join(', ')}`)
-    return { kind: 'pick', args, caller, purpose: purpose as AccountBrokerPurpose }
+    return { caller, purpose: purpose as AccountBrokerPurpose }
   }
 
   private plan(args: CliArguments): AppClientCliPlan {
@@ -438,6 +494,7 @@ export class AppClientCli {
     if (args.command === 'snapins pass brief') return { kind: 'pass', directory: args.required('--pass') }
     if (args.command === 'snapins pass event') return this.passPlan(args)
     if (args.command === 'accounts pick') return this.pickPlan(args)
+    if (args.command === 'accounts report') return this.reportPlan(args)
     if (args.command === 'commit-svn-jamat') return this.commitPlan(args, 'svn')
     else if (args.command === 'commit-git-jamat') return this.commitPlan(args, 'git')
     else if (args.command === 'commit status') {
@@ -450,6 +507,7 @@ export class AppClientCli {
         request: this.request('system.operations', {}, this.deps.requestId()),
         name: args.required('--operation'),
       }
+    if (args.command.startsWith('todos ')) return this.todosPlan(args)
     if (args.command === 'call') {
       const bodyText = args.option('--body')
       const bodyFile = args.option('--body-file')
@@ -1075,8 +1133,8 @@ export class AppClientCli {
     if (agentId === null
       && [mode, nativeSessionId, forkParentId, initialPrompt, args.option('--account')].some((value) => value !== null))
       throw new AppClientCliError('invalid-request', 'Agent options require --agent')
-    if (agentId !== null && agentId !== 'claude' && agentId !== 'codex')
-      throw new AppClientCliError('invalid-request', '--agent must be claude or codex')
+    if (agentId !== null && agentId !== 'claude' && agentId !== 'codex' && agentId !== 'antigravity')
+      throw new AppClientCliError('invalid-request', '--agent must be claude, codex or antigravity')
     if (mode !== null && mode !== 'new' && mode !== 'continue' && mode !== 'resume' && mode !== 'fork')
       throw new AppClientCliError(
         'invalid-request',
@@ -1251,6 +1309,46 @@ export class AppClientCli {
   }
 
   /** `--self` is the session whose terminal runs this CLI, named by the variable Jamat gave it. */
+  /** Each `todos` command is one `projectTodos.*` operation, sent through the same path as `call`. */
+  private todosPlan(args: CliArguments): AppClientCliPlan {
+    const call = (operation: string, body: Record<string, unknown>): AppClientCliPlan =>
+      ({ kind: 'call', operation, body, requestId: this.deps.requestId(), operationId: args.option('--operation-id') })
+    if (args.command === 'todos open')
+      return call('projectTodos.open', { session: this.selfOrSelector(args), ...(args.has('--sidebar') ? { view: 'sidebar' } : {}) })
+    const project = args.option('--project')
+    if (project !== null && (args.has('--self') || args.option('--session-id') !== null || args.option('--number') !== null))
+      throw new AppClientCliError('invalid-request', '--project cannot be combined with a session selector')
+    const address = project === null ? { session: this.selfOrSelector(args) } : { project: resolve(this.deps.cwd(), project) }
+    const texts = (...names: ('--title' | '--category' | '--comment' | '--color')[]): Record<string, string> =>
+      Object.fromEntries(names.flatMap((name) => { const value = args.option(name); return value === null ? [] : [[name.slice(2), value]] }))
+    if (args.command === 'todos restore') return call('projectTodos.restore', { ...address, id: args.required('--id') })
+    if (args.command === 'todos list') {
+      if (args.has('--open') && args.has('--done')) throw new AppClientCliError('invalid-request', '--open and --done cannot be used together')
+      const filter = {
+        ...(args.option('--query') === null ? {} : { text: args.option('--query') }),
+        ...(args.option('--category') === null ? {} : { category: args.option('--category') }),
+        ...(args.option('--color') === null ? {} : { color: args.option('--color') }),
+        ...(args.option('--author') === null ? {} : { author: args.option('--author') }),
+        ...(args.has('--open') ? { done: false } : args.has('--done') ? { done: true } : {}),
+      }
+      return call('projectTodos.list', { ...address, ...(Object.keys(filter).length === 0 ? {} : { filter }) })
+    }
+    let operation: Record<string, unknown>
+    if (args.command === 'todos add')
+      operation = { kind: 'add', title: args.required('--title'), ...texts('--category', '--comment', '--color') }
+    else if (args.command === 'todos edit') {
+      const fields = texts('--title', '--category', '--comment', '--color')
+      if (Object.keys(fields).length === 0)
+        throw new AppClientCliError('invalid-request', 'todos edit needs --title, --category, --comment or --color')
+      operation = { kind: 'edit', id: args.required('--id'), ...fields }
+    }
+    else if (args.command === 'todos done' || args.command === 'todos reopen')
+      operation = { kind: 'toggle', id: args.required('--id'), done: args.command === 'todos done' }
+    else if (args.command === 'todos remove') operation = { kind: 'remove', id: args.required('--id') }
+    else throw new Error(`Unknown todos command: ${JSON.stringify(args.command)}`)
+    return call('projectTodos.apply', { ...address, operation })
+  }
+
   private selfOrSelector(args: CliArguments): RemoteControlSessionSelector {
     if (!args.has('--self')) return this.selector(args)
     const self = SelfSession.of(this.deps.env)
@@ -1597,7 +1695,7 @@ export class AppClientCli {
   private static readonly pickDeadlineMsConst = 6_000
 
   /** The broker reason of a discovery failure; a `Record`, so a new error code must be given one. */
-  private static readonly pickReasonsConst: Record<RemoteControlErrorCode, AccountBrokerReason> = {
+  private static readonly pickReasonsConst: Record<RemoteControlErrorCode, AccountBrokerCliReason> = {
     'invalid-request': 'error',
     'not-found': 'error',
     conflict: 'instance-conflict',

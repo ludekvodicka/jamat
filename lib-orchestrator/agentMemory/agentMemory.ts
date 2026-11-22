@@ -4,6 +4,7 @@ import { readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:f
 import { join, normalize, relative, sep } from 'node:path'
 
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
+import { AntigravityConfigHome } from '../shared/antigravityConfigHome'
 import { ErrnoCode } from '../shared/errnoCode'
 import { ErrorText } from '../shared/errorText'
 import type {
@@ -21,6 +22,8 @@ export interface AgentMemoryOptions {
   claudeHome: string
   /** The main Codex home; account profiles share its `memories` folder. */
   codexHome: string
+  /** The global Antigravity config folder (`~/.gemini/config`). */
+  antigravityConfigHome?: string
 }
 
 /**
@@ -42,19 +45,25 @@ export class AgentMemory {
   private static readonly userEntriesConst: Record<AgentMemoryAgentId, readonly { name: string; folder: boolean }[]> = {
     claude: [{ name: 'CLAUDE.md', folder: false }, { name: 'rules', folder: true }],
     codex: [{ name: 'AGENTS.md', folder: false }, { name: 'AGENTS.override.md', folder: false }, { name: 'memories', folder: true }],
+    antigravity: [{ name: 'GEMINI.md', folder: false }, { name: 'AGENTS.md', folder: false }, { name: 'rules', folder: true }],
   }
 
   private readonly claudeHome: string
   private readonly codexHome: string
+  private readonly antigravityConfigHome: string
 
   constructor(options: AgentMemoryOptions) {
     this.claudeHome = options.claudeHome
     this.codexHome = options.codexHome
+    this.antigravityConfigHome = AntigravityConfigHome.globalConfigDirectory(options.antigravityConfigHome)
   }
 
   async directoryOf(query: AgentMemoryLocation): Promise<{ directory: string; scope: AgentMemoryListing['scope'] }> {
     if (query.scope === 'user')
-      return { directory: AgentMemory.homeOf(query.agentId, this.claudeHome, this.codexHome), scope: 'user' }
+      return {
+        directory: AgentMemory.homeOf(query.agentId, this.claudeHome, this.codexHome, this.antigravityConfigHome),
+        scope: 'user',
+      }
     if (query.agentId === 'claude') {
       const projects = join(this.claudeHome, 'projects')
       const wanted = ProviderTranscriptView.claudeProjectFolderOf(query.projectPath)
@@ -64,7 +73,8 @@ export class AgentMemory {
       return { directory: join(projects, found?.name ?? wanted, 'memory'), scope: 'project' }
     }
     else if (query.agentId === 'codex') return { directory: join(this.codexHome, 'memories'), scope: 'global' }
-    else throw new Error(`Unknown memory agent: ${JSON.stringify(query.agentId)}`)
+    else if (query.agentId === 'antigravity') return { directory: join(query.projectPath, '.agents', 'rules'), scope: 'project' }
+    else throw new Error(`Unknown memory agent: ${JSON.stringify(query.agentId satisfies never)}`)
   }
 
   async list(query: AgentMemoryLocation): Promise<AgentMemoryResult<AgentMemoryListing>> {
@@ -179,10 +189,16 @@ export class AgentMemory {
     return { ok: true, value: file }
   }
 
-  private static homeOf(agentId: AgentMemoryAgentId, claudeHome: string, codexHome: string): string {
+  private static homeOf(
+    agentId: AgentMemoryAgentId,
+    claudeHome: string,
+    codexHome: string,
+    antigravityConfigHome: string,
+  ): string {
     if (agentId === 'claude') return claudeHome
     else if (agentId === 'codex') return codexHome
-    else throw new Error(`Unknown memory agent: ${JSON.stringify(agentId)}`)
+    else if (agentId === 'antigravity') return antigravityConfigHome
+    else throw new Error(`Unknown memory agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /** The named user-level files and folders of a home, each one that exists. */

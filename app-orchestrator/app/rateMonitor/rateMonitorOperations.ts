@@ -22,7 +22,7 @@ export class RateMonitorOperations {
     const op = registry.registrar<AppOperationMap>()
     op('usage.history', {
       kind: 'read', description: 'Recorded weekly pool and its reset-aware projection.',
-      input: z.strictObject({ agentId: z.enum(['claude', 'codex']), from: z.number().finite(), to: z.number().finite(),
+      input: z.strictObject({ agentId: z.enum(['claude', 'codex', 'antigravity']), from: z.number().finite(), to: z.number().finite(),
         burnHours: z.union([z.literal(1), z.literal(3), z.literal(6)]) }).refine(value => value.to > value.from && value.to - value.from <= 90 * 86_400_000),
       run: async request => {
         const now = Date.now()

@@ -279,7 +279,7 @@ export class ClientStateStore {
   }
 
   saveNewSessionAgent(agentId: SessionAgentId): boolean {
-    if (agentId !== 'claude' && agentId !== 'codex')
+    if (agentId !== 'claude' && agentId !== 'codex' && agentId !== 'antigravity')
       throw new Error(`Refusing to store a new-session agent: ${JSON.stringify(agentId)}`)
     const document = this.documentOnDisk()
     return this.write({ ...document, newSessionAgent: agentId }, { snapshotLayout: false })
@@ -534,6 +534,7 @@ export class ClientStateStore {
     if (value === undefined) return undefined
     if (value === 'claude') return value
     else if (value === 'codex') return value
+    else if (value === 'antigravity') return value
     report(`Client state new-session agent is invalid (${JSON.stringify(value)}); reading Claude`)
     return undefined
   }

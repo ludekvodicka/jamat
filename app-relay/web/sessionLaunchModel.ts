@@ -49,7 +49,7 @@ export class PendingSessionLaunch {
       const value = JSON.parse(this.storage?.getItem(this.key) ?? 'null');
       if (value && typeof value.operationId === 'string' && /^[\da-f-]{36}$/i.test(value.operationId)
           && typeof value.categoryId === 'string' && typeof value.projectPath === 'string' && typeof value.title === 'string'
-          && (value.agentId === 'codex' || value.agentId === 'claude') && typeof value.worktree === 'boolean'
+          && (value.agentId === 'codex' || value.agentId === 'claude' || value.agentId === 'antigravity') && typeof value.worktree === 'boolean'
           && (value.model === null || typeof value.model === 'string'))
         this.pending = value;
     } catch { /* A blocked store still allows recovery within this page. */ }

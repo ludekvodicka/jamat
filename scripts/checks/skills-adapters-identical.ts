@@ -15,7 +15,7 @@ class SkillsAdaptersIdentical {
     'appjamat-v3': ['REFERENCE.md', 'scripts/jamat-v3.mjs'],
     'session-automation-groups': ['SKILL.md', 'REFERENCE.md', 'scripts/session-automation-groups.mjs'],
   }
-  private static readonly agentsConst = ['claude', 'codex'] as const
+  private static readonly agentsConst = ['claude', 'codex', 'antigravity'] as const
   /** Everything that is duplicated. A file only one adapter needs does not belong on this list. */
 
   static findings(): string[] {
@@ -29,9 +29,10 @@ class SkillsAdaptersIdentical {
         findings.push(`${file}: missing in ${missing.join(', ')}`)
         continue
       }
-      const [claude, codex] = paths.map(path => readFileSync(path))
-      if (claude === undefined || codex === undefined || !claude.equals(codex))
-        findings.push(`${file}: the claude and codex copies differ`)
+      const contents = paths.map(path => readFileSync(path))
+      const reference = contents[0]
+      if (reference === undefined || contents.some(copy => copy === undefined || !reference.equals(copy)))
+        findings.push(`${file}: the ${SkillsAdaptersIdentical.agentsConst.join(', ')} copies differ`)
     }
     return findings
   }

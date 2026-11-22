@@ -2,7 +2,7 @@ import { mkdir, open, readdir, readFile, realpath, stat } from 'node:fs/promises
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { AtomicJsonFile } from '../shared/atomicJsonFile'
-import type { TokenAgentId, TokenBucket, TokenScanProgress } from './tokenUsageApi.types'
+import type { TokenAgentId, TokenBucket, TokenScanProgress, TokenSessionBucket } from './tokenUsageApi.types'
 import type { TokenUsageSource, UsageParserState, UsageRecord } from './tokenUsageSource'
 
 /**
@@ -30,13 +30,13 @@ const index = count.int()
 const parserSchema = z.object({ nativeId: z.string(), cwd: z.string(), model: z.string(), rolloutAccount: z.string().nullable(),
   cumulative: z.object({ input: count, output: count, cached: count }).nullable() })
 const countsSchema = z.object({ input: count, output: count, cacheRead: count, cacheWrite: count })
-const cursorFields = { file: z.string(), agentId: z.enum(['claude', 'codex']), size: count.int(), mtimeMs: z.number().finite(),
+const cursorFields = { file: z.string(), agentId: z.enum(['claude', 'codex', 'antigravity']), size: count.int(), mtimeMs: z.number().finite(),
   identity: z.string(), offset: count.int(), carry: z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
   parser: parserSchema }
 const cursorBounds = (cursor: { offset: number; size: number; carry: string }) =>
   cursor.offset <= cursor.size && Buffer.from(cursor.carry, 'base64').length <= cursor.offset
 const bucketsSchema = z.array(countsSchema.extend({ day: z.string(), hour: count.int().max(23), projectKey: z.string(),
-  agentId: z.enum(['claude', 'codex']), accountId: z.string(), model: z.string() }))
+  agentId: z.enum(['claude', 'codex', 'antigravity']), accountId: z.string(), model: z.string() }))
 const cacheSchemaV2 = z.object({ schema: z.literal(2), files: z.record(z.string(), z.object({ ...cursorFields,
   records: z.array(countsSchema.extend({ at: z.number().finite(), nativeId: z.string(), cwd: z.string(), model: z.string(),
     rolloutAccount: z.string().nullable(), dedupe: z.string().nullable() })),
@@ -58,11 +58,14 @@ export interface TokenUsageScannerOptions {
 export class TokenUsageScanner {
   private readonly options: TokenUsageScannerOptions
   private cache: ScanCache = { schema: 3, files: {}, buckets: [] }
+  private sessionBuckets: TokenSessionBucket[] = []
   private loaded = false
   /** The cache came off the disk in an older schema and is written again even if no transcript moved. */
   private migrated = false
 
   constructor(options: TokenUsageScannerOptions) { this.options = options }
+
+  sessions(): readonly TokenSessionBucket[] { return this.sessionBuckets }
 
   async scan(rescan = false): Promise<TokenBucket[]> {
     if (!this.loaded) {
@@ -191,7 +194,7 @@ export class TokenUsageScanner {
   private aggregate(files: readonly FileCursor[]): TokenBucket[] {
     const records = files.flatMap(file => file.records.map((record, line) => ({ record, line, file })))
       .sort((a, b) => a.record[0] - b.record[0] || a.file.file.localeCompare(b.file.file) || a.line - b.line)
-    const seen = new Set<string>(), buckets = new Map<string, TokenBucket>()
+    const seen = new Set<string>(), buckets = new Map<string, TokenBucket>(), sessions = new Map<string, TokenSessionBucket>()
     for (const { record, file } of records) {
       const [at, input, output, cacheRead, cacheWrite, nativeIdAt, cwdAt, modelAt, rolloutAccountAt, deduplicated] = record
       const dedupe = deduplicated === null ? null : `${file.agentId}:${deduplicated}`
@@ -199,8 +202,9 @@ export class TokenUsageScanner {
       if (dedupe !== null) seen.add(dedupe)
       const nativeId = file.strings[nativeIdAt]!, rolloutAccount = rolloutAccountAt === -1 ? null : file.strings[rolloutAccountAt]!
       const date = new Date(at)
-      const key = { day: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`,
-        hour: date.getHours(), projectKey: this.options.resolveProject(file.strings[cwdAt]!, nativeId, file.agentId),
+      const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+      const projectKey = this.options.resolveProject(file.strings[cwdAt]!, nativeId, file.agentId)
+      const key = { day, hour: date.getHours(), projectKey,
         agentId: file.agentId, accountId: this.options.resolveAccount(file.agentId, nativeId, at, rolloutAccount), model: file.strings[modelAt]! }
       const id = JSON.stringify(key), bucket = buckets.get(id) ?? { ...key, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
       bucket.input += input
@@ -208,7 +212,18 @@ export class TokenUsageScanner {
       bucket.cacheRead += cacheRead
       bucket.cacheWrite += cacheWrite
       buckets.set(id, bucket)
+      if (nativeId.length > 0) {
+        const sessionKey = `${day}\0${file.agentId}\0${nativeId}`
+        const sessionBucket = sessions.get(sessionKey) ?? { day, agentId: file.agentId, nativeId, projectKey, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+        if (sessionBucket.projectKey === 'unknown' && projectKey !== 'unknown') sessionBucket.projectKey = projectKey
+        sessionBucket.input += input
+        sessionBucket.output += output
+        sessionBucket.cacheRead += cacheRead
+        sessionBucket.cacheWrite += cacheWrite
+        sessions.set(sessionKey, sessionBucket)
+      }
     }
+    this.sessionBuckets = [...sessions.values()]
     return [...buckets.values()]
   }
 

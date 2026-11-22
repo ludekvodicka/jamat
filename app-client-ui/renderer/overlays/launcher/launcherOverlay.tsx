@@ -642,8 +642,8 @@ class LauncherScreens {
       tab: 'agent',
       escape: (ports) => ports.create({ input: 'escape' }),
       enter: (ports) => ports.create({ input: 'activate' }),
-      press: (event, _screen, ports) => {
-        const chosen = LauncherKeys.createInputOf(event.key)
+      press: (event, screen, ports) => {
+        const chosen = LauncherKeys.createInputOf(event, screen.state)
         if (!chosen)
           return
         event.preventDefault()
@@ -1099,9 +1099,13 @@ class LauncherKeys {
 
   /**
    * The second screen's own keys. Every one of them is a button in the options bar as well, and a
-   * letter reaches this only while the filter field does NOT hold focus - inside it, a w is a w.
+   * letter reaches this only while the name field does NOT hold focus - inside it, a w is a w.
    */
-  static createInputOf(key: string): CreateScreenInput | null {
+  static createInputOf(
+    event: { key: string; code?: string; shiftKey?: boolean },
+    state: CreateScreenState,
+  ): CreateScreenInput | null {
+    const key = event.key
     if (key === 'ArrowDown')
       return { input: 'moveField', delta: 1 }
     if (key === 'ArrowUp')
@@ -1110,14 +1114,10 @@ class LauncherKeys {
       return { input: 'stepChoice', delta: -1 }
     if (key === 'ArrowRight')
       return { input: 'stepChoice', delta: 1 }
-    // The letters the footer names. They survive the card layout on purpose: arrows are how a form
-    // is walked, and a shortcut is how somebody who knows it skips the walk.
-    const letter = key.toLowerCase()
-    if (letter === 'w')
-      return { input: 'toggleWorktree' }
-    if (letter === 'n')
-      return { input: 'nameFocus' }
-    return null
+    return CreateScreenModel.shortcutInputOf(state, key, {
+      code: event.code,
+      shiftKey: event.shiftKey,
+    })
   }
 
   /**

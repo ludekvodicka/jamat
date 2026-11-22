@@ -33,6 +33,7 @@ export interface AgentContextCompactionSettings {
 export interface AgentSettingsValue {
   claude: AgentSettingsAgentValue
   codex: AgentSettingsAgentValue
+  antigravity: AgentSettingsAgentValue
   /**
    * The processor priority of agent sessions and script runs, and of what they start. Absent is the
    * default, below normal; `normal` is there to rule the priority out when something misbehaves.
@@ -53,6 +54,8 @@ export class AgentSettings {
     { panelPercent: 35, autoPercent: 40, enabled: false }
   private static readonly codexCompactionDefaultConst: AgentContextCompactionSettings =
     { panelPercent: 60, autoPercent: 75, enabled: false }
+  private static readonly antigravityCompactionDefaultConst: AgentContextCompactionSettings =
+    { panelPercent: 60, autoPercent: 75, enabled: false }
   /**
    * Starts alphanumeric, never `-`, so a stored value can never be read as a flag by the CLI it is
    * handed to. The rest is the shape both catalogs use, plus the optional `[1m]` suffix Claude ids
@@ -71,7 +74,7 @@ export class AgentSettings {
   private static readonly effortShapeConst = /^[A-Za-z][A-Za-z0-9]*$/
 
   static defaultValue(): AgentSettingsValue {
-    return { claude: { yolo: false }, codex: { yolo: false } }
+    return { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }
   }
 
   static coerce(value: unknown, report: (message: string) => void): AgentSettingsValue {
@@ -84,6 +87,7 @@ export class AgentSettings {
       ...value,
       claude: AgentSettings.coerceAgent(value['claude'], 'claude', report),
       codex: AgentSettings.coerceAgent(value['codex'], 'codex', report),
+      antigravity: AgentSettings.coerceAgent(value['antigravity'], 'antigravity', report),
     }
     return AgentSettings.withProcessPriority(coerced, AgentSettings.coerceProcessPriority(value['processPriority'], report))
   }
@@ -92,6 +96,7 @@ export class AgentSettings {
     if (!AgentSettings.isRecord(value)) return false
     return AgentSettings.isAgentValue(value['claude'], 'claude')
       && AgentSettings.isAgentValue(value['codex'], 'codex')
+      && AgentSettings.isAgentValue(value['antigravity'], 'antigravity')
       && (value['processPriority'] === undefined || AgentSettings.isProcessPriority(value['processPriority']))
   }
 
@@ -106,6 +111,7 @@ export class AgentSettings {
     if (!AgentSettings.isRecord(value)) return true
     return AgentSettings.isAgentDamaged(value['claude'], 'claude')
       || AgentSettings.isAgentDamaged(value['codex'], 'codex')
+      || AgentSettings.isAgentDamaged(value['antigravity'], 'antigravity')
       || (value['processPriority'] !== undefined && !AgentSettings.isProcessPriority(value['processPriority']))
   }
 
@@ -127,10 +133,7 @@ export class AgentSettings {
   }
 
   static yoloFor(value: AgentSettingsValue, agentId: AgentSettingsAgentId): boolean {
-    if (agentId === 'claude') return value.claude.yolo
-    else if (agentId === 'codex') return value.codex.yolo
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.agentFor(value, agentId).yolo
   }
 
   static withYolo(
@@ -138,17 +141,11 @@ export class AgentSettings {
     agentId: AgentSettingsAgentId,
     yolo: boolean,
   ): AgentSettingsValue {
-    if (agentId === 'claude') return { ...value, claude: { ...value.claude, yolo } }
-    else if (agentId === 'codex') return { ...value, codex: { ...value.codex, yolo } }
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.withAgent(value, agentId, { ...AgentSettings.agentFor(value, agentId), yolo })
   }
 
   static modelFor(value: AgentSettingsValue, agentId: AgentSettingsAgentId): string | undefined {
-    if (agentId === 'claude') return value.claude.model
-    else if (agentId === 'codex') return value.codex.model
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.agentFor(value, agentId).model
   }
 
   /**
@@ -160,19 +157,11 @@ export class AgentSettings {
     agentId: AgentSettingsAgentId,
     model: string | undefined,
   ): AgentSettingsValue {
-    if (agentId === 'claude')
-      return { ...value, claude: AgentSettings.agentWithModel(value.claude, model) }
-    else if (agentId === 'codex')
-      return { ...value, codex: AgentSettings.agentWithModel(value.codex, model) }
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.withAgent(value, agentId, AgentSettings.agentWithModel(AgentSettings.agentFor(value, agentId), model))
   }
 
   static effortFor(value: AgentSettingsValue, agentId: AgentSettingsAgentId): string | undefined {
-    if (agentId === 'claude') return value.claude.effort
-    else if (agentId === 'codex') return value.codex.effort
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.agentFor(value, agentId).effort
   }
 
   static contextCompactionFor(
@@ -227,12 +216,7 @@ export class AgentSettings {
     agentId: AgentSettingsAgentId,
     effort: string | undefined,
   ): AgentSettingsValue {
-    if (agentId === 'claude')
-      return { ...value, claude: AgentSettings.agentWithEffort(value.claude, effort) }
-    else if (agentId === 'codex')
-      return { ...value, codex: AgentSettings.agentWithEffort(value.codex, effort) }
-    else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    return AgentSettings.withAgent(value, agentId, AgentSettings.agentWithEffort(AgentSettings.agentFor(value, agentId), effort))
   }
 
   private static agentWithEffort(
@@ -267,6 +251,7 @@ export class AgentSettings {
       ...value,
       claude: AgentSettings.resetAgent(value.claude, defaults.claude),
       codex: AgentSettings.resetAgent(value.codex, defaults.codex),
+      antigravity: AgentSettings.resetAgent(value.antigravity, defaults.antigravity),
     }, 'below-normal')
   }
 
@@ -453,8 +438,9 @@ export class AgentSettings {
   ): AgentContextCompactionSettings {
     if (agentId === 'claude') return AgentSettings.claudeCompactionDefaultConst
     else if (agentId === 'codex') return AgentSettings.codexCompactionDefaultConst
+    else if (agentId === 'antigravity') return AgentSettings.antigravityCompactionDefaultConst
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   private static agentFor(
@@ -463,8 +449,9 @@ export class AgentSettings {
   ): AgentSettingsAgentValue {
     if (agentId === 'claude') return value.claude
     else if (agentId === 'codex') return value.codex
+    else if (agentId === 'antigravity') return value.antigravity
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   private static withAgent(
@@ -474,7 +461,8 @@ export class AgentSettings {
   ): AgentSettingsValue {
     if (agentId === 'claude') return { ...value, claude: agent }
     else if (agentId === 'codex') return { ...value, codex: agent }
+    else if (agentId === 'antigravity') return { ...value, antigravity: agent }
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

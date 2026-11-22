@@ -19,7 +19,7 @@ import type { TabFileOpenResolver } from './tabFileOpenResolver'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
 import type { AttentionEntry, AttentionQueue } from '../attention/attentionQueue'
 
-import type { TabRequestPort, TabControlTaskOpenedDto, TabControlWorkflowOpenedDto, TabControlSnapinOpenedDto } from '../../../lib-orchestrator/shared/tabRequestPort.types'
+import type { TabRequestPort, TabControlTaskOpenedDto, TabControlWorkflowOpenedDto, TabControlTodosOpenedDto, TabControlSnapinOpenedDto } from '../../../lib-orchestrator/shared/tabRequestPort.types'
 export type { TabControlTaskOpenedDto, TabControlWorkflowOpenedDto, TabControlSnapinOpenedDto } from '../../../lib-orchestrator/shared/tabRequestPort.types'
 
 type CommitReviewCommand = Omit<Extract<TabControlCommand, { kind: 'open-commit' }>, 'requestId' | 'activate'>
@@ -332,6 +332,17 @@ export class TabControlBroker implements RemoteControlTabsPort {
       panelId: opened.value.panelId,
       sessionId,
     })
+  }
+
+  /** The project todo list in the split of the session's local tab, opening the tab first when it is closed. */
+  async openTodos(sessionId: string, tabTitle: string, view: 'split' | 'sidebar'): Promise<RemoteControlStepResult<TabControlTodosOpenedDto>> {
+    if (this.stopping) return TabControlBroker.error('unavailable', 'The AppClientUI process is stopping')
+    const existing = this.tabs.panelsOfTerminalTarget(TerminalTargetCodec.key({ kind: 'local', sessionId }))[0]
+    const opened = existing === undefined
+      ? await this.openTab(sessionId, tabTitle, { activate: true })
+      : { ok: true as const, value: { windowId: existing.windowId, panelId: existing.panel.panelId } }
+    if (!opened.ok) return opened
+    return this.tabs.request(opened.value.windowId, { kind: 'open-todos', requestId: this.requestId(), panelId: opened.value.panelId, sessionId, view })
   }
 
   async openSessionTask(target: TerminalTarget, task: TabControlTaskRef, title: string): Promise<RemoteControlStepResult<TabControlTaskOpenedDto>> {

@@ -37,6 +37,8 @@ export class RateMonitorSources {
         beforeRead: account.isMain ? undefined : prepare,
         withProfile: account.isMain ? undefined : withProfile,
         onNudge: () => hooks.nudge(account.agentId, account.accountId) })
+    else if (account.agentId === 'antigravity')
+      return { ...RateMonitorSources.antigravity(), accountId: account.accountId, label: account.label }
     else throw new Error(`Unknown rate agent: ${JSON.stringify(account.agentId)}`)
     return { agentId: account.agentId, accountId: account.accountId, label: account.label,
       minimumIntervalMilliseconds: source.minimumIntervalMilliseconds,
@@ -54,6 +56,22 @@ export class RateMonitorSources {
   /** The one asymmetry between the two: the Codex server pushes when its numbers move. */
   static codex(hooks: RateSourceHooks): RateLimitSource {
     return new RateLimitSourceCodex({ onNudge: () => hooks.nudge('codex') })
+  }
+
+  /** Passive provider fed from Antigravity CLI's `statusLine` JSON `quota` payload. */
+  static antigravity(): RateLimitSource {
+    return {
+      agentId: 'antigravity',
+      accountId: 'main',
+      label: 'Main',
+      passive: true,
+      read: () => Promise.resolve({
+        kind: 'unconfigured',
+        reason: 'Antigravity quota is read from the CLI status line',
+        oauthExpiresAt: null,
+      }),
+      stop: () => undefined,
+    }
   }
 
   static credentials(): ClaudeCredentialsReader {

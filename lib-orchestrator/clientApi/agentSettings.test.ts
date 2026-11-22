@@ -12,6 +12,7 @@ describe('app-client-ui/shared/agentSettings', () => {
       expect(AgentSettings.coerce(value, report)).toEqual({
         claude: { yolo: false },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
     expect(messages).toHaveLength(3)
   })
@@ -22,18 +23,18 @@ describe('app-client-ui/shared/agentSettings', () => {
     expect(AgentSettings.coerce(
       { claude: { yolo: true }, codex: 'on please', note: 'keep' },
       report,
-    )).toEqual({ claude: { yolo: true }, codex: { yolo: false }, note: 'keep' })
+    )).toEqual({ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false }, note: 'keep' })
     expect(messages).toHaveLength(1)
     expect(messages[0]).toContain('codex')
     expect(AgentSettings.coerce({ claude: { yolo: true, note: 'keep' } }, report))
-      .toEqual({ claude: { yolo: true, note: 'keep' }, codex: { yolo: false } })
+      .toEqual({ claude: { yolo: true, note: 'keep' }, codex: { yolo: false }, antigravity: { yolo: false } })
   })
 
   it('validates strictly while tolerating extra keys', () => {
     expect(AgentSettings.isValid(AgentSettings.defaultValue())).toBe(true)
-    expect(AgentSettings.isValid({ claude: { yolo: true }, codex: { yolo: false }, x: 1 })).toBe(true)
+    expect(AgentSettings.isValid({ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false }, x: 1 })).toBe(true)
     expect(AgentSettings.isValid({ claude: { yolo: true } })).toBe(false)
-    expect(AgentSettings.isValid({ claude: { yolo: 'true' }, codex: { yolo: false } })).toBe(false)
+    expect(AgentSettings.isValid({ claude: { yolo: 'true' }, codex: { yolo: false }, antigravity: { yolo: false } })).toBe(false)
     expect(AgentSettings.isValid([])).toBe(false)
   })
 
@@ -47,11 +48,14 @@ describe('app-client-ui/shared/agentSettings', () => {
   })
 
   it('reads and writes one agent without touching the other', () => {
-    const value = { claude: { yolo: true }, codex: { yolo: false } }
+    const value: AgentSettingsValue = { claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false } }
     expect(AgentSettings.yoloFor(value, 'claude')).toBe(true)
     expect(AgentSettings.yoloFor(value, 'codex')).toBe(false)
+    expect(AgentSettings.yoloFor(value, 'antigravity')).toBe(false)
     expect(AgentSettings.withYolo(value, 'codex', true))
-      .toEqual({ claude: { yolo: true }, codex: { yolo: true } })
+      .toEqual({ claude: { yolo: true }, codex: { yolo: true }, antigravity: { yolo: false } })
+    expect(AgentSettings.withYolo(value, 'antigravity', true))
+      .toEqual({ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: true } })
     expect(value.codex.yolo).toBe(false)
     expect(() => AgentSettings.yoloFor(value, 'gemini' as never)).toThrow('Unknown agent')
     expect(() => AgentSettings.withYolo(value, 'gemini' as never, true)).toThrow('Unknown agent')
@@ -62,9 +66,9 @@ describe('app-client-ui/shared/agentSettings', () => {
     const report = (message: string): number => messages.push(message)
     for (const model of ['fable', 'opus', 'claude-fable-5', 'claude-fable-5[1m]', 'gpt-5.6-sol',
       'gpt-5.4-mini', 'o3', 'claude-opus-4-5-20251101']) {
-      expect(AgentSettings.coerce({ claude: { yolo: false, model }, codex: { yolo: false } }, report))
-        .toEqual({ claude: { yolo: false, model }, codex: { yolo: false } })
-      expect(AgentSettings.isValid({ claude: { yolo: false, model }, codex: { yolo: false } }))
+      expect(AgentSettings.coerce({ claude: { yolo: false, model }, codex: { yolo: false }, antigravity: { yolo: false } }, report))
+        .toEqual({ claude: { yolo: false, model }, codex: { yolo: false }, antigravity: { yolo: false } })
+      expect(AgentSettings.isValid({ claude: { yolo: false, model }, codex: { yolo: false }, antigravity: { yolo: false } }))
         .toBe(true)
     }
     expect(messages).toHaveLength(0)
@@ -78,10 +82,10 @@ describe('app-client-ui/shared/agentSettings', () => {
     for (const model of ['--dangerously-skip-permissions', '-m', 'gpt 5', '', 'a&b', 'a|b', 'a^b',
       'a>b', '.hidden', 'a"b', "a'b", 7, null, true, ['opus']]) {
       expect(AgentSettings.coerce(
-        { claude: { yolo: true, model }, codex: { yolo: false } },
+        { claude: { yolo: true, model }, codex: { yolo: false }, antigravity: { yolo: false } },
         report,
-      )).toEqual({ claude: { yolo: true }, codex: { yolo: false } })
-      expect(AgentSettings.isValid({ claude: { yolo: true, model }, codex: { yolo: false } }))
+      )).toEqual({ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false } })
+      expect(AgentSettings.isValid({ claude: { yolo: true, model }, codex: { yolo: false }, antigravity: { yolo: false } }))
         .toBe(false)
     }
     expect(messages).toHaveLength(15)
@@ -97,7 +101,7 @@ describe('app-client-ui/shared/agentSettings', () => {
     expect(AgentSettings.coerce(
       { claude: { yolo: true, model: 'not a model' }, codex: { yolo: 'yes', model: 'gpt-5.5' } },
       report,
-    )).toEqual({ claude: { yolo: true }, codex: { yolo: false, model: 'gpt-5.5' } })
+    )).toEqual({ claude: { yolo: true }, codex: { yolo: false, model: 'gpt-5.5' }, antigravity: { yolo: false } })
     expect(messages).toHaveLength(2)
     expect(messages[0]).toContain('claude')
     expect(messages[1]).toContain('codex')
@@ -107,7 +111,7 @@ describe('app-client-ui/shared/agentSettings', () => {
     const messages: string[] = []
     const report = (message: string): number => messages.push(message)
     const coerced = AgentSettings.coerce({ claude: { yolo: true }, codex: { yolo: false } }, report)
-    expect(coerced).toEqual({ claude: { yolo: true }, codex: { yolo: false } })
+    expect(coerced).toEqual({ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false } })
     expect('model' in coerced.claude).toBe(false)
     expect(messages).toHaveLength(0)
     expect(AgentSettings.defaultValue().claude.model).toBeUndefined()
@@ -121,11 +125,11 @@ describe('app-client-ui/shared/agentSettings', () => {
   })
 
   it('reads and writes one agent model without touching the other', () => {
-    const value = { claude: { yolo: true, model: 'fable' }, codex: { yolo: false } }
+    const value: AgentSettingsValue = { claude: { yolo: true, model: 'fable' }, codex: { yolo: false }, antigravity: { yolo: false } }
     expect(AgentSettings.modelFor(value, 'claude')).toBe('fable')
     expect(AgentSettings.modelFor(value, 'codex')).toBeUndefined()
     expect(AgentSettings.withModel(value, 'codex', 'gpt-5.6-sol'))
-      .toEqual({ claude: { yolo: true, model: 'fable' }, codex: { yolo: false, model: 'gpt-5.6-sol' } })
+      .toEqual({ claude: { yolo: true, model: 'fable' }, codex: { yolo: false, model: 'gpt-5.6-sol' }, antigravity: { yolo: false } })
     expect(value.codex).toEqual({ yolo: false })
     expect(() => AgentSettings.modelFor(value, 'gemini' as never)).toThrow('Unknown agent')
     expect(() => AgentSettings.withModel(value, 'gemini' as never, 'x')).toThrow('Unknown agent')
@@ -204,6 +208,7 @@ describe('app-client-ui/shared/agentSettings', () => {
     expect(AgentSettings.resetAgents(value)).toEqual({
       claude: { yolo: false, note: 'for merge sessions' },
       codex: { yolo: false },
+      antigravity: { yolo: false },
       future: 'keep',
     })
   })
@@ -215,7 +220,11 @@ describe('app-client-ui/shared/agentSettings', () => {
   })
 
   it('removes the key when a model is cleared, and leaves yolo standing', () => {
-    const value = { claude: { yolo: true, model: 'fable' }, codex: { yolo: true, model: 'gpt-5.5' } }
+    const value: AgentSettingsValue = {
+      claude: { yolo: true, model: 'fable' },
+      codex: { yolo: true, model: 'gpt-5.5' },
+      antigravity: { yolo: false },
+    }
     const cleared = AgentSettings.withModel(value, 'claude', undefined)
     expect(cleared.claude).toEqual({ yolo: true })
     expect('model' in cleared.claude).toBe(false)
@@ -270,7 +279,7 @@ describe('app-client-ui/shared/agentSettings', () => {
   })
 
   it('refuses invalid context percentages and a panel threshold above auto-compact', () => {
-    const valid = { claude: { yolo: false }, codex: { yolo: false } }
+    const valid = { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }
     for (const percent of [0, 101, 75.5, NaN, '75']) {
       expect(AgentSettings.isValid({
         ...valid,
@@ -328,6 +337,7 @@ describe('app-client-ui/shared/agentSettings', () => {
     } as unknown as AgentSettingsValue)).toEqual({
       claude: { yolo: false, note: 'keep' },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     })
   })
 
@@ -355,7 +365,12 @@ describe('app-client-ui/shared/agentSettings', () => {
   })
 
   it('resets the process priority to below normal', () => {
-    const value: AgentSettingsValue = { claude: { yolo: true }, codex: { yolo: false }, processPriority: 'normal' }
+    const value: AgentSettingsValue = {
+      claude: { yolo: true },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+      processPriority: 'normal',
+    }
     expect('processPriority' in AgentSettings.resetAgents(value)).toBe(false)
   })
 

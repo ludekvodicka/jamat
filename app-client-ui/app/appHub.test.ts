@@ -1104,19 +1104,19 @@ workspaceWindows: { acceptsRenderer: () => true }})
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(MainHub.ipcChannelsConst)).toHaveLength(181)
+    expect(Object.keys(MainHub.ipcChannelsConst)).toHaveLength(183)
     expect(Object.keys(GatewayChannelsConst)).toHaveLength(41)
-    expect(Object.keys(MainHub.ipcChannelsConst).filter(channel => !(channel in GatewayChannelsConst))).toHaveLength(140)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(29)
+    expect(Object.keys(MainHub.ipcChannelsConst).filter(channel => !(channel in GatewayChannelsConst))).toHaveLength(142)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(30)
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageChanged', 'usage:changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageCallersChanged', 'usage:callers-changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onSnapinsChanged')
     expect(Object.keys({ ...ServiceTabsIpc.channelsConst, ...ServiceTabRequestsIpc.channelsConst })).toHaveLength(19)
     expect(Object.keys(ServiceTabsIpc.channelsConst)).toHaveLength(13)
     expect(Object.keys(ServiceTabRequestsIpc.channelsConst)).toHaveLength(6)
-    expect(Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst })).toHaveLength(20)
+    expect(Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst })).toHaveLength(21)
     expect(Object.keys(ServiceFileViewerIpc.channelsConst)).toHaveLength(16)
-    expect(Object.keys(ServiceFileViewerShellIpc.channelsConst)).toHaveLength(4)
+    expect(Object.keys(ServiceFileViewerShellIpc.channelsConst)).toHaveLength(5)
     expect(Object.keys(ServiceRemarkableIpc.channelsConst)).toHaveLength(16)
   })
 
@@ -1593,8 +1593,9 @@ workspaceWindows: { beginQuit: () => order.push('windows') }})
     const source = await readFile(new URL('../../app-orchestrator/app/appHub.ts', import.meta.url), 'utf8')
 
     // The two polled readers, the file-changes manager, the session manager's reference block, the
-    // sub-agent listing and the Codex child threads an erase deletes, and no seventh way in.
-    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(6)
+    // sub-agent listing, the Codex child threads an erase deletes and the two usage-limit readers
+    // (Claude and Antigravity), and no ninth way in.
+    expect(source.match(/this\.projects\.transcripts/g)).toHaveLength(8)
     expect(source).not.toContain('new ProviderTranscriptView(')
   })
 

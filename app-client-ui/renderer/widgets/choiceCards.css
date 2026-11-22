@@ -48,6 +48,34 @@
 .jamat-choice__card:disabled {
   cursor: default;
 }
+.jamat-choice__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+}
+.jamat-choice__shortcut {
+  min-width: 16px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+  color: var(--color-text-3);
+  background: var(--color-surface-control);
+  border: 1px solid var(--color-border-frame);
+  border-radius: 2px;
+}
+.jamat-choice__row--current .jamat-choice__shortcut {
+  color: var(--color-text-1);
+  border-color: var(--color-accent);
+}
+.jamat-choice__card:disabled .jamat-choice__shortcut {
+  color: var(--color-text-5);
+  border-color: transparent;
+}
 .jamat-choice__glyph {
   font-family: var(--font-mono);
   font-size: var(--fs-secondary);

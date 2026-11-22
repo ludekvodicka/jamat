@@ -1,0 +1,34 @@
+{
+  "agent": "antigravity",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "empty"
+    }
+  },
+  "provenance": {
+    "origin": "AppJamatV3 live terminal.peek capture (Antigravity CLI 1.5.14)",
+    "case": "antigravity-live-idle",
+    "capture": "finished turn sitting at empty ruled composer box with ? for shortcuts and mode/model footer",
+    "ported": "2026-11-22",
+    "identical": "sanitized reply text only; ANSI sequences, rules, prompt marker, and ? for shortcuts footer preserved verbatim"
+  },
+  "recorded": {
+    "build": "agy CLI 1.5.14 (2026-11-22)",
+    "capturedAt": "2026-11-22T09:31:59.000Z",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\r\n\u001b[94m>\r\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\r\n? for shortcuts                                                                              \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "screenTail": "\n  All checks passed.\n\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m>\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n? for shortcuts                                                                              \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "wideScreenTail": "\u001b[32m● \u001b[33;1mExplored\u001b[0m 2 files \u001b[37m(agentWorkInspectorAntigravity.ts, workStateMonitor.ts)\n\u001b[32m● \u001b[33;1mRan\u001b[0m \u001b[37m(pnpm test)\n▸ Thought for 7s, 238 tokens\n\n\u001b[0m  Summary:\n  • Updated inspector patterns.\n  • Added unit tests.\n\n  All checks passed.\n\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m>\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n? for shortcuts                                                                              \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "screenStyled": true
+  }
+}

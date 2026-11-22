@@ -37,6 +37,7 @@ import type {
 import { HostDescriptorPaths } from '../../lib-orchestrator/hostClient/hostDescriptorPaths.js'
 import { PathCompare } from '../../lib-orchestrator/shared/pathCompare.js'
 import { AgentComposerReader } from '../../lib-orchestrator/sessionManager/workState/agentComposerReader.js'
+import { AgentWorkInspectorAntigravity } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorAntigravity.js'
 import { AgentWorkInspectorClaude } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude.js'
 import { AgentWorkInspectorCodex } from '../../lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex.js'
 import { ScreenTail } from '../../lib-orchestrator/sessionManager/workState/screenTail.js'
@@ -163,24 +164,28 @@ class CaptureWorkstate {
       const verdicts = {
         claude: AgentWorkInspectorClaude.inspect(frame),
         codex: AgentWorkInspectorCodex.inspect(frame),
+        antigravity: AgentWorkInspectorAntigravity.inspect(frame),
       }
       const age = session.lastOutputAt === null
         ? 'never'
         : `${Math.round((Date.now() - session.lastOutputAt) / 1_000)}s`
       console.log(`   ${session.runtimeSessionId}: claude=${verdicts.claude.hint} `
-        + `codex=${verdicts.codex.hint} lastOutput=${age}`)
-      console.log(`     ${CaptureWorkstate.signalsOf(verdicts.claude, verdicts.codex)}`)
-      // The composer is read as both agents for the same reason; the one that matches the TUI on
+        + `codex=${verdicts.codex.hint} antigravity=${verdicts.antigravity.hint} lastOutput=${age}`)
+      console.log(`     ${CaptureWorkstate.signalsOf(verdicts.claude, verdicts.codex, verdicts.antigravity)}`)
+      // The composer is read as all agents for the same reason; the one that matches the TUI on
       // screen is the one to believe.
       const composers = {
         claude: AgentComposerReader.read('claude', frame),
         codex: AgentComposerReader.read('codex', frame),
+        antigravity: AgentComposerReader.read('antigravity', frame),
       }
       console.log(`     composer claude=${JSON.stringify(composers.claude)}`)
       console.log(`     composer codex=${JSON.stringify(composers.codex)}`)
+      console.log(`     composer antigravity=${JSON.stringify(composers.antigravity)}`)
       const viewportCapture = CaptureWorkstate.viewportCaptureOf(viewportInspected.projection)
       console.log(`     content (${viewportCapture.source}) claude=${JSON.stringify(viewportCapture.contents.claude)}`)
       console.log(`     content (${viewportCapture.source}) codex=${JSON.stringify(viewportCapture.contents.codex)}`)
+      console.log(`     content (${viewportCapture.source}) antigravity=${JSON.stringify(viewportCapture.contents.antigravity)}`)
       writeFileSync(
         join(outDir, `frame-${session.runtimeSessionId}.json`),
         JSON.stringify({
@@ -211,10 +216,19 @@ class CaptureWorkstate {
     viewportProjection: Pick<
       TerminalProjectionSnapshot, 'screen' | 'cols' | 'rows' | 'screenLines' | 'screenLinesStyled'
     > | null
-    contents: { claude: TerminalComposerContent | null; codex: TerminalComposerContent | null }
+    contents: {
+      claude: TerminalComposerContent | null
+      codex: TerminalComposerContent | null
+      antigravity: TerminalComposerContent | null
+    }
   } {
     if (projection === null)
-      return { source: 'no-projection', viewport: null, viewportProjection: null, contents: { claude: null, codex: null } }
+      return {
+        source: 'no-projection',
+        viewport: null,
+        viewportProjection: null,
+        contents: { claude: null, codex: null, antigravity: null },
+      }
     const viewport = ScreenTail.viewportOf(projection)
     const read = viewport ?? ScreenTail.viewportOfScreen(projection)
     return {
@@ -230,12 +244,13 @@ class CaptureWorkstate {
       contents: {
         claude: AgentComposerReader.content('claude', read),
         codex: AgentComposerReader.content('codex', read),
+        antigravity: AgentComposerReader.content('antigravity', read),
       },
     }
   }
 
-  private static signalsOf(claude: AgentWorkInspection, codex: AgentWorkInspection): string {
-    const named = [...claude.evidence, ...codex.evidence]
+  private static signalsOf(...inspections: readonly AgentWorkInspection[]): string {
+    const named = inspections.flatMap((inspection) => inspection.evidence)
       .map((item) => `${item.source}:${item.signal}`)
     return named.length === 0 ? 'no evidence' : named.join(' ')
   }

@@ -314,6 +314,31 @@ describe('lib-orchestrator/sessionManager/launch/agentPresets', () => {
     expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'merger' })).toThrow(/Codex has no edits-only/)
   })
 
+  it('builds Antigravity args for new, continue, resume and interactive initial prompt, and refuses fork', () => {
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'new' }, undefined)).toEqual([])
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'continue' }, undefined)).toEqual(['--continue'])
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'resume', nativeSessionId: mintedConst }, undefined))
+      .toEqual(['--conversation', mintedConst])
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'new', initialPrompt: 'hello' }, undefined))
+      .toEqual(['-i', 'hello'])
+    expect(AgentPresets.commandLine('/compact', 'antigravity')).toEqual({ text: '/compact', input: 'typed' })
+    expect(AgentPresets.headlessUnsupported('antigravity')).toBe(false)
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'new', oneShot: true, initialPrompt: 'resolve conflicts' }, undefined))
+      .toEqual(['-p', 'resolve conflicts'])
+    expect(AgentPresets.createArgs({ agentId: 'antigravity', mode: 'resume', nativeSessionId: mintedConst, oneShot: true, initialPrompt: 'continue' }, undefined))
+      .toEqual(['--conversation', mintedConst, '-p', 'continue'])
+    expect(AgentPresets.confirmsIdentity({ agentId: 'antigravity' })).toBe(true)
+    expect(AgentPresets.confirmsIdentity({ agentId: 'antigravity', oneShot: true })).toBe(false)
+    expect(AgentPresets.identityConfirmed({ nativeSessionIdSource: 'antigravity-statusline' })).toBe(true)
+    expect(AgentPresets.mintsNativeSessionId({ agentId: 'antigravity', mode: 'new' })).toBe(false)
+    expect(AgentPresets.reopenProblem({ agentId: 'antigravity', launchMode: 'new' })).toMatch(/--continue/)
+    expect(AgentPresets.reopenProblem({ agentId: 'antigravity', launchMode: 'resume', nativeSessionId: mintedConst })).toBeNull()
+    expect(AgentPresets.reopenArgs({ agentId: 'antigravity', launchMode: 'resume', nativeSessionId: mintedConst }))
+      .toEqual(['--conversation', mintedConst])
+    expect(() => AgentPresets.createArgs({ agentId: 'antigravity', mode: 'fork', forkParentId: parentConst }, undefined))
+      .toThrow(/does not support forking/)
+  })
+
   it('throws on an agent or a mode it does not know', () => {
     expect(() => AgentPresets.createArgs(
       { agentId: 'gemini' as SessionAgentSpec['agentId'], mode: 'new' }, undefined,

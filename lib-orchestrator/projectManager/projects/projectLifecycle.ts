@@ -227,7 +227,7 @@ export class ProjectLifecycle {
         value: {
           operationId: null,
           directoryRenamed: false,
-          providers: { claude: 'done', codex: 'done' },
+          providers: { claude: 'done', codex: 'done', antigravity: 'done' },
           leftoverCount: 0,
         },
       }
@@ -313,11 +313,13 @@ export class ProjectLifecycle {
     if (!renamed.ok) return renamed
     journal.markDirectoryRenamed()
     // A provider without a migrator has nothing left to finish, which is what 'done' says here.
-    const providers: Record<ProviderAgentId, ProviderOutcome> = { claude: 'done', codex: 'done' }
+    const providers: Record<ProviderAgentId, ProviderOutcome> = { claude: 'done', codex: 'done', antigravity: 'done' }
     for (const migrator of this.migrators)
       providers[migrator.agentId] = await migrator.relocate(oldPath, newPath, journal, this.leftovers)
     this.invalidateAll()
-    if (ProjectLifecycle.finished(providers.claude) && ProjectLifecycle.finished(providers.codex))
+    if (ProjectLifecycle.finished(providers.claude)
+      && ProjectLifecycle.finished(providers.codex)
+      && ProjectLifecycle.finished(providers.antigravity))
       await RelocationJournal.discard(this.journalsDirectory, operationId)
     return {
       ok: true,
@@ -362,7 +364,8 @@ export class ProjectLifecycle {
   private static conflictCodeOf(provider: ProviderAgentId): ProjectsOpErrorCode {
     if (provider === 'claude') return 'claude-store-conflict'
     else if (provider === 'codex') return 'codex-store-conflict'
-    else throw new Error(`Unknown provider: ${JSON.stringify(provider)}`)
+    else if (provider === 'antigravity') return 'antigravity-store-conflict'
+    else throw new Error(`Unknown provider: ${JSON.stringify(provider satisfies never)}`)
   }
 
   private static finished(outcome: ProviderOutcome): boolean {
@@ -458,10 +461,10 @@ export class ProjectLifecycle {
 
   private static encoderOf(provider: ProviderAgentId): ((path: string) => string) | undefined {
     if (provider === 'claude') return ClaudeProjectsLocator.encodeProjectDir
-    // Codex derives no name from the path; adding that shape here would edit text its format never
-    // holds.
-    else if (provider === 'codex') return undefined
-    else throw new Error(`Unknown leftover provider: ${JSON.stringify(provider)}`)
+    // Codex and Antigravity derive no name from the path; adding that shape here would edit text
+    // their format never holds.
+    else if (provider === 'codex' || provider === 'antigravity') return undefined
+    else throw new Error(`Unknown leftover provider: ${JSON.stringify(provider satisfies never)}`)
   }
 
   private async runAfterCreate(

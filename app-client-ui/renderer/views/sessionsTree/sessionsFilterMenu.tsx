@@ -66,7 +66,8 @@ export function SessionsFilterMenu(props: {
           if (agent === null) return 'Terminal'
           else if (agent === 'claude') return 'Claude'
           else if (agent === 'codex') return 'Codex'
-          else throw new Error(`Unknown session filter agent: ${agent}`)
+          else if (agent === 'antigravity') return 'Antigravity'
+          else throw new Error(`Unknown session filter agent: ${agent satisfies never}`)
         }, (agents) => props.onChange({ ...props.filters, agents })),
     },
     { kind: 'separator', key: 'shortcuts' },

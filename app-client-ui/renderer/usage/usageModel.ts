@@ -6,7 +6,7 @@ export type PoolRangePreset = 'forecast' | 'week' | 'month' | 'custom'
 export type TokenPeriodPreset = 'today' | 'week' | 'month' | 'custom'
 
 export class UsageModel {
-  static readonly agentLabels = { claude: 'Claude', codex: 'Codex' }
+  static readonly agentLabels = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity' }
   static readonly sessionMinutesConst = 300
   static readonly weeklyMinutesConst = 10080
   /** The server projects at most 31 days ahead (`usage.history`). */

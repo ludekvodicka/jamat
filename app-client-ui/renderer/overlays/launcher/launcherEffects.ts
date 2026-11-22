@@ -382,7 +382,7 @@ export class LauncherEffects {
     // An entry with no catalog would draw an empty picker as though it were a full one, so it is
     // dropped rather than trusted: an agent the target names is an agent it can list models for.
     return value.agents.filter((agent) =>
-      (agent.agentId === 'claude' || agent.agentId === 'codex')
+      (agent.agentId === 'claude' || agent.agentId === 'codex' || agent.agentId === 'antigravity')
       && (agent.configuredModel === null || typeof agent.configuredModel === 'string')
       && Array.isArray(agent.models))
   }
@@ -390,7 +390,7 @@ export class LauncherEffects {
   private static accountsOf(value: RemoteResponseValue): readonly AccountView[] {
     if (!Array.isArray(value)) return []
     return value.filter((account): account is AccountView => account !== null && typeof account === 'object'
-      && (account.agentId === 'claude' || account.agentId === 'codex')
+      && (account.agentId === 'claude' || account.agentId === 'codex' || account.agentId === 'antigravity')
       && typeof account.accountId === 'string' && typeof account.label === 'string'
       && typeof account.isMain === 'boolean'
       && ['active', 'disabled', 'needs-login', 'pending-login'].includes(account.state)

@@ -1,0 +1,31 @@
+{
+  "agent": "antigravity",
+  "expected": {
+    "hint": "blocked",
+    "composer": {
+      "state": "absent"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "Observed live in AppJamatV3 (Antigravity CLI 1.5.14 permission prompt screenshot 2026-11-22)",
+    "case": "antigravity-live-permission-prompt",
+    "capture": "command permission confirmation dialog replacing the composer box with numbered options, navigation/amend/edit footer, and esc to cancel",
+    "ported": "2026-11-22",
+    "identical": "sanitized command text and reason; dialog header, Requesting permission for, Run this command?, numbered options, and footer lines preserved verbatim"
+  },
+  "recorded": {
+    "build": "agy CLI 1.5.14 (2026-11-22)",
+    "capturedAt": "2026-11-22T09:28:04.000Z",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "\u001b[1mRun this command?\u001b[0m\r\n\u001b[94m> 1. Yes, run command\u001b[0m\r\n  2. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit'\r\n  3. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit && pnpm test'\r\n  4. No, cancel\r\n\r\n\u001b[90m↑/↓ Navigate · tab Amend · ctrl+g edit/expand command\r\nesc to cancel\u001b[0m",
+    "screenTail": "\u001b[1mRun this command?\u001b[0m\n\u001b[94m> 1. Yes, run command\u001b[0m\n  2. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit'\n  3. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit && pnpm test'\n  4. No, cancel\n\n\u001b[90m↑/↓ Navigate · tab Amend · ctrl+g edit/expand command\nesc to cancel\u001b[0m",
+    "wideScreenTail": "\u001b[33m● \u001b[1mRan\u001b[0m (pnpm exec tsc --noEmit && pnpm test)\n\n\u001b[33;1mCommand\u001b[0m\n\nReason: The inline Node script verifies installer output outside the workspace.\n\u001b[1mRequesting permission for:\u001b[0m\n  pnpm exec tsc --noEmit && pnpm test\n  … (6 lines hidden)\n\n\u001b[1mRun this command?\u001b[0m\n\u001b[94m> 1. Yes, run command\u001b[0m\n  2. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit'\n  3. Yes, and always allow in this conversation for commands that start with 'pnpm exec tsc --noEmit && pnpm test'\n  4. No, cancel\n\n\u001b[90m↑/↓ Navigate · tab Amend · ctrl+g edit/expand command\nesc to cancel\u001b[0m",
+    "screenStyled": true
+  }
+}

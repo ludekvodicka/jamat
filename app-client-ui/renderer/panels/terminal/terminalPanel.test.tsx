@@ -728,7 +728,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     settings = new AgentSettingsStore({
       read: () => Promise.resolve({
         ok: true as const,
-        value: { claude: { yolo: false }, codex: { yolo: false } },
+        value: { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } },
       }),
       subscribe: () => () => undefined,
       setAutoCompact: () => Promise.resolve({ ok: true, value: { ok: true } }),
@@ -1429,6 +1429,28 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
         items: [first, { ...second, scrollTop: 75 }] })
     })
 
+    it('persists the active split file scroll offset into panel parameters on scroll so a reload restores it', async () => {
+      const first = TerminalPanelFixtures.splitItem(1)
+      const api = new PanelApiFake('terminal:scroll-persist')
+      const view = mount(api, 'session-1', {
+        params: { split: { ratio: 0.5, active: first.key, preview: first.key, items: [first], history: [] } },
+      })
+      const body = await waitFor(() => {
+        const element = view.container.querySelector<HTMLElement>('.jamat-panel-split__pane .file-viewer-body')
+        if (element === null) throw new Error('the split file is not drawn')
+        return element
+      })
+      await waitFor(() => expect(body.textContent).toContain('body'))
+      body.scrollTop = 415
+      fireEvent.scroll(body)
+      fireEvent(body, new Event('scrollend'))
+
+      expect(PanelSplitParams.of(api.paramsValue())).toMatchObject({
+        active: first.key,
+        items: [{ ...first, scrollTop: 415 }],
+      })
+    })
+
     it('hides the last closed item without forgetting the ratio', async () => {
       const item = TerminalPanelFixtures.splitItem(1)
       const api = new PanelApiFake('terminal:close-split')
@@ -1530,7 +1552,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     })
     await act(async () => { await Promise.resolve() })
     expect(view.getAllByRole('tab').map((tab) => tab.textContent))
-      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+      .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Todo'])
     expect(view.getByRole('tab', { name: 'File Changes' })).toHaveAttribute('aria-selected', 'true')
     act(() => fileTools.toggle('terminal:retired-processes'))
     act(() => fileTools.toggle('terminal:retired-processes'))
@@ -1649,7 +1671,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
       const dock = view.getByRole('complementary', { name: 'Tools' })
       expect(within(dock).getAllByRole('tab').map((tab) => tab.textContent))
-        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes'])
+        .toEqual(['File Changes', 'Changelog', 'Explorer', 'Notes', 'Todo'])
       expect(view.queryByRole('complementary', { name: 'File tools' })).toBeNull()
       expect(notesReads).toEqual([])
     })

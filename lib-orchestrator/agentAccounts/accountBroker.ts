@@ -1,9 +1,10 @@
 import { ErrorText } from '../shared/errorText'
 import { AccountProblem } from './accountProblem'
 import { AccountBrokerAnswers, type AccountBrokerMain } from './accountBrokerAnswer'
-import type { AccountBrokerAnswer, AccountBrokerPurpose, AccountBrokerRequest, AccountCallersView } from './accountBrokerApi.types'
+import type { AccountBrokerAnswer, AccountBrokerPurpose, AccountBrokerRequest, AccountCallersView, AccountUsageReport } from './accountBrokerApi.types'
 import type { AgentAccounts } from './agentAccounts'
 import type { AccountCallerLog } from './broker/accountCallerLog'
+import type { AccountUsageLog } from './broker/accountUsageLog'
 import type { AccountView } from './agentAccountsApi.types'
 import type { AccountChoiceRule } from './defaultAccount'
 
@@ -13,8 +14,13 @@ export interface AccountBrokerDeps {
   mainConfigDir: string | null
   /** Every pick is logged after it is answered; a failed append is reported and never fails the pick. */
   log: Pick<AccountCallerLog, 'append' | 'view'>
+  /** The reported token usage of the callers' runs. */
+  usage: Pick<AccountUsageLog, 'append'>
+  /** The `accounts report` command line for a run made with an answer; null when it cannot be built. */
+  reportCommand(request: AccountBrokerRequest, accountId: string): string | null
   now(): number
   onLogged(): void
+  onReported(): void
   onError(message: string): void
 }
 
@@ -31,11 +37,19 @@ export class AccountBroker {
 
   async pick(request: AccountBrokerRequest): Promise<AccountBrokerAnswer> {
     const started = this.deps.now()
-    const answer = await this.choose(request)
+    const chosen = await this.choose(request)
+    const reportCommand = this.deps.reportCommand(request, chosen.account.id)
+    const answer = reportCommand === null ? chosen : { ...chosen, reportCommand }
     void this.deps.log.append({ at: started, caller: request.caller, purpose: request.purpose, accountId: answer.account.id,
       accountLabel: answer.account.label, fallback: answer.fallback, reason: answer.reason, durationMs: this.deps.now() - started })
       .then(() => this.deps.onLogged(), error => this.deps.onError(`Caller log: ${ErrorText.of(error)}`))
     return answer
+  }
+
+  /** Records the token usage of one finished run; a failed append fails the report, never a pick. */
+  async report(report: AccountUsageReport): Promise<void> {
+    await this.deps.usage.append({ at: this.deps.now(), ...report })
+    this.deps.onReported()
   }
 
   /** The callers of the last 30 days; the composition adds the command. */

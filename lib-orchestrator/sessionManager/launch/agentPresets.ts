@@ -55,20 +55,27 @@ export class AgentPresets {
   static createArgs(agent: AgentLaunchSpec, minted: string | undefined, cli?: string): string[] {
     const args = AgentPresets.modeArgs(agent, minted)
     // In FRONT of the mode flags, because print mode is what the whole invocation is, and after the
-    // prompt it would be read as more prompt.
-    if (agent.oneShot) args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
+    // prompt it would be read as more prompt. Antigravity's `-p` takes the prompt as its argument, so
+    // it rides directly before `initialPrompt` below.
+    if (agent.oneShot && agent.agentId !== 'antigravity') args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
     if (agent.permission !== undefined)
       args.unshift(...AgentPresets.permissionArgsOf(agent.agentId, agent.permission, cli))
-    // LAST, and positional: both CLIs read a trailing bare argument as the first thing to answer.
-    // Anything appended after it would be read as more prompt rather than as a flag.
-    if (agent.initialPrompt) args.push(agent.initialPrompt)
+    // LAST: Claude and Codex read a trailing bare argument as the first thing to answer; Antigravity
+    // takes `-i` (`--prompt-interactive`) for an interactive initial prompt and `-p` for print mode.
+    if (agent.initialPrompt) {
+      if (agent.agentId === 'antigravity') args.push(agent.oneShot ? '-p' : '-i', agent.initialPrompt)
+      else args.push(agent.initialPrompt)
+    }
+    else if (agent.oneShot && agent.agentId === 'antigravity')
+      args.unshift(...AgentPresets.oneShotArgsOf(agent.agentId))
     return args
   }
 
   private static modeArgs(agent: AgentLaunchSpec, minted: string | undefined): string[] {
     if (agent.agentId === 'claude') return AgentPresets.claudeArgs(agent, minted)
     else if (agent.agentId === 'codex') return AgentPresets.codexArgs(agent)
-    else throw new Error(`Unknown agent: ${JSON.stringify(agent)}`)
+    else if (agent.agentId === 'antigravity') return AgentPresets.antigravityArgs(agent)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
   }
 
   /**
@@ -154,8 +161,12 @@ export class AgentPresets {
       return AgentPresets.reopenModeOf(agent) === 'resume'
         ? null
         : 'Codex never reported the id of this conversation, and resuming the most recent session on this machine would land on an unrelated one'
+    else if (agent.agentId === 'antigravity')
+      return AgentPresets.reopenModeOf(agent) === 'resume'
+        ? null
+        : 'Antigravity never reported the id of this conversation, and --continue takes the most recent conversation instead of naming this one'
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
   }
 
   /** A `continue` becomes resumable only after the running agent confirms the conversation it selected. */
@@ -176,54 +187,55 @@ export class AgentPresets {
   static identityConfirmed(agent: Pick<SessionRecordAgent, 'nativeSessionIdSource'>): boolean {
     const source = agent.nativeSessionIdSource
     if (source === undefined || source === 'provided') return false
-    else if (source === 'codex-app-server' || source === 'claude-statusline') return true
+    else if (source === 'codex-app-server' || source === 'claude-statusline' || source === 'antigravity-statusline') return true
     else throw new Error(`Unknown native identity source: ${JSON.stringify(source satisfies never)}`)
   }
 
   /**
    * Whether a launch of this agent reports the conversation it runs, so it gets a launch generation
    * (`identityLaunchId`) to bind that report to. Codex reports through its app-server bridge; an
-   * interactive Claude through its status line relay. A one-shot Claude run draws no status line.
+   * interactive Claude or Antigravity through its status line relay. A one-shot run draws no status line.
    */
   static confirmsIdentity(agent: Pick<SessionRecordAgent, 'agentId' | 'oneShot'>): boolean {
     if (agent.agentId === 'codex') return true
-    else if (agent.agentId === 'claude') return agent.oneShot !== true
+    else if (agent.agentId === 'claude' || agent.agentId === 'antigravity') return agent.oneShot !== true
     else throw new Error(`Unknown agent: ${JSON.stringify(agent.agentId satisfies never)}`)
   }
 
   /**
    * Whether this agent has NO print mode this build can judge, which is what the name says and
-   * what the answers mean: `claude` is false, `codex` is true.
+   * what the answers mean: `claude` is false, `codex` and `antigravity` are true.
    *
    * Claude's `-p` prints the answer and exits, which is what the merge resolver is judged by. Codex
-   * has no equivalent this build knows of, so a conflict in a Codex session takes the manual path
-   * from the start rather than launching something nothing can judge. When that changes, this is the
-   * one line that changes with it.
+   * has no equivalent this build knows of, and Antigravity is not wired as a headless resolver yet,
+   * so a conflict in those sessions takes the manual path from the start rather than launching
+   * something nothing can judge. When that changes, this is the one line that changes with it.
    */
   static headlessUnsupported(agentId: SessionAgentId): boolean {
-    if (agentId === 'claude') return false
+    if (agentId === 'claude' || agentId === 'antigravity') return false
     else if (agentId === 'codex') return true
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
    * A configured line in the agent's own command syntax, and how to put it into the composer. A
-   * leading `/` names a Claude command or skill, typed, because a bracketed paste leaves it as
-   * pasted text. Codex answers "Unrecognized command" to a `/` it does not know and runs a skill
-   * from `$name`. Typed, that `$` opens Codex's skill list and Enter only picks the entry; pasted,
-   * it is submitted and the skill loads (Codex CLI 0.167.0, 2026-11-10). Other lines stay as written.
+   * leading `/` names a Claude or Antigravity command or skill, typed, because a bracketed paste
+   * leaves it as pasted text. Codex answers "Unrecognized command" to a `/` it does not know and
+   * runs a skill from `$name`. Typed, that `$` opens Codex's skill list and Enter only picks the
+   * entry; pasted, it is submitted and the skill loads (Codex CLI 0.167.0, 2026-11-10). Other lines
+   * stay as written.
    */
   static commandLine(text: string, agentId: SessionAgentId): { text: string; input: 'typed' | 'paste' } {
-    if (agentId === 'claude') return { text, input: 'typed' }
+    if (agentId === 'claude' || agentId === 'antigravity') return { text, input: 'typed' }
     else if (agentId === 'codex') return text.startsWith('/') ? { text: `$${text.slice(1)}`, input: 'paste' } : { text, input: 'typed' }
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   private static oneShotArgsOf(agentId: SessionAgentId): string[] {
-    if (agentId === 'claude') return ['-p']
+    if (agentId === 'claude' || agentId === 'antigravity') return ['-p']
     else if (agentId === 'codex')
       throw new Error('Codex has no print mode this build can judge; see headlessUnsupported')
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
@@ -241,6 +253,7 @@ export class AgentPresets {
    */
   private static permissionArgsOf(agentId: SessionAgentId, permission: NonNullable<SessionRecordAgent['permission']>, cli: string | undefined): string[] {
     if (agentId === 'codex') throw new Error('Codex has no edits-only mode this build starts; the SVN resolver and merger are always Claude')
+    else if (agentId === 'antigravity') throw new Error('Antigravity has no edits-only mode this build starts; the SVN resolver and merger are always Claude')
     else if (agentId !== 'claude') throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
     if (permission === 'accept-edits') return ['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits']
     else if (permission === 'merger') {
@@ -260,10 +273,11 @@ export class AgentPresets {
    * (UA1-J14R-2). Each line is allowed as the merger's are, a `Bash(<line>:*)` prefix rule, and no
    * other command gains a right. `--allowedTools` is variadic and only a flag ends it, so the rights go
    * in front of the launch's first flag; a launch that starts with a bare prompt gets none, and the
-   * worker asks for each call. Codex has no such rule this build sets, so its launch stays as it is.
+   * worker asks for each call. Codex and Antigravity have no such rule this build sets, so their
+   * launches stay as they are.
    */
   static workerRightsOf(agentId: SessionAgentId, args: readonly string[], lines: readonly string[]): string[] {
-    if (agentId === 'codex') return [...args]
+    if (agentId === 'codex' || agentId === 'antigravity') return [...args]
     else if (agentId !== 'claude') throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
     if (lines.length === 0 || args[0]?.startsWith('-') !== true) return [...args]
     return ['--allowedTools', ...lines.map((line) => `Bash(${line}:*)`), ...args]
@@ -309,5 +323,22 @@ export class AgentPresets {
       return agent.forkParentId ? ['fork', agent.forkParentId] : ['fork', '--last']
     else
       throw new Error(`Unknown codex launch mode: ${JSON.stringify(agent.mode)}`)
+  }
+
+  /**
+   * Measured against `agy --help`: `--continue` continues the most recent conversation,
+   * `--conversation <id>` resumes one by id. Antigravity CLI has no fork flag.
+   */
+  private static antigravityArgs(agent: AgentLaunchSpec): string[] {
+    if (agent.mode === 'new')
+      return []
+    else if (agent.mode === 'continue')
+      return ['--continue']
+    else if (agent.mode === 'resume')
+      return agent.nativeSessionId ? ['--conversation', agent.nativeSessionId] : ['--continue']
+    else if (agent.mode === 'fork')
+      throw new Error('Antigravity CLI does not support forking a conversation')
+    else
+      throw new Error(`Unknown antigravity launch mode: ${JSON.stringify(agent.mode)}`)
   }
 }

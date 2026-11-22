@@ -53,6 +53,7 @@ import { SessionEraseView } from '../../lib-orchestrator/sessionManager/sessionE
 import { SessionModelReader } from '../../lib-orchestrator/sessionModelReader/sessionModelReader'
 import { SessionTasks } from '../../lib-orchestrator/sessionTasks/sessionTasks'
 import { SessionTranscriptReader } from '../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader'
+import { AntigravityConfigHome } from '../../lib-orchestrator/shared/antigravityConfigHome'
 import { OrchestratorPaths } from '../../lib-orchestrator/shared/orchestratorPaths'
 import { FedHostConnection, type HostConnectionSnapshot } from '../../lib-orchestrator/hostClient/hostConnection'
 import { TerminalPortClient } from '../../lib-orchestrator/sessionManager/terminalPortClient'
@@ -84,9 +85,10 @@ import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { AgentSettingsOperations } from './agents/agentSettingsOperations'
 import { AgentAccounts } from '../../lib-orchestrator/agentAccounts/agentAccounts'
 import { AccountBroker } from '../../lib-orchestrator/agentAccounts/accountBroker'
-import { AccountCallerLog } from '../../lib-orchestrator/agentAccounts/accountCallerLogView'
+import { AccountCallerLog, AccountUsageLog } from '../../lib-orchestrator/agentAccounts/accountCallerLogView'
 import { builtInAccountProfiles } from '../../lib-orchestrator/agentAccounts/builtInAccountsView'
 import { AccountsSection } from './accounts/accountsSection'
+import { AccountsStorageSection } from './accounts/accountsStorageSection'
 import { AccountsOperations } from './accounts/accountsOperations'
 import { AccountBrokerCommand } from './accounts/accountBrokerCommand'
 import { AutolauncherConnection } from './autolauncher/autolauncherConnection'
@@ -106,6 +108,7 @@ import { MainCopyUpdateNotice } from './sessions/mainCopyUpdateNotice'
 import { ServiceContextCompactionIpc } from './contextCompaction/serviceContextCompactionIpc'
 import { ContextCompactionCooldowns } from './contextCompaction/contextCompactionCooldowns'
 import { DirectoryNotesOperations } from './directoryNotes/directoryNotesOperations'
+import { ProjectTodosOperations } from './projectTodos/projectTodosOperations'
 import { FileDiffWorker } from './fileChanges/diff/fileDiffWorker'
 import { FileChangesSettingsOperations } from './fileChanges/fileChangesSettingsOperations'
 import { VersioningSettingsOperations } from './versioning/versioningSettingsOperations'
@@ -128,6 +131,12 @@ import { SvnAssemblyWorker } from './worktrees/svnAssemblyWorker'
 import { TokenUsageOperations } from './tokenUsage/tokenUsageOperations'
 import { RateMonitorOperations } from './rateMonitor/rateMonitorOperations'
 import { SessionNotifyDelivery } from './sessions/sessionNotifyDelivery'
+import { AntigravityLimitReader } from '../../lib-orchestrator/limitRecovery/antigravityLimitReader'
+import { LimitRecovery } from '../../lib-orchestrator/limitRecovery/limitRecovery'
+import { ClaudeLimitReader } from '../../lib-orchestrator/limitRecovery/claudeLimitReader'
+import { LimitRecoveryDelivery } from './limitRecovery/limitRecoveryDelivery'
+import { LimitRecoveryOperations } from './limitRecovery/limitRecoveryOperations'
+import { SessionLimitReads } from './limitRecovery/sessionLimitReads'
 import { RemarkableManager } from './remarkable/remarkableManager'
 import { ServiceRemarkableIpc } from './remarkable/serviceRemarkableIpc'
 import { RemarkableSettingsSection } from './remarkable/settings/remarkableSettingsSection'
@@ -190,7 +199,7 @@ export class OrchestratorHub {
     ServiceContextCompactionIpc.channelsConst, ServiceAgentCliUpdatesIpc.channelsConst,
     ServiceAttentionIpc.channelsConst,
   ] as const)
-  private static readonly describedAgentsConst: readonly AgentSettingsAgentId[] = ['claude', 'codex']
+  private static readonly describedAgentsConst: readonly AgentSettingsAgentId[] = ['claude', 'codex', 'antigravity']
 
   private readonly notices: SessionNotices
   private readonly sessionEvents: SessionEvents
@@ -245,11 +254,13 @@ export class OrchestratorHub {
   private readonly settingsOperations: readonly { register(registry: RemoteControl['registry']): void }[]
   private readonly contextCompactionIpc: ServiceContextCompactionIpc
   private readonly directoryNotes: DirectoryNotesOperations
+  private readonly projectTodos: ProjectTodosOperations
   private readonly rateMonitor: RateMonitor
   private readonly cliUpdates: AgentCliUpdates
   private readonly cliUpdatesIpc: ServiceAgentCliUpdatesIpc
   private readonly tokenUsage: TokenUsageWorker
   private readonly sessionNotifier: SessionNotifier
+  private readonly limitRecovery: LimitRecovery
   private readonly snapins: SnapinsManager
   private readonly finishAttention: FinishAttention
   private readonly attention: AttentionQueue
@@ -360,8 +371,8 @@ export class OrchestratorHub {
       new VersioningSettingsOperations(configStore),
     ]
     const accounts = new AgentAccounts({
-      ...builtInAccountProfiles(process.env),
-      accountsRoot: join(context.config.configDir, 'accounts'),
+      ...builtInAccountProfiles(process.env, join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-account.json')),
+      accountsRoot: AccountsStorageSection.rootOf(configStore.readSection(AccountsStorageSection.spec), context.config.configDir),
       rates: () => this.rateMonitor?.snapshot().accounts ?? [],
       history: range => this.rateMonitor?.readHistory(range) ?? Promise.resolve([]),
       stored: () => configStore.readSection(AccountsSection.spec),
@@ -393,7 +404,12 @@ export class OrchestratorHub {
     )
     this.cliUpdatesIpc = new ServiceAgentCliUpdatesIpc(this.cliUpdates)
     const statusLineRates = RateMonitorSources.statusLine(join(OrchestratorPaths.directory(configIdentity, channel), 'rates'),
-      (sessionId, launchId, at) => this.sessions.accountForLaunch(sessionId, launchId, at))
+      (sessionId, launchId, at) => {
+        const account = this.sessions.accountForLaunch(sessionId, launchId, at)
+        return account !== null && (account.agentId === 'claude' || account.agentId === 'codex' || account.agentId === 'antigravity')
+          ? { agentId: account.agentId, accountId: account.accountId }
+          : null
+      })
     const rolloutRates = RateMonitorSources.rollouts(accounts.homeOf('codex', 'main'), () => accounts.list())
     this.rateMonitor = new RateMonitor({
       perf: this.perf,
@@ -406,7 +422,7 @@ export class OrchestratorHub {
       channel,
       // The same path the session snapshot takes: every workspace window draws the widget and the
       // Debug tab draws the section, and the monitor only says this when the content moved.
-      onChanged: () => { this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged() },
+      onChanged: () => { this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged(); this.limitRecovery?.ratesChanged() },
       onError: (message) => this.report(message),
     })
     const remoteIdentity = {
@@ -428,6 +444,7 @@ export class OrchestratorHub {
       perf: this.perf,
       accounts,
       rates: () => this.rateMonitor.snapshot().accounts ?? [],
+      limitRecovery: (sessionId) => this.limitRecovery?.infoOf(sessionId) ?? null,
       instanceId: remoteIdentity.instanceId,
       skillRoots: () => this.skillLinks.roots(),
       // Electron's app path is this package; `app-host` stands beside it. It is named here rather
@@ -480,6 +497,7 @@ export class OrchestratorHub {
     const modelReader = new SessionModelReader({
       transcripts: this.projects.transcripts,
       claudeContextSnapshots: OrchestratorPaths.claudeContextSnapshotsDirectory(configIdentity, channel),
+      antigravityContextSnapshots: OrchestratorPaths.antigravityContextSnapshotsDirectory(configIdentity, channel),
     })
     const historicSessions = new HistoricSessions(this.projects, this.sessions, modelReader)
     const sessionModel = new SessionModelOperations(modelReader, this.sessions)
@@ -670,6 +688,16 @@ export class OrchestratorHub {
       remoteTerminal,
       (directory) => this.broadcast('directoryNotes:changed', directory),
     )
+    this.projectTodos = new ProjectTodosOperations({
+      sessions: this.sessions,
+      openTodos: (sessionId, tabTitle, view) => this.tabControlBroker.openTodos(sessionId, tabTitle, view),
+      now: () => new Date(),
+      user: ProjectTodosOperations.osUser(),
+      onChanged: (project) => {
+        this.broadcast('projectTodos:changed', project)
+        this.remoteControl.activity.publish('projectTodos.changed', { project })
+      },
+    })
     const sessionGroups = this.sessionGroups = new RemoteSessionGroups(
       () => configStore.readSection(SessionGroupsSection.spec),
       this.shell.sessionGroups,
@@ -698,6 +726,27 @@ export class OrchestratorHub {
       groups: (sessions) => sessionGroups.read(sessions),
       port: new SessionNotifyDelivery(this.sessions, remoteTerminal, transcriptAccess),
       now: () => Date.now(),
+      report: (message) => this.report(message),
+    })
+    const limitDelivery = new LimitRecoveryDelivery(remoteTerminal, transcriptAccess)
+    this.limitRecovery = new LimitRecovery({
+      sessions: {
+        list: () => this.sessions.snapshot().sessions,
+        switchAccount: async (sessionId, accountId) => {
+          const switched = await this.sessions.switchAccount(sessionId, accountId)
+          return switched.ok ? { ok: true } : { ok: false, detail: switched.detail }
+        },
+        changed: () => this.sessions.limitRecoveryChanged(),
+      },
+      limits: new SessionLimitReads(
+        this.sessions,
+        new ClaudeLimitReader(this.projects.transcripts),
+        new AntigravityLimitReader(this.projects.transcripts, () => this.rateMonitor.snapshot().accounts ?? []),
+      ),
+      accounts,
+      rates: () => this.rateMonitor.snapshot().accounts ?? [],
+      refreshRates: () => void this.rateMonitor.refresh().catch(error => this.report(`Quota refresh failed: ${ErrorText.of(error)}`)),
+      deliver: (sessionId, text) => limitDelivery.deliver(sessionId, text),
       report: (message) => this.report(message),
     })
     const remoteControl = new RemoteControl({
@@ -744,24 +793,31 @@ export class OrchestratorHub {
     AgentMemoryOperations.register(remoteControl.registry, new AgentMemory({
       claudeHome: accounts.homesOf('claude')[0],
       codexHome: accounts.homesOf('codex')[0],
+      antigravityConfigHome: AntigravityConfigHome.globalConfigDirectory(),
     }), this.sessions)
     for (const operations of this.settingsOperations) operations.register(remoteControl.registry)
     new SnapinsOperations(this.snapins, configStore).register(remoteControl.registry)
     this.tokenUsage = new TokenUsageWorker(context.tokenUsageWorkerPath, async rescan => ({
       kind: 'scan', rescan, cacheFile: join(OrchestratorPaths.directory(configIdentity, channel), 'token-usage.json'),
       configDir: context.config.configDir, claudeHome: accounts.homeOf('claude', 'main'), codexHome: accounts.homeOf('codex', 'main'),
+      antigravityHome: AntigravityConfigHome.resolve(),
       records: this.sessions.usageRecords(), accounts: await accounts.list(),
     }), () => this.broadcast('usage:changed'), workerPerf('tokenUsage'))
-    new TokenUsageOperations(this.tokenUsage, accounts).register(remoteControl.registry)
+    const usageLog = new AccountUsageLog(OrchestratorPaths.accountUsageDirectory(configIdentity, channel))
+    new TokenUsageOperations(this.tokenUsage, accounts, usageLog).register(remoteControl.registry)
     new RateMonitorOperations(this.rateMonitor, this.accounts).register(remoteControl.registry)
     this.callerLog = new AccountCallerLog(OrchestratorPaths.accountCallersDirectory(configIdentity, channel))
-    const broker = new AccountBroker({ accounts, mainConfigDir: process.env.CLAUDE_CONFIG_DIR || null, log: this.callerLog, now: Date.now,
-      onLogged: () => this.broadcast('usage:callers-changed'), onError: message => this.report(message) })
+    const broker = new AccountBroker({ accounts, mainConfigDir: process.env.CLAUDE_CONFIG_DIR || null, log: this.callerLog, usage: usageLog,
+      reportCommand: (request, accountId) => AccountBrokerCommand.report(this.skillLinks.roots()[0]!, configIdentity, channel, request, accountId),
+      now: Date.now, onLogged: () => this.broadcast('usage:callers-changed'), onReported: () => this.broadcast('usage:changed'),
+      onError: message => this.report(message) })
     new AccountsOperations(accounts, broker, () => AccountBrokerCommand.of(this.skillLinks.roots()[0]!, configIdentity, channel))
       .register(remoteControl.registry)
     sessionModel.register(remoteControl.registry)
+    new LimitRecoveryOperations(this.limitRecovery).register(remoteControl.registry)
     sessionTasks.register(remoteControl.registry)
     this.directoryNotes.register(remoteControl.registry)
+    this.projectTodos.register(remoteControl.registry)
     const credentials = RemotePeerCredentialStore.loadOrCreate(
       ClientStatePaths.remotePeerCredentialsFile(),
       ClientStatePaths.remoteMachineIdentityFile(),
@@ -957,6 +1013,8 @@ export class OrchestratorHub {
       stopAccounts: () => this.accounts.stop(),
       stopRateMonitor: () => this.rateMonitor.stop(),
       stopSessionNotifier: () => this.sessionNotifier.stop(),
+      stopLimitRecovery: () => this.limitRecovery.stop(),
+      stopProjectTodos: () => this.projectTodos.stop(),
       stopSnapins: () => this.snapins.stop(),
       stopSessions: () => this.sessions.stop(),
       stopSvnAssemblyWorker: () => this.svnAssemblyWorker.stop(),
@@ -1038,6 +1096,8 @@ export class OrchestratorHub {
       { subject: 'the accounts manager', run: () => this.api.stopAccounts() },
       { subject: 'the rate monitor', run: () => this.api.stopRateMonitor() },
       { subject: 'the session notifier', run: () => this.api.stopSessionNotifier() },
+      { subject: 'the limit recovery', run: () => this.api.stopLimitRecovery() },
+      { subject: 'the project todo watchers', run: () => this.api.stopProjectTodos() },
       { subject: 'the snap-ins manager', run: () => this.api.stopSnapins() },
       { subject: 'the control server', run: () => this.api.stopRemoteControlServer() },
       { subject: 'the peer listener', run: () => this.api.stopRemoteListener() },
@@ -1121,6 +1181,7 @@ export class OrchestratorHub {
     void this.rateMonitor.start()
     this.cliUpdates.start()
     this.sessionNotifier.start()
+    this.limitRecovery.start()
     this.snapins.wake()
     void this.callerLog.prune(Date.now()).catch(error => this.report(`Caller log prune failed: ${ErrorText.of(error)}`))
   }

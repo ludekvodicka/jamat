@@ -117,7 +117,7 @@ const directory = z.discriminatedUnion('mode', [
 ], { error: 'directory mode must be project, adHoc or default' })
 
 const agent = z.strictObject({
-  agentId: z.enum(['claude', 'codex'], { error: 'agentId must be claude or codex' }),
+  agentId: z.enum(['claude', 'codex', 'antigravity'], { error: 'agentId must be claude, codex or antigravity' }),
   accountId: RemoteControlZod.text().optional(),
   mode: z.enum(['new', 'continue', 'resume', 'fork'], { error: 'agent mode is invalid' }),
   nativeSessionId: RemoteControlZod.text().optional(),
@@ -407,7 +407,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   'sessions.openHistory': z.strictObject({
     spec: z.strictObject({
       directory: projectDirectory,
-      agentId: z.enum(['claude', 'codex'], { error: 'agentId must be claude or codex' }),
+      agentId: z.enum(['claude', 'codex', 'antigravity'], { error: 'agentId must be claude, codex or antigravity' }),
       nativeSessionId: RemoteControlZod.text(),
       providerName: RemoteControlZod.string(512),
       providerActive: RemoteControlZod.boolean(),
@@ -433,7 +433,7 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     note: RemoteControlZod.string(SessionLimits.noteCharacters).nullable(),
   }),
   'agents.describe': RemoteControlZod.empty(),
-  'accounts.list': z.strictObject({ excludeAccount: z.strictObject({ agentId: z.enum(['claude', 'codex']), accountId: RemoteControlZod.text() }).optional() }),
+  'accounts.list': z.strictObject({ excludeAccount: z.strictObject({ agentId: z.enum(['claude', 'codex', 'antigravity']), accountId: RemoteControlZod.text() }).optional() }),
   'tabs.list': RemoteControlZod.empty(),
   'tabs.open': RemoteControlZod.sessionBody(),
   'tabs.openFile': z.strictObject({

@@ -304,7 +304,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
       : null
     if (local === null || agent?.life !== 'live'
       || !wiring.terminalInputs.has(local.target.sessionId)) {
-      AppClientUiReport.error('Select a writable local Claude or Codex terminal first')
+      AppClientUiReport.error('Select a writable local agent terminal first')
       return
     }
     if (claimOverlay())
@@ -404,9 +404,10 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           return
         if (event.target instanceof Element && event.target.closest('[role="menu"], [role="dialog"]'))
           return
-        if (!(event.target instanceof Element) || !event.target.closest('.file-viewer, .task-pane'))
+        if (!(event.target instanceof Element) || !event.target.closest('.file-viewer, .task-pane, .project-todos--pane'))
           return
-        if (event.target.closest('[data-file-search-open="true"]'))
+        // A search, an open task or a typed text in the pane takes this Escape for itself.
+        if (event.target.closest('[data-file-search-open="true"], [data-own-escape="true"]'))
           return
         if (!WorkspacePanels.hasActiveViewer(wiring.controller))
           return
@@ -551,7 +552,7 @@ class AppShellComposition {
       .sort((one, other) => rank(one) - rank(other) || one.tabTitle.localeCompare(other.tabTitle))
       .map((session) => ({
         key: session.sessionId,
-        label: `${session.tabTitle} (${session.agent?.agentId === 'codex' ? 'Codex' : 'Claude'})`,
+        label: `${session.tabTitle} (${session.agent?.agentId === 'codex' ? 'Codex' : session.agent?.agentId === 'antigravity' ? 'Antigravity' : 'Claude'})`,
         target: { sessionId: session.sessionId },
       }))
   }
@@ -840,6 +841,7 @@ class AppShellComposition {
       transferCommit: (token) => WorkspaceChannels.transferCommit(token),
       transferAbort: (token) => WorkspaceChannels.transferAbort(token),
       movePanel: (panel, target) => WorkspaceChannels.movePanel(panel, target),
+      mayReopen: (panel) => WorkspacePanels.mayReopen(panel, sessionsSnapshot.current().snapshot, remoteSnapshot.current().snapshot),
       reportError: (message) => AppClientUiReport.error(`${message}`),
     })
     return {
@@ -1266,6 +1268,9 @@ class AppShellComposition {
     commands.register('session.newInCodex', (arg) =>
       AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
         { agentId: 'codex', act: null }))
+    commands.register('session.newInAntigravity', (arg) =>
+      AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
+        { agentId: 'antigravity', act: null }))
     commands.register('session.fork', (arg) =>
       AppShellComposition.launchBeside(session.snapshot, controller, intents, launcherCommands, arg,
         { agentId: null, act: 'fork' }))
@@ -1285,6 +1290,13 @@ class AppShellComposition {
     commands.register('session.showActions', (arg) => {
       const target = WorkspacePanels.commandTargetOf(controller, arg)
       if (target !== null) WorkflowPortsOf.openWorkflow(target.sessionId)
+    })
+    commands.register('session.showTodos', (arg) => {
+      const target = WorkspacePanels.commandTargetOf(controller, arg)
+      if (target !== null) void AppControl.call('projectTodos.open', { session: AppControl.sessionOf(target.sessionId) }).then((answer) => {
+        const detail = !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null
+        if (detail !== null) AppClientUiReport.error(`The project todo list could not open: ${detail}`)
+      })
     })
     // The row's own Finish, handed to the sessions tree that draws it.
     commands.register('session.finish', (arg) => {
@@ -1316,6 +1328,10 @@ class AppShellComposition {
     commands.register('view.maximizeToggle', () => controller.toggleMaximizeActiveGroup())
     commands.register('view.toggleTabSidebar', () => fileTools.toggle(controller.activePanelId()))
     commands.register('view.fileChanges', () => fileTools.openFileChanges(controller.activePanelId()))
+    commands.register('view.projectTodos', () => {
+      const refusal = WorkspacePanels.openProjectTodos(controller)
+      if (refusal !== null) AppClientUiReport.error(refusal)
+    })
     commands.register('view.fileBack', () => panelHistory.step(controller.activePanelId(), 'back'))
     commands.register('view.fileForward', () => panelHistory.step(controller.activePanelId(), 'forward'))
     commands.assertCovers(AppCommands.rendererFor(role))

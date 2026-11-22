@@ -1,6 +1,6 @@
 import type { ProviderOutcome, ProviderSessionSummary } from '../projectManagerApi.types'
 
-export type ProviderAgentId = 'claude' | 'codex'
+export type ProviderAgentId = 'claude' | 'codex' | 'antigravity'
 
 /**
  * Deliberately narrow. Claude finds a project's history by transforming the path into a directory

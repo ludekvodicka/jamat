@@ -1,0 +1,31 @@
+{
+  "agent": "antigravity",
+  "expected": {
+    "hint": "blocked",
+    "composer": {
+      "state": "absent"
+    },
+    "queuedRow": false,
+    "echoHead": null,
+    "pastePlaceholders": 0
+  },
+  "provenance": {
+    "origin": "Observed live in AppJamatV3 (Antigravity CLI 1.5.14 workspace trust dialog screenshot 2026-11-22)",
+    "case": "antigravity-live-trust-dialog",
+    "capture": "workspace trust prompt shown before the composer box opens, with Yes/No options and ↑/↓ Navigate · enter Confirm footer",
+    "ported": "2026-11-22",
+    "identical": "sanitized workspace path only; prompt wording, options, and navigation/model footer preserved verbatim"
+  },
+  "recorded": {
+    "build": "agy CLI 1.5.14 (2026-11-22)",
+    "capturedAt": "2026-11-22T09:29:42.000Z",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "Do you trust the contents of this project?\r\n\r\nAntigravity CLI requires permission to read, edit, and execute files here.\r\n\r\n\u001b[94m> Yes, I trust this folder\u001b[0m\r\n  No, exit\r\n\r\n\u001b[90m↑/↓ Navigate · enter Confirm                                                                 \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "screenTail": "Do you trust the contents of this project?\n\nAntigravity CLI requires permission to read, edit, and execute files here.\n\n\u001b[94m> Yes, I trust this folder\u001b[0m\n  No, exit\n\n\u001b[90m↑/↓ Navigate · enter Confirm                                                                 \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "wideScreenTail": "Accessing workspace:\n\nQ:\\PROJECT\n\nDo you trust the contents of this project?\n\nAntigravity CLI requires permission to read, edit, and execute files here.\n\n\u001b[94m> Yes, I trust this folder\u001b[0m\n  No, exit\n\n\u001b[90m↑/↓ Navigate · enter Confirm                                                                 \u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "screenStyled": true
+  }
+}

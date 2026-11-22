@@ -45,6 +45,7 @@ import { HostLaunchLocator, type HostLaunchResult } from '../hostControl/hostLau
 import { HostTreeVersion } from '../hostControl/hostTreeVersion'
 import { CatalogView } from '../projectManager/catalogView'
 import { ClaudeTitleWriter } from '../projectManager/claudeTitleWriter'
+import { AntigravityStatusLine } from './launch/antigravityStatusLine'
 import { ClaudeStatusLine } from './launch/claudeStatusLine'
 import { CodexSessionFiles } from './launch/codexSessionFiles'
 import { RunTools } from './launch/runTools'
@@ -54,6 +55,7 @@ import type { PlatformSettingsValue } from '../projectSetup/projectSetup.types'
 import { ProjectSetupManager } from '../projectSetup/projectSetupManager'
 import { SetupFamilies } from '../projectSetup/setupFamilies'
 import type { RuntimeChannel } from '../shared/configIdentity.types'
+import { AntigravityConfigHome } from '../shared/antigravityConfigHome'
 import { ClaudeConfigHome } from '../shared/claudeConfigHome'
 import { ErrorText } from '../shared/errorText'
 import { OrchestratorPaths } from '../shared/orchestratorPaths'
@@ -172,6 +174,7 @@ import { SessionWorkingDirectory } from './sessionWorkingDirectory'
 import type { TerminalRefResolution, TerminalPort, TerminalSessionsFeed, TerminalRefChange, TerminalActivitySink } from './terminalPort'
 import { AgentComposerReader } from './workState/agentComposerReader'
 import { ScreenTail } from './workState/screenTail'
+import { AgentWorkInspectorAntigravity } from './workState/agentWorkInspectorAntigravity'
 import { WorkStateMonitor } from './workState/workStateMonitor'
 
 export { SessionNotifier, type NotifySource, type PendingNotify, type SessionNotifyPort } from './notifies/sessionNotifier'
@@ -180,6 +183,8 @@ export interface SessionManagerDeps {
   perf?: import('../perfMonitor/perfSpans').PerfSpans
   accounts?: import('./sessionAccounts').SessionAccountsPort
   rates?: () => readonly RateAccountState[]
+  /** A session's recovery after a usage limit, drawn by its tab; `limitRecoveryChanged` says when it moved. */
+  limitRecovery?: (sessionId: string) => import('../limitRecovery/limitRecoveryApi.types').SessionLimitRecoveryInfo | null
   skillRoots?: () => readonly string[]
   /** Passed straight to `HostController`: the directory `app-host` stands in, named by the client. */
   applicationRoot: string
@@ -307,6 +312,10 @@ export type SessionWorkingContextResult =
       } | null
     }
   }
+  | { ok: false; code: 'unknown-session'; detail: string }
+
+export type SessionCatalogProjectResult =
+  | { ok: true; value: string | null }
   | { ok: false; code: 'unknown-session'; detail: string }
 
 export type SessionTranscriptContextResult =
@@ -597,9 +606,24 @@ export class SessionManager {
     this.agreement = new CommandAgreement({
       trust: CommandTrustStore.load(OrchestratorPaths.setupTrustFile(deps.configIdentity, deps.channel), deps.onError),
     })
+    const antigravitySnapshotsDir = OrchestratorPaths.antigravityContextSnapshotsDirectory(
+      deps.configIdentity,
+      deps.channel,
+    )
     this.monitor = new WorkStateMonitor({
       client: this.client,
       agentOf: (runtimeSessionId) => this.agentOf(runtimeSessionId),
+      statusHintOf: async (runtimeSessionId, lastOutputAt, now) => {
+        const record = this.records?.get(runtimeSessionId)
+        const launchId = record?.agent?.agentId === 'antigravity' ? record.agent.identityLaunchId : undefined
+        if (!launchId) return null
+        const status = await AntigravityStatusLine.readSessionStatus(antigravitySnapshotsDir, runtimeSessionId, launchId)
+        if (status === null) return null
+        const fresh = now - status.updatedAt <= 30_000
+          || lastOutputAt === null
+          || status.updatedAt >= lastOutputAt - 2_000
+        return fresh ? AgentWorkInspectorAntigravity.fromStatusLine(status) : null
+      },
       onChanged: () => this.changed(),
     })
     this.runLines = new RunOutputLines({
@@ -939,6 +963,25 @@ export class SessionManager {
           },
       },
     }
+  }
+
+  /**
+   * The catalog project a session works in, null outside the catalog. A worktree session binds
+   * through its owner, so it answers the main copy, never its own checkout.
+   */
+  async catalogProject(sessionId: string): Promise<SessionCatalogProjectResult> {
+    await this.lifecycle()
+    const record = this.records?.get(sessionId)
+    if (!record)
+      return { ok: false, code: 'unknown-session', detail: `Session ${sessionId} does not exist` }
+    return { ok: true, value: SessionManager.projectPathOf(
+      this.catalog.read().bind(SessionWorkingDirectory.ofRecord(record), SessionManager.bindRootOf(record))) }
+  }
+
+  /** The catalog project a directory lies in, null outside the catalog. */
+  async catalogProjectOf(directory: string): Promise<string | null> {
+    await this.lifecycle()
+    return SessionManager.projectPathOf(this.catalog.read().bind(directory))
   }
 
   async setupPaths(sessionId: string, paths: readonly string[]): Promise<SessionsOpResult<string[]>> {
@@ -1408,9 +1451,14 @@ export class SessionManager {
     // The rate feed moves every few seconds while a session runs. A session shows only whether its
     // account is exhausted and the account's label, which an account rename or removal reports here.
     const exhausted = JSON.stringify((this.deps.rates?.() ?? []).map(rate => [rate.key, accountExhausted(rate),
-      this.deps.accounts?.labelOf?.(rate.key.agentId, rate.key.accountId) ?? null]))
+      rate.key.agentId === 'antigravity' ? null : this.deps.accounts?.labelOf?.(rate.key.agentId, rate.key.accountId) ?? null]))
     if (exhausted === this.exhaustedAccounts) return
     this.exhaustedAccounts = exhausted
+    if (this.records) this.changed()
+  }
+
+  /** A session's limit recovery moved: its countdown, queue place or outcome. */
+  limitRecoveryChanged(): void {
     if (this.records) this.changed()
   }
 
@@ -1426,7 +1474,8 @@ export class SessionManager {
           return { ok: false, code: 'invalid-spec', detail: 'This session cannot resume its conversation' }
         if ((record.agent.accountId ?? 'main') === accountId)
           return { ok: false, code: 'invalid-spec', detail: 'already on this account' }
-        if (!await this.deps.accounts?.usable?.(record.agent.agentId, accountId))
+        if (!(record.agent.agentId === 'claude' || record.agent.agentId === 'codex')
+          || !await this.deps.accounts?.usable?.(record.agent.agentId, accountId))
           return { ok: false, code: 'invalid-spec', detail: 'account not usable' }
         const at = Date.now()
         const written = await this.records!.update(sessionId, current => {
@@ -2486,6 +2535,14 @@ export class SessionManager {
         tools: this.tools,
         report: this.deps.onError,
       }),
+      antigravityStatusLine: new AntigravityStatusLine({
+        directory: OrchestratorPaths.antigravityStatusLineDirectory(this.deps.configIdentity, this.deps.channel),
+        snapshots: OrchestratorPaths.antigravityContextSnapshotsDirectory(this.deps.configIdentity, this.deps.channel),
+        identities: OrchestratorPaths.antigravityIdentitiesDirectory(this.deps.configIdentity, this.deps.channel),
+        antigravityHome: AntigravityConfigHome.resolve(),
+        tools: this.tools,
+        report: this.deps.onError,
+      }),
       tools: this.tools,
       claudeTitles: ClaudeTitleWriter.load({
         claudeHome: this.deps.claudeHome,
@@ -2806,8 +2863,14 @@ export class SessionManager {
         ...(accountExhausted(this.deps.rates?.().find(rate => rate.key.agentId === record.agent!.agentId
           && rate.key.accountId === (record.agent!.accountId ?? 'main'))) ? { accountExhausted: true } : {}),
         ...(record.agent.accountId && record.agent.accountId !== 'main'
-          ? { accountLabel: this.deps.accounts?.labelOf?.(record.agent.agentId, record.agent.accountId) ?? record.agent.accountId } : {}),
+          ? {
+            accountLabel: (record.agent.agentId === 'claude' || record.agent.agentId === 'codex'
+              ? this.deps.accounts?.labelOf?.(record.agent.agentId, record.agent.accountId)
+              : null) ?? record.agent.accountId,
+          } : {}),
       }
+    const limitRecovery = record.agent ? this.deps.limitRecovery?.(record.sessionId) ?? null : null
+    if (limitRecovery !== null) info.limitRecovery = limitRecovery
     if (record.account) info.account = { ...record.account }
     if (record.worktree) info.worktree = this.worktreeInfoOf(record, record.worktree)
     if (record.worktreeLifecycle) info.worktreeView = WorktreeLifecycle.viewOf(record)

@@ -1,4 +1,4 @@
-export type AgentMemoryAgentId = 'claude' | 'codex'
+export type AgentMemoryAgentId = 'claude' | 'codex' | 'antigravity'
 
 /** Whose memory: an agent and the project directory it ran in, and optionally one conversation of it. */
 export interface AgentMemoryQuery {

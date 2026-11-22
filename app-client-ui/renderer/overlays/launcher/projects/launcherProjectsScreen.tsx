@@ -291,8 +291,10 @@ function LastAgent(props: {
     return <span className="jamat-launcher__agent jamat-launcher__agent--claude">C</span>
   else if (agent === 'codex')
     return <span className="jamat-launcher__agent jamat-launcher__agent--codex">X</span>
+  else if (agent === 'antigravity')
+    return <span className="jamat-launcher__agent jamat-launcher__agent--antigravity">A</span>
   else
-    throw new Error(`Unknown agent: ${JSON.stringify(agent)}`)
+    throw new Error(`Unknown agent: ${JSON.stringify(agent satisfies never)}`)
 }
 
 class LauncherRows {

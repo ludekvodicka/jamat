@@ -27,6 +27,8 @@ export function FileToolsSidebar(props: {
   onOpenDocument(document: FileViewerDocument): void
   /** The terminal's Notes; absent in the FileViewer, which then draws exactly its three tabs. */
   notes?: React.ReactNode
+  /** The project todo list; absent in the FileViewer and for a remote terminal. */
+  todos?: React.ReactNode
 }): React.JSX.Element {
   return (
     <div className="file-tools">
@@ -65,6 +67,16 @@ export function FileToolsSidebar(props: {
             Notes
           </button>
         )}
+        {props.todos !== undefined && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={props.selected === 'todos'}
+            onClick={() => props.onSelect('todos')}
+          >
+            Todo
+          </button>
+        )}
       </div>
       <div className="file-tools-body">
         {(props.selected === 'workingTree' || props.selected === 'fileChanges') && (!props.changesPorts || !props.release)
@@ -92,6 +104,8 @@ export function FileToolsSidebar(props: {
             )
           : props.selected === 'notes'
             ? (props.notes ?? (() => { throw new Error('Notes selected without Notes content') })())
+          : props.selected === 'todos'
+            ? (props.todos ?? <p role="status">The project todo list is unavailable for this session.</p>)
             : (() => { throw new Error(`Unknown file tools tab: ${JSON.stringify(props.selected)}`) })()}
       </div>
     </div>

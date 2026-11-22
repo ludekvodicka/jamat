@@ -227,6 +227,44 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     })
   })
 
+  describe('todo items', () => {
+    it('keeps one todo item per tab and activates it again', () => {
+      const item = PanelSplitParams.todosItemOf('s1')
+      const first = PanelSplitParams.opened(PanelSplitParams.default(), item)
+      if (!first.ok) throw new Error(first.refusal)
+      const withFile = PanelSplitParams.opened(first.state, itemFixture('a.md'))
+      if (!withFile.ok) throw new Error(withFile.refusal)
+      const again = PanelSplitParams.opened(withFile.state, item)
+
+      expect(again).toMatchObject({ ok: true, state: { active: 'todos:s1' } })
+      expect(PanelSplitParams.opened(first.state, PanelSplitParams.todosItemOf('s2'))).toEqual({ ok: false,
+        refusal: 'The split already holds the todo list of another session.' })
+      expect(PanelSplitParams.closeRefusalOf(item, () => true)).toBeNull()
+    })
+
+    it('restores a stored todo item and drops a second one, a wrong key or one with a remote target', () => {
+      const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 's1' }
+      const restored = PanelSplitParams.of({ split: { items: [
+        { kind: 'todos', key: 'todos:s1', title: 'Todo', sessionId: 's1' },
+        { kind: 'todos', key: 'todos:s2', title: 'Todo', sessionId: 's2' },
+        { kind: 'todos', key: 'todos:other', title: 'Todo', sessionId: 's3' },
+      ], active: 'todos:s1' } })
+      const remote = PanelSplitParams.of({ target, split: { items: [{ kind: 'todos', key: 'todos:s1', title: 'Todo', sessionId: 's1', target }] } })
+
+      expect(restored.items).toEqual([PanelSplitParams.todosItemOf('s1')])
+      expect(remote.items).toEqual([])
+    })
+
+    it('offers only Close for the todo item', () => {
+      render(<PanelSplitStrip items={[PanelSplitParams.todosItemOf('s1')]} active="todos:s1" preview={null}
+        onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
+        onCopyId={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+      fireEvent.contextMenu(screen.getByRole('tab'))
+      const menu = screen.getByRole('menu', { name: 'Split tab actions' })
+      expect(Array.from(menu.querySelectorAll('[role="menuitem"]')).map((item) => item.textContent)).toEqual(['Close'])
+    })
+  })
+
   function sourceFixture(path: string): FileViewerDocumentSource {
     return { kind: 'workspace', sessionId: 's1', path }
   }
@@ -675,6 +713,23 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
       expect(atB.items).toEqual([{ ...itemFixture('a.md'), scrollTop: 120 }, { ...itemFixture('b.md'), scrollTop: 480 }])
       // A click on the tab in front moves nothing, so its reading is not a departure.
       expect(PanelSplitParams.activated(atB, 'key:b.md', { key: 'key:b.md', scrollTop: 10 }).items).toEqual(atB.items)
+    })
+
+    it('updates the active file reading offset in place and preserves it across plain reopens', () => {
+      const opened = PanelSplitParams.opened(PanelSplitParams.default(), { ...itemFixture('a.md'), location: { line: 12 } })
+      if (!opened.ok) throw new Error(opened.refusal)
+      const scrolled = PanelSplitParams.readingUpdated(opened.state, { key: 'key:a.md', scrollTop: 640 })
+      expect(scrolled.items).toEqual([{ ...itemFixture('a.md'), scrollTop: 640 }])
+      expect(PanelSplitParams.readingUpdated(scrolled, { key: 'key:a.md', scrollTop: 640 })).toBe(scrolled)
+      expect(PanelSplitParams.readingUpdated(scrolled, { key: 'key:other.md', scrollTop: 10 })).toBe(scrolled)
+
+      // A plain reopen (e.g. agent open-file) keeps the stored offset; a line target replaces it.
+      const reopened = PanelSplitParams.opened(scrolled, itemFixture('a.md'))
+      if (!reopened.ok) throw new Error(reopened.refusal)
+      expect(reopened.state.items).toEqual([{ ...itemFixture('a.md'), scrollTop: 640 }])
+      const targeted = PanelSplitParams.opened(scrolled, { ...itemFixture('a.md'), location: { line: 5 } })
+      if (!targeted.ok) throw new Error(targeted.refusal)
+      expect(targeted.state.items).toEqual([{ ...itemFixture('a.md'), location: { line: 5 } }])
     })
 
     it('goes Forward through every step Back took, each file where the reader left it', () => {

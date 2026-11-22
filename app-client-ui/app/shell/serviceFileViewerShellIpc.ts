@@ -6,6 +6,7 @@ type NativeViewer = { path: OrchestratorNativeApi['viewerPath']; imageDragPath: 
 import type { ServiceCaller } from '../shared/serviceTransport.types'
 import { ClipboardAccess } from '../shared/clipboardAccess'
 import { ErrorText } from '../../shared/errorText'
+import type { FileViewerDragExport } from '../fileViewer/fileViewerDragExport'
 import type { DocumentExport } from './documentExport'
 import { ElectronServiceIpcBase } from './electronServiceIpcBase'
 
@@ -14,23 +15,29 @@ export class ServiceFileViewerShellIpc extends ElectronServiceIpcBase<typeof Ser
     'fileViewer:copy-path': true,
     'fileViewer:export': true,
     'fileViewer:start-image-drag': true,
+    'fileViewer:start-resource-drag': true,
     'fileViewer:open-external': true,
   } as const
+  private static readonly resourceDragMillisecondsConst = 30_000
   private readonly viewer: NativeViewer
   private readonly ownerIdOf: (sender: WebContents) => string | null
   private readonly exporter: Pick<DocumentExport, 'write'>
+  private readonly drag: Pick<FileViewerDragExport, 'copy'>
 
-  constructor(viewer: NativeViewer, ownerIdOf: (sender: WebContents) => string | null, exporter: Pick<DocumentExport, 'write'>) {
+  constructor(viewer: NativeViewer, ownerIdOf: (sender: WebContents) => string | null, exporter: Pick<DocumentExport, 'write'>,
+    drag: Pick<FileViewerDragExport, 'copy'>) {
     super()
     this.viewer = viewer
     this.ownerIdOf = ownerIdOf
     this.exporter = exporter
+    this.drag = drag
   }
 
   initialize(): void {
     this.register('fileViewer:copy-path', (caller, documentId) => this.copyPath(caller, documentId))
     this.register('fileViewer:export', (caller, documentId, format, html) => this.exportDocument(caller, documentId, format, html))
     this.register('fileViewer:start-image-drag', (caller, documentId) => this.startImageDrag(caller, documentId))
+    this.register('fileViewer:start-resource-drag', (caller, resourceId) => this.startResourceDrag(caller, resourceId))
     this.register('fileViewer:open-external', (caller, url) => {
       this.ownerId(caller)
       return this.openExternal(url)
@@ -77,6 +84,21 @@ export class ServiceFileViewerShellIpc extends ElectronServiceIpcBase<typeof Ser
     if (!this.transport.isCurrent(caller) || sender.isDestroyed() || this.ownerIdOf(sender) !== ownerId || icon.isEmpty()) return false
     if (await this.viewer.imageDragPath(ownerId, documentId) !== path) return false
     if (!this.transport.isCurrent(caller) || sender.isDestroyed() || this.ownerIdOf(sender) !== ownerId) return false
+    sender.startDrag({ file: path, icon })
+    return true
+  }
+
+  /**
+   * The resource id is the grant the file protocol already serves to this renderer, so holding it is
+   * the permission; the drag export copies its bytes and refuses anything that is not a source image.
+   */
+  private async startResourceDrag(caller: ServiceCaller, resourceId: string): Promise<boolean> {
+    const ownerId = this.ownerId(caller)
+    const sender = this.sender(caller)
+    if (typeof resourceId !== 'string' || resourceId.length === 0) throw new Error('The dragged image has no resource id')
+    const path = await this.drag.copy(resourceId, AbortSignal.timeout(ServiceFileViewerShellIpc.resourceDragMillisecondsConst))
+    const icon = await app.getFileIcon(path, { size: 'normal' })
+    if (!this.transport.isCurrent(caller) || sender.isDestroyed() || this.ownerIdOf(sender) !== ownerId || icon.isEmpty()) return false
     sender.startDrag({ file: path, icon })
     return true
   }

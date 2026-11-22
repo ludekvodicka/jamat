@@ -34,7 +34,7 @@ export class HistoricSessionsOperations {
       kind: 'write',
       description: 'Erase one conversation from this computer: every Jamat record naming it, its Jamat files and the agent transcript and history.',
       input: z.strictObject({
-        agentId: z.enum(['claude', 'codex']),
+        agentId: z.enum(['claude', 'codex', 'antigravity']),
         nativeSessionId: RemoteControlZod.text(),
         projectPath: RemoteControlZod.text(4_096),
         createdAt: RemoteControlZod.integer(0, Number.MAX_SAFE_INTEGER),

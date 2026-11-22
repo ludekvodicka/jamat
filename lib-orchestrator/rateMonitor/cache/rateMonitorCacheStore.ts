@@ -80,7 +80,7 @@ export class RateMonitorCacheStore {
    */
   save(content: RateMonitorCacheContent): Promise<void> {
     const accounts: RateMonitorAccountCache[] = [...(content.accounts ?? [])]
-    for (const agentId of ['claude', 'codex'] as const) {
+    for (const agentId of ['claude', 'codex', 'antigravity'] as const) {
       const entry = content.providers[agentId]
       const attemptAt = content.attempts[agentId]
       if (entry !== undefined || attemptAt !== undefined)
@@ -126,7 +126,7 @@ export class RateMonitorCacheStore {
     for (const item of value) {
       const record = JsonShape.record(item)
       const key = JsonShape.record(record?.key)
-      if (!record || !key || (key.agentId !== 'claude' && key.agentId !== 'codex')
+      if (!record || !key || (key.agentId !== 'claude' && key.agentId !== 'codex' && key.agentId !== 'antigravity')
         || typeof key.accountId !== 'string' || key.accountId.length === 0) continue
       const entry = RateMonitorCacheStore.entryOf(record.entry) ?? undefined
       const attemptAt = JsonNumber.isFinite(record.attemptAt) ? record.attemptAt : undefined

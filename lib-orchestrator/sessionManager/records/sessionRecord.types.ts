@@ -67,7 +67,7 @@ export interface SessionRecordAgent {
    * status line relay, which reports the conversation Claude Code actually writes (UA1-J14-1).
    * Absent: minted before launch and never confirmed.
    */
-  nativeSessionIdSource?: 'provided' | 'codex-app-server' | 'claude-statusline'
+  nativeSessionIdSource?: 'provided' | 'codex-app-server' | 'claude-statusline' | 'antigravity-statusline'
   unverifiedNativeSessionId?: string
   identityLaunchId?: string
   identitySequence?: number

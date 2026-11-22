@@ -40,7 +40,11 @@ export function SnapinsSettingsTab(props: ConfigurationTabProps): React.JSX.Elem
   }
   const settings = state.buffer?.settings
   const dirty = SettingsCard.isModified(state, (a, b) => JSON.stringify(a.settings) === JSON.stringify(b.settings))
-  const agents: { id: SessionAgentId; label: string }[] = [{ id: 'claude', label: 'Claude' }, { id: 'codex', label: 'Codex' }]
+  const agents: { id: SessionAgentId; label: string }[] = [
+    { id: 'claude', label: 'Claude' },
+    { id: 'codex', label: 'Codex' },
+    { id: 'antigravity', label: 'Antigravity' },
+  ]
   return <div className="snapins-settings">
     {state.problem && <p role="alert" className="jamat-configuration__problem">{state.problem}</p>}
     {!settings && <p>Reading Snap-ins settings…</p>}

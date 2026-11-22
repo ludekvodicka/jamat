@@ -9,6 +9,7 @@ import type {
   ProviderHistoryMigrator,
   RelocationLeftoversWriter,
 } from '../providers/providerContract.types'
+import { AntigravityConfigHome } from '../../shared/antigravityConfigHome'
 import { ErrorText } from '../../shared/errorText'
 import { PathCompare } from '../../shared/pathCompare'
 import { type TreeRemove, TreeRemoval } from '../../shared/treeRemoval'
@@ -27,6 +28,7 @@ interface DeleteTargets {
   encodedDirectory: string | null
   claudeFiles: string[]
   codexFiles: string[]
+  antigravityFiles: string[]
 }
 
 interface PendingDelete {
@@ -40,6 +42,7 @@ interface PendingDelete {
 export interface ProjectDeletionDeps {
   claudeHome: string
   codexHome: string
+  antigravityHome?: string
   locator: ClaudeProjectsLocator
   migrators: readonly ProviderHistoryMigrator[]
   leftovers: RelocationLeftoversWriter
@@ -67,6 +70,7 @@ export class ProjectDeletion {
 
   private readonly claudeHome: string
   private readonly codexHome: string
+  private readonly antigravityHome: string
   private readonly locator: ClaudeProjectsLocator
   private readonly migrators: readonly ProviderHistoryMigrator[]
   private readonly leftovers: RelocationLeftoversWriter
@@ -79,6 +83,7 @@ export class ProjectDeletion {
   constructor(deps: ProjectDeletionDeps) {
     this.claudeHome = deps.claudeHome
     this.codexHome = deps.codexHome
+    this.antigravityHome = AntigravityConfigHome.resolve(deps.antigravityHome)
     this.locator = deps.locator
     this.migrators = deps.migrators
     this.leftovers = deps.leftovers
@@ -106,6 +111,9 @@ export class ProjectDeletion {
         transcriptFiles: targets.value.claudeFiles,
       },
       codex: { rolloutFiles: targets.value.codexFiles },
+      ...(targets.value.antigravityFiles.length > 0
+        ? { antigravity: { conversationFiles: targets.value.antigravityFiles } }
+        : {}),
     }
     this.pending.set(preview.token, {
       category,
@@ -219,11 +227,16 @@ export class ProjectDeletion {
     const encodedDirectory = await this.locator.resolveProjectDir(projectPath)
     const claudeRoot = join(this.claudeHome, ProjectDeletion.projectsDirectoryNameConst)
     const codexRoot = join(this.codexHome, ProjectDeletion.sessionsDirectoryNameConst)
+    const antigravityBrainRoot = AntigravityConfigHome.brainDirectory(this.antigravityHome)
+    const antigravityConversationsRoot = join(this.antigravityHome, 'conversations')
     // The provider paths are enumerated by the providers themselves, so this checks their answers
     // rather than trusting them: a store that moved or a link that points elsewhere stops the delete.
     const strayed = [encodedDirectory, ...files.claude]
       .find((path) => path !== null && !PathCompare.isInside(claudeRoot, path))
       ?? files.codex.find((path) => !PathCompare.isInside(codexRoot, path))
+      ?? files.antigravity.find((path) =>
+        !PathCompare.isInside(antigravityBrainRoot, path)
+        && !PathCompare.isInside(antigravityConversationsRoot, path))
     if (strayed !== undefined && strayed !== null)
       return {
         ok: false,
@@ -238,17 +251,19 @@ export class ProjectDeletion {
         encodedDirectory,
         claudeFiles: [...files.claude].sort(),
         codexFiles: [...files.codex].sort(),
+        antigravityFiles: [...files.antigravity].sort(),
       },
     }
   }
 
-  private async providerFiles(projectPath: string): Promise<{ claude: string[]; codex: string[] }> {
-    const files: { claude: string[]; codex: string[] } = { claude: [], codex: [] }
+  private async providerFiles(projectPath: string): Promise<{ claude: string[]; codex: string[]; antigravity: string[] }> {
+    const files: { claude: string[]; codex: string[]; antigravity: string[] } = { claude: [], codex: [], antigravity: [] }
     for (const migrator of this.migrators) {
       const enumerated = await migrator.enumerateProjectFiles(projectPath)
       if (migrator.agentId === 'claude') files.claude = enumerated
       else if (migrator.agentId === 'codex') files.codex = enumerated
-      else throw new Error(`Unknown provider: ${JSON.stringify(migrator.agentId)}`)
+      else if (migrator.agentId === 'antigravity') files.antigravity = enumerated
+      else throw new Error(`Unknown provider: ${JSON.stringify(migrator.agentId satisfies never)}`)
     }
     return files
   }
@@ -264,6 +279,7 @@ export class ProjectDeletion {
       targets.encodedDirectory === null ? null : PathCompare.comparable(targets.encodedDirectory),
       targets.claudeFiles.map(PathCompare.comparable),
       targets.codexFiles.map(PathCompare.comparable),
+      targets.antigravityFiles.map(PathCompare.comparable),
     ])
   }
 
@@ -310,7 +326,7 @@ export class ProjectDeletion {
     const order = [targets.projectPath, ...targets.claudeFiles]
     if (targets.encodedDirectory !== null)
       order.push(targets.encodedDirectory)
-    order.push(...targets.codexFiles)
+    order.push(...targets.codexFiles, ...targets.antigravityFiles)
     return order
   }
 

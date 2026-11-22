@@ -806,6 +806,25 @@ describe('lib-orchestrator/sessionManager/lifecycle/worktreeMergeFlow', () => {
       expect(marks).toEqual({ sessionId: 'resolve-1', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } })
     })
 
+    it('launches a one-shot new Antigravity resolver inside the worktree when an Antigravity session conflicts', async () => {
+      const it_ = await withResolver({
+        agent: { agentId: 'antigravity', launchMode: 'new', nativeSessionId: 'conv-agy-1' },
+      })
+
+      const refusal = refusalOf(await it_.flow.mergeSession('s1'))
+      expect(refusal.code).toBe('merge-conflict')
+      expect(refusal.detail).toMatch(/being resolved/)
+
+      expect(it_.launched).toHaveLength(1)
+      const { spec, marks } = it_.launched[0]
+      expect(spec.directory).toEqual({ mode: 'adHoc', path: worktreeConst })
+      expect(spec.agent?.agentId).toBe('antigravity')
+      expect(spec.agent?.mode).toBe('new')
+      expect(spec.agent?.forkParentId).toBeUndefined()
+      expect(spec.agent?.initialPrompt).toMatch(/Resolve every conflict/)
+      expect(marks).toEqual({ sessionId: 'resolve-1', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } })
+    })
+
     /** Write-ahead: a crash between the pointer and the launch reads as a resolver that is gone. */
     it('writes the pointer to the resolver before it launches it', async () => {
       const it_ = await withResolver()

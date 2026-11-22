@@ -1,5 +1,6 @@
 import { RemoteSidebarPorts } from './remoteSidebarPorts'
 import { localTerminalNotesPorts, type TerminalNotesPorts } from './notes/terminalNotesPorts'
+import { localProjectTodosPorts, type ProjectTodosPorts } from '../../projectTodos/projectTodosPorts'
 import type { SessionTranscriptReading } from '../../../../lib-orchestrator/sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import { RemoteCommitPanePorts } from '../../versioning/remoteCommitPanePorts'
 import type { RemoteTaskRequest, RemoteTaskListing, RemoteTaskValue } from '../../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
@@ -38,6 +39,8 @@ export interface SessionPathPorts {
 export interface SessionWorkspacePorts {
   openCommit(vcs: 'svn' | 'git', scopeRoot: string): Promise<string | null>
   notes: TerminalNotesPorts | null
+  /** Local only: the list lives in a file of this computer's project. */
+  todos: ProjectTodosPorts | null
   transcript?: () => Promise<IpcResult<SessionTranscriptReading>>
   listTasks?(): Promise<IpcResult<RemoteControlStepResult<RemoteTaskListing>>>
   share?(request: SessionViewOpenRequest): Promise<IpcResult<unknown>>
@@ -68,6 +71,7 @@ export class SessionWorkspaceProviders {
         return result.ok ? result.value.ok ? null : result.value.error.detail : result.error
       },
       notes: localTerminalNotesPorts,
+      todos: localProjectTodosPorts,
       transcript: async () => { const answer = await AppControl.value('sessions.transcript', { session: AppControl.sessionOf(target.sessionId) }); return answer.ok ? { ok: true, value: answer.value.reading } : answer },
       share: window.appClient.tabs?.openSharedItem ? (request) => window.appClient.tabs.openSharedItem(target.sessionId, request) : undefined,
       items: window.appClient.tabs?.sessionItems ? { read: (cursor) => window.appClient.tabs.sessionItems(target.sessionId, cursor),
@@ -94,6 +98,7 @@ export class SessionWorkspaceProviders {
 
 class RemoteSessionWorkspace implements SessionWorkspacePorts {
   private sidebar: RemoteSidebarPorts
+  readonly todos = null
   get notes(): TerminalNotesPorts | null { return this.endpoint()?.workspaceCapabilities?.includes('session-workspace.sidebar') ? this.sidebar.notes : null }
   transcript = (): Promise<IpcResult<SessionTranscriptReading>> => this.sidebar.transcript()
   private content: RemoteFileViewerPorts

@@ -94,12 +94,31 @@ var __pure = (() => {
     if (!modelId) return "unknown";
     const id = modelId.replace(/\[1m\]$/i, "");
     const m = id.match(/^claude-([a-z]+)-(\d+)-(\d+)/i);
-    if (!m) return modelId;
-    const family = m[1].charAt(0).toUpperCase() + m[1].slice(1);
-    return `${family} ${m[2]}.${m[3]}`;
+    if (m) {
+      const family = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+      return `${family} ${m[2]}.${m[3]}`;
+    }
+    if (/^gemini-/i.test(id)) {
+      const effortMatch = id.match(/-(low|medium|high|xhigh|max)$/i);
+      const base = effortMatch ? id.slice(0, -effortMatch[0].length) : id;
+      const formatted = base.split("-").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
+      return effortMatch
+        ? `${formatted} (${effortMatch[1].charAt(0).toUpperCase() + effortMatch[1].slice(1).toLowerCase()})`
+        : formatted;
+    }
+    if (/^gpt-oss-/i.test(id)) {
+      const effortMatch = id.match(/-(low|medium|high|xhigh|max)$/i);
+      const base = effortMatch ? id.slice(0, -effortMatch[0].length) : id;
+      const formatted = base.replace(/^gpt-oss-/i, "GPT-OSS ").toUpperCase();
+      return effortMatch
+        ? `${formatted} (${effortMatch[1].charAt(0).toUpperCase() + effortMatch[1].slice(1).toLowerCase()})`
+        : formatted;
+    }
+    return modelId;
   }
   function contextWindowFor(modelId) {
     if (/\[1m\]$/i.test(modelId)) return CONTEXT_1M;
+    if (/^gemini-/i.test(modelId)) return CONTEXT_1M;
     const fam = modelId.match(/^claude-([a-z]+)-/i)?.[1]?.toLowerCase();
     if (fam === "opus" || fam === "sonnet") return CONTEXT_1M;
     if (fam === "haiku") return CONTEXT_200K;

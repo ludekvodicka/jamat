@@ -9,6 +9,7 @@ import type { HostCallResult } from '../../hostClient/hostClient.types'
 import type { SessionRecordAgent } from '../records/sessionRecord.types'
 import type { SessionActivity, SessionActivityDetail } from '../sessionManagerApi.types'
 import type { AgentWorkFrame, AgentWorkHint, AgentWorkInspection } from './agentWorkInspector.types'
+import { AgentWorkInspectorAntigravity } from './agentWorkInspectorAntigravity'
 import { AgentWorkInspectorClaude } from './agentWorkInspectorClaude'
 import { AgentWorkInspectorCodex } from './agentWorkInspectorCodex'
 import { ScreenTail } from './screenTail'
@@ -28,6 +29,12 @@ export interface WorkStateMonitorDeps {
   client: HostRuntimeReader
   /** Null for a shell and for a runtime with no record: nothing classifies a plain terminal. */
   agentOf: (runtimeSessionId: string) => SessionRecordAgent['agentId'] | null
+  /** Optional live hint from an agent's own status channel (e.g. Antigravity statusLine). */
+  statusHintOf?: (
+    runtimeSessionId: string,
+    lastOutputAt: number | null,
+    now: number,
+  ) => Promise<AgentWorkInspection | null>
   onChanged: () => void
 }
 
@@ -162,10 +169,23 @@ export class WorkStateMonitor {
       seen.add(session.runtimeSessionId)
       if (!this.needsInspection(session, now)) {
         const previous = this.states.get(session.runtimeSessionId)
+        if (agentId === 'antigravity' && this.deps.statusHintOf !== undefined && previous !== undefined) {
+          const status = await this.deps.statusHintOf(session.runtimeSessionId, session.lastOutputAt, now)
+          if (this.stopped) return
+          if (status !== null) {
+            const next = AgentWorkInspectorAntigravity.isStatusLineInspection(previous.inspection)
+              ? status
+              : AgentWorkInspectorAntigravity.mergeStatusLine(previous.inspection, status)
+            if (next.hint !== previous.inspection.hint) {
+              changed = this.apply(session, next, agentId, now) || changed
+              continue
+            }
+          }
+        }
         if (previous !== undefined) previous.polledAt = now
         continue
       }
-      const inspection = await this.classify(listing.hostInstanceId, session, agentId)
+      const inspection = await this.classify(listing.hostInstanceId, session, agentId, now)
       // Checked after every await: `stop` can land in any of these gaps, and what it means is that
       // nothing more is written and nobody is told.
       if (this.stopped) return
@@ -198,6 +218,7 @@ export class WorkStateMonitor {
     hostInstanceId: string,
     session: RuntimeSessionInfo,
     agentId: SessionRecordAgent['agentId'],
+    now: number,
   ): Promise<AgentWorkInspection> {
     const inspected = await this.deps.client.runtimeInspect(
       {
@@ -212,8 +233,14 @@ export class WorkStateMonitor {
     )
     // A refused call or a runtime with no projection yet is an absence of evidence, and that is
     // exactly what `unknown` says. The settle rule below still decides on the age of the output.
-    if (!inspected.ok || inspected.value.projection === null) return WorkStateMonitor.noEvidenceConst
-    return WorkStateMonitor.inspect(agentId, ScreenTail.frameOf(inspected.value.projection))
+    const screen = !inspected.ok || inspected.value.projection === null
+      ? WorkStateMonitor.noEvidenceConst
+      : WorkStateMonitor.inspect(agentId, ScreenTail.frameOf(inspected.value.projection))
+    if (agentId === 'antigravity' && this.deps.statusHintOf !== undefined) {
+      const status = await this.deps.statusHintOf(session.runtimeSessionId, session.lastOutputAt, now)
+      return AgentWorkInspectorAntigravity.mergeStatusLine(screen, status)
+    }
+    return screen
   }
 
   private apply(
@@ -241,11 +268,11 @@ export class WorkStateMonitor {
     // replaces `Working` with its finished layout, so a currently sighted row is authoritative.
     if (inspection.hint === 'background' || inspection.hint === 'compacting') state.workingEvidenceAt = now
     else if (mapped === 'working') {
-      if (agentId === 'claude') state.workingEvidenceAt = session.lastOutputAt ?? now
+      if (agentId === 'claude' || agentId === 'antigravity') state.workingEvidenceAt = session.lastOutputAt ?? now
       // Codex's spinner title is read from the ring, which can outlive the turn: it ages by output.
       else if (agentId === 'codex')
         state.workingEvidenceAt = inspection.evidence.every((item) => item.source === 'raw') ? session.lastOutputAt ?? now : now
-      else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
     }
     else if (mapped === 'waiting') state.workingEvidenceAt = null
     state.activity = WorkStateMonitor.settle(
@@ -309,7 +336,7 @@ export class WorkStateMonitor {
     if (inspection.hint === 'background' || inspection.hint === 'compacting' || WorkStateMonitor.activityOf(inspection.hint) !== 'working')
       return inspection.hint
     let ages: boolean
-    if (agentId === 'claude') ages = true
+    if (agentId === 'claude' || agentId === 'antigravity') ages = true
     else if (agentId === 'codex') ages = inspection.evidence.every((item) => item.source === 'raw')
     else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
     return ages && now - (lastOutputAt ?? now) >= WorkStateMonitor.silenceMillisecondsConst ? 'idle' : inspection.hint
@@ -319,8 +346,9 @@ export class WorkStateMonitor {
   static inspect(agentId: SessionRecordAgent['agentId'], frame: AgentWorkFrame): AgentWorkInspection {
     if (agentId === 'claude') return AgentWorkInspectorClaude.inspect(frame)
     else if (agentId === 'codex') return AgentWorkInspectorCodex.inspect(frame)
+    else if (agentId === 'antigravity') return AgentWorkInspectorAntigravity.inspect(frame)
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /** A runtime that died or was removed leaves nothing behind: its activity is not news any more. */

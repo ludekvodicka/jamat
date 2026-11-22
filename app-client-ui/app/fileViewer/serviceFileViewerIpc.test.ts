@@ -43,6 +43,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   const isDestroyed = vi.fn(() => false)
   const sender = { startDrag, isDestroyed } as unknown as WebContents
   const imageDragPath = vi.fn<FileViewer['imageDragPath']>()
+  const dragCopy = vi.fn<(token: string, signal: AbortSignal) => Promise<string>>()
   const exported = vi.fn(async (source: string, format: 'html' | 'pdf', _html: string) => source.replace(/\.ts$/, `.${format}`))
   const icon = { isEmpty: () => false }
   const rejected = {} as WebContents
@@ -79,6 +80,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     electronMock.opened = []
     electronMock.getFileIcon.mockReset().mockResolvedValue(icon)
     imageDragPath.mockReset().mockResolvedValue('C:/work/picture.png')
+    dragCopy.mockReset().mockResolvedValue('C:/state/drag-exports/copy.png')
     startDrag.mockReset()
     isDestroyed.mockReset().mockReturnValue(false)
     calls = []
@@ -135,7 +137,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       },
     }), (value) => callerSource(value) === sender ? 'window-1' : null)).initialize()
     bindService(new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, value => value === sender ? 'window-1' : null,
-      { write: exported })).initialize()
+      { write: exported }, { copy: dragCopy })).initialize()
   })
 
   afterEach(async () => {
@@ -386,7 +388,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it('rejects every capability operation from an unknown workspace', async () => {
     const channels = Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst }) as
       (keyof AppClientUiIpcInvokeMap)[]
-    expect(channels.length).toBe(20)
+    expect(channels.length).toBe(21)
 
     for (const channel of channels)
       expect(await invoke(channel, rejected, 'https://example.test/a', 'second', true), channel)
@@ -397,6 +399,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     expect(electronMock.opened).toEqual([])
     expect(electronMock.copied).toEqual([])
     expect(imageDragPath).not.toHaveBeenCalled()
+    expect(dragCopy).not.toHaveBeenCalled()
     expect(startDrag).not.toHaveBeenCalled()
     expect(exported).not.toHaveBeenCalled()
   })
@@ -430,6 +433,37 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       return icon
     })
     expect(await invoke('fileViewer:start-image-drag', sender, 'document-1'))
+      .toEqual({ ok: true, value: false })
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('drags an image a document shows by copying its protocol resource to a drag export', async () => {
+    expect(await invoke('fileViewer:start-resource-drag', sender, 'resource-1'))
+      .toEqual({ ok: true, value: true })
+    expect(dragCopy).toHaveBeenCalledWith('resource-1', expect.any(AbortSignal))
+    expect(startDrag).toHaveBeenCalledWith({ file: 'C:/state/drag-exports/copy.png', icon })
+  })
+
+  it('refuses a resource drag from an unknown window before copying anything', async () => {
+    expect(await invoke('fileViewer:start-resource-drag', rejected, 'resource-1'))
+      .toEqual({ ok: false, error: 'File viewer request came from an unknown workspace' })
+    expect(dragCopy).not.toHaveBeenCalled()
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('reports why a resource could not be copied for dragging', async () => {
+    dragCopy.mockRejectedValue(new Error('Only source images can be dragged'))
+    expect(await invoke('fileViewer:start-resource-drag', sender, 'resource-1'))
+      .toEqual({ ok: false, error: 'Only source images can be dragged' })
+    expect(startDrag).not.toHaveBeenCalled()
+  })
+
+  it('does not start a resource drag after the window closes during the copy', async () => {
+    dragCopy.mockImplementationOnce(async () => {
+      isDestroyed.mockReturnValue(true)
+      return 'C:/state/drag-exports/copy.png'
+    })
+    expect(await invoke('fileViewer:start-resource-drag', sender, 'resource-1'))
       .toEqual({ ok: true, value: false })
     expect(startDrag).not.toHaveBeenCalled()
   })

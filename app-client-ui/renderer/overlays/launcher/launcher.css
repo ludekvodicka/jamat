@@ -169,6 +169,10 @@
   color: var(--color-ok);
   background: var(--color-surface-control-hover);
 }
+.jamat-launcher__agent--antigravity {
+  color: var(--color-accent);
+  background: var(--color-surface-control-hover);
+}
 .jamat-launcher__code {
   font-family: var(--font-mono);
   font-size: var(--fs-status);

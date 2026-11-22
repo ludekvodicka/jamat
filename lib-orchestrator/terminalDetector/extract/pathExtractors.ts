@@ -13,8 +13,8 @@ export class PathExtractors {
    */
   static of(agentId: TerminalDetectorAgentId | null): TerminalPathExtractor {
     if (agentId === null) return PathExtractors.baseConst
-    if (agentId === 'claude') return PathExtractors.baseConst
+    if (agentId === 'claude' || agentId === 'antigravity') return PathExtractors.baseConst
     if (agentId === 'codex') return PathExtractors.codexConst
-    throw new Error(`Unknown agent id: ${JSON.stringify(agentId)}`)
+    throw new Error(`Unknown agent id: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

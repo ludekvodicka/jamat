@@ -508,6 +508,8 @@ class TabsControllerHarness {
   clearOperation: (() => Promise<boolean>) | null = null
   transferLease: TabTransferLease | null = null
   transferCommitError: Error | null = null
+  /** Panels whose session has gone; a replaced preview of one of them may not come back. */
+  readonly gonePanelIds = new Set<string>()
   readonly controller: TabsController
 
   constructor(readonly dockview: FakeDockview) {
@@ -569,6 +571,7 @@ class TabsControllerHarness {
         this.moved.push({ panel, target })
         return Promise.resolve()
       },
+      mayReopen: (panel) => !this.gonePanelIds.has(panel.panelId),
       reportError: (message) => this.errors.push(message),
     })
     this.controller.attach(dockview.asApi())
@@ -1643,6 +1646,100 @@ describe('app-client-ui/renderer/widgets/tabs/tabsController', () => {
     await harness.controller.hidePanel('c')
 
     expect(harness.dockview.activated).toEqual(['b'])
+  })
+
+  describe('focus history', () => {
+    const terminal = (sessionId: string): { params: Record<string, unknown>; panelId: string } => {
+      const params = TerminalTargetCodec.params({ kind: 'local', sessionId })
+      return { params, panelId: TabsController.panelIdOf(PanelKeysConst.terminal, params) }
+    }
+
+    it('returns to the panel that was in front before the closed one, not to its neighbour', async () => {
+      const harness = TabsControllerHarness.fresh()
+      for (const id of ['a', 'b', 'c'])
+        await harness.controller.openPanel(PanelKeysConst.probe, id, {}, id)
+      harness.dockview.getPanel('a')?.api.setActive()
+      await harness.controller.openPanel(PanelKeysConst.probe, 'd', {}, 'd')
+
+      await harness.controller.hidePanel('d')
+
+      expect(harness.controller.activePanelId()).toBe('a')
+    })
+
+    it('reopens a preview that a newer preview replaced, in the closed panel\'s place and state', async () => {
+      const harness = TabsControllerHarness.fresh()
+      const a = terminal('a')
+      const b = terminal('b')
+      await harness.controller.openPanel(PanelKeysConst.probe, 'kept', {}, 'kept')
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'A', a.params, undefined, { preview: true })
+      harness.dockview.getPanel(a.panelId)?.api.updateParameters({ sidebar: { visible: true } })
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'B', b.params, undefined, { preview: true })
+      expect(harness.dockview.getPanel(a.panelId)).toBeUndefined()
+
+      await harness.controller.hidePanel(b.panelId, { silent: true })
+
+      expect(harness.controller.activePanelId()).toBe(a.panelId)
+      expect(harness.controller.isPreview(a.panelId)).toBe(true)
+      expect(harness.dockview.getPanel(a.panelId)?.params).toEqual({ ...a.params, sidebar: { visible: true } })
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual(['kept', a.panelId])
+    })
+
+    it('walks back through a chain of replaced previews', async () => {
+      const harness = TabsControllerHarness.fresh()
+      const [a, b, c] = [terminal('a'), terminal('b'), terminal('c')]
+      for (const [title, opened] of [['A', a], ['B', b], ['C', c]] as const)
+        await harness.controller.openPanel(PanelKeysConst.terminal, title, opened.params, undefined, { preview: true })
+
+      await harness.controller.hidePanel(c.panelId)
+      expect(harness.controller.activePanelId()).toBe(b.panelId)
+      await harness.controller.hidePanel(b.panelId)
+      expect(harness.controller.activePanelId()).toBe(a.panelId)
+    })
+
+    it('skips a replaced preview whose session has gone', async () => {
+      const harness = TabsControllerHarness.fresh()
+      const a = terminal('a')
+      const b = terminal('b')
+      await harness.controller.openPanel(PanelKeysConst.probe, 'kept', {}, 'kept')
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'A', a.params, undefined, { preview: true })
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'B', b.params, undefined, { preview: true })
+      harness.gonePanelIds.add(a.panelId)
+
+      await harness.controller.hidePanel(b.panelId, { silent: true })
+
+      expect(harness.dockview.getPanel(a.panelId)).toBeUndefined()
+      expect(harness.controller.activePanelId()).toBe('kept')
+    })
+
+    it('never brings back a tab someone closed', async () => {
+      const harness = TabsControllerHarness.fresh()
+      for (const id of ['a', 'b', 'c'])
+        await harness.controller.openPanel(PanelKeysConst.probe, id, {}, id)
+      harness.dockview.getPanel('a')?.api.setActive()
+      harness.dockview.getPanel('c')?.api.setActive()
+      await harness.controller.hidePanel('a')
+
+      await harness.controller.hidePanel('c')
+
+      expect(harness.dockview.getPanel('a')).toBeUndefined()
+      expect(harness.controller.activePanelId()).toBe('b')
+    })
+
+    it('reopens nothing when Close Others or Reset Layout empties the window', async () => {
+      const harness = TabsControllerHarness.fresh()
+      const a = terminal('a')
+      const b = terminal('b')
+      await harness.controller.openPanel(PanelKeysConst.probe, 'kept', {}, 'kept')
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'A', a.params, undefined, { preview: true })
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'B', b.params, undefined, { preview: true })
+
+      await harness.controller.closeOtherPanels('kept')
+      expect(harness.dockview.panels.map((panel) => panel.id)).toEqual(['kept'])
+
+      await harness.controller.openPanel(PanelKeysConst.terminal, 'B', b.params, undefined, { preview: true })
+      await harness.controller.resetLayout()
+      expect(harness.dockview.getPanel(a.panelId)).toBeUndefined()
+    })
   })
 
   it('restores the last parameters when a user closes and reopens a panel', async () => {

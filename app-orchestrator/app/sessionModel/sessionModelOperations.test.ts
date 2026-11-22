@@ -35,14 +35,20 @@ describe('app-client-ui/app/sessionModel/sessionModelOperations', () => {
     'agent-1': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: 'native-1', model: 'claude-opus-5[1m]' as string | null } },
     'shell-1': { kind: 'shell' as const, cwd: 'C:/work', agent: null },
     'agent-unlaunched': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'claude' as const, nativeSessionId: '', model: null as string | null } },
+    'agy-pending': { kind: 'agent' as const, cwd: 'C:/work', agent: { agentId: 'antigravity' as const, nativeSessionId: '', model: null as string | null } },
   }
   let reads: SessionModelContext[]
+  let pendingReads: { agentId: string; sessionId: string }[]
   let bench: RegistryBench
 
   function readerUnderTest(): SessionModelReader {
     return {
       read: (context: SessionModelContext) => {
         reads.push(context)
+        return Promise.resolve(readingConst)
+      },
+      readPending: (agentId: 'antigravity', sessionId: string) => {
+        pendingReads.push({ agentId, sessionId })
         return Promise.resolve(readingConst)
       },
     } as unknown as SessionModelReader
@@ -75,6 +81,7 @@ describe('app-client-ui/app/sessionModel/sessionModelOperations', () => {
   beforeEach(() => {
     bench = new RegistryBench()
     reads = []
+    pendingReads = []
     new SessionModelOperations(readerUnderTest(), sessionsUnderTest()).register(bench.registry)
   })
 
@@ -110,6 +117,13 @@ describe('app-client-ui/app/sessionModel/sessionModelOperations', () => {
       ok: true,
       value: { kind: 'none', reason: 'the agent session has no native session id yet' },
     })
+    expect(reads).toEqual([])
+    expect(pendingReads).toEqual([])
+  })
+
+  it('reads pending Antigravity statusLine snapshot before a native session id is assigned', async () => {
+    expect(await invoke('sessionModel:get', 'agy-pending')).toEqual({ ok: true, value: readingConst })
+    expect(pendingReads).toEqual([{ agentId: 'antigravity', sessionId: 'agy-pending' }])
     expect(reads).toEqual([])
   })
 

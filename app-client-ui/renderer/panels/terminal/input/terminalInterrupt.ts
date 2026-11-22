@@ -12,8 +12,8 @@ export class TerminalInterrupt {
   static sequenceOf(event: KeyboardEvent, agentId: TerminalAgentId | null): string | null {
     if (event.type !== 'keydown' || event.key !== 'Escape') return null
     if (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return null
-    if (agentId === null || agentId === 'claude') return null
+    if (agentId === null || agentId === 'claude' || agentId === 'antigravity') return null
     else if (agentId === 'codex') return TerminalInterrupt.codexSequenceConst
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

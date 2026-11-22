@@ -17,6 +17,8 @@ export class FileViewerProtocol {
         secure: true,
         supportFetchAPI: true,
         stream: true,
+        // Copying an image draws it on a canvas, and only a CORS load from this scheme leaves it readable.
+        corsEnabled: true,
       },
     }])
   }

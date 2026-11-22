@@ -202,6 +202,7 @@ command that starts with the words before it (`sessions --help`).
 | Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group ID` |
 | Read, write, clear the note | `sessions note <session selector>\|--self` reads; `--note TEXT` writes; `--clear` takes it away |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector>\|--self --path PATH`, `tabs focus\|close --panel-id ID` |
+| Project todo list | `todos list <session selector>\|--self\|--project DIR [--query TEXT] [--category NAME] [--color NAME] [--author USER] [--open\|--done]`; `todos add ... --title TEXT [--category NAME] [--comment TEXT] [--color NAME]`; `todos edit ... --id ID [--title] [--category] [--comment] [--color]`; colours `red orange amber green teal blue violet magenta`, `""` for none; `todos done\|reopen\|remove\|restore ... --id ID` (`restore` puts back a task removed through Jamat since it started); `todos open <session selector>\|--self [--sidebar]` (split item, or the File Tools tab with `--sidebar`). Operations `projectTodos.list\|apply\|open`; file `<project>/.aidocs/todolist.jsonl` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
 | Commit result | `commit status --commit-session-id UUID [--wait] [--timeout-ms N]` |
 | Cancel a commit review | `commit cancel --commit-session-id UUID` |
@@ -806,7 +807,9 @@ stay and resolve `--number` for you; `call` takes the body exactly as the schema
 is `{"kind":"sessionId","sessionId":"..."}` or `{"kind":"number","number":"014"}`.
 
 `events poll [--after N] [--wait-ms N]` reads the activity log: every successful write with its
-operation and caller (`operation.completed`), and every change of sessions, tabs and commit reviews. It
+operation and caller (`operation.completed`), every change of sessions, tabs and commit reviews, and
+every change of a project todo list (`projectTodos.changed`, `data.project`; a change of the file
+outside Jamat once the list was read since the client started). It
 waits at most `--wait-ms` (30000) for a first entry; pass the answer's `last` as the next `--after`.
 `truncated: true` means entries before the answer were dropped, so read the state again. `calls list`
 answers the latest 100 calls of every caller, the window's included, with outcome and duration.

@@ -22,11 +22,13 @@ export class SessionCommandRun {
     'session.newBeside',
     'session.newInClaude',
     'session.newInCodex',
+    'session.newInAntigravity',
     'session.fork',
     'session.resume',
     'session.restart',
     'session.compact',
     'session.showActions',
+    'session.showTodos',
     'session.finish',
     'session.commitSvn',
     'session.commitGit',
@@ -46,11 +48,13 @@ export class SessionCommandRun {
       case 'session.newBeside':
       case 'session.newInClaude':
       case 'session.newInCodex':
+      case 'session.newInAntigravity':
       case 'session.fork':
       case 'session.resume':
       case 'session.restart':
       case 'session.compact':
       case 'session.showActions':
+      case 'session.showTodos':
       case 'session.finish':
       case 'session.commitSvn':
       case 'session.commitGit':

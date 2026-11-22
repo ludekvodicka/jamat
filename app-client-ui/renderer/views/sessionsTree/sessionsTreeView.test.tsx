@@ -33,6 +33,7 @@ import { SessionDrag } from '../../sessions/sessionDrag'
 import { SessionsMarksStore } from '../../sessions/sessionsMarksStore'
 import { SessionTasksStore } from '../../sessions/sessionTasksStore'
 import { ActiveTerminalStore } from '../../shell/activeTerminalStore'
+import { ContextMenuReading } from '../../widgets/fixtures/contextMenuReading'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import { SessionNodeState } from './sessionNodeState'
@@ -804,13 +805,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     )].map((item) => item.querySelector('.jamat-context-menu__label')?.textContent ?? '')
   }
 
+  /** A row at the top level or inside a submenu, whose row is entered first. */
   function clickMenuItem(title: string): void {
-    const found = [...document.querySelectorAll('.jamat-tab-menu .jamat-context-menu__label')]
-      .find((label) => label.textContent === title)
-    if (!(found instanceof HTMLElement))
-      throw new Error(`The menu shows no item titled ${JSON.stringify(title)} in ${
-        JSON.stringify(menuTitles())}`)
-    fireEvent.click(found)
+    fireEvent.click(new ContextMenuReading('.jamat-tab-menu', ['Session Appearance', 'Groups']).itemTitled(title))
   }
 
   function chooseSessionMenuAction(container: HTMLElement, sessionId: string, title: string): void {
@@ -1934,7 +1931,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(onCloseTerminal).not.toHaveBeenCalled()
     expect(container.querySelector('.jamat-sessions__error')).toBeNull()
     fireEvent.contextMenu(rowOf(container, 's-svn'))
-    expect(screen.getByRole('menuitem', { name: 'Show session actions' })).toBeInTheDocument()
+    expect(new ContextMenuReading('.jamat-tab-menu').childrenOf('Show')).toContain('Session actions')
   })
 
   it('answers a never-started refusal to a stale Prepare with the dialog and leaves no notice behind', async () => {
@@ -3272,11 +3269,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.contextMenu(row)
     expect(document.querySelector('.jamat-tab-menu')).toBeTruthy()
 
-    const fork = [...document.querySelectorAll('.jamat-tab-menu .jamat-context-menu__label')]
-      .find((label) => label.textContent === 'Fork session')
-    if (!(fork instanceof HTMLElement))
-      throw new Error('The menu offers no fork')
-    fireEvent.click(fork)
+    fireEvent.click(new ContextMenuReading('.jamat-tab-menu', ['Session Appearance', 'Groups']).itemTitled('Fork session'))
 
     expect(execute.mock.calls).toEqual([['session.fork', { sessionId: 's-working' }]])
     expect(document.querySelector('.jamat-tab-menu')).toBeNull()

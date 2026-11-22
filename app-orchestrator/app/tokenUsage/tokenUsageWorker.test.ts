@@ -15,7 +15,7 @@ vi.mock('node:worker_threads', () => ({ Worker: class {
   on(event: string, handler: (...args: any[]) => void) { this.handlers[event] = handler }
   postMessage(value: unknown) { this.sent.push(value) }
 } }))
-const request: TokenUsageWorkerRequest = { kind: 'scan', cacheFile: 'fixture', configDir: 'fixture', claudeHome: 'fixture', codexHome: 'fixture', records: [], accounts: [], rescan: false }
+const request: TokenUsageWorkerRequest = { kind: 'scan', cacheFile: 'fixture', configDir: 'fixture', claudeHome: 'fixture', codexHome: 'fixture', antigravityHome: 'fixture', records: [], accounts: [], rescan: false }
 describe('TokenUsageWorker', () => {
   it('records one live worker sample per minute with unavailable loop fields and none after stop', async () => {
     vi.useFakeTimers()
@@ -26,7 +26,7 @@ describe('TokenUsageWorker', () => {
       const pending = worker.refresh()
       await vi.advanceTimersByTimeAsync(0)
       threads[0].handlers.message({ kind: 'ready' })
-      threads[0].handlers.message({ kind: 'result', buckets: [], accountLabels: {}, labels: {} })
+      threads[0].handlers.message({ kind: 'result', buckets: [], sessionBuckets: [], accountLabels: {}, labels: {}, sessionLabels: {} })
       await pending
       await vi.advanceTimersByTimeAsync(59_999)
       expect(sampled).not.toHaveBeenCalled()
@@ -45,7 +45,7 @@ describe('TokenUsageWorker', () => {
     await vi.waitFor(() => expect(threads).toHaveLength(1))
     threads[0].handlers.message({ kind: 'progress', progress: { running: true, completed: 1, total: 2, error: null, scannedAt: null } })
     expect(worker.snapshot().progress.completed).toBe(1)
-    threads[0].handlers.message({ kind: 'result', buckets: [], accountLabels: {}, labels: { a: 'A' } })
+    threads[0].handlers.message({ kind: 'result', buckets: [], sessionBuckets: [], accountLabels: {}, labels: { a: 'A' }, sessionLabels: {} })
     await one
     await worker.stop()
     expect(worker.snapshot().labels).toEqual({ a: 'A' })
@@ -75,7 +75,7 @@ describe('TokenUsageWorker', () => {
       expect(threads[0].sent).toEqual([])
       threads[0].handlers.message({ kind: 'ready' })
       expect(threads[0].sent).toEqual([request])
-      threads[0].handlers.message({ kind: 'result', buckets: [], accountLabels: {}, labels: { a: 'A' } })
+      threads[0].handlers.message({ kind: 'result', buckets: [], sessionBuckets: [], accountLabels: {}, labels: { a: 'A' }, sessionLabels: {} })
       await first
       const second = worker.refresh(true)
       await vi.advanceTimersByTimeAsync(0)
@@ -113,7 +113,7 @@ describe('TokenUsageWorker', () => {
       late(request)
       await vi.advanceTimersByTimeAsync(0)
       expect(threads).toHaveLength(1)
-      threads[0].handlers.message({ kind: 'result', buckets: [], accountLabels: {}, labels: {} })
+      threads[0].handlers.message({ kind: 'result', buckets: [], sessionBuckets: [], accountLabels: {}, labels: {}, sessionLabels: {} })
       await fresh
     } finally { await worker.stop(); vi.useRealTimers() }
   })

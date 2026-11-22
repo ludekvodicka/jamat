@@ -35,6 +35,7 @@ type MemoryTab = 'session' | 'global'
 const globalSourcesConst: readonly MemorySource[] = [
   { key: 'claude', label: 'Claude', target: { scope: 'user', agentId: 'claude' } },
   { key: 'codex', label: 'Codex', target: { scope: 'user', agentId: 'codex' } },
+  { key: 'antigravity', label: 'Antigravity', target: { scope: 'user', agentId: 'antigravity' } },
 ]
 
 /**
@@ -86,7 +87,7 @@ export function AgentMemoryDialog(props: {
       </div>
       {tab === 'session'
         ? session === null
-          ? <p className="jamat-agent-memory__empty">No local Claude or Codex session to show the memory of.</p>
+          ? <p className="jamat-agent-memory__empty">No local agent session to show the memory of.</p>
           : <MemoryBrowser key={`session:${session.key}`} sources={sessionSources} onBusy={setBusy} />
         : <MemoryBrowser key="global" sources={globalSourcesConst} onBusy={setBusy} />}
     </div>

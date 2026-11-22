@@ -575,8 +575,9 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
   ): Promise<SessionsOpResult | null> {
     const agent = record.agent
     const worktree = record.worktree
-    if (!this.launchResolve || !worktree || !agent?.nativeSessionId) return null
+    if (!this.launchResolve || !worktree || !agent) return null
     if (AgentPresets.headlessUnsupported(agent.agentId)) return null
+    if (agent.agentId === 'claude' && !agent.nativeSessionId) return null
 
     // The id is minted HERE and the pointer written BEFORE the launch, the same ordering
     // `createWithSetup` uses: a crash in between leaves a record naming a session that does not
@@ -590,16 +591,26 @@ export class WorktreeMergeFlow implements WorktreeFinisher {
     }))
       return WorktreeMergeFlow.latched()
 
+    // Claude forks the session's own conversation for full context; Antigravity CLI has no fork
+    // flag, so its headless resolver runs a fresh one-shot print turn inside the worktree.
+    const resolverAgent = agent.agentId === 'antigravity'
+      ? {
+        agentId: 'antigravity' as const,
+        mode: 'new' as const,
+        initialPrompt: WorktreeMergeFlow.promptOf(baseBranch, worktree.branch),
+      }
+      : {
+        agentId: agent.agentId,
+        mode: 'fork' as const,
+        forkParentId: agent.nativeSessionId,
+        initialPrompt: WorktreeMergeFlow.promptOf(baseBranch, worktree.branch),
+      }
+
     const created = await this.launchResolve(
       {
         kind: 'agent',
         directory: { mode: 'adHoc', path: worktree.worktreePath },
-        agent: {
-          agentId: agent.agentId,
-          mode: 'fork',
-          forkParentId: agent.nativeSessionId,
-          initialPrompt: WorktreeMergeFlow.promptOf(baseBranch, worktree.branch),
-        },
+        agent: resolverAgent,
         title: `Resolve merge ${worktree.branch}`,
       },
       {

@@ -1,7 +1,7 @@
-import type { AccountAgentId, AccountState } from '../../../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
+import type { AccountState } from '../../../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
 import { AppControl } from '../../../../ipc/appControl'
 
-export type AccountAction = { kind: 'add'; label: string; agentId: AccountAgentId } | { kind: 'login'; accountId: string }
+export type AccountAction = { kind: 'add'; label: string; agentId: 'claude' | 'codex' } | { kind: 'login'; accountId: string }
   | { kind: 'rename'; accountId: string; label: string } | { kind: 'enable'; accountId: string; enabled: boolean }
   | { kind: 'remove'; accountId: string }
 

@@ -1,5 +1,6 @@
 import type { ProviderTranscriptRef } from '../projectManager/providerTranscriptView'
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
+import { SessionModelSourceAntigravity } from './antigravity/sessionModelSourceAntigravity'
 import { SessionModelSourceClaude } from './claude/sessionModelSourceClaude'
 import { SessionModelSourceCodex } from './codex/sessionModelSourceCodex'
 import type {
@@ -22,6 +23,8 @@ export interface SessionModelReaderDeps {
   claudeHome?: string
   /** Where Jamat's Claude status line relay stores each session's context window. */
   claudeContextSnapshots?: string
+  /** Where Jamat's Antigravity status line relay stores each session's model and context window. */
+  antigravityContextSnapshots?: string
   sources?: readonly SessionModelSource[]
 }
 
@@ -43,7 +46,11 @@ export class SessionModelReader
       ?? new ProviderTranscriptView({ claudeHome: deps?.claudeHome })
     super((context) => transcripts.resolve(context))
     const sources = deps?.sources
-      ?? [new SessionModelSourceClaude(deps?.claudeHome, deps?.claudeContextSnapshots), new SessionModelSourceCodex()]
+      ?? [
+        new SessionModelSourceClaude(deps?.claudeHome, deps?.claudeContextSnapshots),
+        new SessionModelSourceCodex(),
+        new SessionModelSourceAntigravity(deps?.antigravityContextSnapshots),
+      ]
     this.sources = new Map(sources.map((source) => [source.agentId, source]))
   }
 
@@ -55,6 +62,14 @@ export class SessionModelReader
   async read(context: SessionModelContext): Promise<SessionModelReading> {
     this.sourceOf(context.agentId)
     return this.readTail(context)
+  }
+
+  /** Fallback for an interactive Antigravity session before its first conversation transcript exists. */
+  async readPending(agentId: SessionModelAgentId, sessionId: string): Promise<SessionModelReading> {
+    const source = this.sourceOf(agentId)
+    if (source instanceof SessionModelSourceAntigravity)
+      return source.readSessionSnapshot(sessionId)
+    return this.missing()
   }
 
   protected missing(): SessionModelReading {

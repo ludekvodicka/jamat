@@ -1,5 +1,6 @@
 import type { ProviderTranscriptRef } from '../projectManager/providerTranscriptView'
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
+import { SessionTranscriptSourceAntigravity } from './antigravity/sessionTranscriptSourceAntigravity'
 import { SessionTranscriptSourceClaude } from './claude/sessionTranscriptSourceClaude'
 import { SessionTranscriptSourceCodex } from './codex/sessionTranscriptSourceCodex'
 import type {
@@ -52,7 +53,11 @@ export class SessionTranscriptReader
       ?? new ProviderTranscriptView({ claudeHome: deps?.claudeHome })
     super((context) => transcripts.resolve(context))
     const sources = deps?.sources
-      ?? [new SessionTranscriptSourceClaude(), new SessionTranscriptSourceCodex()]
+      ?? [
+        new SessionTranscriptSourceClaude(),
+        new SessionTranscriptSourceCodex(),
+        new SessionTranscriptSourceAntigravity(),
+      ]
     this.sources = new Map(sources.map((source) => [source.agentId, source]))
   }
 

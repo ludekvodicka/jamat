@@ -111,7 +111,7 @@ export class RateHistoryStore {
   private static sampleOf(value: unknown): RateSample | null {
     const row = JsonShape.record(value)
     if (!row || typeof row.at !== 'number' || !Number.isFinite(row.at)
-      || (row.agentId !== 'claude' && row.agentId !== 'codex') || typeof row.accountId !== 'string'
+      || (row.agentId !== 'claude' && row.agentId !== 'codex' && row.agentId !== 'antigravity') || typeof row.accountId !== 'string'
       || (row.source !== 'poll' && row.source !== 'statusline' && row.source !== 'rollout') || !Array.isArray(row.windows)) return null
     const windows: RateWindow[] = []
     for (const value of row.windows) {

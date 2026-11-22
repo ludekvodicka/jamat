@@ -41,6 +41,10 @@ import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpen
 import { FileViewerPane } from '../../fileViewer/fileViewerPane'
 import type { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
 import { ContextCompactionPanel } from '../../contextCompaction/contextCompactionPanel'
+import { AppControl } from '../../ipc/appControl'
+import { LimitRecoveryPanel } from './limitRecovery/limitRecoveryPanel'
+import { LimitRecoveryText } from './limitRecovery/limitRecoveryText'
+import type { LimitRecoveryAction } from '../../../../lib-orchestrator/limitRecovery/limitRecoveryApi.types'
 import type { SessionCompact } from '../../contextCompaction/sessionCompact'
 import type { ContextCompactionController } from '../../contextCompaction/contextCompactionController'
 import type { FileViewerBaselineHint } from '../../fileViewer/fileViewerPanel.types'
@@ -77,6 +81,7 @@ import { TerminalContextMenu, TerminalMenuItems } from './menu/terminalContextMe
 import { TerminalClipboard } from './input/terminalClipboard'
 import { TerminalNotesPanel } from './notes/terminalNotesPanel'
 import { useTerminalNotes } from './notes/useTerminalNotes'
+import { ProjectTodosPanel } from '../../projectTodos/projectTodosPanel'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalHostInstance, useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
@@ -406,13 +411,15 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
 
   const openSplitItem = useCallback((item: PanelSplitItem, reading?: PanelSplitReading): string | null =>
     splitRef.current.open(item, true, reading), [])
+  const rememberSplitReading = useCallback((reading: PanelSplitReading): void =>
+    splitRef.current.rememberReading(reading), [])
   const openInSplit = useCallback((
     document: FileViewerDocument,
     baselineHint?: FileViewerBaselineHint,
     location?: FileViewerLocation,
   ): string | null => {
     const refusal = openSplitItem({ kind: 'file', key: document.documentKey, title: document.name, source: document.source,
-      ...(target.kind === 'remote' ? { target } : {}), baselineHint, location })
+      ...(target.kind === 'remote' ? { target } : {}), baselineHint, location }, splitReading())
     if (refusal === null && workspace.share) {
       const openId = crypto.randomUUID()
       try {
@@ -421,7 +428,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       } catch (error) { setMenuNote(String(error)) }
     }
     return refusal
-  }, [openSplitItem, targetKey, workspace])
+  }, [openSplitItem, splitReading, targetKey, workspace])
 
   const openSharedWorkflow = useCallback(() => {
     const refusal = splitRef.current.open(PanelSplitParams.workflowItemOf(sessionId, target))
@@ -433,6 +440,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
       void workspace.share({ openId, item: { kind: 'workflow' } }).then((answer) => { if (!answer.ok) setMenuNote(answer.error) })
     } catch (error) { setMenuNote(String(error)) }
   }, [sessionId, targetKey, workspace])
+
+  const todosPorts = workspace.todos
+  const openTodosInSplit = useCallback(() => {
+    setMenuNote(splitRef.current.open(PanelSplitParams.todosItemOf(sessionId)))
+  }, [sessionId])
 
   const workflowPorts = useMemo(() => ({ ...workspace.actions(setMenuNote, (document) => openInSplit(document)),
     tasks: taskPorts ?? undefined }), [workspace, openInSplit, taskPorts])
@@ -708,6 +720,10 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     return () => clearTimeout(timer)
   }, [state, hostInstance])
 
+  const actOnLimit = useCallback(async (action: LimitRecoveryAction): Promise<string | null> => {
+    const answer = await AppControl.value('sessions.limitRecovery', { sessionId, action })
+    return answer.ok ? null : answer.error
+  }, [sessionId])
   const note = TerminalPanelState.noteOf(state, outcome, life, info?.awaitsSetupApproval === true, info?.endedReason)
   const recovery = TerminalPanelState.recoveryOf(state, info, connectStalled)
   const terminal = (
@@ -731,6 +747,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
           compact={props.compact}
           controller={props.compaction}
         />
+      )}
+      {info?.limitRecovery !== undefined && LimitRecoveryText.drawable(info.limitRecovery) && (
+        <LimitRecoveryPanel info={info.limitRecovery} {...(target.kind === 'remote' ? {} : { act: actOnLimit })} />
       )}
       {recovery !== null && (
         <div className="jamat-terminal__interrupted">
@@ -826,7 +845,8 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         ? null
         : (<>
           {(activeItem.kind === 'file' && workspace.files === null || activeItem.kind === 'task' && workspace.tasks === null
-            || activeItem.kind === 'commit' && workspace.reviews === null) && <p role="status">This pane is unavailable for this session workspace.</p>}
+            || activeItem.kind === 'commit' && workspace.reviews === null || activeItem.kind === 'todos' && workspace.todos === null)
+            && <p role="status">This pane is unavailable for this session workspace.</p>}
           {activeItem.kind === 'file' && workspace.files !== null && <FileViewerPane ports={workspace.files}
             insertPrompt={localTools ? insertPrompt : undefined}
             key={`${activeItem.key}:${contentRevision}`}
@@ -839,6 +859,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onBack={() => stepSplit('back')}
             onClose={() => split.close(activeItem.key)}
             onOpenItem={openSplitItem}
+            onRememberReading={rememberSplitReading}
             onRefused={setMenuNote}
           />}
           {activeItem.kind === 'task' && taskPorts !== null && <TaskPane key={activeItem.key} ports={taskPorts} ref={attachFilePane} item={activeItem} visible={panelVisible} />}
@@ -849,8 +870,14 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
                 session={item.sessionId === sessionId ? actionInfo : null} sessions={actionSessions} unavailable={workspace.status() ?? actionState.error ?? (actionInfo === null ? 'Reading Session actions…' : null)} visible={panelVisible && item.key === activeItem.key} ports={workflowPorts}
                 onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)} onOpenSeparately={openCommitItem} />
             </div>)}
+          {/* Kept mounted behind other inner tabs, so the filter and an open task survive a switch. */}
+          {todosPorts !== null && split.state.items.filter((item) => item.kind === 'todos').map((item) =>
+            <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
+              <ProjectTodosPanel key={item.sessionId} sessionId={item.sessionId} ports={todosPorts} variant="pane"
+                ref={item.key === activeItem.key ? attachFilePane : undefined} />
+            </div>)}
           <div ref={commitPanes} className="commit-pane-slots">{split.state.items.map((item) => {
-            if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow') return null
+            if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow' || item.kind === 'todos') return null
             else if (item.kind === 'commit') return workspace.reviews === null ? null : <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
               <CommitPane ports={workspace.reviews} sessionId={sessionId} item={item} onClose={() => closeCommitItem(item.key)}
                 onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)}
@@ -901,6 +928,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
                 canPaste={writable}
                 canImport={writable && agentId !== null}
               />
+            ) : undefined}
+            todos={workspace.todos ? (
+              <ProjectTodosPanel key={sessionId} sessionId={sessionId} ports={workspace.todos} variant="sidebar" onOpenInSplit={openTodosInSplit} />
             ) : undefined}
           />
         </SidebarDock>

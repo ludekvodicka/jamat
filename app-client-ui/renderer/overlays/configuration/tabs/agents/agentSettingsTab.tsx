@@ -22,24 +22,32 @@ export function AgentSettingsTab(props: ConfigurationTabProps): React.JSX.Elemen
   dirtyChange.current = props.onDirtyChange
   const claudeId = useId()
   const codexId = useId()
+  const antigravityId = useId()
   const claudeModelId = useId()
   const codexModelId = useId()
-  // One list per agent: the two offer different models, and a shared id would give Codex
-  // Claude's suggestions.
+  const antigravityModelId = useId()
+  // One list per agent: each offers different models, and a shared id would mix suggestions.
   const claudeModelListId = useId()
   const codexModelListId = useId()
+  const antigravityModelListId = useId()
   const claudeEffortId = useId()
   const codexEffortId = useId()
+  const antigravityEffortId = useId()
   const claudeContextPanelId = useId()
   const codexContextPanelId = useId()
+  const antigravityContextPanelId = useId()
   const claudeAutoCompactId = useId()
   const codexAutoCompactId = useId()
+  const antigravityAutoCompactId = useId()
   const claudeAutoCompactEnabledId = useId()
   const codexAutoCompactEnabledId = useId()
+  const antigravityAutoCompactEnabledId = useId()
   const claudeTabId = useId()
   const codexTabId = useId()
+  const antigravityTabId = useId()
   const claudePanelId = useId()
   const codexPanelId = useId()
+  const antigravityPanelId = useId()
   const processPriorityId = useId()
   const [ports] = useState<AgentSettingsPorts>(() => {
     const self: AgentSettingsPorts = {
@@ -310,8 +318,26 @@ export function AgentSettingsTab(props: ConfigurationTabProps): React.JSX.Elemen
       effortRule: 'Codex refuses an effort level its model does not support.',
       specialNote: null,
     },
+    antigravity: {
+      agentId: 'antigravity' as const,
+      label: 'Antigravity',
+      tabId: antigravityTabId,
+      panelId: antigravityPanelId,
+      yoloId: antigravityId,
+      modelId: antigravityModelId,
+      modelListId: antigravityModelListId,
+      effortId: antigravityEffortId,
+      contextPanelId: antigravityContextPanelId,
+      autoCompactId: antigravityAutoCompactId,
+      autoCompactEnabledId: antigravityAutoCompactEnabledId,
+      value: values.antigravity,
+      contextCompaction: AgentSettings.contextCompactionFor(values, 'antigravity'),
+      modelSyntax: <>Antigravity takes any model id accepted by <code>agy --model</code> (see <code>agy models</code>).</>,
+      effortRule: 'The effort follows the model and reaches the same new sessions.',
+      specialNote: null,
+    },
   }
-  const providerTabs = [providers.claude, providers.codex]
+  const providerTabs = [providers.claude, providers.codex, providers.antigravity]
 
   return (
     <div className="jamat-configuration-agents">
@@ -406,7 +432,7 @@ export function AgentSettingsTab(props: ConfigurationTabProps): React.JSX.Elemen
         <div className="jamat-configuration-agents__row">
           <div className="jamat-configuration-agents__heading">
             <label htmlFor={processPriorityId}>Agent sessions and script runs</label>
-            <span>Applies to Claude, Codex and script runs, and to everything they start.</span>
+            <span>Applies to Claude, Codex, Antigravity and script runs, and to everything they start.</span>
           </div>
           <select
             id={processPriorityId}

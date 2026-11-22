@@ -8,7 +8,7 @@
  * that may ever travel is when that token expires.
  */
 
-export type RateAgentId = 'claude' | 'codex'
+export type RateAgentId = 'claude' | 'codex' | 'antigravity'
 
 export interface RateWindow {
   /** 300 is the session window, 10080 the weekly one. Windows are matched on this, never on position. */
@@ -64,7 +64,7 @@ export interface RatePool {
 
 export interface RateMonitorSnapshot {
   revision: number
-  providers: Readonly<Record<RateAgentId, RateProviderState>>
+  providers: Readonly<Record<'claude' | 'codex', RateProviderState> & Partial<Record<'antigravity', RateProviderState>>>
   /** Optional for snapshots from older clients. New monitors always provide both collections. */
   accounts?: readonly RateAccountState[]
   pools?: readonly RatePool[]
@@ -86,6 +86,6 @@ export interface RateProviderDebug {
 export interface RateMonitorDebugStatus {
   capturedAt: number
   poll: { windowVisible: boolean; cadenceMilliseconds: number; claudeFloorMilliseconds: number }
-  providers: Readonly<Record<RateAgentId, RateProviderDebug>>
+  providers: Readonly<Record<'claude' | 'codex', RateProviderDebug> & Partial<Record<'antigravity', RateProviderDebug>>>
   accounts?: readonly { key: RateAccountKey; label: string; provider: RateProviderDebug; source: RateSampleSource | null }[]
 }

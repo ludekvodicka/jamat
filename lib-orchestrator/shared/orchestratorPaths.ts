@@ -28,6 +28,9 @@ export class OrchestratorPaths {
   private static readonly claudeStatusLineNameConst = 'claude-statusline'
   private static readonly claudeContextSnapshotsNameConst = 'claude-context'
   private static readonly claudeIdentitiesNameConst = 'claude-identity'
+  private static readonly antigravityStatusLineNameConst = 'antigravity-statusline'
+  private static readonly antigravityContextSnapshotsNameConst = 'antigravity-context'
+  private static readonly antigravityIdentitiesNameConst = 'antigravity-identity'
   private static readonly pastedFilesNameConst = 'pasted-files'
   private static readonly codexSessionsNameConst = 'codex-sessions'
 
@@ -144,6 +147,11 @@ export class OrchestratorPaths {
     return join(OrchestratorPaths.directory(configIdentity, channel), 'account-callers')
   }
 
+  /** The token usage that account broker callers reported, one JSONL file per UTC month. */
+  static accountUsageDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), 'account-usage')
+  }
+
   /**
    * The rate limits both agents last reported. A cache and never a record: deleting it costs the next
    * client its first drawing of the widget and one read against an endpoint that counts them.
@@ -223,6 +231,21 @@ export class OrchestratorPaths {
   /** One receipt per Jamat session: the conversation its running Claude reported through the status line relay. */
   static claudeIdentitiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.claudeIdentitiesNameConst)
+  }
+
+  /** The status line relay Antigravity sessions are started with, and the `--settings` files naming it. */
+  static antigravityStatusLineDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.antigravityStatusLineNameConst)
+  }
+
+  /** `<antigravity conversation id>.json`: the model and context window Antigravity last handed its status line. */
+  static antigravityContextSnapshotsDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.antigravityContextSnapshotsNameConst)
+  }
+
+  /** One receipt per Jamat session: the conversation its running Antigravity reported through the status line relay. */
+  static antigravityIdentitiesDirectory(configIdentity: string, channel: RuntimeChannel): string {
+    return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.antigravityIdentitiesNameConst)
   }
 
   /** `<Jamat session id>/`: the launch files and identity receipts of the Codex bridge. */

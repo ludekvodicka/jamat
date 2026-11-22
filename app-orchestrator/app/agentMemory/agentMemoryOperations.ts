@@ -27,11 +27,11 @@ export class AgentMemoryOperations {
       z.strictObject({ sessionId: RemoteControlZod.text() }),
       z.strictObject({
         scope: z.literal('project').optional(),
-        agentId: z.enum(['claude', 'codex']),
+        agentId: z.enum(['claude', 'codex', 'antigravity']),
         projectPath: RemoteControlZod.text(4_096),
         nativeSessionId: RemoteControlZod.text().optional(),
       }),
-      z.strictObject({ scope: z.literal('user'), agentId: z.enum(['claude', 'codex']) }),
+      z.strictObject({ scope: z.literal('user'), agentId: z.enum(['claude', 'codex', 'antigravity']) }),
     ])
     const name = RemoteControlZod.text(1_024)
     const queryOf = (value: AgentMemoryTarget): AgentMemoryLocation | null =>

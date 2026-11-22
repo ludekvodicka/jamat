@@ -24,6 +24,10 @@ export function RateClaudeSection(): React.JSX.Element {
   return <RateDebugPage agentId="claude" />
 }
 
+export function RateAntigravitySection(): React.JSX.Element {
+  return <RateDebugPage agentId="antigravity" />
+}
+
 /**
  * One implementation behind the rate root and both provider nodes. The root draws shared poll
  * facts and every account; a child filters accounts by provider. Only the selected node is mounted, so

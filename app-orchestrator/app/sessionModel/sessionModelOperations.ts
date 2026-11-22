@@ -42,8 +42,20 @@ export class SessionModelOperations {
 
   private async get(sessionId: string): Promise<SessionModelReading> {
     const context = await AgentSessionContext.of(this.sessions, sessionId)
-    if (!context.ok) return { kind: 'none', reason: context.reason }
+    if (!context.ok) {
+      const raw = await this.sessions.transcriptContext(sessionId)
+      if (raw.ok && raw.value.agentId === 'antigravity') {
+        const pending = await this.reader.readPending('antigravity', sessionId)
+        if (pending.kind === 'ok') return pending
+      }
+      return { kind: 'none', reason: context.reason }
+    }
     const { agentId, cwd, nativeSessionId, launchModel } = context.value
-    return this.reader.read({ agentId, cwd, nativeSessionId, launchModel })
+    const reading = await this.reader.read({ agentId, cwd, nativeSessionId, launchModel })
+    if (reading.kind === 'none' && agentId === 'antigravity') {
+      const pending = await this.reader.readPending('antigravity', sessionId)
+      if (pending.kind === 'ok') return pending
+    }
+    return reading
   }
 }

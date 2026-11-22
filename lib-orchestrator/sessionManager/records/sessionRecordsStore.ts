@@ -1574,7 +1574,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
    */
   private static agentProblem(value: SessionRecord['agent']): string | null {
     if (!value || typeof value !== 'object') return 'an agent session needs an agent'
-    if (value.agentId !== 'claude' && value.agentId !== 'codex')
+    if (value.agentId !== 'claude' && value.agentId !== 'codex' && value.agentId !== 'antigravity')
       return `unknown agent ${JSON.stringify(value.agentId)}`
     if (value.accountId !== undefined && !SessionRecordsStore.isFilledString(value.accountId))
       return 'accountId must be a non-empty string'
@@ -1595,7 +1595,8 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (value.permission !== undefined && value.permission !== 'accept-edits' && value.permission !== 'merger')
       return `unknown agent permission ${JSON.stringify(value.permission)}`
     if (value.nativeSessionIdSource !== undefined && value.nativeSessionIdSource !== 'provided'
-      && value.nativeSessionIdSource !== 'codex-app-server' && value.nativeSessionIdSource !== 'claude-statusline')
+      && value.nativeSessionIdSource !== 'codex-app-server' && value.nativeSessionIdSource !== 'claude-statusline'
+      && value.nativeSessionIdSource !== 'antigravity-statusline')
       return 'unknown native identity source'
     for (const id of [value.identityLaunchId, value.unverifiedNativeSessionId])
       if (id !== undefined && !SessionRecordsStore.isFilledString(id)) return 'invalid identity metadata'

@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import { WorkerPerfSampler, type WorkerPerfSample } from '../perf/workerPerfSampler'
-import type { TokenBucket, TokenScanProgress } from '../../../lib-orchestrator/tokenUsage/tokenUsageApi.types'
+import type { TokenBucket, TokenScanProgress, TokenSessionBucket } from '../../../lib-orchestrator/tokenUsage/tokenUsageApi.types'
 import type { TokenUsageWorkerRequest, TokenUsageWorkerResponse } from './tokenUsageWorker.types'
 
 /**
@@ -27,8 +27,10 @@ export class TokenUsageWorker {
   private settle: (() => void) | null = null
   private termination: Promise<unknown> = Promise.resolve()
   private buckets: readonly TokenBucket[] = []
+  private sessionBuckets: readonly TokenSessionBucket[] = []
   private labels: Readonly<Record<string, string>> = {}
   private accountLabels: Readonly<Record<string, string>> = {}
+  private sessionLabels: Readonly<Record<string, string>> = {}
   private progress: TokenScanProgress = { running: false, completed: 0, total: 0, error: null, scannedAt: null }
 
   constructor(path: string, request: (rescan: boolean) => Promise<TokenUsageWorkerRequest>, changed: () => void,
@@ -40,7 +42,16 @@ export class TokenUsageWorker {
     this.perfSampler = null
   }
 
-  snapshot() { return { buckets: this.buckets, labels: this.labels, accountLabels: this.accountLabels, progress: this.progress } }
+  snapshot() {
+    return {
+      buckets: this.buckets,
+      sessionBuckets: this.sessionBuckets,
+      labels: this.labels,
+      accountLabels: this.accountLabels,
+      sessionLabels: this.sessionLabels,
+      progress: this.progress,
+    }
+  }
 
   start(): void {
     if (this.stopping || this.timer) return
@@ -115,8 +126,10 @@ export class TokenUsageWorker {
     else if (message.kind === 'result') {
       if (this.active === null) return
       this.buckets = message.buckets
+      this.sessionBuckets = message.sessionBuckets ?? []
       this.labels = message.labels
       this.accountLabels = message.accountLabels
+      this.sessionLabels = message.sessionLabels ?? {}
       this.finish(null)
     }
     else if (message.kind === 'error') { if (this.active !== null) this.finish(message.detail) }

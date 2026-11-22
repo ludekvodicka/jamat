@@ -59,6 +59,8 @@ export function LauncherCreateScreen(props: {
   const modelRefusal = CreateScreenModel.modelRefusal(state)
   const modelNote = CreateScreenModel.modelNoteOf(state)
   const accountOptions = CreateScreenModel.accountOptionsOf(state)
+  const types = CreateScreenModel.typesOf(state)
+  const typeShortcuts = CreateScreenModel.typeShortcutsOf(types)
 
   return (
     <div className="jamat-launcher-create">
@@ -96,7 +98,7 @@ export function LauncherCreateScreen(props: {
 
       <ChoiceRow label="Agent" current={state.field === 'agent'}>
         <div className="jamat-choice__cards">
-          {(existing ? ['claude', 'codex', 'all'] as const : ['claude', 'codex'] as const)
+          {(existing ? ['claude', 'codex', 'antigravity', 'all'] as const : ['claude', 'codex', 'antigravity'] as const)
             .map((agentId) => (
             <ChoiceCard
               key={agentId}
@@ -106,6 +108,7 @@ export function LauncherCreateScreen(props: {
               glyphClass={agentId === 'all'
                 ? 'jamat-choice__glyph'
                 : `jamat-launcher__agent jamat-launcher__agent--${agentId}`}
+              shortcut={agentId === 'all' ? '*' : null}
               chosen={existing
                 ? state.existingAgentFilter === agentId
                 : state.agentId === agentId}
@@ -125,12 +128,13 @@ export function LauncherCreateScreen(props: {
 
       <ChoiceRow label="Type" current={state.field === 'type'}>
         <div className="jamat-choice__cards">
-          {CreateScreenModel.typesOf(state).map((type, index) => (
+          {types.map((type, index) => (
             <ChoiceCard
               key={CreateTypes.keyOf(type)}
               title={CreateTypes.titleOf(type, remote)}
               note={CreateTypes.noteOf(type, remote)}
               glyph={CreateTypes.glyphOf(type)}
+              shortcut={typeShortcuts[index]}
               chosen={index === state.typeIndex}
               refusal={CreateScreenModel.typeRefusal(state, type)}
               onChoose={() => dispatch({ input: 'chooseType', index })}
@@ -149,6 +153,7 @@ export function LauncherCreateScreen(props: {
             title="None"
             note="runs in the project directory"
             glyph="—"
+            shortcut={CreateScreenModel.isolationShortcutOf(false)}
             chosen={!state.worktree}
             refusal={null}
             onChoose={() => dispatch({ input: 'chooseIsolation', worktree: false })}
@@ -157,6 +162,7 @@ export function LauncherCreateScreen(props: {
             title="Worktree"
             note="runs in its own worktree"
             glyph="◆"
+            shortcut={CreateScreenModel.isolationShortcutOf(true)}
             chosen={state.worktree}
             refusal={worktreeRefusal}
             onChoose={() => dispatch({ input: 'chooseIsolation', worktree: true })}
@@ -229,12 +235,13 @@ export function LauncherCreateScreen(props: {
       {accountOptions.length > 1 && (
         <ChoiceRow label="Account" current={state.field === 'account'}>
           <div className="jamat-choice__cards" role="group" aria-label="Account">
-            {accountOptions.map(account => (
+            {accountOptions.map((account, index) => (
               <ChoiceCard
                 key={account.accountId}
                 title={account.label}
                 note={CreateScreenModel.accountNoteOf(account)}
                 glyph={account.isMain ? '★' : '●'}
+                shortcut={CreateScreenModel.accountShortcutOf(index)}
                 chosen={account.accountId === state.accountId}
                 refusal={null}
                 onChoose={() => dispatch({ input: 'chooseAccount', accountId: account.accountId })}

@@ -36,3 +36,35 @@ it('attributes to the current launch and ignores an old account receipt after sw
   writeFileSync(join(root, 'session.json'), '{broken')
   expect(await reader.read()).toEqual([])
 })
+
+it('reads Antigravity statusLine quota receipts and preserves extras and raw payload', async () => {
+  const temp = resolve('../.aidocs/temp')
+  mkdirSync(temp, { recursive: true })
+  const root = mkdtempSync(join(temp, 'U8-agy-reader-'))
+  roots.push(root)
+  const quota = {
+    'gemini-5h': { remaining_fraction: 0.75, reset_in_seconds: 3_600 },
+    'gemini-weekly': { remaining_fraction: 0.9, reset_time: '2026-11-28T00:00:00Z' },
+  }
+  const at = Date.parse('2026-11-21T15:00:00.000Z')
+  writeFileSync(join(root, 'agy-session.json'), JSON.stringify({
+    schemaVersion: 1,
+    at,
+    launchId: 'launch-agy',
+    planTier: 'Pro',
+    antigravityQuota: quota,
+  }))
+  const reader = new StatusLineRateReader(root, (session, launch) =>
+    session === 'agy-session' && launch === 'launch-agy' ? { agentId: 'antigravity', accountId: 'main' } : null)
+  expect(await reader.read()).toEqual([{
+    key: { agentId: 'antigravity', accountId: 'main' },
+    at,
+    source: 'statusline',
+    windows: [
+      { durationMinutes: 300, usedPercent: 25, resetsAt: '2026-11-21T16:00:00.000Z' },
+      { durationMinutes: 10_080, usedPercent: 10, resetsAt: '2026-11-28T00:00:00.000Z' },
+    ],
+    extras: [{ label: 'Plan', detail: 'Pro' }],
+    raw: quota,
+  }])
+})

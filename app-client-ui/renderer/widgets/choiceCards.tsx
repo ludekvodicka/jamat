@@ -21,6 +21,7 @@ export function ChoiceCard(props: {
   note: string | null
   glyph: string
   glyphClass?: string
+  shortcut?: string | null
   chosen: boolean
   refusal: string | null
   danger?: boolean
@@ -37,7 +38,12 @@ export function ChoiceCard(props: {
       title={props.refusal ?? undefined}
       onClick={props.onChoose}
     >
-      <span className={props.glyphClass ?? 'jamat-choice__glyph'}>{props.glyph}</span>
+      <span className="jamat-choice__card-head">
+        <span className={props.glyphClass ?? 'jamat-choice__glyph'}>{props.glyph}</span>
+        {props.shortcut != null && (
+          <span className="jamat-choice__shortcut" aria-hidden="true">{props.shortcut}</span>
+        )}
+      </span>
       <span className="jamat-choice__card-title">{props.title}</span>
       {props.note !== null && (
         <span className="jamat-choice__card-note">{props.note}</span>

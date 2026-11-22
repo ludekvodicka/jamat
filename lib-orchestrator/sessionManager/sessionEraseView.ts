@@ -1,6 +1,7 @@
 import type { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import { CodexAppServerClient } from '../rateMonitor/codexAppServerView'
 import type { AgentHistoryEraser } from './purge/agentHistoryEraser.types'
+import { AntigravityHistoryEraser } from './purge/antigravityHistoryEraser'
 import { ClaudeHistoryEraser } from './purge/claudeHistoryEraser'
 import { CodexHistoryEraser } from './purge/codexHistoryEraser'
 import type { SessionAgentId } from './sessionManagerApi.types'
@@ -12,6 +13,8 @@ export class SessionEraseView {
     claudeHomes: () => readonly string[]
     /** The main Codex home; profiles share its sessions and databases. */
     codexHome: string
+    /** The Antigravity CLI home; defaults to `~/.gemini/antigravity-cli`. */
+    antigravityHome?: string
     /** Claude Code's temporary root: `CLAUDE_CODE_TMPDIR`, else the system one. */
     temporaryRoot: string
     transcripts: Pick<ProviderTranscriptView, 'subagentFiles'>
@@ -27,6 +30,7 @@ export class SessionEraseView {
         // not tied to the account that ran it, because profiles share the rollouts and databases.
         client: () => new CodexAppServerClient({ onNotification: () => undefined }),
       }),
+      antigravity: new AntigravityHistoryEraser({ home: options.antigravityHome }),
     }
   }
 }

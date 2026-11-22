@@ -1229,4 +1229,105 @@ describe('app-client-ui/renderer/overlays/launcher/create/createScreenModel', ()
         .toThrow(/Unknown launcher target/)
     })
   })
+
+  describe('dialog-wide keyboard shortcuts', () => {
+    it('gives every choice across all rows a unique key so shortcuts work from any row', () => {
+      const state = Run.numbered().on(
+        { input: 'accountsLoaded', remoteEndpointId: null, accounts: [mainAccount, secondAccount] },
+        { input: 'setField', field: 'agent' },
+      ).state
+
+      // Agent marks (C/X/A)
+      expect(CreateScreenModel.shortcutInputOf(state, 'c'))
+        .toEqual({ input: 'chooseAgent', agentId: 'claude' })
+      expect(CreateScreenModel.shortcutInputOf(state, 'X'))
+        .toEqual({ input: 'chooseAgent', agentId: 'codex' })
+      expect(CreateScreenModel.shortcutInputOf(state, 'a'))
+        .toEqual({ input: 'chooseAgent', agentId: 'antigravity' })
+
+      // Type letters (R/F/O/S) work directly while standing on Agent row — no ArrowDown needed.
+      expect(CreateScreenModel.typeShortcutsOf(CreateScreenModel.typesOf(state)))
+        .toEqual(['R', 'F', 'O', 'S'])
+      expect(CreateScreenModel.shortcutInputOf(state, 'r')).toEqual({ input: 'chooseType', index: 0 })
+      expect(CreateScreenModel.shortcutInputOf(state, 'f')).toEqual({ input: 'chooseType', index: 1 })
+      expect(CreateScreenModel.shortcutInputOf(state, 'o')).toEqual({ input: 'chooseType', index: 2 })
+      expect(CreateScreenModel.shortcutInputOf(state, 's')).toEqual({ input: 'chooseType', index: 3 })
+
+      // Isolation (0 = None, W = toggle Worktree) works from any row, including Czech Digit0.
+      expect(CreateScreenModel.shortcutInputOf(state, '0'))
+        .toEqual({ input: 'chooseIsolation', worktree: false })
+      expect(CreateScreenModel.shortcutInputOf(state, 'é', { code: 'Digit0', shiftKey: false }))
+        .toEqual({ input: 'chooseIsolation', worktree: false })
+      expect(CreateScreenModel.shortcutInputOf(state, 'w')).toEqual({ input: 'toggleWorktree' })
+
+      // Account (1..9) works from any row, including unshifted Czech top-row Digit1/Digit2.
+      expect(CreateScreenModel.shortcutInputOf(state, '1'))
+        .toEqual({ input: 'chooseAccount', accountId: 'main' })
+      expect(CreateScreenModel.shortcutInputOf(state, '2'))
+        .toEqual({ input: 'chooseAccount', accountId: 'second' })
+      expect(CreateScreenModel.shortcutInputOf(state, '+', { code: 'Digit1', shiftKey: false }))
+        .toEqual({ input: 'chooseAccount', accountId: 'main' })
+      expect(CreateScreenModel.shortcutInputOf(state, 'ě', { code: 'Digit2', shiftKey: false }))
+        .toEqual({ input: 'chooseAccount', accountId: 'second' })
+      expect(CreateScreenModel.shortcutInputOf(state, '3')).toBeNull()
+
+      // Name (N) works from any row.
+      expect(CreateScreenModel.shortcutInputOf(state, 'n')).toEqual({ input: 'nameFocus' })
+
+      // On a card opened on a session, Continue/Fork moves to index 0 and keeps O.
+      const forking = Run.forking().state
+      expect(CreateScreenModel.typeShortcutsOf(CreateScreenModel.typesOf(forking)))
+        .toEqual(['O', 'R', 'F', 'S'])
+      expect(CreateScreenModel.shortcutInputOf(forking, 'o')).toEqual({ input: 'chooseType', index: 0 })
+      expect(CreateScreenModel.shortcutInputOf(forking, 'r')).toEqual({ input: 'chooseType', index: 1 })
+    })
+
+    it('filters existing sessions by C/X/A and * from any row in Continue/Fork', () => {
+      const state = Run.existing().on({ input: 'setField', field: 'existingSessions' }).state
+
+      expect(CreateScreenModel.shortcutInputOf(state, 'c'))
+        .toEqual({ input: 'chooseExistingAgent', agentId: 'claude' })
+      expect(CreateScreenModel.shortcutInputOf(state, 'x'))
+        .toEqual({ input: 'chooseExistingAgent', agentId: 'codex' })
+      expect(CreateScreenModel.shortcutInputOf(state, 'a'))
+        .toEqual({ input: 'chooseExistingAgent', agentId: 'antigravity' })
+      expect(CreateScreenModel.shortcutInputOf(state, '*', { code: 'Digit8', shiftKey: true }))
+        .toEqual({ input: 'chooseExistingAgent', agentId: 'all' })
+      // Isolation 0 is ignored in Continue/Fork where Isolation is not shown.
+      expect(CreateScreenModel.shortcutInputOf(state, '0')).toBeNull()
+      // Switching back to Raw works directly with R.
+      expect(CreateScreenModel.shortcutInputOf(state, 'r')).toEqual({ input: 'chooseType', index: 0 })
+    })
+
+    it('does not select an account with 1..9 when no Account row is drawn', () => {
+      const singleAccount = Run.numbered().on(
+        { input: 'accountsLoaded', remoteEndpointId: null, accounts: [mainAccount] },
+        { input: 'setField', field: 'agent' },
+      ).state
+      expect(CreateScreenModel.shortcutInputOf(singleAccount, '1')).toBeNull()
+    })
+
+    it('picks remote models by D and 1..9 while keeping Account 1..9 when multiple accounts exist', () => {
+      const remoteNoAccounts = Run.described().on({ input: 'setField', field: 'agent' }).state
+      expect(CreateScreenModel.shortcutInputOf(remoteNoAccounts, 'd'))
+        .toEqual({ input: 'chooseModel', modelId: null })
+      expect(CreateScreenModel.shortcutInputOf(remoteNoAccounts, '1'))
+        .toEqual({ input: 'chooseModel', modelId: null })
+      expect(CreateScreenModel.shortcutInputOf(remoteNoAccounts, '2'))
+        .toEqual({ input: 'chooseModel', modelId: 'opus' })
+      expect(CreateScreenModel.shortcutInputOf(remoteNoAccounts, '3'))
+        .toEqual({ input: 'chooseModel', modelId: 'claude-fable-5' })
+      expect(CreateScreenModel.shortcutInputOf(remoteNoAccounts, '!', { code: 'Digit1', shiftKey: true }))
+        .toBeNull()
+
+      const remoteWithAccounts = Run.described().on(
+        { input: 'accountsLoaded', remoteEndpointId: 'endpoint-a', accounts: [mainAccount, secondAccount] },
+        { input: 'setField', field: 'agent' },
+      ).state
+      expect(CreateScreenModel.shortcutInputOf(remoteWithAccounts, '2'))
+        .toEqual({ input: 'chooseAccount', accountId: 'second' })
+      expect(CreateScreenModel.shortcutInputOf({ ...remoteWithAccounts, field: 'model' }, '2'))
+        .toEqual({ input: 'chooseModel', modelId: 'opus' })
+    })
+  })
 })

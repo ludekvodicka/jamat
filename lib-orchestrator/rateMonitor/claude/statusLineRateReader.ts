@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { JsonShape } from '../../shared/jsonShape'
+import { AntigravityQuotaMapper } from '../antigravity/antigravityQuotaMapper'
 import type { RateExternalReading } from '../rateMonitor'
 import type { RateAccountKey, RateWindow } from '../rateMonitorApi.types'
 
@@ -27,6 +28,13 @@ export class StatusLineRateReader {
           || typeof value.launchId !== 'string') continue
         const key = this.accountFor(file.slice(0, -5), value.launchId, value.at)
         if (key === null) continue
+        if (value.antigravityQuota !== undefined) {
+          const planTier = typeof value.planTier === 'string' ? value.planTier : null
+          const mapped = AntigravityQuotaMapper.map(value.antigravityQuota, value.at, planTier)
+          if (mapped.windows.length > 0)
+            readings.push({ key, at: value.at, windows: mapped.windows, extras: mapped.extras, raw: value.antigravityQuota, source: 'statusline' })
+          continue
+        }
         const windows = StatusLineRateReader.windowsOf(value.rateLimits)
         if (windows.length > 0) readings.push({ key, at: value.at, windows, source: 'statusline' })
       } catch { /* A relay can disappear between enumeration and read. */ }

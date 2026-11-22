@@ -839,4 +839,173 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     await context.observe()
     expect(context.calls.inspect).toHaveLength(1)
   })
+
+  it('holds an Antigravity permission prompt as waiting through silence and stale working statusLine ticks', async () => {
+    const permission = frameOf('antigravity-live-permission-prompt.json')
+    const working = frameOf('antigravity-live-working.json')
+    const idle = frameOf('antigravity-live-idle.json')
+    let statusHint: { hint: 'working' | 'idle' | 'blocked'; evidence: { source: 'screen'; signal: string; match: string }[] } | null = {
+      hint: 'working',
+      evidence: [{ source: 'screen', signal: 'statusLineWorking', match: 'working' }],
+    }
+    const runtime = {
+      runtimeSessionId: 'agy-1',
+      generation: 1,
+      alive: true,
+      cols: 120,
+      rows: 30,
+      outputSeq: 1,
+      outputEpoch: 1,
+      lastOutputAt: Date.now(),
+      startedAt: 0,
+    }
+    let screen = permission.wideScreenTail
+    let raw = permission.rawTail
+    let changes = 0
+    const monitor = new WorkStateMonitor({
+      client: {
+        runtimeInspect: async () => ({
+          ok: true,
+          value: {
+            session: { ...runtime },
+            projection: {
+              ...runtime,
+              raw,
+              screen,
+              cols: Math.max(120, ...screen.split(/\r?\n/).map((row) => row.length)),
+            },
+          },
+        }),
+      },
+      agentOf: () => 'antigravity',
+      statusHintOf: async () => statusHint,
+      onChanged: () => { changes += 1 },
+    })
+    const observe = () => monitor.observe({
+      sessions: [{ ...runtime }],
+      throughRevision: 1,
+      hostInstanceId: 'host-1',
+    })
+
+    // First look: screen shows permission prompt while statusLine still says working.
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('waiting')
+    expect(monitor.inspection('agy-1')?.hint).toBe('blocked')
+
+    // Silent polls with statusLine still saying working or going stale (null) must NOT overwrite waiting.
+    await vi.advanceTimersByTimeAsync(2_000)
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('waiting')
+
+    statusHint = null
+    await vi.advanceTimersByTimeAsync(60_000)
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('waiting')
+
+    // Focus/resize redraw while prompt is still open must stay waiting even without statusLine.
+    runtime.outputSeq += 1
+    runtime.lastOutputAt = Date.now()
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('waiting')
+
+    // Once approved and working resumes, transitions to working, then idle when done.
+    runtime.outputSeq += 1
+    runtime.lastOutputAt = Date.now()
+    screen = working.wideScreenTail
+    raw = working.rawTail
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('working')
+
+    runtime.outputSeq += 1
+    runtime.lastOutputAt = Date.now()
+    screen = idle.wideScreenTail
+    raw = idle.rawTail
+    await vi.advanceTimersByTimeAsync(15_000)
+    await observe()
+    expect(monitor.activity('agy-1')).toBe('idle')
+    expect(changes).toBe(3)
+  })
+
+  it('holds an Antigravity background task session green through silence even while statusLine reports idle', async () => {
+    const background = frameOf('antigravity-live-background-tasks.json')
+    const idle = frameOf('antigravity-live-idle.json')
+    const statusIdle = {
+      hint: 'idle' as const,
+      evidence: [{ source: 'screen' as const, signal: 'statusLineIdle', match: 'idle' }],
+    }
+    const runtime = {
+      runtimeSessionId: 'agy-bg',
+      generation: 1,
+      alive: true,
+      cols: 120,
+      rows: 30,
+      outputSeq: 1,
+      outputEpoch: 1,
+      lastOutputAt: Date.now(),
+      startedAt: 0,
+    }
+    let screen = background.wideScreenTail
+    let raw = background.rawTail
+    let inspectCalls = 0
+    let changes = 0
+    const monitor = new WorkStateMonitor({
+      client: {
+        runtimeInspect: async () => {
+          inspectCalls += 1
+          return {
+            ok: true,
+            value: {
+              session: { ...runtime },
+              projection: {
+                ...runtime,
+                raw,
+                screen,
+                cols: Math.max(120, ...screen.split(/\r?\n/).map((row) => row.length)),
+              },
+            },
+          }
+        },
+      },
+      agentOf: () => 'antigravity',
+      statusHintOf: async () => statusIdle,
+      onChanged: () => { changes += 1 },
+    })
+    const observe = () => monitor.observe({
+      sessions: [{ ...runtime }],
+      throughRevision: 1,
+      hostInstanceId: 'host-1',
+    })
+
+    await observe()
+    expect(monitor.activity('agy-bg')).toBe('working')
+    expect(monitor.activityDetail('agy-bg')).toBe('background')
+    expect(monitor.inspection('agy-bg')?.hint).toBe('background')
+    expect(WorkStateMonitor.agedHint('antigravity', background, Date.now() - 60_000, Date.now())).toBe('background')
+
+    // Silent polls between and across settle windows keep the row in background work.
+    for (let window = 0; window < 3; window += 1) {
+      await vi.advanceTimersByTimeAsync(2_000)
+      await observe()
+      expect(monitor.activity('agy-bg')).toBe('working')
+      expect(monitor.activityDetail('agy-bg')).toBe('background')
+      await vi.advanceTimersByTimeAsync(13_000)
+      await observe()
+      expect(monitor.activity('agy-bg')).toBe('working')
+      expect(monitor.activityDetail('agy-bg')).toBe('background')
+    }
+    expect(inspectCalls).toBe(4)
+    expect(changes).toBe(1)
+
+    // Once the background task finishes and the drawer/footer clears, the session settles to idle once.
+    runtime.outputSeq += 1
+    runtime.lastOutputAt = Date.now()
+    screen = idle.wideScreenTail
+    raw = idle.rawTail
+    await observe()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await observe()
+    expect(monitor.activity('agy-bg')).toBe('idle')
+    expect(monitor.activityDetail('agy-bg')).toBeNull()
+    expect(changes).toBe(2)
+  })
 })

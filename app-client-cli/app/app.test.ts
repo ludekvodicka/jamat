@@ -316,6 +316,10 @@ class FakeCliClient implements AppClientCliClientPort {
         operations: [
           { name: 'sessions.fork', kind: 'write', description: 'Fork.', inputSchema: { type: 'object' } },
           { name: 'uiSettings.get', kind: 'read', description: 'Read.', inputSchema: { type: 'object' } },
+          { name: 'projectTodos.list', kind: 'read', description: 'List.', inputSchema: { type: 'object' } },
+          { name: 'projectTodos.apply', kind: 'write', description: 'Apply.', inputSchema: { type: 'object' } },
+          { name: 'projectTodos.open', kind: 'write', description: 'Open.', inputSchema: { type: 'object' } },
+          { name: 'projectTodos.restore', kind: 'write', description: 'Restore.', inputSchema: { type: 'object' } },
         ],
       }
     if (operation === 'sessions.list')
@@ -422,6 +426,7 @@ class CliHarness {
   nextRequestId = 0
   discoveryError: RemoteControlError | null = null
   jsonInput: unknown = {}
+  stdinInput = ''
   readonly descriptor: RemoteControlDescriptor = {
     schemaVersion: 1,
     protocol: RemoteControlConst.protocol,
@@ -473,6 +478,7 @@ class CliHarness {
       requestId: () => `request-${++this.nextRequestId}`,
       write: (value) => this.output.push(value),
       readJson: () => this.jsonInput,
+      readStdin: () => this.stdinInput,
       now: Date.now,
       pause: async () => {},
       ...(signal === undefined ? {} : { signal }),
@@ -908,6 +914,53 @@ describe('app-client-cli/app/app', () => {
     expect(await new AppClientCli(['call', '--operation', 'notes.erase'], harness.deps()).run()).toBe(3)
     expect(await new AppClientCli(['call', '--operation', 'uiSettings.get', '--body', '{nope'], harness.deps()).run()).toBe(2)
     expect(await new AppClientCli(['call', '--operation', 'x.y', '--body', '{}', '--body-file', 'b.json'], harness.deps()).run()).toBe(2)
+  })
+
+  it('drives the project todo list through its operations, by session or by project directory', async () => {
+    const harness = new CliHarness()
+    const run = async (argv: string[]) => {
+      expect(await new AppClientCli(argv, harness.deps()).run()).toBe(0)
+      return harness.client.requests.at(-1)
+    }
+    const session = { kind: 'sessionId', sessionId: 'session-001' }
+
+    expect(await run(['todos', 'list', '--session-id', 'session-001', '--query', 'sidebar', '--author', 'eva', '--open']))
+      .toMatchObject({ operation: 'projectTodos.list', body: { session, filter: { text: 'sidebar', author: 'eva', done: false } } })
+    const listed = await run(['todos', 'list', '--project', 'docs'])
+    expect(listed).toMatchObject({ body: { project: resolve('Q:/Apps/One', 'docs') } })
+    expect(listed).not.toHaveProperty('operationId')
+    expect(await run(['todos', 'add', '--number', '014', '--title', 'New task', '--category', 'ui']))
+      .toMatchObject({ operation: 'projectTodos.apply', operationId: expect.any(String),
+        body: { session: { kind: 'number', number: '014' }, operation: { kind: 'add', title: 'New task', category: 'ui' } } })
+    expect(await run(['todos', 'edit', '--session-id', 'session-001', '--id', 'a1', '--comment', 'two\nlines']))
+      .toMatchObject({ body: { operation: { kind: 'edit', id: 'a1', comment: 'two\nlines' } } })
+    expect((await run(['todos', 'edit', '--session-id', 'session-001', '--id', 'a1', '--title', 'T']))?.body)
+      .toEqual({ session, operation: { kind: 'edit', id: 'a1', title: 'T' } })
+    expect((await run(['todos', 'edit', '--session-id', 'session-001', '--id', 'a1', '--color', 'red']))?.body)
+      .toEqual({ session, operation: { kind: 'edit', id: 'a1', color: 'red' } })
+    expect(await run(['todos', 'add', '--session-id', 'session-001', '--title', 'Hue', '--color', 'teal']))
+      .toMatchObject({ body: { operation: { kind: 'add', title: 'Hue', color: 'teal' } } })
+    expect(await run(['todos', 'list', '--session-id', 'session-001', '--color', '']))
+      .toMatchObject({ body: { filter: { color: '' } } })
+    expect(await run(['todos', 'done', '--session-id', 'session-001', '--id', 'a1'])).toMatchObject({ body: { operation: { kind: 'toggle', id: 'a1', done: true } } })
+    expect(await run(['todos', 'reopen', '--session-id', 'session-001', '--id', 'a1'])).toMatchObject({ body: { operation: { kind: 'toggle', id: 'a1', done: false } } })
+    expect(await run(['todos', 'remove', '--session-id', 'session-001', '--id', 'a1'])).toMatchObject({ body: { operation: { kind: 'remove', id: 'a1' } } })
+    expect((await run(['todos', 'open', '--session-id', 'session-001']))?.body).toEqual({ session })
+    expect(await run(['todos', 'open', '--session-id', 'session-001', '--sidebar'])).toMatchObject({ operation: 'projectTodos.open', body: { view: 'sidebar' } })
+    expect(await run(['todos', 'restore', '--session-id', 'session-001', '--id', 'a1']))
+      .toMatchObject({ operation: 'projectTodos.restore', operationId: expect.any(String), body: { session, id: 'a1' } })
+  })
+
+  it('refuses a todos command that names two lists or nothing to change', async () => {
+    const harness = new CliHarness()
+    for (const argv of [
+      ['todos', 'list', '--session-id', 'session-001', '--project', '.'],
+      ['todos', 'list', '--session-id', 'session-001', '--open', '--done'],
+      ['todos', 'edit', '--session-id', 'session-001', '--id', 'a1'],
+      ['todos', 'add', '--session-id', 'session-001'],
+      ['todos', 'open', '--project', '.'],
+    ]) expect(await new AppClientCli(argv, harness.deps()).run()).toBe(2)
+    expect(harness.client.requests.filter((request) => String(request.operation).startsWith('projectTodos.'))).toEqual([])
   })
 
   it('refuses the registry commands before HTTP on a Jamat that predates them', async () => {
@@ -2636,6 +2689,71 @@ describe('accounts pick', () => {
     const { h, deps } = pickHarness(answered(chosen))
     expect(await new AppClientCli(['accounts', '--help'], deps).run()).toBe(0)
     expect(h.parsedOutput()).toMatchObject({ value: { commands: expect.arrayContaining([
-      { command: 'accounts pick', options: ['--caller', '--purpose'], flags: [] }]) } })
+      { command: 'accounts pick', options: ['--caller', '--purpose'], flags: [] },
+      { command: 'accounts report', options: ['--caller', '--purpose', '--account'], flags: [] }]) } })
+  })
+})
+
+describe('accounts report', () => {
+  const reportArgs = ['accounts', 'report', '--caller', 'indexer', '--purpose', 'background', '--account', 'mhc-claude-1fbcc96f']
+  const result = JSON.stringify({ type: 'result', result: 'summary', modelUsage: {
+    'claude-opus-5-5': { inputTokens: 2, outputTokens: 4, cacheReadInputTokens: 649, cacheCreationInputTokens: 3_249, costUSD: 0.1 } } })
+  type Respond = (request: RemoteControlRequestUnion, signal?: AbortSignal) => Promise<RemoteControlResponse>
+  const reportHarness = (respond: Respond, stdin = result) => {
+    const h = new CliHarness()
+    h.descriptor.registryOperations = ['accounts.report']
+    h.stdinInput = stdin
+    const requests: RemoteControlRequestUnion[] = []
+    const client = { execute: (request: RemoteControlRequestUnion, signal?: AbortSignal) => { requests.push(request); return respond(request, signal) } }
+    const pause = (_milliseconds: number, signal?: AbortSignal) =>
+      new Promise<void>((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    return { h, requests, deps: { ...h.deps(), pause, client: () => client as unknown as AppClientCliClientPort } }
+  }
+  const recorded: Respond = async request => ({ protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
+    operationId: request.operationId ?? null, ok: true, value: { recorded: true } } as unknown as RemoteControlResponse)
+
+  it('sends the per-model counters of the result on stdin and prints that the run was recorded', async () => {
+    const { h, requests, deps } = reportHarness(recorded)
+    expect(await new AppClientCli(reportArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: { recorded: true } })
+    expect(requests).toEqual([{ protocol: RemoteControlConst.protocol, requestId: 'request-1', operationId: 'operation-1', operation: 'accounts.report',
+      body: { caller: 'indexer', purpose: 'background', accountId: 'mhc-claude-1fbcc96f',
+        models: { 'claude-opus-5-5': { input: 2, output: 4, cacheRead: 649, cacheWrite: 3_249 } } } }])
+  })
+
+  it.each([
+    ['discovery finds no instance', (h: CliHarness) => { h.discoveryError = { code: 'unavailable', detail: 'x' } }, 'jamat-unavailable'],
+    ['the instance does not list the operation', (h: CliHarness) => { delete h.descriptor.registryOperations }, 'unsupported'],
+  ] as const)('prints recorded false with exit 0 when %s', async (_name, arrange, reason) => {
+    const { h, requests, deps } = reportHarness(recorded)
+    arrange(h)
+    expect(await new AppClientCli(reportArgs, deps).run()).toBe(0)
+    expect(h.parsedOutput()).toEqual({ ok: true, value: { recorded: false, reason } })
+    expect(requests).toEqual([])
+  })
+
+  it('prints recorded false for a refusal and for the deadline, and aborts the request', async () => {
+    const refusal = reportHarness(async request => ({ protocol: RemoteControlConst.protocol, requestId: request.requestId, operation: request.operation,
+      operationId: request.operationId ?? null, ok: false, error: { code: 'operation-failed', detail: 'disk full' } }))
+    expect(await new AppClientCli(reportArgs, refusal.deps).run()).toBe(0)
+    expect(refusal.h.parsedOutput()).toEqual({ ok: true, value: { recorded: false, reason: 'error' } })
+    let seen: AbortSignal | undefined
+    const slow = reportHarness((_request, signal) => { seen = signal; return new Promise(() => {}) })
+    expect(await new AppClientCli(reportArgs, { ...slow.deps, pause: async () => {} }).run()).toBe(0)
+    expect(slow.h.parsedOutput()).toEqual({ ok: true, value: { recorded: false, reason: 'timeout' } })
+    expect(seen?.aborted).toBe(true)
+  })
+
+  it.each([
+    [reportArgs.slice(0, -2), result],
+    [[...reportArgs.slice(0, -1), 'a b'], result],
+    [reportArgs, 'not json'],
+    [reportArgs, JSON.stringify({ type: 'result', modelUsage: {} })],
+    [reportArgs, JSON.stringify({ type: 'result', is_error: true })],
+  ])('exits 2 with invalid-request before discovery: %j', async (argv, stdin) => {
+    const { h, deps } = reportHarness(recorded, stdin)
+    expect(await new AppClientCli(argv, deps).run()).toBe(2)
+    expect(h.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(h.discoveries).toBe(0)
   })
 })

@@ -16,11 +16,23 @@ describe('TokensSection', () => {
     read.mockResolvedValue({ ok: true, value: { rows: [], progress: { running: false, completed: 2, total: 2, error: null, scannedAt: 1 } } })
     render(<TokensSection />)
     expect(await screen.findByText('No usage in this period')).toBeTruthy()
-    expect(read).toHaveBeenCalledTimes(4)
+    expect(read).toHaveBeenCalledTimes(5)
     fireEvent.click(screen.getByRole('button', { name: 'Rescan' }))
     await waitFor(() => expect(read).toHaveBeenCalledWith('usage.rescan', {}))
     fireEvent.click(screen.getByRole('button', { name: 'Codex' }))
     await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ agentId: 'codex', groupBy: 'project' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Antigravity' }))
+    await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ agentId: 'antigravity', groupBy: 'session' })))
+  })
+  it('asks for both sources by default, then only the chosen source', async () => {
+    read.mockResolvedValue({ ok: true, value: { rows: [], progress: { running: false, completed: 0, total: 0, error: null, scannedAt: 1 } } })
+    render(<TokensSection />)
+    await screen.findByText('No usage in this period')
+    expect(read.mock.calls.every(([, query]) => !('origin' in query))).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '3rd party' }))
+    await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ origin: 'thirdParty', groupBy: 'project' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Jamat' }))
+    await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ origin: 'jamat', groupBy: 'day' })))
   })
   it('asks for whole days of the chosen period', async () => {
     read.mockResolvedValue({ ok: true, value: { rows: [], progress: { running: false, completed: 0, total: 0, error: null, scannedAt: 1 } } })
@@ -34,18 +46,31 @@ describe('TokensSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Custom' }))
     expect(screen.getByLabelText('Period from')).toBeTruthy()
   })
-  it('keeps totals, charts and project/account tables visible during a refresh', async () => {
+  it('keeps totals, charts, agent legend and project/account/session tables visible during a refresh', async () => {
     read.mockImplementation(async (_operation, query) => ({ ok: true, value: {
-      rows: [{ key: 'a', label: query.groupBy === 'project' ? 'Jamat' : 'Main', agentId: 'claude', input: 10, output: 3, cacheRead: 5_000, cacheWrite: 2 }],
+      rows: [
+        {
+          key: 'a',
+          label: query.groupBy === 'project' ? 'Jamat' : query.groupBy === 'session' ? '147 - agy' : 'Main',
+          agentId: 'antigravity',
+          input: 10,
+          output: 3,
+          cacheRead: 5_000,
+          cacheWrite: 2,
+        },
+        ...(query.groupBy === 'day' ? [{ key: 'b', label: 'Main', agentId: 'claude', input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }] : []),
+      ],
       progress: { running: true, completed: 3, total: 9, error: null, scannedAt: 1 },
     } }))
     render(<TokensSection />)
     expect(await screen.findByText('Jamat')).toBeTruthy()
+    expect(screen.getByText('147 - agy')).toBeTruthy()
+    expect(screen.getByLabelText('Agents in charts')).toBeTruthy()
     expect(screen.getByText(/3 \/ 9 files/)).toBeTruthy()
     expect(screen.getAllByText('5.0k').length).toBeGreaterThan(0)
     expect(screen.getByRole('img', { name: 'Token usage per day' })).toBeTruthy()
     expect(screen.getByRole('img', { name: /local time/ })).toBeTruthy()
-    expect(screen.getAllByRole('table')).toHaveLength(2)
+    expect(screen.getAllByRole('table')).toHaveLength(3)
     expect(screen.getByRole('button', { name: 'Rescan' })).toBeDisabled()
   })
 })

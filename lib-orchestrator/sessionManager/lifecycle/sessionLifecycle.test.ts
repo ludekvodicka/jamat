@@ -35,6 +35,7 @@ import { WorktreeResultsStore } from '../../worktrees/worktreeResults'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { type ScriptCollapsed, SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import type {
+  SessionAgentId,
   SessionCommitReceipt,
   SessionCreateSpec,
   SessionHistoryOpenSpec,
@@ -156,11 +157,11 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     reports: string[]
     workDirectory: string
     /** Which agents the switch is on for, mutable so one harness can be read twice. */
-    yolo: Set<'claude' | 'codex'>
+    yolo: Set<SessionAgentId>
     /** The stored default model per agent, mutable for the same reason. */
-    models: Map<'claude' | 'codex', string>
+    models: Map<SessionAgentId, string>
     /** The stored default effort per agent, on the same footing as the model beside it. */
-    efforts: Map<'claude' | 'codex', string>
+    efforts: Map<SessionAgentId, string>
     /** What the relay answers, and every directory it was asked for. */
     statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] }
     /** Every directory the Claude trust seed was asked to answer for. */
@@ -506,9 +507,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     // Movable, because the replay backoff is measured against it: a fixed clock makes every pass
     // land in the same instant, which is exactly the case the pacing is supposed to thin out.
     const clock = { now: 5_000 }
-    const yolo = new Set<'claude' | 'codex'>()
-    const models = new Map<'claude' | 'codex', string>()
-    const efforts = new Map<'claude' | 'codex', string>()
+    const yolo = new Set<SessionAgentId>()
+    const models = new Map<SessionAgentId, string>()
+    const efforts = new Map<SessionAgentId, string>()
     const statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] } = { file: null, cwds: [], identities: [] }
     const seeded: string[] = []
     const resumed: string[] = []

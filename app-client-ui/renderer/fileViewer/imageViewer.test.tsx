@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ImageViewerResource, ImageViewerSource } from './imageViewer'
 import { useImageViewer } from './imageViewer'
 import { FileImageSurface } from './fileImageSurface'
+import { FileImageTransfer } from './fileImageTransfer'
 import { FileViewerContent } from './fileViewerContent'
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
 
@@ -150,5 +151,89 @@ describe('fullscreen image viewer', () => {
     fireEvent.contextMenu(thumbnail)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open image full screen' }))
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+  })
+  it('copies the whole image from the toolbar button and from Ctrl+C', async () => {
+    const copy = vi.spyOn(FileImageTransfer, 'copy').mockResolvedValue()
+    const { dialog } = await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(copy).toHaveBeenLastCalledWith('data:image/png;base64,AA==', undefined)
+    expect(await screen.findByText('Image copied to clipboard')).toHaveAttribute('role', 'status')
+    fireEvent.keyDown(dialog, { key: 'c', ctrlKey: true })
+    expect(copy).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('shows why a copy failed', async () => {
+    vi.spyOn(FileImageTransfer, 'copy').mockRejectedValue(new Error('Another application held the clipboard'))
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Image not copied: Another application held the clipboard')
+  })
+
+  it('copies a selected area in the image pixels and leaves area mode', async () => {
+    const copy = vi.spyOn(FileImageTransfer, 'copy').mockResolvedValue()
+    const { image } = await open()
+    vi.spyOn(image, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, x: 0, y: 0, toJSON: () => ({}) })
+    const area = screen.getByRole('button', { name: 'Copy area' })
+    fireEvent.click(area)
+    expect(area).toHaveAttribute('aria-pressed', 'true')
+    const viewport = image.closest('.image-viewer__viewport')!
+    fireEvent.pointerDown(viewport, { button: 0, clientX: 300, clientY: 250 })
+    fireEvent.pointerMove(viewport, { clientX: 100, clientY: 100 })
+    expect(document.querySelector('.image-viewer__selection')).toHaveStyle({ left: '100px', top: '100px', width: '200px', height: '150px' })
+    fireEvent.pointerUp(viewport)
+    expect(copy).toHaveBeenCalledExactlyOnceWith('data:image/png;base64,AA==', { x: 200, y: 200, width: 400, height: 300 })
+    expect(area).toHaveAttribute('aria-pressed', 'false')
+    expect(viewport.scrollLeft).toBe(0)
+  })
+
+  it('cancels area mode on Escape without closing the viewer', async () => {
+    const copy = vi.spyOn(FileImageTransfer, 'copy').mockResolvedValue()
+    const { dialog } = await open()
+    const area = screen.getByRole('button', { name: 'Copy area' })
+    fireEvent.click(area)
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(area).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(copy).not.toHaveBeenCalled()
+  })
+})
+
+describe('document image transfer', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('copies an image from its context menu', async () => {
+    const copy = vi.spyOn(FileImageTransfer, 'copy').mockResolvedValue()
+    render(<FileImageSurface name="doc.md"><img src="jamat-v3-file://resource/picture" alt="Chart" /></FileImageSurface>)
+    fireEvent.contextMenu(screen.getByRole('img', { name: 'Chart' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy image to clipboard' }))
+    expect(await screen.findByText('Image copied to clipboard')).toHaveAttribute('role', 'status')
+    expect(copy).toHaveBeenCalledExactlyOnceWith('jamat-v3-file://resource/picture')
+  })
+
+  it('drags a protocol image as a file instead of its URL', async () => {
+    const startResourceDrag = vi.fn(async () => ({ ok: true as const, value: true }))
+    vi.stubGlobal('appClient', { fileViewer: { startResourceDrag } })
+    render(<FileImageSurface name="doc.md"><img src="jamat-v3-file://resource/picture%201" alt="Chart" /></FileImageSurface>)
+    expect(fireEvent.dragStart(screen.getByRole('img', { name: 'Chart' }))).toBe(false)
+    expect(startResourceDrag).toHaveBeenCalledExactlyOnceWith('picture 1')
+  })
+
+  it('leaves the browser drag of any other image alone and reports a refused drag', async () => {
+    const startResourceDrag = vi.fn(async () => ({ ok: false as const, error: 'Only source images can be dragged' }))
+    vi.stubGlobal('appClient', { fileViewer: { startResourceDrag } })
+    render(<FileImageSurface name="doc.md">
+      <img src="data:image/png;base64,AA==" alt="Inline" />
+      <img src="jamat-v3-file://resource/picture" alt="Chart" />
+    </FileImageSurface>)
+    expect(fireEvent.dragStart(screen.getByRole('img', { name: 'Inline' }))).toBe(true)
+    expect(startResourceDrag).not.toHaveBeenCalled()
+    fireEvent.dragStart(screen.getByRole('img', { name: 'Chart' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Only source images can be dragged')
   })
 })

@@ -3,7 +3,7 @@
  * renderer compiles this file, so it has no imports at all and never grows one.
  */
 
-export type SessionTaskAgentId = 'claude' | 'codex'
+export type SessionTaskAgentId = 'claude' | 'codex' | 'antigravity'
 
 export type SessionSubagentState = 'running' | 'done' | 'failed' | 'stopped' | 'unfinished'
 

@@ -6,9 +6,11 @@
 
 export type AccountBrokerPurpose = 'interactive' | 'background'
 
+/** The reasons the CLI gives by itself, when no instance answered. */
+export type AccountBrokerCliReason = 'jamat-unavailable' | 'instance-conflict' | 'unsupported' | 'timeout' | 'error'
+
 /** `chosen` is the one answer that is no fallback; a client shows the reason as text and never branches on it. */
-export type AccountBrokerReason = 'chosen' | 'no-eligible-account' | 'account-unusable'
-  | 'jamat-unavailable' | 'instance-conflict' | 'unsupported' | 'timeout' | 'error'
+export type AccountBrokerReason = 'chosen' | 'no-eligible-account' | 'account-unusable' | AccountBrokerCliReason
 
 export interface AccountBrokerAnswer {
   brokerVersion: 1
@@ -22,9 +24,32 @@ export interface AccountBrokerAnswer {
   reason: AccountBrokerReason
   /** How long a caller may reuse this answer. */
   reuseSeconds: number
+  /**
+   * The command line that records the token usage of a run made with this answer; the caller writes
+   * Claude's result JSON to its stdin. Added 2026-11-21 inside version 1; absent from the CLI's own
+   * fallback answers, because no instance answered them.
+   */
+  reportCommand?: string
 }
 
 export interface AccountBrokerRequest { caller: string; purpose: AccountBrokerPurpose }
+
+/** The four counters of one model, as the token statistics keep them. */
+export interface AccountUsageCounts { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+/** The token usage of one finished run of a caller, per model (`accounts report`). */
+export interface AccountUsageReport {
+  caller: string
+  purpose: AccountBrokerPurpose
+  accountId: string
+  models: Record<string, AccountUsageCounts>
+}
+
+/** One reported run, one line of the usage log; it holds no prompt, argument or path. */
+export interface AccountUsageEntry extends AccountUsageReport { at: number }
+
+/** What `accounts report` prints: whether a running instance recorded the run. */
+export type AccountUsageReportResult = { recorded: true } | { recorded: false; reason: AccountBrokerCliReason }
 
 /** One pick that reached Jamat, one line of the caller log; it holds no prompt, argument or path. */
 export interface AccountCallerEntry {

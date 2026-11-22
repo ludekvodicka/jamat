@@ -68,7 +68,7 @@ class PackagedResources {
       join('host', 'start.cjs'), join('host', 'node_modules', 'node-pty'), join('host', 'manifest.json'),
       ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => join('orchestrator', name + '.cjs')),
       join('codex', 'start.cjs'), join('gateway', 'start.cjs'), join('cli', 'jamat-v3.cjs'), join('launcher', node),
-      join('launcher', 'launcher.cjs'), join('skills', 'claude'), join('skills', 'codex'),
+      join('launcher', 'launcher.cjs'), join('skills', 'claude'), join('skills', 'codex'), join('skills', 'antigravity'),
       join('mdext-renderer', 'USAGE.md'), join('remarkable-sidecar', 'manifest.json'),
     ]
   }

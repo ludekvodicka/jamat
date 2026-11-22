@@ -29,7 +29,7 @@ test('distributed skills run outside the checkout with no tsx or node_modules', 
           process.nextTick(() => process.emit(event))
       })
     `)
-    for (const agent of ['claude', 'codex']) {
+    for (const agent of ['claude', 'codex', 'antigravity']) {
       const cli = spawnSync(process.execPath, [join(output, 'skills', agent, 'appjamat-v3/scripts/jamat-v3.mjs'), '--help'],
         { encoding: 'utf8', windowsHide: true, cwd: output })
       assert.equal(cli.status, 0, cli.stderr + cli.stdout)
@@ -83,7 +83,7 @@ test('distributed wrappers keep arguments, process state and delayed exits witho
       }, 20)
     `
     const args = ['argument with spaces', 'quote"value', 'trailing\\', '']
-    for (const agent of ['claude', 'codex']) {
+    for (const agent of ['claude', 'codex', 'antigravity']) {
       const directory = join(output, 'skills', agent, 'appjamat-v3/scripts')
       mkdirSync(directory, { recursive: true })
       const wrapper = join(directory, 'jamat-v3.mjs')

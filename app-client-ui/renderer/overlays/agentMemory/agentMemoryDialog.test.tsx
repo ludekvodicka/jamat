@@ -28,7 +28,7 @@ describe('app-client-ui/renderer/overlays/agentMemory/agentMemoryDialog', () => 
             if (target.scope === 'user')
               return ControlBridgeFixture.valueOf(operation, { ok: true, value: {
                 agentId: target.agentId, directory: `C:/Users/u/.${target.agentId}`, scope: 'user', truncated: false,
-                files: [{ name: target.agentId === 'claude' ? 'CLAUDE.md' : 'AGENTS.md', size: 5, modifiedAt: 1, writtenByConversation: false }],
+                files: [{ name: target.agentId === 'claude' ? 'CLAUDE.md' : target.agentId === 'antigravity' ? 'GEMINI.md' : 'AGENTS.md', size: 5, modifiedAt: 1, writtenByConversation: false }],
               } })
             return ControlBridgeFixture.valueOf(operation, { ok: true, value: listing })
           }
@@ -89,10 +89,16 @@ describe('app-client-ui/renderer/overlays/agentMemory/agentMemoryDialog', () => 
 
     expect(await view.findByText('CLAUDE.md')).toBeTruthy()
     expect(await view.findByText('AGENTS.md')).toBeTruthy()
+    expect(await view.findByText('GEMINI.md')).toBeTruthy()
     expect(view.getByText('Claude')).toBeTruthy()
     expect(view.getByText('Codex')).toBeTruthy()
+    expect(view.getByText('Antigravity')).toBeTruthy()
     expect(view.calls.filter((call) => call.operation === 'agentMemory.list').map((call) => call.body.target))
-      .toEqual(expect.arrayContaining([{ scope: 'user', agentId: 'claude' }, { scope: 'user', agentId: 'codex' }]))
+      .toEqual(expect.arrayContaining([
+        { scope: 'user', agentId: 'claude' },
+        { scope: 'user', agentId: 'codex' },
+        { scope: 'user', agentId: 'antigravity' },
+      ]))
     fireEvent.click(view.getByText('AGENTS.md'))
     await waitFor(() => expect(view.getByText('AGENTS.md text')).toBeTruthy())
   })

@@ -12,8 +12,9 @@ export class LauncherLabels {
   static agentLabelOf(agentId: SessionAgentId): string {
     if (agentId === 'claude') return 'Claude'
     else if (agentId === 'codex') return 'Codex'
+    else if (agentId === 'antigravity') return 'Antigravity'
     else
-      throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /** The title if the provider recorded one, else the words the session was opened with. */

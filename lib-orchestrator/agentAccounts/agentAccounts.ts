@@ -21,7 +21,8 @@ export interface StoredAccount {
 }
 
 export interface AgentAccountsDeps {
-  mainHomes: Readonly<Record<AccountAgentId, string>>
+  mainHomes: Readonly<Record<'claude' | 'codex', string> & Partial<Record<'antigravity', string>>>
+  mainProbes?: Readonly<Partial<Record<AccountAgentId, (home: string) => Promise<IdentityProbe | null>>>>
   specs: readonly AgentProfileSpec[]
   stored(): readonly StoredAccount[]
   store(accounts: readonly StoredAccount[]): void
@@ -56,7 +57,7 @@ export class AgentAccounts {
   private readonly logins = new Map<AccountId, LoginRun>()
   private loginTimer: ReturnType<typeof setInterval> | null = null
   private readonly problems = new Map<AccountId, string>()
-  private readonly probes = new Map<string, { at: number; result: Promise<IdentityProbe> }>()
+  private readonly probes = new Map<string, { at: number; result: Promise<IdentityProbe | null> }>()
   private spend: { at: number; samples: Promise<readonly RateSample[]> } | null = null
 
   constructor(deps: AgentAccountsDeps) {
@@ -67,7 +68,9 @@ export class AgentAccounts {
   }
 
   async list(exclude?: { agentId: AccountAgentId; accountId: string }): Promise<readonly AccountView[]> {
-    const mains = Object.entries(this.deps.mainHomes).map(([agent, home]) => ({ agentId: agent as AccountAgentId, home }))
+    const mains = (Object.entries(this.deps.mainHomes) as [AccountAgentId, string | undefined][])
+      .filter((entry): entry is [AccountAgentId, string] => typeof entry[1] === 'string')
+      .map(([agentId, home]) => ({ agentId, home }))
     const views = await Promise.all(mains.map(async ({ agentId, home }): Promise<AccountView> => ({
       agentId, accountId: 'main', label: 'Main', isMain: true,
       ...this.probeView(await this.probe(agentId, 'main', home), null, true),
@@ -90,7 +93,7 @@ export class AgentAccounts {
         const quota = accountQuota(rates.find(rate => rate.key.agentId === view.agentId && rate.key.accountId === view.accountId))
         if (quota !== null) view.quota = quota
       }
-      for (const agentId of Object.keys(this.deps.mainHomes) as AccountAgentId[]) {
+      for (const { agentId } of mains) {
         const choice = chooseDefault(agentId, views.filter(account => account.agentId !== exclude?.agentId || account.accountId !== exclude.accountId), rates, burns, now)
         const selected = views.find(account => account.agentId === agentId && account.accountId === choice.accountId)
         if (selected) selected.defaultChoice = { noFreeAccount: choice.noFreeAccount, resetsAt: choice.resetsAt ?? null }
@@ -210,7 +213,7 @@ export class AgentAccounts {
           case 'logged-in': {
             if (current.identity !== null && current.identity.key !== result.identity.key)
               throw new AccountProblem('Log in again must use the same account identity')
-            const main = await spec.probe(this.deps.mainHomes[current.agentId])
+            const main = await spec.probe(this.homeOf(current.agentId, 'main'))
             switch (main.kind) {
               case 'logged-in':
                 if (main.identity.key === result.identity.key) throw new AccountProblem('already added as Main')
@@ -272,7 +275,11 @@ export class AgentAccounts {
   }
 
   homeOf(agentId: AccountAgentId, accountId: AccountId): string {
-    if (accountId === 'main') return this.deps.mainHomes[agentId]
+    if (accountId === 'main') {
+      const home = this.deps.mainHomes[agentId]
+      if (home === undefined) throw new AccountProblem(`No main home configured for ${agentId}`)
+      return home
+    }
     const account = this.added(accountId)
     if (account.agentId !== agentId) throw new AccountProblem('Account belongs to another agent')
     return join(this.deps.accountsRoot, agentId, account.id)
@@ -288,14 +295,17 @@ export class AgentAccounts {
   }
 
   homesOf(agentId: AccountAgentId): string[] {
-    return [this.deps.mainHomes[agentId], ...this.deps.stored().filter(account => account.agentId === agentId)
+    const main = this.deps.mainHomes[agentId]
+    return [...(main === undefined ? [] : [main]), ...this.deps.stored().filter(account => account.agentId === agentId)
       .map(account => join(this.deps.accountsRoot, agentId, account.id))]
   }
 
-  defaultAccount(agentId: AccountAgentId, rule?: AccountChoiceRule): DefaultAccountChoice | Promise<DefaultAccountChoice> {
-    return this.list().then(async accounts => {
+  /** `exclude` leaves accounts out of the choice, for a caller that knows them spent before the quota feed does. */
+  defaultAccount(agentId: AccountAgentId, rule?: AccountChoiceRule, exclude?: ReadonlySet<AccountId>): DefaultAccountChoice | Promise<DefaultAccountChoice> {
+    return this.list().then(async listed => {
       const now = Date.now()
-      return chooseDefault(agentId, accounts, this.deps.rates?.() ?? [], await this.burns(accounts, now), now, rule)
+      const accounts = exclude ? listed.filter(account => account.agentId !== agentId || !exclude.has(account.accountId)) : listed
+      return chooseDefault(agentId, accounts, this.deps.rates?.() ?? [], await this.burns(listed, now), now, rule)
     })
   }
 
@@ -402,16 +412,19 @@ export class AgentAccounts {
     return clean
   }
 
-  private probe(agentId: AccountAgentId, accountId: AccountId, home: string): Promise<IdentityProbe> | null {
+  private probe(agentId: AccountAgentId, accountId: AccountId, home: string): Promise<IdentityProbe | null> | null {
     const spec = this.specs.get(agentId)
-    if (!spec) return null
+    const mainProbe = accountId === 'main' ? this.deps.mainProbes?.[agentId] : undefined
+    if (!spec && !mainProbe) return null
     const key = `${agentId}/${accountId}`
     const cached = this.probes.get(key)
     if (cached && Date.now() - cached.at < 60_000) return cached.result
-    const read = accountId === 'main' ? spec.probe(home) : this.lock(accountId, async retain => {
-      this.added(accountId)
-      return spec.probe(home, retain)
-    })
+    const read = accountId === 'main'
+      ? (spec ? spec.probe(home) : mainProbe!(home))
+      : this.lock(accountId, async retain => {
+        this.added(accountId)
+        return spec!.probe(home, retain)
+      })
     const result = read.catch((): IdentityProbe => ({ kind: 'failed', reason: 'Account identity probe failed' }))
     this.probes.set(key, { at: Date.now(), result })
     return result

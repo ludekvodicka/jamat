@@ -44,6 +44,8 @@ export class CliArguments {
     'accounts list': { options: [CliArguments.remoteComputerOptionConst], flags: [], mutation: false },
     /* The account broker's frozen v1 arguments (`docs/architecture/account-broker.md`); local only, so no --computer. */
     'accounts pick': { options: ['--caller', '--purpose'], flags: [], mutation: false },
+    /* Records one finished run's token usage; Claude's result JSON on stdin (`docs/architecture/account-broker.md`). */
+    'accounts report': { options: ['--caller', '--purpose', '--account'], flags: [], mutation: false },
     'projects list': {
       options: ['--category-id', '--sort', CliArguments.remoteComputerOptionConst],
       flags: [],
@@ -273,6 +275,18 @@ export class CliArguments {
     'operations get': { options: ['--operation'], flags: [], mutation: false },
     'call': { options: ['--operation', '--body', '--body-file'], flags: [], mutation: true },
     'calls list': { options: [], flags: [], mutation: false },
+    /*
+     * The project todo list (`projectTodos.*`). A list is named by a session (its catalog project,
+     * the main copy for a worktree) or by --project, any directory inside a catalog project.
+     */
+    'todos list': { options: ['--session-id', '--number', '--project', '--query', '--category', '--color', '--author'], flags: ['--self', '--open', '--done'], mutation: false },
+    'todos add': { options: ['--session-id', '--number', '--project', '--title', '--category', '--comment', '--color'], flags: ['--self'], mutation: true },
+    'todos restore': { options: ['--session-id', '--number', '--project', '--id'], flags: ['--self'], mutation: true },
+    'todos edit': { options: ['--session-id', '--number', '--project', '--id', '--title', '--category', '--comment', '--color'], flags: ['--self'], mutation: true },
+    'todos done': { options: ['--session-id', '--number', '--project', '--id'], flags: ['--self'], mutation: true },
+    'todos reopen': { options: ['--session-id', '--number', '--project', '--id'], flags: ['--self'], mutation: true },
+    'todos remove': { options: ['--session-id', '--number', '--project', '--id'], flags: ['--self'], mutation: true },
+    'todos open': { options: ['--session-id', '--number'], flags: ['--self', '--sidebar'], mutation: true },
     'events poll': { options: ['--after', '--wait-ms'], flags: [], mutation: false },
     'remote computers list': { options: [], flags: [], mutation: false },
     'remote pairing export': { options: [], flags: [], mutation: false },

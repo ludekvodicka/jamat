@@ -26,7 +26,11 @@ describe('lib-orchestrator/agentMemory/agentMemory', () => {
     writeFileSync(join(claudeHome, 'projects', 'q--Apps-My-App', `${id}.jsonl`), JSON.stringify({ message: { content: [
       { type: 'tool_use', name: 'Write', input: { file_path: join(memoryDirectory, 'private.md'), content: 'secret' } },
     ] } }))
-    memory = new AgentMemory({ claudeHome, codexHome: join(root, '.codex') })
+    memory = new AgentMemory({
+      claudeHome,
+      codexHome: join(root, '.codex'),
+      antigravityConfigHome: join(root, '.gemini', 'config'),
+    })
   })
 
   afterEach(() => {
@@ -92,5 +96,29 @@ describe('lib-orchestrator/agentMemory/agentMemory', () => {
     expect(readFileSync(join(claudeHome, 'CLAUDE.md'), 'utf8')).toBe('changed')
     for (const name of ['settings.json', 'rules', 'CLAUDE.md/x', 'projects/q--Apps-My-App/memory/other.md'])
       expect(await memory.read(claude, name)).toMatchObject({ ok: false, code: 'invalid' })
+  })
+
+  it('lists global and project rules for Antigravity', async () => {
+    const agyConfig = join(root, '.gemini', 'config')
+    mkdirSync(join(agyConfig, 'rules'), { recursive: true })
+    writeFileSync(join(agyConfig, 'GEMINI.md'), 'global gemini')
+    writeFileSync(join(agyConfig, 'rules', 'guide.md'), 'global rule')
+    const projectDir = join(root, 'proj')
+    mkdirSync(join(projectDir, '.agents', 'rules'), { recursive: true })
+    writeFileSync(join(projectDir, '.agents', 'rules', 'local.md'), 'local rule')
+
+    const user = await memory.list({ scope: 'user', agentId: 'antigravity' })
+    expect(user).toMatchObject({
+      ok: true,
+      value: { scope: 'user', directory: agyConfig },
+    })
+    expect(user.ok && user.value.files.map((file) => file.name)).toEqual(['GEMINI.md', 'rules/guide.md'])
+
+    const project = await memory.list({ agentId: 'antigravity', projectPath: projectDir })
+    expect(project).toMatchObject({
+      ok: true,
+      value: { scope: 'project', directory: join(projectDir, '.agents', 'rules') },
+    })
+    expect(project.ok && project.value.files.map((file) => file.name)).toEqual(['local.md'])
   })
 })

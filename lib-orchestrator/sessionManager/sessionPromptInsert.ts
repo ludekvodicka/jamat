@@ -14,7 +14,8 @@ export class SessionPromptInsert {
     if (!session.agent) return 'no-agent'
     switch (session.agent.agentId) {
       case 'claude':
-      case 'codex': break
+      case 'codex':
+      case 'antigravity': break
       default: throw new Error(`Unknown session agent: ${session.agent.agentId satisfies never}`)
     }
     switch (session.activity) {

@@ -9,7 +9,7 @@ import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixt
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSettingsTab', () => {
   type BridgeStub = Pick<AppClientUiBridge, 'control'>
-  type ProviderLabel = 'Claude' | 'Codex'
+  type ProviderLabel = 'Claude' | 'Codex' | 'Antigravity'
   type View = ReturnType<typeof render>
 
   afterEach(() => {
@@ -54,10 +54,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     const { onDirtyChange, saved, view } = await mount({
       claude: { yolo: false },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     })
     const tabs = view.getAllByRole('tab')
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Claude', 'Codex'])
-    expect(tabs.map((tab) => tab.getAttribute('aria-selected'))).toEqual(['true', 'false'])
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Claude', 'Codex', 'Antigravity'])
+    expect(tabs.map((tab) => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
     expect(view.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(tabs[0]!.id)
     expect(view.queryByLabelText('Codex - run in yolo mode')).toBeNull()
 
@@ -69,12 +70,34 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     expect(yoloOf(view, 'Claude').checked).toBe(true)
     await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-    expect(saved).toEqual([{ claude: { yolo: true }, codex: { yolo: false } }])
+    expect(saved).toEqual([{ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false } }])
     expect(onDirtyChange.mock.calls).toEqual([[true], [false]])
   })
 
+  it('switches to the Antigravity panel and saves its settings', async () => {
+    const { saved, view } = await mount({
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+    })
+    fireEvent.click(yoloOf(view, 'Antigravity'))
+    fireEvent.change(view.getByLabelText('Antigravity - default model'), { target: { value: 'gemini-3-pro' } })
+    fireEvent.change(view.getByLabelText('Antigravity - default effort'), { target: { value: 'high' } })
+    await act(async () => { fireEvent.click(view.getByText('Save')) })
+
+    expect(saved).toEqual([{
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: true, model: 'gemini-3-pro', effort: 'high' },
+    }])
+  })
+
   it('shows a stored yolo and turns it back off', async () => {
-    const { saved, view } = await mount({ claude: { yolo: true }, codex: { yolo: true } })
+    const { saved, view } = await mount({
+      claude: { yolo: true },
+      codex: { yolo: true },
+      antigravity: { yolo: false },
+    })
     expect(yoloOf(view, 'Claude').checked).toBe(true)
     const codex = yoloOf(view, 'Codex')
     expect(codex.checked).toBe(true)
@@ -82,12 +105,12 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     fireEvent.click(codex)
     await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-    expect(saved).toEqual([{ claude: { yolo: true }, codex: { yolo: false } }])
+    expect(saved).toEqual([{ claude: { yolo: true }, codex: { yolo: false }, antigravity: { yolo: false } }])
   })
 
   it('puts a refused save on screen and keeps the pending choice', async () => {
     const { view } = await mount(
-      { claude: { yolo: false }, codex: { yolo: false } },
+      { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } },
       'repair it by hand',
     )
     fireEvent.click(yoloOf(view, 'Claude'))
@@ -99,7 +122,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
 
   // The one thing the switch cannot do for the user, so the tab has to say who does it.
   it('names the setting Jamat will not write on their behalf', async () => {
-    const { view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+    const { view } = await mount({
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+    })
 
     expect(view.container.textContent).toContain('skipDangerousModePermissionPrompt')
     expect(view.container.textContent).toContain('~/.claude/settings.json')
@@ -107,14 +134,19 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     expect(view.container.textContent).not.toContain('skipDangerousModePermissionPrompt')
   })
 
-  it('resets both agents without writing', async () => {
-    const { saved, view } = await mount({ claude: { yolo: true }, codex: { yolo: true } })
+  it('resets all agents without writing', async () => {
+    const { saved, view } = await mount({
+      claude: { yolo: true },
+      codex: { yolo: true },
+      antigravity: { yolo: true },
+    })
 
     selectProvider(view, 'Codex')
     fireEvent.click(view.getByText('Reset to default'))
 
     expect(yoloOf(view, 'Claude').checked).toBe(false)
     expect(yoloOf(view, 'Codex').checked).toBe(false)
+    expect(yoloOf(view, 'Antigravity').checked).toBe(false)
     expect(saved).toEqual([])
   })
 
@@ -129,7 +161,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     }
 
     it('draws the provider defaults over an old config', async () => {
-      const { view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+      const { view } = await mount({
+        claude: { yolo: false },
+        codex: { yolo: false },
+        antigravity: { yolo: false },
+      })
 
       expect(percentagesOf(view).map((field) => field.value)).toEqual(['35', '40'])
       expect(automaticOf(view, 'Claude').checked).toBe(false)
@@ -143,6 +179,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { saved, view } = await mount({
         claude: { yolo: true, model: 'opus' },
         codex: { yolo: false, effort: 'max' },
+        antigravity: { yolo: false },
       })
       const percentages = percentagesOf(view)
 
@@ -160,6 +197,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
           autoCompactEnabled: true,
         },
         codex: { yolo: false, effort: 'max' },
+        antigravity: { yolo: false },
       }])
     })
 
@@ -172,6 +210,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
           autoCompactEnabled: true,
         },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
 
       fireEvent.click(view.getByText('Reset to default'))
@@ -191,7 +230,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     }
 
     it('draws an empty field per agent, naming what an empty one means', async () => {
-      const { view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+      const { view } = await mount({
+        claude: { yolo: false },
+        codex: { yolo: false },
+        antigravity: { yolo: false },
+      })
       const claude = fieldOf(view, 'Claude')
       const codex = fieldOf(view, 'Codex')
 
@@ -204,6 +247,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { onDirtyChange, saved, view } = await mount({
         claude: { yolo: false, model: 'opus' },
         codex: { yolo: true, model: 'gpt-5.5' },
+        antigravity: { yolo: false },
       })
       expect(fieldOf(view, 'Claude').value).toBe('opus')
       const codex = fieldOf(view, 'Codex')
@@ -216,6 +260,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       expect(saved).toEqual([{
         claude: { yolo: false, model: 'opus' },
         codex: { yolo: true, model: 'gpt-5.6-sol' },
+        antigravity: { yolo: false },
       }])
     })
 
@@ -224,18 +269,19 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { saved, view } = await mount({
         claude: { yolo: false, model: 'opus' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
 
       fireEvent.change(fieldOf(view, 'Claude'), { target: { value: '' } })
       await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-      expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false } }])
+      expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }])
       expect('model' in (saved[0] as { claude: object }).claude).toBe(false)
     })
 
     it('puts a refused model on screen and keeps what was typed', async () => {
       const { view } = await mount(
-        { claude: { yolo: false }, codex: { yolo: false } },
+        { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } },
         'agents must hold { claude: { yolo: boolean, model?: string }, codex: the same }',
       )
 
@@ -252,7 +298,11 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     }
 
     it('suggests each agent its own models and nobody else\'s', async () => {
-      const { view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+      const { view } = await mount({
+        claude: { yolo: false },
+        codex: { yolo: false },
+        antigravity: { yolo: false },
+      })
       const claude = fieldOf(view, 'Claude')
       const claudeList = listOf(view, claude)
       const codex = fieldOf(view, 'Codex')
@@ -280,6 +330,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { view } = await mount({
         claude: { yolo: false, model: 'opus' },
         codex: { yolo: false, model: 'gpt-5.6-sol' },
+        antigravity: { yolo: false },
       })
 
       expect(detailsOf(view)).toEqual([
@@ -302,10 +353,12 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { view } = await mount({
         claude: { yolo: false, model: 'claude-opus-5[1m]' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
       const bare = await mount({
         claude: { yolo: false, model: 'claude-opus-5' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
 
       expect(detailsOf(view)[0]).toContain('1M context')
@@ -316,6 +369,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { view } = await mount({
         claude: { yolo: false, model: 'claude-haiku-4-5-20251001' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
 
       expect(detailsOf(view)).toEqual(['200k context'])
@@ -325,12 +379,14 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { saved, view } = await mount({
         claude: { yolo: true, model: 'opus' },
         codex: { yolo: true, model: 'gpt-5.5' },
+        antigravity: { yolo: true, model: 'gemini-3-pro' },
       })
 
       fireEvent.click(view.getByText('Reset to default'))
 
       expect(fieldOf(view, 'Claude').value).toBe('')
       expect(fieldOf(view, 'Codex').value).toBe('')
+      expect(fieldOf(view, 'Antigravity').value).toBe('')
       expect(saved).toEqual([])
     })
   })
@@ -349,6 +405,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { view } = await mount({
         claude: { yolo: false, model: 'claude-haiku-4-5-20251001' },
         codex: { yolo: false, model: 'gpt-5.6-sol' },
+        antigravity: { yolo: false },
       })
       const claude = selectOf(view, 'Claude')
 
@@ -364,12 +421,18 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     })
 
     it('falls back to the agent\'s own levels while no model is chosen', async () => {
-      const { view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+      const { view } = await mount({
+        claude: { yolo: false },
+        codex: { yolo: false },
+        antigravity: { yolo: false },
+      })
       const claude = selectOf(view, 'Claude')
       const codex = selectOf(view, 'Codex')
+      const antigravity = selectOf(view, 'Antigravity')
 
       expect(levelsOf(claude)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
       expect(levelsOf(codex)).toContain('ultra')
+      expect(levelsOf(antigravity)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
       expect(claude.disabled).toBe(false)
     })
 
@@ -377,6 +440,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { onDirtyChange, saved, view } = await mount({
         claude: { yolo: false, model: 'opus' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
       const claude = selectOf(view, 'Claude')
       expect(claude.value).toBe('')
@@ -388,6 +452,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       expect(saved).toEqual([{
         claude: { yolo: false, model: 'opus', effort: 'xhigh' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       }])
 
       fireEvent.change(selectOf(view, 'Claude'), { target: { value: '' } })
@@ -401,6 +466,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { view } = await mount({
         claude: { yolo: false, model: 'opus', effort: 'ultra' },
         codex: { yolo: false },
+        antigravity: { yolo: false },
       })
 
       expect(selectOf(view, 'Claude').value).toBe('ultra')
@@ -411,19 +477,25 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
       const { saved, view } = await mount({
         claude: { yolo: true, model: 'opus', effort: 'high' },
         codex: { yolo: false, effort: 'low' },
+        antigravity: { yolo: false, effort: 'medium' },
       })
 
       fireEvent.click(view.getByText('Reset to default'))
 
       expect(selectOf(view, 'Claude').value).toBe('')
       expect(selectOf(view, 'Codex').value).toBe('')
+      expect(selectOf(view, 'Antigravity').value).toBe('')
       await act(async () => { fireEvent.click(view.getByText('Save')) })
-      expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false } }])
+      expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }])
     })
   })
 
   it('offers below normal by default and saves a switch to normal', async () => {
-    const { saved, view } = await mount({ claude: { yolo: false }, codex: { yolo: false } })
+    const { saved, view } = await mount({
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+    })
     const select = view.getByLabelText('Agent sessions and script runs') as HTMLSelectElement
     expect(select.value).toBe('below-normal')
     expect([...select.options].map((option) => option.textContent)).toEqual(['Below normal (recommended)', 'Normal'])
@@ -431,18 +503,28 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/agents/agentSetting
     fireEvent.change(select, { target: { value: 'normal' } })
     await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-    expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false }, processPriority: 'normal' }])
+    expect(saved).toEqual([{
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+      processPriority: 'normal',
+    }])
   })
 
   it('shows a stored normal and puts the default back without storing it', async () => {
-    const { saved, view } = await mount({ claude: { yolo: false }, codex: { yolo: false }, processPriority: 'normal' })
+    const { saved, view } = await mount({
+      claude: { yolo: false },
+      codex: { yolo: false },
+      antigravity: { yolo: false },
+      processPriority: 'normal',
+    })
     const select = view.getByLabelText('Agent sessions and script runs') as HTMLSelectElement
     expect(select.value).toBe('normal')
 
     fireEvent.change(select, { target: { value: 'below-normal' } })
     await act(async () => { fireEvent.click(view.getByText('Save')) })
 
-    expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false } }])
+    expect(saved).toEqual([{ claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }])
   })
 
 })

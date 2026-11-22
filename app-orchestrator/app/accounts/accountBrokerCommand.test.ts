@@ -21,11 +21,14 @@ describe('AccountBrokerCommand', () => {
     expect(wrapper).not.toContain(String.fromCharCode(92))
     expect(AccountBrokerCommand.of(skills, 'b5c1d2e3-0000-4000-8000-000000000001', 'development')).toBe(
       `node "${wrapper}" --config-identity b5c1d2e3-0000-4000-8000-000000000001 --channel development accounts pick --caller {caller} --purpose {purpose}`)
+    expect(AccountBrokerCommand.report(skills, 'b5c1d2e3-0000-4000-8000-000000000001', 'development', { caller: 'indexer', purpose: 'background' }, 'work-1a2b'))
+      .toBe(`node "${wrapper}" --config-identity b5c1d2e3-0000-4000-8000-000000000001 --channel development accounts report --caller indexer --purpose background --account work-1a2b`)
   })
 
   it('answers null when the wrapper file does not exist', () => {
     const root = mkdtempSync(join(tmpdir(), 'jamat-broker-missing-'))
     roots.push(root)
     expect(AccountBrokerCommand.of(join(root, '.claude', 'skills'), 'id', 'production')).toBeNull()
+    expect(AccountBrokerCommand.report(join(root, '.claude', 'skills'), 'id', 'production', { caller: 'x', purpose: 'interactive' }, 'main')).toBeNull()
   })
 })

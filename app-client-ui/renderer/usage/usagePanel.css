@@ -49,10 +49,10 @@
   overflow-wrap: anywhere;
 }
 
-/* Two agents side by side when there is room for both charts. */
+/* At most two agents side by side when there is room for both charts; further cards wrap below. */
 .jamat-usage__quotas {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(560px, calc(50% - var(--space-4)))), 1fr));
   gap: var(--space-4);
 }
 
@@ -267,3 +267,26 @@
   color: var(--color-text-1);
   background: linear-gradient(to right, var(--color-surface-control) var(--share), transparent var(--share));
 }
+
+.jamat-usage__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  font-size: var(--fs-secondary);
+  color: var(--color-text-3);
+}
+.jamat-usage__legend-item { display: inline-flex; align-items: center; }
+
+.jamat-usage__sessions { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; }
+.jamat-usage__more {
+  padding: 2px var(--space-3);
+  border: 1px solid var(--color-border-frame);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-control);
+  color: var(--color-text-2);
+  font: inherit;
+  font-size: var(--fs-secondary);
+  cursor: pointer;
+}
+.jamat-usage__more:hover { background: var(--color-surface-control-hover); color: var(--color-text-1); }

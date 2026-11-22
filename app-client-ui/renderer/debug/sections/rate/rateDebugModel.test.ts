@@ -169,9 +169,10 @@ describe('app-client-ui/renderer/debug/sections/rate/rateDebugModel', () => {
     expect(RateDebugModel.rawOf(undefined)).toBe('nothing has been read yet')
   })
 
-  it('names the two providers and throws on anyone else', () => {
+  it('names the providers and throws on anyone else', () => {
     expect(RateDebugModel.titleOf('claude')).toBe('Claude')
     expect(RateDebugModel.titleOf('codex')).toBe('Codex')
+    expect(RateDebugModel.titleOf('antigravity')).toBe('Antigravity')
     expect(() => RateDebugModel.titleOf('gemini' as unknown as RateAgentId))
       .toThrow(/Unknown rate agent/)
   })

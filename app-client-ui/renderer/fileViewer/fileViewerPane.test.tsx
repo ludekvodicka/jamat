@@ -493,4 +493,68 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(bodyOf().scrollTop).toBe(320)
   })
 
+  it('restores the scroll offset across a reload even when keys are pressed in a sibling terminal while the reload is in flight', async () => {
+    const current = FileViewerPaneHarness.document()
+    const reloaded = FileViewerPaneHarness.document({ documentId: 'document-a2' })
+    const { fileViewer } = FileViewerPaneHarness.install([current], 'body')
+    let finishRestore!: (answer: Awaited<ReturnType<typeof fileViewer.restore>>) => void
+    fileViewer.restore
+      .mockResolvedValueOnce({ ok: true, value: { ok: true, value: current } })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishRestore = resolve }))
+    Object.assign(fileViewer, { version: vi.fn(async () => ({ ok: true, value: { ok: true, kind: 'unchanged' } })) })
+    const ports = { viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }
+    const item = { ...FileViewerPaneHarness.item(current), location: { line: 1 } }
+    const changes = FileViewerPaneHarness.changes()
+    const workingTree = FileViewerPaneHarness.workingTree()
+    const onBack = vi.fn()
+    const onClose = vi.fn()
+    const onOpenItem = vi.fn(() => null)
+    const onRefused = vi.fn()
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const harness = (reloadRequest: number) => (
+      <div>
+        <div className="jamat-terminal" tabIndex={-1} data-testid="terminal" />
+        <FileViewerPane ports={ports} reloadRequest={reloadRequest} backPath={null} onBack={onBack} onClose={onClose}
+          item={item} changes={changes} workingTree={workingTree} onOpenItem={onOpenItem} onRefused={onRefused} />
+      </div>
+    )
+    const view = render(harness(0))
+    await screen.findByText('body')
+    scrollIntoView.mockClear()
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    body.scrollTop = 480
+
+    view.rerender(harness(1))
+    await waitFor(() => expect(fileViewer.restore).toHaveBeenCalledTimes(2))
+    // Typing in the terminal next to the split file while reload IPC is in flight must not cancel restore.
+    fireEvent.keyDown(screen.getByTestId('terminal'), { key: 'a' })
+    // Simulate Chromium resetting scrollTop to 0 when the new document grant remounts the body tree.
+    body.scrollTop = 0
+
+    finishRestore({ ok: true, value: { ok: true, value: reloaded } })
+    await waitFor(() => expect(fileViewer.release).toHaveBeenCalledWith('document-a'))
+    await waitFor(() => expect(body.scrollTop).toBe(480))
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('persists the reader scroll offset via onRememberReading after scrolling settles', async () => {
+    const current = FileViewerPaneHarness.document()
+    FileViewerPaneHarness.install([current], 'body')
+    const onRememberReading = vi.fn()
+    const view = render(
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
+        reloadRequest={0} backPath={null} onBack={vi.fn()} onClose={vi.fn()}
+        item={FileViewerPaneHarness.item(current)} changes={FileViewerPaneHarness.changes()}
+        workingTree={FileViewerPaneHarness.workingTree()} onOpenItem={vi.fn(() => null)}
+        onRememberReading={onRememberReading} onRefused={vi.fn()} />,
+    )
+    await screen.findByText('body')
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    body.scrollTop = 720
+    fireEvent.scroll(body)
+    fireEvent(body, new Event('scrollend'))
+
+    expect(onRememberReading).toHaveBeenCalledWith({ key: current.documentKey, scrollTop: 720 })
+  })
+
 })

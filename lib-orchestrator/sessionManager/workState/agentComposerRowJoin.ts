@@ -87,14 +87,14 @@ export class AgentComposerRowJoin {
   }
 
   private static marginOf(agentId: SessionAgentId): number {
-    if (agentId === 'claude') return AgentComposerRowJoin.claudeMarginConst
+    if (agentId === 'claude' || agentId === 'antigravity') return AgentComposerRowJoin.claudeMarginConst
     else if (agentId === 'codex') return AgentComposerRowJoin.codexMarginConst
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   private static breaksAfterPunctuation(agentId: SessionAgentId): boolean {
-    if (agentId === 'claude') return false
+    if (agentId === 'claude' || agentId === 'antigravity') return false
     else if (agentId === 'codex') return true
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 }

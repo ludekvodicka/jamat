@@ -221,6 +221,11 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
    * plain field pastes the text. false = another process held the clipboard throughout.
    */
   'clipboard:write-rich': (text: string, html: string) => boolean
+  /**
+   * A PNG the renderer drew, as a `data:image/png;base64,` URL; drawing it there is what lets a page
+   * copy any format it can show, or a cut-out of it. false = another process held the clipboard.
+   */
+  'clipboard:write-image': (pngDataUrl: string) => boolean
   'remote:start-image-drag': (endpointId: string, viewId: string, documentId: string) => boolean
   'remote:export-file': (endpointId: string, viewId: string, documentId: string, name: string) => boolean
   'remote:media-resource': (endpointId: string, viewId: string, documentId: string, reference: string | null) => FileViewerResourceResult
@@ -435,6 +440,11 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
    */
   'fileViewer:export': (documentId: string, format: FileViewerExportFormat, html: string) => FileViewerExportResult
   'fileViewer:start-image-drag': (documentId: string) => boolean
+  /**
+   * Drags an image a document shows through the file protocol, as a file: the resource id is what
+   * its URL carries, and main copies those bytes to a drag export before it starts the native drag.
+   */
+  'fileViewer:start-resource-drag': (resourceId: string) => boolean
   'fileViewer:open-external': (url: string) => boolean
   'fileViewer:release': (documentId: string) => void
   'remarkable:settings-get': () => RemarkableSettingsSnapshot
@@ -543,6 +553,8 @@ export interface AppClientUiIpcEventMap {
    * plus Debug; a panel of that directory holding no unsaved edit reads them again.
    */
   'directoryNotes:changed': (directory: string) => void
+  /** One catalog project's todo list moved: a change of a window, or the file changed on disk. */
+  'projectTodos:changed': (project: string) => void
 }
 
 export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -624,6 +636,7 @@ export const AppClientUiBridgeCallsConst = {
   clipboard: {
     writeText: 'clipboard:write-text',
     writeRich: 'clipboard:write-rich',
+    writeImage: 'clipboard:write-image',
   },
   remote: {
     startImageDrag: 'remote:start-image-drag',
@@ -764,6 +777,7 @@ export const AppClientUiBridgeCallsConst = {
     copyPath: 'fileViewer:copy-path',
     exportDocument: 'fileViewer:export',
     startImageDrag: 'fileViewer:start-image-drag',
+    startResourceDrag: 'fileViewer:start-resource-drag',
     openExternal: 'fileViewer:open-external',
     release: 'fileViewer:release',
   },
@@ -824,6 +838,7 @@ export const AppClientUiBridgeEventsConst = {
   onTerminalFrame: 'terminal:frame',
   onRemoteTerminalFrame: 'remote:terminal-frame',
   onDirectoryNotesChanged: 'directoryNotes:changed',
+  onProjectTodosChanged: 'projectTodos:changed',
 } as const satisfies Readonly<Record<string, keyof AppClientUiIpcEventMap>>
 
 /** A group of members, or the channel one member calls. Nesting is how the bridge reads, nothing more. */
@@ -1075,6 +1090,7 @@ export const AppClientUiChannelOwnersConst = {
   'dialog:confirm': 'main',
   'clipboard:write-text': 'main',
   'clipboard:write-rich': 'main',
+  'clipboard:write-image': 'main',
   'remote:start-image-drag': 'main',
   'remote:export-file': 'main',
   'remote:media-resource': 'main',
@@ -1160,6 +1176,7 @@ export const AppClientUiChannelOwnersConst = {
   'fileViewer:copy-path': 'main',
   'fileViewer:export': 'main',
   'fileViewer:start-image-drag': 'main',
+  'fileViewer:start-resource-drag': 'main',
   'fileViewer:open-external': 'main',
   'fileViewer:release': 'orchestrator',
   'remarkable:settings-get': 'orchestrator',
@@ -1211,4 +1228,5 @@ export const AppClientUiChannelOwnersConst = {
   'terminal:frame': 'gateway',
   'remote:terminal-frame': 'gateway',
   'directoryNotes:changed': 'orchestrator',
+  'projectTodos:changed': 'orchestrator',
 } as const satisfies Record<keyof AppClientUiIpcInvokeMap | keyof AppClientUiIpcEventMap, ChannelOwner>

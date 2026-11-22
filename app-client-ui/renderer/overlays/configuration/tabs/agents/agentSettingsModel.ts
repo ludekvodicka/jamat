@@ -44,16 +44,22 @@ export class AgentSettingsModel {
     return SettingsCard.isModified(state, (loaded, buffer) =>
       loaded.claude.yolo === buffer.claude.yolo
       && loaded.codex.yolo === buffer.codex.yolo
+      && loaded.antigravity.yolo === buffer.antigravity.yolo
       && loaded.claude.model === buffer.claude.model
       && loaded.codex.model === buffer.codex.model
+      && loaded.antigravity.model === buffer.antigravity.model
       && loaded.claude.effort === buffer.claude.effort
       && loaded.codex.effort === buffer.codex.effort
+      && loaded.antigravity.effort === buffer.antigravity.effort
       && loaded.claude.contextPanelPercent === buffer.claude.contextPanelPercent
       && loaded.codex.contextPanelPercent === buffer.codex.contextPanelPercent
+      && loaded.antigravity.contextPanelPercent === buffer.antigravity.contextPanelPercent
       && loaded.claude.autoCompactPercent === buffer.claude.autoCompactPercent
       && loaded.codex.autoCompactPercent === buffer.codex.autoCompactPercent
+      && loaded.antigravity.autoCompactPercent === buffer.antigravity.autoCompactPercent
       && loaded.claude.autoCompactEnabled === buffer.claude.autoCompactEnabled
       && loaded.codex.autoCompactEnabled === buffer.codex.autoCompactEnabled
+      && loaded.antigravity.autoCompactEnabled === buffer.antigravity.autoCompactEnabled
       && AgentSettings.processPriorityOf(loaded) === AgentSettings.processPriorityOf(buffer))
   }
 

@@ -23,17 +23,25 @@ describe('app-client-ui/app/agents/agentSettingsSection', () => {
     )
     expect(refusal).toContain('model')
     expect(AgentSettingsSection.spec.validate(
-      { claude: { yolo: true, model: 'claude-fable-5[1m]' }, codex: { yolo: false, model: 'o3' } },
+      {
+        claude: { yolo: true, model: 'claude-fable-5[1m]' },
+        codex: { yolo: false, model: 'o3' },
+        antigravity: { yolo: false, model: 'gemini-3-pro' },
+      },
     )).toBeNull()
   })
 
   it('names the effort in the refusal and latches a hand-written one it cannot read', () => {
     const refusal = AgentSettingsSection.spec.validate?.(
-      { claude: { yolo: true, effort: '--effort' }, codex: { yolo: false } } as never,
+      { claude: { yolo: true, effort: '--effort' }, codex: { yolo: false }, antigravity: { yolo: false } } as never,
     )
     expect(refusal).toContain('effort')
     expect(AgentSettingsSection.spec.validate?.(
-      { claude: { yolo: true, effort: 'ultra' }, codex: { yolo: false, effort: 'max' } },
+      {
+        claude: { yolo: true, effort: 'ultra' },
+        codex: { yolo: false, effort: 'max' },
+        antigravity: { yolo: false, effort: 'high' },
+      },
     )).toBeNull()
     expect(AgentSettingsSection.spec.damaged?.(
       { claude: { yolo: true, effort: 'hi gh' } },

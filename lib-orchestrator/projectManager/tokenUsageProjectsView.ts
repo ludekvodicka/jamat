@@ -1,6 +1,7 @@
 import { CatalogView, type CatalogReading } from './catalogView'
 import type { SessionUsageRecord } from '../sessionManager/sessionUsageView'
 import { PathCompare } from '../shared/pathCompare'
+import type { TokenAgentId } from '../tokenUsage/tokenUsageApi.types'
 
 export class TokenUsageProjectsView {
   private readonly catalog: CatalogReading
@@ -13,7 +14,7 @@ export class TokenUsageProjectsView {
     this.paths = new Map()
   }
 
-  project(cwd: string, nativeId: string, agentId: 'claude' | 'codex'): string {
+  project(cwd: string, nativeId: string, agentId: TokenAgentId): string {
     const record = this.records.find(item => item.agentId === agentId && item.nativeSessionId === nativeId)
     const path = cwd || record?.cwd || ''
     const owner = record?.ownerPath ?? this.records.find(item => item.ownerPath !== null && PathCompare.isInside(item.cwd, path))?.ownerPath

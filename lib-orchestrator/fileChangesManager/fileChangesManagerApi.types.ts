@@ -1,4 +1,4 @@
-export type FileChangesAgentId = 'claude' | 'codex'
+export type FileChangesAgentId = 'claude' | 'codex' | 'antigravity'
 export type FileChangesVcsId = 'git' | 'svn'
 export type FileChangesWorkingTreeSource = 'checkpoint' | 'svn' | 'worktree-base' | 'git'
 export type FileChangeStatus =

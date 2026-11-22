@@ -70,9 +70,10 @@ export class RateDebugModel {
   }
 
   static accountsOf(status: RateMonitorDebugStatus, agentId?: RateAgentId) {
-    const accounts = status.accounts ?? (Object.keys(status.providers) as RateAgentId[]).map(id => ({
-      key: { agentId: id, accountId: 'main' }, label: 'Main', provider: status.providers[id], source: null,
-    }))
+    const accounts = status.accounts ?? (Object.keys(status.providers) as RateAgentId[]).flatMap(id => {
+      const provider = status.providers[id]
+      return provider ? [{ key: { agentId: id, accountId: 'main' }, label: 'Main', provider, source: null }] : []
+    })
     return accounts.filter(account => agentId === undefined || account.key.agentId === agentId)
   }
 
@@ -81,6 +82,8 @@ export class RateDebugModel {
       return 'Claude'
     else if (agentId === 'codex')
       return 'Codex'
+    else if (agentId === 'antigravity')
+      return 'Antigravity'
     else
       throw new Error(`Unknown rate agent: ${JSON.stringify(agentId)}`)
   }

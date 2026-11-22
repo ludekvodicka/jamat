@@ -16,3 +16,4 @@ export type DebugSectionId =
   | 'rate'
   | 'rate-codex'
   | 'rate-claude'
+  | 'rate-antigravity'

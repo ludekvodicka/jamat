@@ -6,6 +6,7 @@ import { DocumentExport } from './shell/documentExport'
 import { DocumentPdfPrinter } from './shell/documentPdfPrinter'
 import { FileViewerDragExport } from './fileViewer/fileViewerDragExport'
 import { FileViewerExport } from './fileViewer/fileViewerExport'
+import type { FileMediaSource } from './fileViewer/fileMediaSource'
 import { LocalFileMediaSource } from './fileViewer/localFileMediaSource'
 import { RemoteFileMediaSource } from './fileViewer/remoteFileMediaSource'
 import { RemoteContentClient } from './remoteControl/remoteContentClient'
@@ -111,7 +112,7 @@ export class MainHub {
   private readonly debugIpc: ServiceDebugIpc
   private readonly autolauncherIpc: ServiceAutolauncherIpc
   private readonly remoteIpc: ServiceRemoteControlIpc
-  private readonly remoteDrag: FileViewerDragExport
+  private readonly mediaDrag: FileViewerDragExport
   private readonly remoteMedia: RemoteFileMediaSource
   private readonly contentClient: RemoteContentClient
   private readonly fileViewerProtocol: FileViewerProtocol
@@ -293,11 +294,12 @@ export class MainHub {
     })
     this.contentClient = new RemoteContentClient((endpointId, request) => this.gatewayCalls.call('outbound', 'session-view', [endpointId, request]))
     this.remoteMedia = new RemoteFileMediaSource(this.contentClient, (endpointId, epoch) => this.remoteState.outbound.some(endpoint => endpoint.remoteEndpointId === endpointId && endpoint.status === 'connected' && endpoint.connectionId === epoch))
-    this.remoteDrag = new FileViewerDragExport(join(ClientStatePaths.directory(configIdentity, channel), 'drag-exports'), this.remoteMedia)
-    this.fileViewerProtocol = new FileViewerProtocol({
+    const media: FileMediaSource = {
       metadata: (token) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).metadata(token),
       read: (token, version, offset, length, signal) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).read(token, version, offset, length, signal),
-    })
+    }
+    this.mediaDrag = new FileViewerDragExport(join(ClientStatePaths.directory(configIdentity, channel), 'drag-exports'), media)
+    this.fileViewerProtocol = new FileViewerProtocol(media)
     this.machineLoad = new MachineLoadSampler({
       emit: (event, at) => this.perf.record([{ ...event, v: 1, at, process: 'machine', pid: process.pid, build }]),
       roots: () => this.orchestrator.processTree().roots,
@@ -312,7 +314,7 @@ export class MainHub {
         ? this.workspaceWindows.windowIdOf(sender)
         : null
     this.fileViewerShellIpc = new ServiceFileViewerShellIpc({ path: (...args) => this.orchestrator.viewerPath(...args), imageDragPath: (...args) => this.orchestrator.viewerImageDragPath(...args) }, workspaceOwnerIdOf,
-      new DocumentExport(new DocumentPdfPrinter()))
+      new DocumentExport(new DocumentPdfPrinter()), this.mediaDrag)
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
       this.panelIndex,
@@ -352,7 +354,7 @@ export class MainHub {
         : 'https://github.com/ludekvodicka/jamat/releases',
     })
     const remoteNative = new RemoteNativeActions({
-      content: this.contentClient, media: this.remoteMedia, drag: this.remoteDrag,
+      content: this.contentClient, media: this.remoteMedia, drag: this.mediaDrag,
       icon: path => app.getFileIcon(path, { size: 'normal' }),
       selectFile: async defaultPath => {
         const filePath = await this.shell.saveDialog({ title: 'Save source file copy', defaultPath })
@@ -427,7 +429,7 @@ export class MainHub {
     this.orchestratorClient.beginQuit()
     const native = Promise.all([
       this.settleStep('the machine load sampler', () => this.machineLoad.stop()),
-      this.settleStep('the remote image exports', () => this.remoteDrag.dispose()),
+      this.settleStep('the image drag exports', () => this.mediaDrag.dispose()),
       this.settleStep('the updater', () => this.autoUpdate.stop()),
       this.settleStep('the performance monitor', () => this.perf.stop()),
     ])

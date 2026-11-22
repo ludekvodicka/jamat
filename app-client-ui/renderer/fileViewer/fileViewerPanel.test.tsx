@@ -562,4 +562,28 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     await waitFor(() => expect(fileViewer.text).toHaveBeenLastCalledWith('document-4'))
     await waitFor(() => expect(bodyOf().scrollTop).toBe(120))
   })
+
+  it('persists scroll offset in panel parameters so a remount restores where the reader was', async () => {
+    const first = PanelHarness.document()
+    const second = PanelHarness.document({ documentId: 'document-2' })
+    const { fileViewer } = PanelHarness.install([first, second])
+    const panel = PanelHarness.panel(PanelHarness.workspaceParams())
+    const view = render(<FileViewerPanel {...panel.props} />)
+    await screen.findByText('export const answer = 42')
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    body.scrollTop = 540
+    fireEvent.scroll(body)
+    fireEvent(body, new Event('scrollend'))
+
+    await waitFor(() => expect(panel.updateParameters).toHaveBeenCalledWith(expect.objectContaining({
+      restoreScroll: { documentKey: 'key-1', scrollTop: 540 },
+    })))
+    const saved = panel.updateParameters.mock.lastCall![0] as Record<string, unknown>
+    view.unmount()
+
+    const reopened = render(<FileViewerPanel {...PanelHarness.props(saved)} />)
+    await waitFor(() => expect(fileViewer.text).toHaveBeenLastCalledWith('document-2'))
+    const reopenedBody = reopened.container.querySelector<HTMLElement>('.file-viewer-body')!
+    await waitFor(() => expect(reopenedBody.scrollTop).toBe(540))
+  })
 })

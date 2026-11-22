@@ -50,6 +50,8 @@ export interface RateLimitSource {
   readonly accountId?: string
   readonly label?: string
   readonly minimumIntervalMilliseconds?: number
+  /** Feed-only provider (e.g. Antigravity statusLine): never polled, fed exclusively via `deps.readings`. */
+  readonly passive?: boolean
   read(): Promise<RateSourceReading>
   stop(): void
 }
@@ -58,6 +60,8 @@ export interface RateExternalReading {
   key: RateAccountKey
   at: number
   windows: readonly RateWindow[]
+  extras?: readonly RateExtra[]
+  raw?: unknown
   source: RateSampleSource
   backfill?: boolean
 }
@@ -75,6 +79,8 @@ export interface RateMonitorDeps {
    * thing a source sets off that no read asked for.
    */
   sources?: (hooks: RateSourceHooks) => readonly RateLimitSource[]
+  /** Sources kept alongside dynamic `accounts` sources (never removed by `updateAccounts`). */
+  extraSources?: readonly RateLimitSource[]
   readings?: () => Promise<readonly RateExternalReading[]>
   accounts?: () => Promise<readonly AccountView[]>
   sourceForAccount?: (account: AccountView, hooks: RateSourceHooks) => RateLimitSource
@@ -128,6 +134,7 @@ export class RateMonitor {
   private readonly deps: RateMonitorDeps
   private readonly hooks: RateSourceHooks
   private readonly sources: Map<string, RateLimitSource>
+  private readonly staticKeys = new Set<string>()
   private readonly readingSources = new Map<string, RateSampleSource>()
   private feedTimer: ReturnType<typeof setInterval> | null = null
   private feedReading = false
@@ -142,14 +149,15 @@ export class RateMonitor {
   private readonly providers: Record<string, RateProviderState> = {
     claude: { kind: 'never-read' },
     codex: { kind: 'never-read' },
+    antigravity: { kind: 'never-read' },
   }
   private readonly lastGood = new Map<string, RateMonitorCacheEntry>()
-  private readonly attemptAt: Record<string, number | null> = { claude: null, codex: null }
-  private readonly successAt: Record<string, number | null> = { claude: null, codex: null }
-  private readonly lastReason: Record<string, string | null> = { claude: null, codex: null }
-  private readonly oauthExpiresAt: Record<string, number | null> = { claude: null, codex: null }
-  private readonly extras: Record<string, readonly RateExtra[]> = { claude: [], codex: [] }
-  private readonly raw: Record<string, unknown> = { claude: null, codex: null }
+  private readonly attemptAt: Record<string, number | null> = { claude: null, codex: null, antigravity: null }
+  private readonly successAt: Record<string, number | null> = { claude: null, codex: null, antigravity: null }
+  private readonly lastReason: Record<string, string | null> = { claude: null, codex: null, antigravity: null }
+  private readonly oauthExpiresAt: Record<string, number | null> = { claude: null, codex: null, antigravity: null }
+  private readonly extras: Record<string, readonly RateExtra[]> = { claude: [], codex: [], antigravity: [] }
+  private readonly raw: Record<string, unknown> = { claude: null, codex: null, antigravity: null }
   private readonly inFlight = new Map<string, Promise<void>>()
   /**
    * Providers whose push arrived while a read was already out.
@@ -158,7 +166,7 @@ export class RateMonitor {
    * was about. One repeat when it lands is enough, and the flag is cleared before the repeat starts.
    */
   private readonly nudgedMidRead = new Set<string>()
-  private readonly nudgedReadAt: Record<string, number | null> = { claude: null, codex: null }
+  private readonly nudgedReadAt: Record<string, number | null> = { claude: null, codex: null, antigravity: null }
   private readonly nudgedWhileHidden = new Set<string>()
   private snapshotValue: RateMonitorSnapshot
   private serializedValue: string
@@ -181,6 +189,10 @@ export class RateMonitor {
     const sources = deps.sources?.(hooks) ?? (deps.accounts ? [] : RateMonitorSources.of(hooks))
     this.sources = new Map()
     for (const source of sources) this.addSource(source)
+    for (const source of deps.extraSources ?? []) {
+      this.addSource(source)
+      this.staticKeys.add(this.keyOf(source.agentId, source.accountId ?? 'main'))
+    }
     this.serializedValue = this.serializedSnapshot()
     this.snapshotValue = this.composeSnapshot()
   }
@@ -260,7 +272,7 @@ export class RateMonitor {
    */
   async refresh(): Promise<RateMonitorSnapshot> {
     await this.syncAccounts()
-    await this.readAll()
+    await Promise.all([this.readAll(), this.readFeed()])
     return this.snapshotValue
   }
 
@@ -280,6 +292,7 @@ export class RateMonitor {
       providers: {
         claude: this.debugProviderOf('claude'),
         codex: this.debugProviderOf('codex'),
+        antigravity: this.debugProviderOf('antigravity'),
       },
       accounts: [...this.sources].map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId ?? 'main' },
         label: this.labels.get(key) ?? 'Main', provider: this.debugProviderOf(key), source: this.readingSources.get(key) ?? (this.lastGood.has(key) ? 'poll' : null) })),
@@ -352,7 +365,7 @@ export class RateMonitor {
 
   private async readAll(): Promise<void> {
     await this.syncAccounts()
-    await Promise.all([...this.sources.keys()].map((agentId) => this.readProvider(agentId)))
+    await Promise.all([...this.sources].filter(([, source]) => !source.passive).map(([agentId]) => this.readProvider(agentId)))
   }
 
   /**
@@ -362,11 +375,12 @@ export class RateMonitor {
    */
   private async readDue(): Promise<void> {
     const now = this.now()
-    const due = [...this.sources.keys()].filter((agentId) => {
+    const due = [...this.sources].filter(([agentId, source]) => {
+      if (source.passive) return false
       if (this.nudgedWhileHidden.has(agentId)) return true
       const success = this.successAt[agentId]
       return success === null || now - success >= RateMonitor.pollMillisecondsConst
-    })
+    }).map(([agentId]) => agentId)
     this.nudgedWhileHidden.clear()
     await Promise.all(due.map((agentId) => this.readProvider(agentId)))
   }
@@ -378,7 +392,7 @@ export class RateMonitor {
    * instead of doubling it.
    */
   private readProvider(agentId: string): Promise<void> {
-    if (!this.started) return Promise.resolve()
+    if (!this.started || this.sources.get(agentId)?.passive) return Promise.resolve()
     const running = this.inFlight.get(agentId)
     if (running) return running
     if (this.flooredOut(agentId)) return Promise.resolve()
@@ -483,10 +497,15 @@ export class RateMonitor {
    */
   private save(): void {
     void this.cache.save({
-      providers: { claude: this.lastGood.get('claude'), codex: this.lastGood.get('codex') },
+      providers: {
+        claude: this.lastGood.get('claude'),
+        codex: this.lastGood.get('codex'),
+        antigravity: this.lastGood.get('antigravity'),
+      },
       attempts: {
         claude: this.attemptAt.claude ?? undefined,
         codex: this.attemptAt.codex ?? undefined,
+        antigravity: this.attemptAt.antigravity ?? undefined,
       },
       accounts: [...this.sources].filter(([, source]) => (source.accountId ?? 'main') !== 'main')
         .map(([key, source]) => ({ key: { agentId: source.agentId, accountId: source.accountId! },
@@ -502,6 +521,7 @@ export class RateMonitor {
   private hydrate(cached: RateMonitorCacheContent): void {
     this.hydrateProvider('claude', cached)
     this.hydrateProvider('codex', cached)
+    this.hydrateProvider('antigravity', cached)
     for (const account of cached.accounts ?? []) {
       const key = this.keyOf(account.key.agentId, account.key.accountId)
       if (this.sources.has(key)) this.hydrateEntry(key, account.entry, account.attemptAt)
@@ -557,7 +577,11 @@ export class RateMonitor {
     const now = this.now()
     return {
       revision: this.revision,
-      providers: { claude: this.providers.claude, codex: this.providers.codex },
+      providers: {
+        claude: this.providers.claude,
+        codex: this.providers.codex,
+        antigravity: this.providers.antigravity,
+      },
       accounts: [...this.sources].map(([key, source]) => ({
         key: { agentId: source.agentId, accountId: source.accountId ?? 'main' },
         label: this.labels.get(key) ?? 'Main', state: this.providers[key], estimated: this.estimateOf(key, now),
@@ -601,7 +625,9 @@ export class RateMonitor {
         if (!this.sources.has(key) || reading.at > this.now()
           || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity) || this.repeats(key, reading)
           || this.behind(key, reading)) continue
-        this.lastGood.set(key, { fetchedAt: reading.at, windows: reading.windows, extras: this.extras[key] })
+        if (reading.extras !== undefined) this.extras[key] = reading.extras
+        if (reading.raw !== undefined) this.raw[key] = reading.raw
+        this.lastGood.set(key, { fetchedAt: reading.at, windows: reading.windows, extras: this.extras[key] ?? [] })
         this.successAt[key] = reading.at
         this.lastReason[key] = null
         this.readingSources.set(key, reading.source)
@@ -670,7 +696,7 @@ export class RateMonitor {
       this.labels.set(key, account.label)
     }
     for (const [key, source] of this.sources) {
-      if (keys.has(key)) continue
+      if (keys.has(key) || this.staticKeys.has(key)) continue
       source.stop()
       this.sources.delete(key)
       this.labels.delete(key)

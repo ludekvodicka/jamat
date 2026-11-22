@@ -1,5 +1,5 @@
-import type { CommandId, CommandSurface, ValueCarryingCommandId, CommandDescriptor } from '../../lib-orchestrator/clientApi/commands.types'
-export type { CommandId, CommandMenuSection, CommandSurface, NewSessionPlace, CommandArgById, CommandArgOf, ValueCarryingCommandId, BareCommandId, CommandDescriptor } from '../../lib-orchestrator/clientApi/commands.types'
+import type { CommandContextSubmenu, CommandId, CommandSurface, ValueCarryingCommandId, CommandDescriptor } from '../../lib-orchestrator/clientApi/commands.types'
+export type { CommandContextSubmenu, CommandId, CommandMenuSection, CommandSurface, NewSessionPlace, CommandArgById, CommandArgOf, ValueCarryingCommandId, BareCommandId, CommandDescriptor } from '../../lib-orchestrator/clientApi/commands.types'
 import type { WindowRole } from './windowInfo'
 
 /** The one source of commands: the native menu, the renderer registry and the tab context menu read it. */
@@ -164,13 +164,13 @@ export class AppCommands {
       terminalSafe: true,
     },
     /*
-     * The three that start work BESIDE the session in front, and none of them starts it outright:
-     * every one opens the create card with what the clicked session already answers - its project,
-     * its name, and an agent - so the thing that arrives is a session of the tree with a number,
-     * not an unnamed plain tab.
+     * `New session` holds the three that start work BESIDE the clicked session and the fork. None
+     * starts it outright: each opens the create card with what the clicked session already answers -
+     * its project, its name, and an agent - so what arrives is a session of the tree with a number.
      *
-     * It made a plain tab until 2026-09-10, and was called `New blank session` for it. Nothing about
-     * it was blank except what it left out.
+     * The session's own agent comes first: `session.newBeside` keeps the clicked session's agent, and
+     * the menus label it with that agent's name. The other agents follow, the filter showing only
+     * those the session does not already run, and the fork sits below a line.
      */
     {
       id: 'session.newBeside',
@@ -179,26 +179,37 @@ export class AppCommands {
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
       contextMenuGroup: 1,
+      contextSubmenu: { id: 'new', group: 0 },
       terminalSafe: true,
     },
-    // Two commands rather than one with a title that changes: a catalog title is static, and the
-    // filter shows only the one naming the OTHER agent, so the menu still carries a single item.
     {
       id: 'session.newInClaude',
-      title: 'New session in Claude',
+      title: 'Claude',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
       contextMenuGroup: 1,
+      contextSubmenu: { id: 'new', group: 0 },
       terminalSafe: true,
     },
     {
       id: 'session.newInCodex',
-      title: 'New session in Codex',
+      title: 'Codex',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
       contextMenuGroup: 1,
+      contextSubmenu: { id: 'new', group: 0 },
+      terminalSafe: true,
+    },
+    {
+      id: 'session.newInAntigravity',
+      title: 'Antigravity',
+      target: 'renderer',
+      windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'],
+      contextMenuGroup: 1,
+      contextSubmenu: { id: 'new', group: 0 },
       terminalSafe: true,
     },
     {
@@ -208,17 +219,14 @@ export class AppCommands {
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
       contextMenuGroup: 1,
+      contextSubmenu: { id: 'new', group: 1 },
       terminalSafe: true,
     },
     /*
-     * The other half of the pair above, and the one that is offered only where the session has
-     * ENDED: a resume brings that very session back - its number, its name, its colour, its note -
-     * where a fork branches its conversation into a new one. Over a RUNNING session a resume means
-     * nothing, and what somebody asking for one there means is the fork.
-     *
-     * It opens the same card as the fork, so the two are one screen apart rather than two menu items
-     * that cannot see each other. `Restart session` below is the live half of the same operation and
-     * the two are never drawn together.
+     * The other half of the fork, offered only where the session has ENDED: a resume brings that
+     * very session back - its number, its name, its colour, its note - where a fork branches its
+     * conversation into a new one. `Restart session` is the live half of the same operation and the
+     * two are never drawn together.
      */
     {
       id: 'session.resume',
@@ -247,40 +255,48 @@ export class AppCommands {
       contextMenuGroup: 2,
       terminalSafe: true,
     },
-    {
-      id: 'session.showActions', title: 'Show session actions', target: 'renderer', windowScope: 'any',
-      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 2, terminalSafe: true,
-    },
     // The tab's way to the row's Finish; the tree row draws its own Finish button and menu item.
     {
       id: 'session.finish', title: 'Finish…', target: 'renderer', windowScope: 'any',
       surfaces: ['contextMenu'], contextMenuGroup: 2, terminalSafe: true,
     },
+    // `Show`: the views of a session that open in its own tab's split.
     {
-      id: 'session.commitSvn', title: 'Commit (SVN)…', target: 'renderer', windowScope: 'any',
-      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, terminalSafe: true,
+      id: 'session.showActions', title: 'Session actions', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'show', group: 0 }, terminalSafe: true,
+    },
+    // The project todo list is a file of this computer, so the menus offer it for local sessions only.
+    {
+      id: 'session.showTodos', title: 'Todo list', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'show', group: 0 }, terminalSafe: true,
     },
     {
-      id: 'session.commitGit', title: 'Commit (Git)…', target: 'renderer', windowScope: 'any',
-      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, terminalSafe: true,
+      id: 'session.commitGit', title: 'Git…', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'commit', group: 0 }, terminalSafe: true,
+    },
+    {
+      id: 'session.commitSvn', title: 'SVN…', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'commit', group: 0 }, terminalSafe: true,
     },
     {
       id: 'tab.openProjectFolder',
-      title: 'Open project folder',
+      title: 'Project folder',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
-      contextMenuGroup: 4,
+      contextMenuGroup: 3,
+      contextSubmenu: { id: 'open', group: 0 },
       terminalSafe: true,
     },
     // The project root, or the workspace file it holds: the main process chooses, from the session.
     {
       id: 'session.openInVsCode',
-      title: 'Open in VS Code',
+      title: 'VS Code',
       target: 'renderer',
       windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'],
-      contextMenuGroup: 4,
+      contextMenuGroup: 3,
+      contextSubmenu: { id: 'open', group: 0 },
       terminalSafe: true,
     },
     {
@@ -292,7 +308,7 @@ export class AppCommands {
       contextMenuGroup: 4,
       terminalSafe: true,
     },
-    // Beside the folder pair, because it is the third thing somebody copies out of a session, and
+    // Beside the folder copy, because it is the second thing somebody copies out of a session, and
     // the only one meant for a SECOND agent: the machine, the agent's own conversation id, the
     // directory and the transcript, in one block to paste.
     {
@@ -502,6 +518,19 @@ export class AppCommands {
       surfaces: ['menu'],
       terminalSafe: true,
     },
+    // The split of the local terminal in front; its sidebar's Todo tab opens the same item. Ctrl+D is
+    // the shell's end of input, asked for anyway: the list is opened far more often than a shell is
+    // ended with a key, and `exit` still ends one.
+    {
+      id: 'view.projectTodos',
+      title: 'Project Todo',
+      target: 'renderer',
+      windowScope: 'any',
+      menu: { section: 'view', group: 0 },
+      surfaces: ['menu'],
+      accelerator: 'Ctrl+D',
+      terminalSafe: true,
+    },
     {
       id: 'view.fileBack',
       title: 'Back in File Viewer',
@@ -657,6 +686,15 @@ export class AppCommands {
    */
   static carriesValue(id: CommandId): id is ValueCarryingCommandId {
     return AppCommands.byId(id).carriesValue === true
+  }
+
+  /** The label of a session context menu's parent row. */
+  static submenuTitleOf(id: CommandContextSubmenu): string {
+    if (id === 'new') return 'New session'
+    else if (id === 'show') return 'Show'
+    else if (id === 'commit') return 'Commit'
+    else if (id === 'open') return 'Open in'
+    else throw new Error(`Unknown context submenu: ${JSON.stringify(id satisfies never)}`)
   }
 
   static forSurface(surface: CommandSurface): readonly CommandDescriptor[] {

@@ -89,7 +89,8 @@ export function AccountsTab(props: ConfigurationTabProps): React.JSX.Element {
           onClick={() => void run({ kind: 'add', agentId: 'codex', label })}>Add Codex account</button>
       </form>
       <p>Complete sign-in in the terminal Jamat opens. Registration waits for the login command to finish successfully.
-        A Claude login opens no browser: copy its sign-in link below and open it in the browser profile of that account.</p>
+        A Claude login opens no browser: copy its sign-in link below and open it in the browser profile of that account.
+        Antigravity CLI stores a single sign-in in the OS credential manager, so only its Main account is shown.</p>
     </ConfigurationSection>
     <p>Identity comes from local account metadata. It does not verify current token validity.</p>
     {accounts === null && <p>Reading accounts…</p>}

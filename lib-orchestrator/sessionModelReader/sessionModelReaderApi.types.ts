@@ -3,7 +3,7 @@
  * file, so it has no imports at all and never grows one.
  */
 
-export type SessionModelAgentId = 'claude' | 'codex'
+export type SessionModelAgentId = 'claude' | 'codex' | 'antigravity'
 
 export interface SessionModelInfo {
   model: string

@@ -45,6 +45,7 @@ export class RateStatusModel {
   private static readonly namesConst: Readonly<Record<RateAgentId, string>> = {
     claude: 'Claude',
     codex: 'Codex',
+    antigravity: 'Antigravity',
   }
   /**
    * The letters V1's emptyLabel stood up, for a provider that has answered nothing at all. Both
@@ -54,10 +55,11 @@ export class RateStatusModel {
    */
   private static readonly unknownLettersConst: readonly string[]
     = [RateStatusModel.sessionLetterConst, RateStatusModel.weeklyLetterConst]
-  /** A page a provider publishes for its own limits, and Codex publishes none. */
+  /** A page a provider publishes for its own limits, and Codex/Antigravity publish none. */
   private static readonly usageUrlsConst: Readonly<Record<RateAgentId, string | null>> = {
     claude: 'https://claude.ai/settings/usage',
     codex: null,
+    antigravity: null,
   }
   private static readonly meterWidthConst = 10
   private static readonly spentGlyphConst = '█'
@@ -76,7 +78,7 @@ export class RateStatusModel {
     accountId = 'main',
   ): RateReading {
     const account = snapshot.accounts?.find(item => item.key.agentId === agentId && item.key.accountId === accountId)
-    const state = account?.state ?? (accountId === 'main' ? snapshot.providers[agentId] : { kind: 'never-read' as const })
+    const state = account?.state ?? (accountId === 'main' ? snapshot.providers[agentId] : undefined) ?? { kind: 'never-read' as const }
     const name = RateStatusModel.namesConst[agentId]
     const tooltip = RateStatusModel.tooltipOf(name, state, now)
     const usageUrl = RateStatusModel.usageUrlsConst[agentId]
@@ -114,22 +116,39 @@ export class RateStatusModel {
     const weekly = RateStatusModel.weeklyOf(windows)
     if (weekly !== null)
       segments.push(RateStatusModel.segmentOf(RateStatusModel.weeklyLetterConst, weekly))
+    const extras: { window: RateWindow; base: string }[] = []
     for (const window of windows) {
       if (window === session || window === weekly)
         continue
       // A window this bar has no letter for is still a number somebody is being measured by. Drawn
       // by its own length rather than dropped: dropping it is how a provider answering one window of
       // an unfamiliar length ended up under the placeholder that says nothing was read at all.
-      segments.push(RateStatusModel.segmentOf(
-        window.model === undefined
+      extras.push({
+        window,
+        base: window.model === undefined
           ? RateStatusModel.durationLetterOf(window.durationMinutes)
           : RateStatusModel.scopedLetterOf(window.model),
-        window,
-      ))
+      })
+    }
+    const baseCounts = new Map<string, number>()
+    for (const entry of extras)
+      baseCounts.set(entry.base, (baseCounts.get(entry.base) ?? 0) + 1)
+    for (const { window, base } of extras) {
+      const collides = (baseCounts.get(base) ?? 0) > 1
+      const letter = collides && window.model !== undefined
+        ? `${base}${RateStatusModel.windowTagOf(window.durationMinutes)}`
+        : base
+      segments.push(RateStatusModel.segmentOf(letter, window))
     }
     if (segments.length > 0)
       return segments
     return RateStatusModel.unknownLettersConst.map((letter) => ({ letter, usedPercent: null }))
+  }
+
+  private static windowTagOf(durationMinutes: number): string {
+    if (durationMinutes === RateMonitorLimits.sessionMinutes) return RateStatusModel.sessionLetterConst
+    if (durationMinutes === RateMonitorLimits.weeklyMinutes) return RateStatusModel.weeklyLetterConst
+    return RateStatusModel.durationLetterOf(durationMinutes)
   }
 
   /** `1440` becomes `24h`, `45` becomes `45m`: short enough to sit where a letter would. */
@@ -176,6 +195,8 @@ export class RateStatusModel {
    */
   private static scopedLetterOf(model: string): string {
     const initial = model.slice(0, 1).toUpperCase()
+    if (/^\d$/.test(initial) && model.length >= 2)
+      return `${initial}${model.slice(1, 2).toLowerCase()}`
     if (initial !== RateStatusModel.sessionLetterConst
       && initial !== RateStatusModel.weeklyLetterConst)
       return initial

@@ -4,7 +4,7 @@ import type { SnapinsSettings } from '../../../lib-orchestrator/snapins/snapinsA
 import { BuiltInSnapins } from '../../../lib-orchestrator/snapins/builtInSnapinsView'
 import { JsonShape } from '../../../lib-orchestrator/shared/jsonShape'
 
-const agent = z.enum(['claude', 'codex'])
+const agent = z.enum(['claude', 'codex', 'antigravity'])
 const kindValues = z.record(z.string(), z.union([z.number().finite(), z.string(), z.record(z.string(), z.string())]))
 const schema = z.strictObject({
   limit: z.number().int().min(1).max(32), agents: z.array(agent).refine((values) => new Set(values).size === values.length),

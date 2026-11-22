@@ -3,7 +3,7 @@
  * renderer compiles this file, so it has no imports at all and never grows one.
  */
 
-export type SessionTranscriptAgentId = 'claude' | 'codex'
+export type SessionTranscriptAgentId = 'claude' | 'codex' | 'antigravity'
 
 export interface SessionTranscriptMessage {
   role: 'user' | 'assistant'

@@ -44,6 +44,8 @@ export type TabControlCommand = { sharedOpen?: SessionOpen } & (
   | { kind: 'open-task'; requestId: string; panelId: string; item: TabControlTaskItem; target?: TerminalTarget }
   /** The session's workflow item in its own tab's split, made active. */
   | { kind: 'open-workflow'; requestId: string; panelId: string; sessionId: string; target?: TerminalTarget }
+  /** The project todo list in the session's own local tab's split, made active. */
+  | { kind: 'open-todos'; requestId: string; panelId: string; sessionId: string; view: 'split' | 'sidebar' }
   | { kind: 'focus-panel'; requestId: string; panelId: string }
   | { kind: 'close-panel'; requestId: string; panelId: string }
 )
@@ -58,6 +60,7 @@ export type TabControlCommandResult =
   | { kind: 'commit-opened'; panelId: string }
   | { kind: 'task-opened'; panelId: string }
   | { kind: 'workflow-opened'; panelId: string }
+  | { kind: 'todos-opened'; panelId: string }
   | { kind: 'failed'; detail: string }
 
 export interface TabControlAck {
@@ -81,9 +84,10 @@ export interface TabControlTaskItem {
 
 export interface TabControlTaskOpenedDto { kind: 'task-opened'; panelId: string; windowId: string }
 export interface TabControlWorkflowOpenedDto { kind: 'workflow-opened'; panelId: string; windowId: string }
+export interface TabControlTodosOpenedDto { kind: 'todos-opened'; panelId: string; windowId: string }
 export interface TabControlSnapinOpenedDto { kind: 'snapin-opened'; panelId: string; windowId: string }
 export type TabControlBrokerDto = RemoteControlTabCommandDto | RemoteControlTabOpenFileDto | RemoteControlTabOpenCommitDto
-  | TabControlTaskOpenedDto | TabControlWorkflowOpenedDto | TabControlSnapinOpenedDto
+  | TabControlTaskOpenedDto | TabControlWorkflowOpenedDto | TabControlTodosOpenedDto | TabControlSnapinOpenedDto
 export type TabControlBrokerResult = RemoteControlStepResult<TabControlBrokerDto>
 export type TabPanelSnapshot = Omit<RemoteControlTabDto, 'commitReviews'>
 export interface TabPanelOwner { windowId: string; panel: Omit<TabPanelSnapshot, 'windowId' | 'active'> }
@@ -98,6 +102,7 @@ export interface TabRequestPort {
   request(windowId: string, command: Extract<TabControlCommand, { kind: 'open-file' }>): Promise<RemoteControlStepResult<RemoteControlTabOpenFileDto>>
   request(windowId: string, command: Extract<TabControlCommand, { kind: 'open-task' }>): Promise<RemoteControlStepResult<TabControlTaskOpenedDto>>
   request(windowId: string, command: Extract<TabControlCommand, { kind: 'open-workflow' }>): Promise<RemoteControlStepResult<TabControlWorkflowOpenedDto>>
+  request(windowId: string, command: Extract<TabControlCommand, { kind: 'open-todos' }>): Promise<RemoteControlStepResult<TabControlTodosOpenedDto>>
   request(windowId: string, command: Extract<TabControlCommand, { kind: 'open-snapin' }>): Promise<RemoteControlStepResult<TabControlSnapinOpenedDto>>
-  request(windowId: string, command: Exclude<TabControlCommand, { kind: 'open-commit' | 'open-file' | 'open-task' | 'open-workflow' | 'open-snapin' }>): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
+  request(windowId: string, command: Exclude<TabControlCommand, { kind: 'open-commit' | 'open-file' | 'open-task' | 'open-workflow' | 'open-todos' | 'open-snapin' }>): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
 }

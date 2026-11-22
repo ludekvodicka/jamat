@@ -4,7 +4,7 @@ import { AppControl } from '../../ipc/appControl'
 import type {
   SessionOperation,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import { AppCommands, type CommandDescriptor } from '../../../shared/commands'
+import { AppCommands, type CommandDescriptor, type CommandId } from '../../../shared/commands'
 import type { CommandRegistry } from '../../commands/commandRegistry'
 import { SessionCommandRun } from '../../commands/sessionCommandRun'
 import { CommandMenuEntries } from '../../widgets/commandMenuEntries'
@@ -13,7 +13,7 @@ import {
   type ContextMenuEntry,
   type ContextMenuPosition,
 } from '../../widgets/contextMenu'
-import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
+import { SessionMenuLabels, type TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import { type SessionAction, SessionNodeState } from './sessionNodeState'
 
 /**
@@ -40,7 +40,7 @@ export function SessionsTreeContextMenu(props: {
   const currentAccount = props.facts.accountId ?? 'main'
   useEffect(() => {
     let active = true
-    if (agentId && props.facts.admits.includes('restart'))
+    if ((agentId === 'claude' || agentId === 'codex') && props.facts.admits.includes('restart'))
       void AppControl.value('accounts.list', { excludeAccount: { agentId, accountId: currentAccount } }).then(result => {
         if (active && result.ok) setAccounts(result.value.filter(account => account.agentId === agentId
           && account.accountId !== currentAccount && account.state === 'active'))
@@ -75,6 +75,14 @@ export function SessionsTreeContextMenu(props: {
  * row here IS a session.
  */
 export class SessionsTreeMenuItems {
+  /**
+   * What a paired computer's row leaves out: VS Code and the todo file are this computer's, and the
+   * remote row draws its own Session actions and copy items, gated on what the peer offers.
+   */
+  private static readonly localOnlyConst: ReadonlySet<CommandId> = new Set<CommandId>([
+    'session.openInVsCode', 'session.showTodos', 'session.showActions', 'session.copyReference',
+  ])
+
   static forNode(
     commands: CommandRegistry,
     sessionId: string,
@@ -84,10 +92,11 @@ export class SessionsTreeMenuItems {
     remoteEndpointId?: string,
   ): readonly ContextMenuEntry[] {
     const commandItems = CommandMenuEntries.of(
-      SessionsTreeMenuItems.applicable(facts).filter((entry) => !remoteEndpointId || entry.id !== 'session.openInVsCode'),
+      SessionsTreeMenuItems.applicable(facts).filter((entry) => !remoteEndpointId || !SessionsTreeMenuItems.localOnlyConst.has(entry.id)),
       facts.color,
       {
         run: (id) => SessionCommandRun.at(commands, id, sessionId, remoteEndpointId),
+        labelOf: SessionMenuLabels.of(facts.agentId),
         setColor: (color) => commands.execute('session.setColor', { color, sessionId, ...(remoteEndpointId ? { remoteEndpointId } : {}) }),
       },
     )
@@ -180,11 +189,13 @@ export class SessionsTreeMenuItems {
       // session the row already is.
       .filter((descriptor) => descriptor.id !== 'session.newBeside'
         || placed && admits('newBeside'))
-      // Only ever the OTHER agent: the one this session already runs is not an alternative to itself.
+      // Only ever OTHER agents: the one this session already runs is not an alternative to itself.
       .filter((descriptor) => descriptor.id !== 'session.newInClaude'
-        || placed && admits('newBeside') && facts.agentId === 'codex')
+        || placed && admits('newBeside') && facts.agentId !== null && facts.agentId !== 'claude')
       .filter((descriptor) => descriptor.id !== 'session.newInCodex'
-        || placed && admits('newBeside') && facts.agentId === 'claude')
+        || placed && admits('newBeside') && facts.agentId !== null && facts.agentId !== 'codex')
+      .filter((descriptor) => descriptor.id !== 'session.newInAntigravity'
+        || placed && admits('newBeside') && facts.agentId !== null && facts.agentId !== 'antigravity')
       .filter((descriptor) => descriptor.id !== 'session.fork' || placed && admits('fork'))
       // Resume uses the selected record directly; only creation commands need a launcher binding.
       .filter((descriptor) => descriptor.id !== 'session.resume'

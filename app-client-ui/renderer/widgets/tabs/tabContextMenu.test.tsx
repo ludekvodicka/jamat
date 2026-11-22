@@ -7,6 +7,7 @@ import type {
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { AppCommands, type CommandId } from '../../../shared/commands'
 import { CommandRegistry } from '../../commands/commandRegistry'
+import { ContextMenuReading } from '../fixtures/contextMenuReading'
 import { TabContextMenu, type TabSessionFacts } from './tabContextMenu'
 
 function titleOf(id: CommandId): string {
@@ -115,11 +116,24 @@ class MenuView {
     return document.querySelector('.jamat-tab-menu') !== null
   }
 
+  private static readonly reading = new ContextMenuReading('.jamat-tab-menu', [titleOf('session.setColor')])
+
+  /** A row at the top level or inside a submenu, whose row is then entered. */
   static itemTitled(title: string): HTMLElement {
-    const index = MenuView.titles().indexOf(title)
-    if (index < 0)
-      throw new Error(`The menu shows no item titled ${JSON.stringify(title)}`)
-    return MenuView.items()[index]
+    return MenuView.reading.itemTitled(title)
+  }
+
+  /** Every label, the rows of the command submenus included. */
+  static all(): string[] {
+    return MenuView.reading.all()
+  }
+
+  static outline(): string[] {
+    return MenuView.reading.outline()
+  }
+
+  static childrenOf(title: string): string[] {
+    return MenuView.reading.childrenOf(title)
   }
 
   /** Opens the appearance submenu and answers with the labels it holds. */
@@ -136,21 +150,27 @@ class MenuView {
 describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('opens actions below Compact for local sessions, including ended ones with no admitted operation', () => {
+  it('shows Session actions and the todo list under Show, the todo list for local sessions only', () => {
     const commands = new CommandRegistry()
     const opened = vi.fn()
+    const todos = vi.fn()
     commands.register('session.showActions', opened)
+    commands.register('session.showTodos', todos)
     const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
-    const titles = MenuView.titles()
-    expect(titles[titles.indexOf('Compact session') + 1]).toBe('Show session actions')
-    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
+    fireEvent.click(MenuView.itemTitled('Session actions'))
     expect(opened).toHaveBeenCalledWith({ sessionId: 'clicked' })
     view.unmount()
+    const local = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
+    fireEvent.click(MenuView.itemTitled('Todo list'))
+    expect(todos).toHaveBeenCalledWith({ sessionId: 'clicked' })
+    local.unmount()
     const ended = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'ended' }} facts={factsOf({ ended: true, admits: [], directoryPath: null })} />)
-    expect(MenuView.titles()).toContain('Show session actions')
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
     ended.unmount()
     render(<MenuHost commands={commands} panelKey="terminal" params={{ target: { kind: 'remote', sessionId: 'remote', remoteEndpointId: 'peer' } }} facts={factsOf()} />)
-    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions'])
+    fireEvent.click(MenuView.itemTitled('Session actions'))
     expect(opened).toHaveBeenLastCalledWith({ sessionId: 'remote', remoteEndpointId: 'peer' })
   })
 
@@ -161,7 +181,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     commands.register('session.finish', finish)
     const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf({ finish: true })} />)
     const titles = MenuView.titles()
-    expect(titles[titles.indexOf('Show session actions') + 1]).toBe('Finish…')
+    expect(titles[titles.indexOf('Compact session') + 1]).toBe('Finish…')
     fireEvent.click(MenuView.itemTitled('Finish…'))
     expect(finish).toHaveBeenCalledWith({ sessionId: 'clicked' })
     view.unmount()
@@ -171,7 +191,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       { facts: factsOf({ finish: true }), panelKey: 'fileViewer' },
     ]) {
       const other = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} {...options} />)
-      expect(MenuView.titles()).not.toContain('Finish…')
+      expect(MenuView.all()).not.toContain('Finish…')
       other.unmount()
     }
   })
@@ -181,17 +201,17 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     const run = vi.fn()
     commands.register('session.commitSvn', run)
     const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
-    fireEvent.click(MenuView.itemTitled('Commit (SVN)…'))
+    expect(MenuView.childrenOf('Commit')).toEqual(['Git…', 'SVN…'])
+    fireEvent.click(MenuView.itemTitled('SVN…'))
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'clicked' }))
     view.unmount()
     const remote = render(<MenuHost commands={commands} panelKey="terminal" params={{ target: { kind: 'remote', sessionId: 'clicked', remoteEndpointId: 'peer' } }} facts={factsOf()} />)
-    fireEvent.click(MenuView.itemTitled('Commit (SVN)…'))
+    fireEvent.click(MenuView.itemTitled('SVN…'))
     expect(run).toHaveBeenLastCalledWith({ sessionId: 'clicked', remoteEndpointId: 'peer' })
     remote.unmount()
     for (const options of [{ facts: factsOf({ ended: true }) }]) {
       const other = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} {...options} />)
-      expect(MenuView.titles()).not.toContain('Commit (SVN)…')
-      expect(MenuView.titles()).not.toContain('Commit (Git)…')
+      expect(MenuView.titles()).not.toContain('Commit')
       other.unmount()
     }
   })
@@ -207,23 +227,28 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).toEqual([
+    expect(MenuView.outline()).toEqual([
       // The catalog's order, so the colour opens this menu exactly as it opens the tree's.
       'Session Appearance',
       'Session properties…',
-      // The launcher pre-bound to this tab's project: it starts nothing by itself, which is why it
-      // is above the three that do.
-      'New session',
-      // The other agent only: this tab is already Claude's.
-      'New session in Codex',
-      'Fork session',
+      // This tab's own agent first, then the others, and the fork below a line.
+      'New session ›',
+      '  Claude',
+      '  Codex',
+      '  Antigravity',
+      '  ---',
+      '  Fork session',
       'Restart session',
       'Compact session',
-      'Show session actions',
-      'Commit (SVN)…',
-      'Commit (Git)…',
-      'Open project folder',
-      'Open in VS Code',
+      'Show ›',
+      '  Session actions',
+      '  Todo list',
+      'Commit ›',
+      '  Git…',
+      '  SVN…',
+      'Open in ›',
+      '  Project folder',
+      '  VS Code',
       'Copy project folder',
       'Copy unique session id',
       'Close Tab',
@@ -232,7 +257,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Split Down',
       'Move to New Window',
     ])
-    expect(MenuView.titles()).not.toContain(titleOf('tab.resetLayout'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.resetLayout'))
   })
 
   it('offers the other agent, whichever this one is', () => {
@@ -245,8 +270,8 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).toContain(titleOf('session.newInClaude'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.newInCodex'))
+    // `New session` keeps this tab's agent and reads as it; the other agents follow.
+    expect(MenuView.childrenOf('New session')).toEqual(['Codex', 'Claude', 'Antigravity', '---', 'Fork session'])
   })
 
   /**
@@ -263,8 +288,8 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
-    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
+    expect(MenuView.all()).not.toContain(titleOf('session.newHere'))
+    expect(MenuView.all()).toContain(titleOf('session.newBeside'))
   })
 
   /**
@@ -281,10 +306,10 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.restart'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.compact'))
+    expect(MenuView.all()).toContain(titleOf('session.newBeside'))
+    expect(MenuView.all()).not.toContain(titleOf('session.fork'))
+    expect(MenuView.all()).not.toContain(titleOf('session.restart'))
+    expect(MenuView.all()).not.toContain(titleOf('session.compact'))
   })
 
   it('offers no session action at all on a tab that is not a session panel', () => {
@@ -297,12 +322,12 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).not.toContain(titleOf('session.details'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.setColor'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.copyReference'))
+    expect(MenuView.all()).not.toContain(titleOf('session.details'))
+    expect(MenuView.all()).not.toContain(titleOf('session.setColor'))
+    expect(MenuView.all()).not.toContain(titleOf('session.fork'))
+    expect(MenuView.all()).not.toContain(titleOf('session.copyReference'))
     // What the file viewer's own tab still offers is unaffected.
-    expect(MenuView.titles()).toContain(titleOf('tab.openProjectFolder'))
+    expect(MenuView.all()).toContain(titleOf('tab.openProjectFolder'))
   })
 
   /**
@@ -318,7 +343,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         facts={factsOf({ admits: [] })}
       />,
     )
-    expect(MenuView.titles()).toContain(titleOf('session.details'))
+    expect(MenuView.all()).toContain(titleOf('session.details'))
 
     cleanup()
     render(
@@ -329,7 +354,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         facts={null}
       />,
     )
-    expect(MenuView.titles()).not.toContain(titleOf('session.details'))
+    expect(MenuView.all()).not.toContain(titleOf('session.details'))
   })
 
   it('offers copying the folder only where there is a path to copy', () => {
@@ -342,13 +367,13 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       />,
     )
 
-    expect(MenuView.titles()).not.toContain(titleOf('tab.copyProjectFolder'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.copyProjectFolder'))
   })
 
   it('offers VS Code only on a local session tab that has a directory', () => {
     const vsCode = titleOf('session.openInVsCode')
     const view = render(<MenuHost commands={new CommandRegistry()} panelKey="terminal" params={{ sessionId: 's1' }} facts={factsOf()} />)
-    expect(MenuView.titles()).toContain(vsCode)
+    expect(MenuView.all()).toContain(vsCode)
     view.unmount()
     for (const options of [
       { facts: factsOf({ directoryPath: null }) },
@@ -356,31 +381,31 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       { facts: factsOf(), panelKey: 'fileViewer' },
     ]) {
       const other = render(<MenuHost commands={new CommandRegistry()} panelKey="terminal" params={{ sessionId: 's1' }} {...options} />)
-      expect(MenuView.titles()).not.toContain(vsCode)
+      expect(MenuView.all()).not.toContain(vsCode)
       other.unmount()
     }
   })
 
   it('offers the project folder only on a tab bound to a session', () => {
     render(<MenuHost commands={new CommandRegistry()} params={{ sessionId: 's1' }} />)
-    expect(MenuView.titles()).toContain(titleOf('tab.openProjectFolder'))
+    expect(MenuView.all()).toContain(titleOf('tab.openProjectFolder'))
 
     cleanup()
     render(<MenuHost commands={new CommandRegistry()} params={{}} />)
-    expect(MenuView.titles()).not.toContain(titleOf('tab.openProjectFolder'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.openProjectFolder'))
 
     cleanup()
     render(<MenuHost commands={new CommandRegistry()} params={{ sessionId: '' }} />)
-    expect(MenuView.titles()).not.toContain(titleOf('tab.openProjectFolder'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.openProjectFolder'))
   })
 
   it('does not offer moving Home to a new window', () => {
     render(<MenuHost commands={new CommandRegistry()} panelKey="welcome" />)
-    expect(MenuView.titles()).not.toContain(titleOf('tab.moveToNewWindow'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.moveToNewWindow'))
 
     cleanup()
     render(<MenuHost commands={new CommandRegistry()} panelKey="probe" />)
-    expect(MenuView.titles()).toContain(titleOf('tab.moveToNewWindow'))
+    expect(MenuView.all()).toContain(titleOf('tab.moveToNewWindow'))
   })
 
   it('separates the blocks, and only where both sides have something in them', () => {
@@ -551,7 +576,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         />,
       )
 
-      expect(MenuView.titles()).toContain('Keep Open')
+      expect(MenuView.all()).toContain('Keep Open')
     })
 
     it('is not offered on a tab that already stays', () => {
@@ -564,7 +589,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         />,
       )
 
-      expect(MenuView.titles()).not.toContain('Keep Open')
+      expect(MenuView.all()).not.toContain('Keep Open')
     })
 
     // A plain tab can never be the preview, so the item cannot reach the one tab whose close ends
@@ -579,7 +604,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
         />,
       )
 
-      expect(MenuView.titles()).not.toContain('Keep Open')
+      expect(MenuView.all()).not.toContain('Keep Open')
     })
 
     it('runs the command with no argument, on the tab the menu made active', () => {

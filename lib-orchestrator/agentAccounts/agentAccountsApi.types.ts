@@ -1,4 +1,4 @@
-export type AccountAgentId = 'claude' | 'codex'
+export type AccountAgentId = 'claude' | 'codex' | 'antigravity'
 export type AccountId = string
 export interface AccountIdentity { key: string; label: string }
 export interface AccountLaunchSettings { yolo?: boolean; model?: string; effort?: string }

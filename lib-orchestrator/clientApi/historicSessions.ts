@@ -1,6 +1,8 @@
 import type { CategoryInfo, ProjectEntry, ProviderSessionSummary } from '../projectManager/projectManagerApi.types'
+import type { SessionAgentId } from '../sessionManager/sessionManagerApi.types'
 
-export interface HistoricSession extends Omit<ProviderSessionSummary, 'lastActivity'> {
+export interface HistoricSession extends Omit<ProviderSessionSummary, 'agentId' | 'lastActivity'> {
+  agentId: SessionAgentId
   lastActivity: number | null
   /**
    * When the session ended, as AppJamat recorded it. Null while it runs, and null for a session

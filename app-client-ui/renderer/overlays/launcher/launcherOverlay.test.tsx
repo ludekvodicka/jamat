@@ -1178,6 +1178,7 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
         .toEqual([
           'Claude',
           'Codex',
+          'Antigravity',
           'Raw',
           'Feature request',
           'Continue/Fork',
@@ -1409,6 +1410,56 @@ describe('app-client-ui/renderer/overlays/launcher/launcherOverlay', () => {
 
       fireEvent.keyDown(card(view.container), { key: 'w' })
       expect(chosen(view.container)).toContain('None')
+    })
+
+    it('configures the whole dialog with unique shortcuts (e.g. name, Down, A-F-1-Enter) without moving rows', async () => {
+      const stub = new ProjectsStub().hasSessions(LauncherFixtures.history())
+      stub.accounts = Promise.resolve([
+        { agentId: 'claude', accountId: 'main', label: 'Main', isMain: true, state: 'active', identity: null, profileProblem: null },
+        { agentId: 'claude', accountId: 'mhc', label: 'MHC-Claude', isMain: false, state: 'active', identity: null, profileProblem: null },
+        { agentId: 'antigravity', accountId: 'agy-1', label: 'Agy Main', isMain: true, state: 'active', identity: null, profileProblem: null },
+        { agentId: 'antigravity', accountId: 'agy-2', label: 'Agy Work', isMain: false, state: 'active', identity: null, profileProblem: null },
+      ])
+      const { view } = await openCreate(stub)
+      const name = nameField(view.container)
+
+      // Typing letters into Name still writes into the field rather than firing shortcuts.
+      fireEvent.change(name, { target: { value: 'quick run' } })
+      fireEvent.keyDown(name, { key: 'a' })
+      expect(chosen(view.container)).toContain('Claude')
+
+      // One ArrowDown leaves Name, then unique keys configure every row with no further arrows.
+      fireEvent.keyDown(name, { key: 'ArrowDown' })
+      fireEvent.keyDown(card(view.container), { key: 'a' })
+      fireEvent.keyDown(card(view.container), { key: 'f' })
+      fireEvent.keyDown(card(view.container), { key: 'w' })
+      fireEvent.keyDown(card(view.container), { key: '2' })
+      expect(chosen(view.container)).toEqual(['Antigravity', 'Feature request', 'Worktree', 'Agy Work'])
+
+      // 0 explicitly picks None, 1 picks the first account, O switches to Continue/Fork, X/* filter, R returns to Raw.
+      fireEvent.keyDown(card(view.container), { key: '0' })
+      fireEvent.keyDown(card(view.container), { key: '1' })
+      expect(chosen(view.container)).toEqual(['Antigravity', 'Feature request', 'None', 'Agy Main'])
+
+      fireEvent.keyDown(card(view.container), { key: 'o' })
+      await waitFor(() => expect(chosen(view.container)).toContain('Continue/Fork'))
+      fireEvent.keyDown(card(view.container), { key: 'x' })
+      expect(chosen(view.container)).toContain('Codex')
+      fireEvent.keyDown(card(view.container), { key: '*' })
+      expect(chosen(view.container)).toContain('All')
+      fireEvent.keyDown(card(view.container), { key: 'r' })
+      expect(chosen(view.container)).toContain('Raw')
+
+      // N still jumps back to Name, and Enter launches the configured flow directly.
+      fireEvent.keyDown(card(view.container), { key: 'n' })
+      expect(document.activeElement).toBe(nameField(view.container))
+      fireEvent.keyDown(nameField(view.container), { key: 'ArrowDown' })
+      fireEvent.keyDown(card(view.container), { key: 'a' })
+      fireEvent.keyDown(card(view.container), { key: 'f' })
+      fireEvent.keyDown(card(view.container), { key: '1' })
+      fireEvent.keyDown(card(view.container), { key: 'Enter' })
+      await waitFor(() =>
+        expect(view.container.querySelector('.jamat-launcher-flows')).toBeTruthy())
     })
 
     it('goes back to the projects on Escape without closing the card', async () => {

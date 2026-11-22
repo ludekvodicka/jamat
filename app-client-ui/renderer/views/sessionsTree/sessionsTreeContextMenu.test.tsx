@@ -7,6 +7,7 @@ import type {
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { AppCommands, type CommandId } from '../../../shared/commands'
 import { CommandRegistry } from '../../commands/commandRegistry'
+import { ContextMenuReading } from '../../widgets/fixtures/contextMenuReading'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import type { SessionAction } from './sessionNodeState'
 import { SessionsTreeContextMenu } from './sessionsTreeContextMenu'
@@ -93,11 +94,24 @@ class MenuView {
     return document.querySelector('.jamat-tab-menu') !== null
   }
 
+  private static readonly reading = new ContextMenuReading('.jamat-tab-menu', [titleOf('session.setColor')])
+
+  /** A row at the top level or inside a submenu, whose row is then entered. */
   static itemTitled(title: string): HTMLElement {
-    const index = MenuView.titles().indexOf(title)
-    if (index < 0)
-      throw new Error(`The menu shows no item titled ${JSON.stringify(title)}`)
-    return MenuView.items()[index]
+    return MenuView.reading.itemTitled(title)
+  }
+
+  /** Every label, the rows of the command submenus included. */
+  static all(): string[] {
+    return MenuView.reading.all()
+  }
+
+  static outline(): string[] {
+    return MenuView.reading.outline()
+  }
+
+  static childrenOf(title: string): string[] {
+    return MenuView.reading.childrenOf(title)
   }
 
   /** Opens the appearance submenu and answers with the item that reads the given label. */
@@ -122,44 +136,48 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('shows the session commands that apply to a live claude row, in catalog order', () => {
     render(<MenuHost commands={new CommandRegistry()} />)
 
-    expect(MenuView.titles()).toEqual([
+    expect(MenuView.outline()).toEqual([
       // The colour first: it is the one row of this menu a person reaches for again and again.
       'Session Appearance',
       'Session properties…',
-      // The launcher pre-bound to this session's project: it starts nothing by itself, which is why
-      // it is above the three that do.
-      'New session',
-      // The other agent only: this session is already Claude's.
-      'New session in Codex',
-      'Fork session',
+      // This session's own agent first, then the others, and the fork below a line.
+      'New session ›',
+      '  Claude',
+      '  Codex',
+      '  Antigravity',
+      '  ---',
+      '  Fork session',
       'Restart session',
       'Compact session',
-      'Show session actions',
-      'Commit (SVN)…',
-      'Commit (Git)…',
-      'Open project folder',
-      'Open in VS Code',
+      'Show ›',
+      '  Session actions',
+      '  Todo list',
+      'Commit ›',
+      '  Git…',
+      '  SVN…',
+      'Open in ›',
+      '  Project folder',
+      '  VS Code',
       'Copy project folder',
       'Copy unique session id',
     ])
-    expect(MenuView.titles()).not.toContain(titleOf('tab.close'))
-    expect(MenuView.titles()).not.toContain(titleOf('tab.closeOthers'))
-    expect(MenuView.titles()).not.toContain(titleOf('tab.splitRight'))
-    expect(MenuView.titles()).not.toContain(titleOf('tab.moveToNewWindow'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.close'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.closeOthers'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.splitRight'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.moveToNewWindow'))
     expect(MenuView.sections()).toEqual([
       ['Session Appearance', 'Session properties…'],
-      ['New session', 'New session in Codex', 'Fork session'],
-      ['Restart session', 'Compact session', 'Show session actions'],
-      ['Commit (SVN)…', 'Commit (Git)…'],
-      ['Open project folder', 'Open in VS Code', 'Copy project folder', 'Copy unique session id'],
+      ['New session'],
+      ['Restart session', 'Compact session'],
+      ['Show', 'Commit', 'Open in'],
+      ['Copy project folder', 'Copy unique session id'],
     ])
   })
 
   it('offers the other agent, whichever this one is', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ agentId: 'codex' }} />)
 
-    expect(MenuView.titles()).toContain(titleOf('session.newInClaude'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.newInCodex'))
+    expect(MenuView.childrenOf('New session')).toEqual(['Codex', 'Claude', 'Antigravity', '---', 'Fork session'])
   })
 
   /**
@@ -169,15 +187,19 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('keeps the record and folder commands on a row whose session admits nothing', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ admits: [] }} />)
 
-    expect(MenuView.titles()).toEqual([
+    expect(MenuView.outline()).toEqual([
       'Session Appearance',
       'Session properties…',
       // Not gated on `admits` either: the launcher creates from scratch rather than beside this one.
-      'Show session actions',
-      'Commit (SVN)…',
-      'Commit (Git)…',
-      'Open project folder',
-      'Open in VS Code',
+      'Show ›',
+      '  Session actions',
+      '  Todo list',
+      'Commit ›',
+      '  Git…',
+      '  SVN…',
+      'Open in ›',
+      '  Project folder',
+      '  VS Code',
       'Copy project folder',
       // Gated on nothing either, and the one item on this row a SECOND agent is meant to read: an
       // ended session is exactly the one somebody hands over.
@@ -188,11 +210,11 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('leaves out every session action the session does not admit, and keeps the rest', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ admits: ['newBeside'] }} />)
 
-    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
-    expect(MenuView.titles()).toContain(titleOf('session.newInCodex'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.restart'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.compact'))
+    expect(MenuView.all()).toContain(titleOf('session.newBeside'))
+    expect(MenuView.all()).toContain(titleOf('session.newInCodex'))
+    expect(MenuView.all()).not.toContain(titleOf('session.fork'))
+    expect(MenuView.all()).not.toContain(titleOf('session.restart'))
+    expect(MenuView.all()).not.toContain(titleOf('session.compact'))
   })
 
   it('moves the secondary tree operations into final sections and keeps Finish on the row', () => {
@@ -206,14 +228,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       onAction={onAction}
     />)
 
-    expect(MenuView.titles()).not.toContain('Finish')
+    expect(MenuView.all()).not.toContain('Finish')
     // Close is the row's own button too, for the same reason Finish is: one click, no question.
-    expect(MenuView.titles()).not.toContain('Close')
-    expect(MenuView.titles()).not.toContain('Restart session')
+    expect(MenuView.all()).not.toContain('Close')
+    expect(MenuView.all()).not.toContain('Restart session')
     // Rerun left this block on 2026-09-10: bringing a stopped session back is `Resume session` in
     // the catalog block above, and one operation under two names on one menu is what that block's
     // own rule already forbade.
-    expect(MenuView.titles()).not.toContain('Rerun')
+    expect(MenuView.all()).not.toContain('Rerun')
     expect(MenuView.sections().slice(-2)).toEqual([['Retry setup'], ['Remove…']])
 
     fireEvent.click(MenuView.itemTitled('Remove…'))
@@ -222,18 +244,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.isOpen()).toBe(false)
   })
 
-  it('opens actions below Compact and offers them for ended sessions with an empty history', () => {
+  it('shows Session actions under Show and offers them for ended sessions with an empty history', () => {
     const commands = new CommandRegistry()
     const opened = vi.fn()
     commands.register('session.showActions', opened)
     const view = render(<MenuHost commands={commands} />)
-    const titles = MenuView.titles()
-    expect(titles[titles.indexOf('Compact session') + 1]).toBe('Show session actions')
-    fireEvent.click(MenuView.itemTitled('Show session actions'))
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
+    fireEvent.click(MenuView.itemTitled('Session actions'))
     expect(opened).toHaveBeenCalledWith({ sessionId: 's1' })
     view.unmount()
     render(<MenuHost commands={commands} facts={{ ended: true, admits: [], directoryPath: null }} />)
-    expect(MenuView.titles()).toContain('Show session actions')
+    expect(MenuView.all()).toContain('Session actions')
   })
 
   it('puts Finish session and Finish and prune session in a section under Restart session of a running row', () => {
@@ -243,7 +264,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     const sections = MenuView.sections()
     const restart = sections.findIndex((section) => section.includes('Restart session'))
     expect(sections[restart + 1]).toEqual(['Finish session', 'Finish and prune session…'])
-    expect(MenuView.titles()).not.toContain('Prune session…')
+    expect(MenuView.all()).not.toContain('Prune session…')
     fireEvent.click(MenuView.itemTitled('Finish session'))
 
     expect(onAction).toHaveBeenCalledWith('finalize')
@@ -253,7 +274,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('leaves Memory files out of the row menu', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ ended: true }} actions={['remove']} />)
 
-    expect(MenuView.titles()).not.toContain('Memory files…')
+    expect(MenuView.all()).not.toContain('Memory files…')
     expect(MenuView.sections().at(-1)).toEqual(['Remove…'])
   })
 
@@ -292,10 +313,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('offers copying the folder only where there is a path to copy, and opening it regardless', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ directoryPath: null }} />)
 
-    expect(MenuView.titles()).not.toContain(titleOf('tab.copyProjectFolder'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.openInVsCode'))
+    expect(MenuView.all()).not.toContain(titleOf('tab.copyProjectFolder'))
+    expect(MenuView.all()).not.toContain(titleOf('session.openInVsCode'))
     // The open needs only the session, exactly as the tab menu asks only for a session's tab.
-    expect(MenuView.titles()).toContain(titleOf('tab.openProjectFolder'))
+    expect(MenuView.all()).toContain(titleOf('tab.openProjectFolder'))
   })
 
   /*
@@ -306,10 +327,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('leaves out the whole start-beside block on a row with no directory', () => {
     render(<MenuHost commands={new CommandRegistry()} facts={{ directoryPath: null }} />)
 
-    expect(MenuView.titles()).not.toContain(titleOf('session.newBeside'))
-    expect(MenuView.titles()).not.toContain(titleOf('session.fork'))
+    expect(MenuView.all()).not.toContain(titleOf('session.newBeside'))
+    expect(MenuView.all()).not.toContain(titleOf('session.fork'))
     // Still the whole point of the row: naming it and reading it ask nothing of a directory.
-    expect(MenuView.titles()).toContain(titleOf('session.details'))
+    expect(MenuView.all()).toContain(titleOf('session.details'))
   })
 
   /*
@@ -319,8 +340,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
   it('leaves the project row’s pre-bound launcher out of a session row’s menu', () => {
     render(<MenuHost commands={new CommandRegistry()} />)
 
-    expect(MenuView.titles()).not.toContain(titleOf('session.newHere'))
-    expect(MenuView.titles()).toContain(titleOf('session.newBeside'))
+    expect(MenuView.all()).not.toContain(titleOf('session.newHere'))
+    expect(MenuView.all()).toContain(titleOf('session.newBeside'))
   })
 
   // The whole reason this menu exists: the command acts on the CLICKED row's session, which may

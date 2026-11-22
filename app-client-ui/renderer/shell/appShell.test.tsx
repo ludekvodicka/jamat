@@ -444,6 +444,7 @@ class AppClientStub {
         copyPath: () => { throw new Error('No test of the shell copies a file path') },
         exportDocument: () => { throw new Error('No test of the shell exports a document') },
         startImageDrag: () => { throw new Error('No test of the shell drags an image') },
+        startResourceDrag: () => { throw new Error('No test of the shell drags a document image') },
         openExternal: () => { throw new Error('No test of the shell opens an external URL') },
         release: () => { throw new Error('No test of the shell releases a file') },
       },
@@ -571,6 +572,7 @@ class AppClientStub {
         return () => { this.tabsControlCommand = null }
       },
       onDirectoryNotesChanged: () => () => undefined,
+      onProjectTodosChanged: () => () => undefined,
       onUiSettingsChanged: () => () => undefined,
       onCommitChanged: () => () => undefined,
       onAgentSettingsChanged: () => () => undefined,
@@ -638,6 +640,7 @@ class AppClientStub {
           this.copied.push(text)
           return Promise.resolve({ ok: true as const, value: true })
         },
+        writeImage: () => { throw new Error('No test of the shell copies an image') },
       },
       onTerminalFrame: () => () => undefined,
       onRemoteTerminalFrame: () => () => undefined,
@@ -2145,7 +2148,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     expect(view.container.querySelector('.jamat-remarkable')).toBeNull()
     expect(remarkableOverlayMock.props).toBeNull()
-    expect(report).toHaveBeenCalledWith('Select a writable local Claude or Codex terminal first')
+    expect(report).toHaveBeenCalledWith('Select a writable local agent terminal first')
     expect(has).not.toHaveBeenCalled()
   })
 
@@ -2182,7 +2185,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
 
     expect(has).toHaveBeenCalledWith('s-working')
     expect(view.container.querySelector('.jamat-remarkable')).toBeNull()
-    expect(report).toHaveBeenCalledWith('Select a writable local Claude or Codex terminal first')
+    expect(report).toHaveBeenCalledWith('Select a writable local agent terminal first')
   })
 
   it('opens Remarkable for a live Codex terminal', async () => {

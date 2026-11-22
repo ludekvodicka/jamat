@@ -133,7 +133,8 @@ export class AgentComposerReader {
     const rows = frame.screenStyled === false ? [] : AgentComposerReader.rowsOf(frame.wideScreenTail)
     if (agentId === 'claude') return AgentComposerReader.claude(rows)
     else if (agentId === 'codex') return AgentComposerReader.codex(rows)
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else if (agentId === 'antigravity') return AgentComposerReader.antigravity(rows)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
@@ -165,9 +166,9 @@ export class AgentComposerReader {
   }
 
   private static boxOf(agentId: SessionAgentId, rows: readonly ComposerRow[]): ComposerBox | null {
-    if (agentId === 'claude') return AgentComposerReader.claudeBox(rows)
+    if (agentId === 'claude' || agentId === 'antigravity') return AgentComposerReader.claudeBox(rows)
     else if (agentId === 'codex') return AgentComposerReader.codexBox(rows)
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /** What the box holds, with each agent's empty states: the dim placeholder and the words below. */
@@ -183,7 +184,8 @@ export class AgentComposerReader {
       return AgentComposerReader.claudeSuggestionConst.test(normalized) ? { state: 'empty' } : read
     else if (agentId === 'codex')
       return AgentComposerReader.codexPlaceholderConst.test(normalized) ? { state: 'empty' } : read
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else if (agentId === 'antigravity') return read
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   private static holdsPlaceholder(agentId: SessionAgentId, text: string): boolean {
@@ -194,7 +196,8 @@ export class AgentComposerReader {
     else if (agentId === 'codex')
       return normalized.match(AgentComposerReader.codexPastedConst) !== null
         || normalized.match(AgentComposerReader.codexImageConst) !== null
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else if (agentId === 'antigravity') return false
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
@@ -207,8 +210,8 @@ export class AgentComposerReader {
   private static clipped(agentId: SessionAgentId, box: ComposerBox, height: number): boolean {
     if (box.top === 0) return true
     if (agentId === 'claude') return box.end - box.at >= AgentComposerReader.claudeDraftRowsMax(height)
-    else if (agentId === 'codex') return false
-    else throw new Error(`Unknown agent: ${JSON.stringify(agentId)}`)
+    else if (agentId === 'codex' || agentId === 'antigravity') return false
+    else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 
   /**
@@ -242,6 +245,19 @@ export class AgentComposerReader {
       if (isRule(end)) return { top: at - 1, at, end, closed: true }
     }
     return null
+  }
+
+  private static antigravity(rows: readonly ComposerRow[]): AgentComposerReading {
+    const box = AgentComposerReader.claudeBox(rows)
+    if (box === null) return AgentComposerReader.absentConst
+    const composer = AgentComposerReader.composerIn('antigravity', rows, box)
+    return {
+      composer,
+      queuedRow: false,
+      echoHead: AgentComposerReader.claudeEcho(rows, box.top),
+      pastePlaceholders: 0,
+      onlyPlaceholders: false,
+    }
   }
 
   private static claude(rows: readonly ComposerRow[]): AgentComposerReading {

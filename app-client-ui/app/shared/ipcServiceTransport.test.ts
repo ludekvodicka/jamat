@@ -121,7 +121,7 @@ describe('IpcServiceTransport', () => {
     const service = new ServiceFileViewerIpc(viewer, access, caller => transport.isCurrent(caller) ? caller.windowId : null)
     service.setTransport(transport).initialize()
     new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, sender => sender === one.contents() ? 'one' : sender === two.contents() ? 'two' : null,
-      { write: vi.fn() })
+      { write: vi.fn() }, { copy: vi.fn() })
       .setTransport(transport).setCallerAccess(transport).initialize()
     return { root, viewer, one, two, workingContext, context }
   }

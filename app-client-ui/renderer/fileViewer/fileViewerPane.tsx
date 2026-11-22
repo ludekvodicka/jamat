@@ -19,10 +19,15 @@ import type {
   FileChangesWorkingTreeViewModel,
 } from './fileViewerPanel.types'
 import { FileViewerZoom, useFileViewerZoomWheel } from './fileViewerZoom'
-import { useFileViewerDocument } from './useFileViewerDocument'
+import { FileViewerDocumentState, useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
-import { FileViewerPlace, FileViewerScrollTop, useFileViewerPlaceRestore } from './fileViewerScrollRestore'
+import {
+  FileViewerPlace,
+  FileViewerScrollTop,
+  useFileViewerPlaceRestore,
+  useFileViewerScrollSave,
+} from './fileViewerScrollRestore'
 import './fileViewerPanel.css'
 import './fileViewerPane.css'
 
@@ -39,6 +44,8 @@ export function FileViewerPane(props: {
   onClose(): void
   /** `reading` is where the reader was in this file, given when a link leaves it for another. */
   onOpenItem(item: PanelSplitFileItem, reading?: PanelSplitReading): string | null
+  /** Persists the reader's scroll offset in this file while it remains active, for window reloads. */
+  onRememberReading?(reading: PanelSplitReading): void
   onRefused(reason: string): void
   insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
@@ -74,14 +81,40 @@ export function FileViewerPane(props: {
     if (model.document?.kind.kind === 'html' && model.mode === 'rendered') model.setMode('raw')
   })
   // The pane mounts once per shown item, so the offset it mounted with is restored once.
-  const [restore, setRestore] = useState(() => FileViewerPlace.at(props.item.scrollTop))
-  useFileViewerPlaceRestore(body, restore, model.textReady, () => setRestore(undefined))
+  const [restore, setRestore] = useState<{ place: FileViewerPlace; afterDocumentId?: string } | undefined>(() => {
+    const place = FileViewerPlace.at(props.item.scrollTop)
+    return place === undefined ? undefined : { place }
+  })
+  const [dismissedLocation, setDismissedLocation] = useState<PanelSplitFileItem['location']>(undefined)
+  const contentReady = model.document !== null && (
+    model.mode === 'diff'
+      ? model.diff !== null
+      : FileViewerDocumentState.hasText(model.document) ? model.textReady : true
+  )
+  // A reload restore waits for the new grant's document id, so the old document still on screen
+  // cannot activate listeners or time out the restore before the fresh content arrives.
+  const restoreReady = contentReady
+    && (restore?.afterDocumentId === undefined || model.document?.documentId !== restore.afterDocumentId)
+  useFileViewerPlaceRestore(body, restore?.place, restoreReady, () => setRestore(undefined))
+  const onRememberReading = props.onRememberReading
+  const rememberReading = useCallback((scrollTop: number | undefined): void => {
+    onRememberReading?.({ key: props.item.key, scrollTop })
+  }, [onRememberReading, props.item.key])
+  useFileViewerScrollSave(body, contentReady && restore === undefined, rememberReading)
   const modelReload = model.reload
-  // A place still being restored is where the reader is: the body may not show it yet.
+  const currentDocumentId = model.document?.documentId
+  const itemLocation = props.item.location
+  // A place still being restored on a newer grant is where the reader is: the body may not show it yet.
   const reload = useCallback((): void => {
-    setRestore((current) => current ?? FileViewerPlace.of(body.current))
+    if (itemLocation !== undefined) setDismissedLocation(itemLocation)
+    setRestore((current) => {
+      const place = current !== undefined && current.afterDocumentId !== currentDocumentId
+        ? current.place
+        : FileViewerPlace.of(body.current)
+      return place === undefined ? undefined : { place, afterDocumentId: currentDocumentId }
+    })
     modelReload()
-  }, [body, modelReload])
+  }, [body, currentDocumentId, itemLocation, modelReload])
   const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, props.ports.viewer)
   // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
   const servedReload = useRef(props.reloadRequest)
@@ -170,7 +203,7 @@ export function FileViewerPane(props: {
               text={model.text}
               textReady={model.textReady}
               diff={model.diff}
-              location={props.item.location}
+              location={props.item.location === dismissedLocation ? undefined : props.item.location}
               onOpenSource={openSource}
               onReload={reload}
             />

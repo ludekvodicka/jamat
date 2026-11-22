@@ -91,6 +91,9 @@ describe('AgentAccounts', () => {
     expect((await accounts.list()).find(view => view.agentId === 'claude' && view.defaultChoice)?.accountId).toBe('work')
     expect((await accounts.defaultAccount('claude')).accountId).toBe('work')
     expect((await accounts.defaultAccount('claude', 'soonest-reset')).accountId).toBe('main')
+    expect((await accounts.defaultAccount('claude', 'paced', new Set(['work']))).accountId).toBe('main')
+    expect(await accounts.defaultAccount('claude', 'paced', new Set(['work', 'main'])))
+      .toEqual({ accountId: 'main', noFreeAccount: true, resetsAt: null })
     expect(history).toHaveBeenCalledTimes(1)
   })
 
@@ -297,5 +300,36 @@ describe('AgentAccounts', () => {
     })
     expect(ClaudeIdentityProbe.parse('{}')).toEqual({ kind: 'logged-out' })
     expect(ClaudeIdentityProbe.parse('broken')).toMatchObject({ kind: 'failed' })
+  })
+
+  it('lists read-only antigravity Main account with mainProbes and refuses adding extra antigravity profiles', async () => {
+    accounts.stop()
+    accounts = new AgentAccounts({
+      mainHomes: { claude: main, codex: join(root, 'codex'), antigravity: join(root, 'agy') },
+      mainProbes: {
+        antigravity: async () => ({
+          kind: 'logged-in',
+          identity: { key: 'antigravity/dev@example.com', label: 'dev@example.com' },
+          rateLimitTier: 'Pro',
+        }),
+      },
+      specs: [],
+      stored: () => stored,
+      store: value => { stored = value },
+      accountsRoot: join(root, 'accounts'),
+      hasRunningSession: () => busy,
+      onChanged: () => {},
+    })
+    const listed = await accounts.list()
+    expect(listed.find(account => account.agentId === 'antigravity')).toMatchObject({
+      agentId: 'antigravity',
+      accountId: 'main',
+      label: 'Main',
+      isMain: true,
+      state: 'active',
+      identity: { key: 'antigravity/dev@example.com', label: 'dev@example.com' },
+      capacity: { weight: 1, tier: 'Pro' },
+    })
+    await expect(accounts.add('antigravity', 'Second')).rejects.toThrow('Adding antigravity accounts is not available')
   })
 })

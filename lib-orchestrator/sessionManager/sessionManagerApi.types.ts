@@ -14,6 +14,7 @@ import type { CommitMessageSource, CommitMessageFinding, CommitMessageFindingInf
  */
 import type { SvnConflictKind, SvnConflictLoss, SvnConflictOption, SvnLocalItem } from '../svn/svn.types'
 import type { AgentWorkHint } from './workState/agentWorkInspector.types'
+import type { SessionLimitRecoveryInfo } from '../limitRecovery/limitRecoveryApi.types'
 import type {
   HostWsServerMsg,
   RuntimeChannel,
@@ -28,7 +29,7 @@ import type { ProjectBinding } from '../projectManager/projectManagerApi.types'
  * way `RateAgentId`, `SessionModelAgentId`, `TerminalDetectorAgentId` and their siblings are named
  * in their own subsystems: a wire type of one subsystem never imports another's.
  */
-export type SessionAgentId = 'claude' | 'codex'
+export type SessionAgentId = 'claude' | 'codex' | 'antigravity'
 
 /** The processor priority of agent sessions and script runs, and of everything they start. */
 export type SessionProcessPriorityLevel = 'below-normal' | 'normal'
@@ -1109,6 +1110,8 @@ export interface SessionInfo {
   project: ProjectBinding
   agent?: { agentId: SessionAgentId; nativeSessionId?: string; accountId?: string; accountLabel?: string; accountExhausted?: boolean }
   account?: { agentId: SessionAgentId; accountId: string }
+  /** Absent = no usage-limit recovery. Moving to another account, or waiting for a reset, after a limit. */
+  limitRecovery?: SessionLimitRecoveryInfo
   worktree?: SessionWorktreeInfo
   retiredWorktree?: SessionRetiredWorktreeInfo
   /** Absent = None. A name only; what it looks like is the renderer's to decide. */

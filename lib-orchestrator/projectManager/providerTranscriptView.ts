@@ -3,16 +3,20 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, normalize } from 'node:path'
 
+import { AntigravityConfigHome } from '../shared/antigravityConfigHome'
 import { BoundedMap } from '../shared/boundedMap'
 import { ClaudeConfigHome } from '../shared/claudeConfigHome'
 import type { ProviderAgentId } from './providers/providerContract.types'
+import { AntigravitySummariesDb } from './providers/antigravity/antigravitySummariesDb'
+
+export type ProviderTranscriptAgentId = ProviderAgentId
 import { ClaudeProjectsLocator } from './providers/claude/claudeProjectsLocator'
 import { CodexChildRollouts } from './providers/codex/codexChildRollouts'
 import { CodexRolloutIndex } from './providers/codex/codexRolloutIndex'
 import { CodexSessionSource } from './providers/codex/codexSessionSource'
 
 export interface ProviderTranscriptRef {
-  agentId: ProviderAgentId
+  agentId: ProviderTranscriptAgentId
   nativeSessionId: string
   file: string
   mtimeMs: number
@@ -20,7 +24,7 @@ export interface ProviderTranscriptRef {
 }
 
 export interface ProviderSubagentFileRef {
-  agentId: ProviderAgentId
+  agentId: ProviderTranscriptAgentId
   subagentId: string
   file: string
   mtimeMs: number
@@ -47,6 +51,7 @@ export interface ProviderSubagentThread {
 export interface ProviderTranscriptViewOptions {
   claudeHome?: string
   codexHome?: string
+  antigravityHome?: string
   claudeLocator?: ClaudeProjectsLocator
   codexIndex?: CodexRolloutIndex
   codexChildren?: CodexChildRollouts
@@ -67,6 +72,7 @@ export class ProviderTranscriptView {
   private readonly claudeLocator: ClaudeProjectsLocator
   private readonly codexIndex: CodexRolloutIndex
   private readonly codexChildren: CodexChildRollouts
+  private readonly antigravityHome: string
   /**
    * The meta's spawn tool_use id by meta path, never invalidated: Claude Code writes it once at the
    * spawn, so a poll reads each meta once rather than once per listing. A meta that is missing or
@@ -80,10 +86,11 @@ export class ProviderTranscriptView {
     this.claudeLocator = options?.claudeLocator ?? new ClaudeProjectsLocator(claudeHome)
     this.codexIndex = options?.codexIndex ?? new CodexRolloutIndex(codexHome, options?.report)
     this.codexChildren = options?.codexChildren ?? new CodexChildRollouts(this.codexIndex)
+    this.antigravityHome = AntigravityConfigHome.resolve(options?.antigravityHome)
   }
 
   async resolve(input: {
-    agentId: ProviderAgentId
+    agentId: ProviderTranscriptAgentId
     cwd: string
     nativeSessionId: string
   }): Promise<ProviderTranscriptRef | null> {
@@ -93,8 +100,10 @@ export class ProviderTranscriptView {
       file = await this.claudeFile(input.cwd, input.nativeSessionId)
     else if (input.agentId === 'codex')
       file = await this.codexFile(input.cwd, input.nativeSessionId)
+    else if (input.agentId === 'antigravity')
+      file = AntigravityConfigHome.transcriptFile(this.antigravityHome, input.nativeSessionId)
     else
-      throw new Error(`Unknown provider agent: ${JSON.stringify(input.agentId)}`)
+      throw new Error(`Unknown provider agent: ${JSON.stringify(input.agentId satisfies never)}`)
     if (file === null) return null
     try {
       const stats = await stat(file)
@@ -116,7 +125,7 @@ export class ProviderTranscriptView {
    * start) onwards. Codex never resolves the parent's own rollout for this.
    */
   async subagentFiles(input: {
-    agentId: ProviderAgentId
+    agentId: ProviderTranscriptAgentId
     cwd: string
     nativeSessionId: string
     since: number
@@ -126,8 +135,35 @@ export class ProviderTranscriptView {
       return this.claudeSubagentFiles(input.cwd, input.nativeSessionId)
     else if (input.agentId === 'codex')
       return this.codexSubagentFiles(input.nativeSessionId, input.since)
+    else if (input.agentId === 'antigravity')
+      return this.antigravitySubagentFiles(input.nativeSessionId)
     else
-      throw new Error(`Unknown provider agent: ${JSON.stringify(input.agentId)}`)
+      throw new Error(`Unknown provider agent: ${JSON.stringify(input.agentId satisfies never)}`)
+  }
+
+  /**
+   * The `task-<step>.log` file of one Antigravity background shell under
+   * `<antigravityHome>/brain/<nativeSessionId>/.system_generated/tasks/<shellId>.log`.
+   */
+  async antigravityShellOutputFile(input: {
+    nativeSessionId: string
+    shellId: string
+  }): Promise<{ file: string; mtimeMs: number; size: number } | null> {
+    if (!ProviderTranscriptView.subagentIdPatternConst.test(input.nativeSessionId)
+      || !ProviderTranscriptView.subagentIdPatternConst.test(input.shellId))
+      return null
+    const file = join(
+      AntigravityConfigHome.brainDirectory(this.antigravityHome),
+      input.nativeSessionId,
+      '.system_generated',
+      'tasks',
+      `${input.shellId}.log`,
+    )
+    try {
+      const stats = await stat(file)
+      return stats.isFile() ? { file, mtimeMs: stats.mtimeMs, size: stats.size } : null
+    }
+    catch { return null }
   }
 
   /**
@@ -260,6 +296,43 @@ export class ProviderTranscriptView {
               nickname: child.nickname,
               depth: child.depth,
               parentSubagentId: child.depth === 1 ? null : child.parentThreadId,
+              startedAt: child.createdAt,
+            },
+          }
+        }
+        catch { return null }
+      },
+    )
+    return refs.filter((ref) => ref !== null)
+  }
+
+  private async antigravitySubagentFiles(
+    conversationId: string,
+  ): Promise<readonly ProviderSubagentFileRef[]> {
+    const children = AntigravitySummariesDb.childrenOf(this.antigravityHome, conversationId)
+      .filter((child) => ProviderTranscriptView.subagentIdPatternConst.test(child.conversationId))
+    const refs = await BoundedMap.run(
+      children,
+      ProviderTranscriptView.statConcurrencyConst,
+      async (child): Promise<ProviderSubagentFileRef | null> => {
+        const file = AntigravityConfigHome.transcriptFile(this.antigravityHome, child.conversationId)
+        try {
+          const stats = await stat(file)
+          if (!stats.isFile()) return null
+          const depth: 1 | 2 = child.nestingDepth >= 2 ? 2 : 1
+          return {
+            agentId: 'antigravity',
+            subagentId: child.conversationId,
+            file,
+            mtimeMs: stats.mtimeMs,
+            size: stats.size,
+            metaFile: null,
+            spawnKey: child.conversationId,
+            workflowId: null,
+            thread: {
+              nickname: child.agentName ?? child.title,
+              depth,
+              parentSubagentId: depth === 2 ? child.parentConversationId : null,
               startedAt: child.createdAt,
             },
           }

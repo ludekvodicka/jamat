@@ -10,6 +10,8 @@ describe('app-client-ui/renderer/panels/terminal/terminalPromptNewline', () => {
   it('spells the newline each agent reads', () => {
     expect(TerminalPromptNewline.sequenceOf(keydown('Enter', { shiftKey: true }), 'claude'))
       .toBe('\x1b[13;2u')
+    expect(TerminalPromptNewline.sequenceOf(keydown('Enter', { shiftKey: true }), 'antigravity'))
+      .toBe('\x1b[13;2u')
     // Not a bare LF: ConPTY delivers that as Ctrl+Enter, and Codex reads console records.
     expect(TerminalPromptNewline.sequenceOf(keydown('Enter', { shiftKey: true }), 'codex'))
       .toBe('\x1b[74;36;10;1;8;1_')

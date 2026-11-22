@@ -1,6 +1,6 @@
-import type { TokenBucket, TokenUsageQuery, TokenUsageRow } from './tokenUsageApi.types'
+import type { TokenBucket, TokenSessionBucket, TokenUsageQuery, TokenUsageRow } from './tokenUsageApi.types'
 
-export function tokenUsageRows(buckets: readonly TokenBucket[], query: TokenUsageQuery,
+export function tokenUsageRows(buckets: readonly TokenBucket[], query: Omit<TokenUsageQuery, 'groupBy'> & { groupBy: Exclude<TokenUsageQuery['groupBy'], 'session'> },
   labels: { projects: Readonly<Record<string, string>>; accounts: Readonly<Record<string, string>> }): TokenUsageRow[] {
   const rows = new Map<string, TokenUsageRow>()
   for (const bucket of buckets) {
@@ -23,6 +23,34 @@ export function tokenUsageRows(buckets: readonly TokenBucket[], query: TokenUsag
     row.cacheRead += bucket.cacheRead
     row.cacheWrite += bucket.cacheWrite
     rows.set(id, row)
+  }
+  return [...rows.values()].sort((a, b) => a.key.localeCompare(b.key) || a.agentId.localeCompare(b.agentId))
+}
+
+export function tokenUsageSessionRows(
+  buckets: readonly TokenSessionBucket[],
+  query: Pick<TokenUsageQuery, 'from' | 'to' | 'agentId'>,
+  labels: { sessions: Readonly<Record<string, string>>; projects: Readonly<Record<string, string>> },
+): TokenUsageRow[] {
+  const rows = new Map<string, TokenUsageRow>()
+  for (const bucket of buckets) {
+    if (bucket.day < query.from || bucket.day > query.to || query.agentId && query.agentId !== bucket.agentId) continue
+    const id = `${bucket.agentId}/${bucket.nativeId}`
+    let row = rows.get(id)
+    if (!row) {
+      const explicit = labels.sessions[id]?.trim()
+      const shortId = bucket.nativeId.length > 12 ? bucket.nativeId.slice(0, 8) : bucket.nativeId
+      const project = bucket.projectKey && bucket.projectKey !== 'unknown'
+        ? (labels.projects[bucket.projectKey] ?? bucket.projectKey)
+        : ''
+      const label = explicit || (project ? `${project} · ${shortId}` : shortId)
+      row = { key: bucket.nativeId, label, agentId: bucket.agentId, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+      rows.set(id, row)
+    }
+    row.input += bucket.input
+    row.output += bucket.output
+    row.cacheRead += bucket.cacheRead
+    row.cacheWrite += bucket.cacheWrite
   }
   return [...rows.values()].sort((a, b) => a.key.localeCompare(b.key) || a.agentId.localeCompare(b.agentId))
 }

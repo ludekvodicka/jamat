@@ -65,7 +65,7 @@ export class TerminalNotesMessages {
     const reason = result.reason
     if (reason === 'unknown-session') return 'Import refused: the session is no longer known'
     else if (reason === 'not-live') return 'Import refused: the session is not running'
-    else if (reason === 'not-agent') return 'Import refused: only a Claude or Codex prompt can be imported'
+    else if (reason === 'not-agent') return 'Import refused: only an agent prompt can be imported'
     else if (reason === 'unreadable') return 'Import refused: the screen cannot be read; a Host older than this build needs a restart'
     else if (reason === 'dialog') return 'Import refused: the agent is showing a dialog'
     else if (reason === 'no-prompt') return 'Import refused: no prompt box was recognized on screen'

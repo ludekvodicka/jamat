@@ -40,6 +40,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     settings = {
       claude: { yolo: false, autoCompactEnabled: true },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     }
     model = {
       model: 'claude-sonnet-4-5-20260101',
@@ -159,6 +160,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     settings = {
       claude: { yolo: false, autoCompactEnabled: true, autoCompactPercent: 95 },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     }
     controller.start()
     push('idle')
@@ -169,6 +171,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     pushSettings({
       claude: { yolo: false, autoCompactEnabled: true, autoCompactPercent: 40 },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     })
     await settle()
 
@@ -327,7 +330,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     await settle()
     expect(reads).toEqual([])
 
-    pushSettings({ claude: { yolo: false }, codex: { yolo: false } })
+    pushSettings({ claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } })
     push('idle')
     await settle()
     expect(reads).toEqual([])
@@ -336,6 +339,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     pushSettings({
       claude: { yolo: false, autoCompactEnabled: true },
       codex: { yolo: false },
+      antigravity: { yolo: false },
     })
     await settle()
     expect(reads).toEqual(['s-working'])
@@ -386,7 +390,7 @@ describe('app-client-ui/renderer/contextCompaction/contextCompactionController',
     controller.start()
     push('idle')
     await Promise.resolve()
-    settings = { claude: { yolo: false }, codex: { yolo: false } }
+    settings = { claude: { yolo: false }, codex: { yolo: false }, antigravity: { yolo: false } }
     waiting.resolve?.(model)
     await settle()
 

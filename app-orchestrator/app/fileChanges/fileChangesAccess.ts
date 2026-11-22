@@ -173,10 +173,24 @@ export class FileChangesAccess {
       ?? this.configStore.readSection(FileChangesSettingsSection.spec).primaryVcs
     const key = `${sessionId}\u0000${selectedVcs}`
     const running = this.listing.get(key)
-    const result = await (running ?? this.startList(key, context.value, selectedVcs))
+    const result = await (running ?? this.startList(key, FileChangesAccess.fileChangesContextOf(context.value), selectedVcs))
     if (this.owners.get(ownerId) !== token) return { ok: false, code: 'invalid-context', detail: 'The file changes owner was released' }
     if (result.ok) this.track(result.value.snapshotId, ownerId, sessionId)
     return result
+  }
+
+  private static fileChangesContextOf<
+    T extends {
+      sessionId: string
+      cwd: string
+      agent?: { agentId: string; nativeSessionId: string } | null
+    },
+  >(context: T): Omit<T, 'agent'> & { agent: FileChangesContext['agent'] } {
+    const agent: FileChangesContext['agent'] = context.agent != null
+      && (context.agent.agentId === 'claude' || context.agent.agentId === 'codex' || context.agent.agentId === 'antigravity')
+      ? { agentId: context.agent.agentId, nativeSessionId: context.agent.nativeSessionId }
+      : null
+    return { ...context, agent }
   }
 
   private startList(
@@ -208,8 +222,7 @@ export class FileChangesAccess {
       return { ok: false, code: 'invalid-context', detail: 'The scope is outside the session working directory' }
     const key = JSON.stringify([sessionId, source, scopeRoot, forCommit, filePath, includedPaths])
     const running = this.workingTrees.get(key)
-    const result = await (running ?? this.startWorkingTree(key, { ...context.value, cwd: scopeRoot ?? context.value.cwd,
-      ...(forCommit ? { worktree: null } : {}) }, source, forCommit, filePath, includedPaths))
+    const result = await (running ?? this.startWorkingTree(key, { ...FileChangesAccess.fileChangesContextOf(context.value), worktree: forCommit ? null : context.value.worktree, cwd: scopeRoot ?? context.value.cwd }, source, forCommit, filePath, includedPaths))
     if (this.owners.get(ownerId) !== token) return { ok: false, code: 'invalid-context', detail: 'The file changes owner was released' }
     if (result.ok && context.value.worktree?.kind === 'svn' && result.value.source.selected === 'svn') {
       // Only an unversioned file can be a setup output a Finish leaves out; a versioned one setup changed is published.

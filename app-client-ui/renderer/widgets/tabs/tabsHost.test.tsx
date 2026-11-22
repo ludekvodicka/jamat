@@ -37,6 +37,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabsHost', () => {
       transferCommit: () => Promise.resolve(),
       transferAbort: () => Promise.resolve(),
       movePanel: () => Promise.resolve(),
+      mayReopen: () => true,
       reportError: () => undefined,
     })
     return {

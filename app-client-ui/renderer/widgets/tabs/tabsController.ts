@@ -23,6 +23,7 @@ import { PanelKeysConst, TabTransferDrag } from '../../../shared/tabTransfer'
 import { WorkspaceSaveLimits } from '../workspaceSaveLimits'
 import type { PanelOpenOutcome } from '../../shell/appShell.types'
 import type { PanelRegistry } from './panelRegistry'
+import { PanelFocusHistory } from './panelFocusHistory'
 import { type MoveDirection, type TabGroupBox, TabGroupNeighbour } from './tabGroupNeighbour'
 
 type LayoutWrite = { kind: 'save'; layout: string } | { kind: 'clear' }
@@ -49,6 +50,11 @@ export interface TabsControllerPorts {
   transferCommit(token: string): Promise<void>
   transferAbort(token: string): Promise<void>
   movePanel(panel: TabTransferPayload, target: TabMoveTarget): Promise<void>
+  /**
+   * Whether a replaced preview may come back when the panel in front closes. A terminal whose session
+   * has gone since (finished, removed, disconnected) answers false and is skipped.
+   */
+  mayReopen(panel: WorkspacePanelPresence): boolean
   reportError(message: string): void
   /**
    * Asked before a panel a PERSON is closing goes, and only then: the four paths below are the ones
@@ -85,6 +91,9 @@ export class TabsController {
   private readonly panelListeners = new Set<() => void>()
   /** Closed and replaced previews return with their last panel state in this window. */
   private readonly closedPanelParameters = new Map<string, Record<string, unknown>>()
+  private readonly focusHistory = new PanelFocusHistory()
+  /** Dockview fronts a panel of its own choice while one is removed; that is not a visit. */
+  private removingCount = 0
   /** Latched on a failed restore: saving now would overwrite the layout we could not read. */
   private restoreFailed = false
   private emptyRefusalReported = false
@@ -108,10 +117,14 @@ export class TabsController {
     }))
     // Its own event, though `onDidLayoutChange` carries it too: that one also fires for every
     // splitter drag and every panel added, and what hangs off this one redraws on the answer.
-    this.subscriptions.push(api.onDidActivePanelChange(() => this.notifyActivePanel()))
+    this.subscriptions.push(api.onDidActivePanelChange(() => {
+      this.recordActivePanel()
+      this.notifyActivePanel()
+    }))
     this.subscriptions.push(api.onDidRemovePanel((panel) => {
       void this.ports.releasePanel(panel.id)
         .catch((error: unknown) => this.report('Panel ownership could not be released', error))
+      this.focusHistory.removed(panel.id)
       // Every way a panel leaves passes here: the cross, a replacement, a transfer out, close-others
       // and the reset. One line, instead of the same line on each of those paths.
       if (panel.id === this.previewPanelId)
@@ -143,6 +156,12 @@ export class TabsController {
           .catch((error: unknown) => this.report('Tab transfer failed', error))
     }))
     this.notifyPanels()
+  }
+
+  private recordActivePanel(): void {
+    const panel = this.api?.activePanel
+    if (this.removingCount === 0 && panel && panel.view.contentComponent !== PanelKeysConst.welcome)
+      this.focusHistory.visited(panel.id)
   }
 
   private notifyActivePanel(): void {
@@ -305,9 +324,17 @@ export class TabsController {
         // which would release a claim this window is now using. A hand-off closes only the tab it
         // replaces, and its caller does that.
         this.setPreviewPanelId(presence.panelId)
-        if (options?.inPlaceOf === undefined && oldPreviewId !== null && oldPreviewId !== presence.panelId)
-          await this.hidePanel(oldPreviewId)
+        const oldPreview = options?.inPlaceOf === undefined && oldPreviewId !== null && oldPreviewId !== presence.panelId
+          ? api.getPanel(oldPreviewId) : undefined
+        if (oldPreview) {
+          this.focusHistory.replaced(oldPreview.id, {
+            key: oldPreview.view.contentComponent,
+            title: oldPreview.title ?? this.ports.registry.titleOf(oldPreview.view.contentComponent),
+            params: { ...(oldPreview.params ?? {}) },
+          })
+          await this.hidePanel(oldPreview.id)
             .catch((error: unknown) => this.report('The previous preview tab could not be closed', error))
+        }
       }
       return { kind: 'opened', panelId: presence.panelId }
     } catch (error) {
@@ -490,22 +517,68 @@ export class TabsController {
    * re-open, because nobody closed that tab meaning to come back to it.
    */
   async hidePanel(panelId: string, options?: { silent?: true }): Promise<void> {
+    await this.hide(panelId, options?.silent === true, true)
+  }
+
+  /**
+   * `followHistory`: the panel in front closing brings back the one in front before it. Bulk closes
+   * (close others, reset, restore rejections, transfer rollback) pass false and take the neighbour.
+   */
+  private async hide(panelId: string, silent: boolean, followHistory: boolean): Promise<void> {
     const api = this.api
-    const panel = api?.getPanel(panelId)
-    if (!api || !panel)
+    if (!api?.getPanel(panelId))
+      return
+    const wasActive = api.activePanel?.id === panelId
+    const previous = wasActive && followHistory ? await this.previousOf(panelId) : null
+    // Read again: the reopen above awaited a claim, and the panel may have gone meanwhile.
+    const panel = api.getPanel(panelId)
+    if (!panel)
       return
     // The neighbour is read BEFORE the removal, because the group's panel list shrinks on remove.
     // Dockview's own answer is the group's LAST tab, which is not the tab next to the closed one.
-    const wasActive = api.activePanel === panel
     const siblings = panel.group.panels
     const index = siblings.indexOf(panel)
     const neighbour = index >= 0 ? siblings[index + 1] ?? siblings[index - 1] : undefined
-    const remembered = options?.silent === true ? null : { ...(panel.params ?? {}) }
-    api.removePanel(panel)
+    const remembered = silent ? null : { ...(panel.params ?? {}) }
+    this.removingCount += 1
+    try {
+      api.removePanel(panel)
+      if (wasActive && previous === null && neighbour && api.getPanel(neighbour.id))
+        neighbour.api.setActive()
+    } finally {
+      this.removingCount -= 1
+    }
     if (remembered !== null)
       this.closedPanelParameters.set(panelId, remembered)
-    if (wasActive && neighbour && api.getPanel(neighbour.id))
-      neighbour.api.setActive()
+    if (previous !== null && api.getPanel(previous.id))
+      previous.api.setActive()
+    this.recordActivePanel()
+  }
+
+  /**
+   * The panel in front before `panelId`: one still open, or a replaced preview reopened in the leaving
+   * panel's place. Entries that can no longer come back leave the history on the way.
+   */
+  private async previousOf(panelId: string): Promise<IDockviewPanel | null> {
+    const api = this.requireApi()
+    for (const entry of this.focusHistory.before(panelId)) {
+      const open = api.getPanel(entry.panelId)
+      if (open)
+        return open
+      const reopen = entry.reopen
+      if (reopen === null || !this.ports.mayReopen(this.presenceOf(reopen.key, reopen.title, reopen.params, entry.panelId))) {
+        this.focusHistory.forget(entry.panelId)
+        continue
+      }
+      const outcome = await this.openPanel(reopen.key, reopen.title, reopen.params, entry.panelId, { inPlaceOf: panelId })
+      const reopened = outcome.kind === 'opened' ? api.getPanel(outcome.panelId) : undefined
+      if (reopened)
+        return reopened
+      this.focusHistory.forget(entry.panelId)
+      if (!api.getPanel(panelId))
+        return null
+    }
+    return null
   }
 
   /** What every surface that names no panel means: the menu, the accelerators, the context menu. */
@@ -601,7 +674,7 @@ export class TabsController {
   }
 
   async removeTransferred(panelId: string): Promise<void> {
-    await this.hidePanel(panelId, { silent: true })
+    await this.hide(panelId, true, false)
   }
 
   async receiveTransfer(token: string, placement: TabDropPlacement): Promise<void> {
@@ -658,7 +731,7 @@ export class TabsController {
     // One at a time and each asked for itself: a refusal leaves that panel and takes the rest.
     for (const panel of TabsController.snapshotOf(api))
       if (panel.id !== panelId)
-        await this.hidePanel(panel.id)
+        await this.hide(panel.id, false, false)
     api.getPanel(panelId)?.api.setActive()
   }
 
@@ -677,8 +750,9 @@ export class TabsController {
     if (!api)
       return
     for (const panel of TabsController.snapshotOf(api))
-      await this.hidePanel(panel.id)
+      await this.hide(panel.id, false, false)
     this.closedPanelParameters.clear()
+    this.focusHistory.clear()
     this.openWelcome()
   }
 
@@ -722,7 +796,7 @@ export class TabsController {
     }
     const answer = await this.ports.reconcilePanels(this.inventoryWithoutWelcome())
     for (const panelId of answer.rejectedPanelIds)
-      await this.hidePanel(panelId, { silent: true })
+      await this.hide(panelId, true, false)
     if (this.inventoryWithoutWelcome().length === 0) {
       this.removeWelcomeSilently()
       await this.clearLayoutOrThrow()

@@ -67,7 +67,17 @@ export interface PanelSplitWorkflowItem {
   sessionId: string
 }
 
-export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem | PanelSplitTaskItem | PanelSplitWorkflowItem
+/** The todo list of the tab's session's catalog project: local only, one per tab, never pinned. */
+export interface PanelSplitTodosItem {
+  /** Never set: the file is on this computer, so a remote tab holds no todo item. */
+  target?: undefined
+  kind: 'todos'
+  key: `todos:${string}`
+  title: string
+  sessionId: string
+}
+
+export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem | PanelSplitTaskItem | PanelSplitWorkflowItem | PanelSplitTodosItem
 
 export interface PanelSplitState {
   ratio: number
@@ -100,6 +110,8 @@ export interface PanelSplitHandle {
   back(reading?: PanelSplitReading): string | null
   forward(reading?: PanelSplitReading): string | null
   activate(key: string, reading?: PanelSplitReading): void
+  /** Persists the current scroll offset of the active file without leaving it, so reloads return there. */
+  rememberReading(reading: PanelSplitReading): void
   keepOpen(key: string): void
   setPinned(key: string, pinned: boolean): void
   /** Adds the session's stored pins that the restored or reopened split does not hold. */
@@ -143,6 +155,7 @@ export class PanelSplitParams {
     else if (item.kind === 'commit') return item.scopeRoot
     else if (item.kind === 'task') return item.title
     else if (item.kind === 'workflow') return item.title
+    else if (item.kind === 'todos') return 'Todo list of the project'
     else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
   }
 
@@ -153,12 +166,16 @@ export class PanelSplitParams {
   static closeRefusalOf(item: PanelSplitItem, openOf: (sessionId: string) => boolean): string | null {
     if (item.kind === 'workflow')
       return openOf(item.sessionId) ? 'The workflow stays open while its action runs or waits for you.' : null
-    else if (item.kind === 'file' || item.kind === 'commit' || item.kind === 'task') return null
+    else if (item.kind === 'file' || item.kind === 'commit' || item.kind === 'task' || item.kind === 'todos') return null
     else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
   static workflowItemOf(sessionId: string, target?: TerminalTarget): PanelSplitWorkflowItem {
     return { kind: 'workflow', key: `workflow:${target === undefined ? sessionId : TerminalTargetCodec.key(target)}`, title: 'Session actions', sessionId, ...(target === undefined ? {} : { target }) }
+  }
+
+  static todosItemOf(sessionId: string): PanelSplitTodosItem {
+    return { kind: 'todos', key: `todos:${sessionId}`, title: 'Todo', sessionId }
   }
 
   /**
@@ -216,7 +233,7 @@ export class PanelSplitParams {
     | { ok: true; state: PanelSplitState }
     | { ok: false; refusal: string } {
     const read = PanelSplitParams.read(state, reading)
-    const result = PanelSplitParams.placed(read, item)
+    const result = PanelSplitParams.placed(read, item, true)
     if (!result.ok)
       return result
     return {
@@ -228,6 +245,18 @@ export class PanelSplitParams {
         recent: PanelSplitParams.touched(result.state, item.key),
       },
     }
+  }
+
+  /** Records where the reader currently is in the active file without leaving it, so a reload returns there. */
+  static readingUpdated(state: PanelSplitState, reading: PanelSplitReading): PanelSplitState {
+    if (reading.key !== state.active)
+      return state
+    const current = state.items.find((item) => item.key === reading.key)
+    if (current === undefined || current.kind !== 'file')
+      return state
+    if (current.scrollTop === reading.scrollTop && current.location === undefined)
+      return state
+    return PanelSplitParams.read(state, reading)
   }
 
   /**
@@ -333,18 +362,32 @@ export class PanelSplitParams {
   private static placed(
     state: PanelSplitState,
     item: PanelSplitItem,
+    preserveScroll = false,
   ): ReturnType<typeof PanelSplitParams.opened> {
     const existing = state.items.findIndex((candidate) => candidate.key === item.key)
     if (existing !== -1) {
       // The same file again is the same tab, brought forward. The item is replaced rather than
       // kept, because the second open may carry a baseline the first one did not. The pin is the
-      // held item's: an open never pins or unpins anything.
-      const items = state.items.map((candidate, index) => index !== existing ? candidate
-        : item.kind === 'file' ? PanelSplitParams.withPin(item, PanelSplitParams.isPinnedItem(candidate)) : item)
+      // held item's: an open never pins or unpins anything. A plain reopen with no line target
+      // also keeps the held reading offset, so an agent or sidebar click does not wipe it.
+      const items = state.items.map((candidate, index) => {
+        if (index !== existing) return candidate
+        if (item.kind !== 'file') return item
+        const pinned = PanelSplitParams.withPin(item, PanelSplitParams.isPinnedItem(candidate))
+        return preserveScroll && pinned.scrollTop === undefined && pinned.location === undefined
+          && candidate.kind === 'file' && candidate.scrollTop !== undefined
+          ? { ...pinned, scrollTop: candidate.scrollTop }
+          : pinned
+      })
       return { ok: true, state: { ...state, items, active: item.key } }
     }
     if (item.kind === 'commit' || item.kind === 'task')
       return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    else if (item.kind === 'todos') {
+      if (state.items.some((candidate) => candidate.kind === 'todos'))
+        return { ok: false, refusal: 'The split already holds the todo list of another session.' }
+      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    }
     else if (item.kind === 'workflow') {
       if (state.items.some((candidate) => candidate.kind === 'workflow'))
         return { ok: false, refusal: 'The split already holds the workflow of another session.' }
@@ -488,6 +531,7 @@ export class PanelSplitParams {
       if (items.some((held) => held.key === item.key))
         continue
       if (item.kind === 'workflow' && items.some((held) => held.kind === 'workflow')) continue
+      if (item.kind === 'todos' && items.some((held) => held.kind === 'todos')) continue
       items.push(item)
     }
     return items
@@ -511,7 +555,9 @@ export class PanelSplitParams {
       : TerminalTargetCodec.read({ target: rawTarget })?.target
     if (candidate.target !== undefined && target === undefined) return null
     const item = PanelSplitParams.contentItem(value, target)
-    return item === null ? null : { ...item, ...(target === undefined ? {} : { target }) }
+    if (item === null) return null
+    // contentItem refuses a todo item with a target, so only the other kinds take one here.
+    return item.kind === 'todos' || target === undefined ? item : { ...item, target }
   }
 
   private static contentItem(value: unknown, target?: TerminalTarget): PanelSplitItem | null {
@@ -533,6 +579,11 @@ export class PanelSplitParams {
     else if (kind === 'workflow') {
       if (typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
       const item = PanelSplitParams.workflowItemOf(candidate.sessionId, target)
+      return candidate.key === item.key ? item : null
+    }
+    else if (kind === 'todos') {
+      if (target !== undefined || typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
+      const item = PanelSplitParams.todosItemOf(candidate.sessionId)
       return candidate.key === item.key ? item : null
     }
     else if (kind !== 'file') return null
@@ -694,6 +745,16 @@ export function usePanelSplit(
       (key: string, reading?: PanelSplitReading) => {
         const currentParams = currentParameters()
         store(currentParams, PanelSplitParams.activated(PanelSplitParams.of(currentParams), key, reading))
+      },
+      [currentParameters, store],
+    ),
+    rememberReading: useCallback(
+      (reading: PanelSplitReading) => {
+        const currentParams = currentParameters()
+        const current = PanelSplitParams.of(currentParams)
+        const next = PanelSplitParams.readingUpdated(current, reading)
+        if (next !== current)
+          store(currentParams, next)
       },
       [currentParameters, store],
     ),
@@ -968,7 +1029,7 @@ class PanelSplitMenu {
     close(): void
   }): readonly ContextMenuEntry[] {
     const close: ContextMenuEntry = { key: 'split.close', label: 'Close', onSelect: actions.close }
-    if (item.kind === 'commit' || item.kind === 'workflow') return [close]
+    if (item.kind === 'commit' || item.kind === 'workflow' || item.kind === 'todos') return [close]
     else if (item.kind === 'task') return [
       { key: 'split.copyId', label: 'Copy id', onSelect: actions.copyId },
       { kind: 'separator', key: 'split.separator.task' },

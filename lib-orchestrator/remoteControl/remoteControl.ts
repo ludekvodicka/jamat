@@ -414,7 +414,9 @@ export class RemoteControl {
     define('sessions.create', 'Create a session; optionally open its tab and file it under a group.', async (body, context) => {
       const account = body.spec.agent?.accountId === undefined ? body.spec.account
         : { agentId: body.spec.agent.agentId, accountId: body.spec.agent.accountId }
-      if (account && !this.deps.accounts?.exists(account.agentId, account.accountId))
+      if (account && !(account.agentId === 'claude' || account.agentId === 'codex'
+        ? this.deps.accounts?.exists(account.agentId, account.accountId)
+        : account.accountId === 'main'))
         return RemoteControl.sessionError({ ok: false, code: 'invalid-spec', detail: 'account not found' })
       if (body.spec.notify !== undefined && context.callerKind === 'remote-peer')
         return RemoteControl.error('forbidden', 'Session notify is local only')
