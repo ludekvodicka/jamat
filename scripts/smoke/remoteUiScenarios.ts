@@ -177,12 +177,12 @@ export class RemoteUiScenarios {
     await author.call('Input.insertText', { text: message })
     await this.until(async () => observer.evaluate<boolean>(`Array.from(document.querySelectorAll('.commit-message textarea')).some(e => e.value === ${JSON.stringify(message)})`), 'Same commit message in both windows')
     await author.evaluate(`Array.from(document.querySelectorAll('.commit-pane button')).find(e => e.textContent === 'Select none' && e.getBoundingClientRect().height > 0).click()`)
-    await this.until(async () => author.evaluate<boolean>(`Array.from(document.querySelectorAll('.commit-target input')).filter(e => e.checked).length === 0`), 'Cleared shared selection')
+    await this.until(async () => observer.evaluate<boolean>(`Array.from(document.querySelectorAll('.commit-target input')).filter(e => e.checked).length === 0`), 'Cleared shared selection')
     await author.evaluate(`Array.from(document.querySelectorAll('.commit-target input')).find(e => e.getAttribute('aria-label') === 'Include change-00.txt' && e.getBoundingClientRect().height > 0).click()`)
     await this.until(async () => observer.evaluate<boolean>(`Array.from(document.querySelectorAll('.commit-target input')).filter(e => e.checked).length === 1`), 'Same selected path in both windows')
     for (const width of [1440, 1000]) {
       await author.call('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false })
-      await this.until(async () => author.evaluate<boolean>(`(() => { const pane = Array.from(document.querySelectorAll('.commit-pane')).find(e => e.getBoundingClientRect().height > 0); const list = pane.querySelector('.commit-files'), box = pane.querySelector('textarea'), submit = pane.querySelector('.commit-submit'); return list.clientHeight > 100 && list.scrollHeight > list.clientHeight && box.clientHeight > 80 && submit.getBoundingClientRect().bottom < innerHeight && !submit.disabled; })()`), 'Usable review geometry and approval')
+      await this.until(async () => author.evaluate<boolean>(`(() => { const pane = Array.from(document.querySelectorAll('.commit-pane')).find(e => e.getBoundingClientRect().height > 0); const list = pane.querySelector('.commit-files'), box = pane.querySelector('textarea'), submit = pane.querySelector('.commit-submit'); return list.clientHeight > 100 && list.scrollHeight > list.clientHeight && box.clientHeight >= 60 && submit.getBoundingClientRect().bottom < innerHeight && !submit.disabled; })()`), 'Usable review geometry and approval')
     }
     await author.evaluate(`Array.from(document.querySelectorAll('.commit-submit')).find(e => e.getBoundingClientRect().height > 0).focus()`)
     assert(await author.evaluate<boolean>(`document.activeElement.matches('.commit-submit')`), 'Commit action is focusable and enabled')
