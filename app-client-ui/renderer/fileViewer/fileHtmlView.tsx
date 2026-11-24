@@ -1,46 +1,101 @@
+import type { AppClientUiBridge } from '../../shared/appClientUiIpc'
 import type { SessionFilePorts } from '../../shared/sessionWorkspace'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { MdExtSecurity } from '../../../mdext-renderer/renderer'
 import { ErrorText } from '../../shared/errorText'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 
+type HtmlPreviewPorts = Pick<AppClientUiBridge['fileViewer'], 'registerHtmlPreview' | 'releaseHtmlPreview'>
+type RenderedHtml = { kind: 'static'; html: string } | { kind: 'scripted'; url: string }
+
 /**
  * An HTML file drawn the way a browser would draw it, inside a frame of its own.
  *
- * The frame is what makes this possible at all: a page brings a whole stylesheet, and `body { }` in
- * this document would restyle the application around it. A sandboxed `srcdoc` frame is a separate
- * document with an opaque origin, so the page's CSS reaches its own content and nothing else.
+ * By default nothing in it runs: a sandboxed `srcdoc` frame carries no `allow-scripts`, inherits
+ * the app's own CSP, and `MdExtSecurity.page` removes every script and handler before either
+ * refusal is needed.
  *
- * Nothing in it runs. The frame carries no `allow-scripts`, and a `srcdoc` document inherits the
- * app's own CSP, so a page's script is refused twice over and its `<script>` is gone before either
- * refusal is needed. What that costs is the page that DRAWS itself with JavaScript: a chart built
- * by a library at load time comes up empty, and its markup is what `raw` is for. Links are inert
- * for the same reason - the frame may not navigate anything, this window included.
+ * When the reader opts into `allowScripts` for one open document, the prepared HTML is registered
+ * in main and loaded from its own ephemeral `jamat-v3-html://<previewId>/` origin with a strict
+ * offline CSP (inline scripts and styles allowed, no network, no subframes, no parent or preload
+ * access). Each preview gets its own cross-origin host so `history.replaceState` works while the
+ * frame stays isolated from both the shell and other open HTML documents.
  */
 export function FileHtmlView(props: {
   ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>
   documentId: string
   name: string
   source: string
+  allowScripts?: boolean
+  onAllowScriptsChange?(allow: boolean): void
+  preview?: HtmlPreviewPorts
 }): React.JSX.Element {
-  const [page, setPage] = useState<string | null>(null)
+  const allowScripts = props.allowScripts === true
+  const preview = props.preview ?? window.appClient?.fileViewer
+  const [rendered, setRendered] = useState<RenderedHtml | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const hasScripts = useMemo(() => FileHtmlPage.hasScripts(props.source), [props.source])
 
   useEffect(() => {
     let alive = true
-    setPage(null)
+    let registeredId: string | null = null
+    setRendered(null)
     setError(null)
-    void FileHtmlPage.of(props.source, props.documentId, props.ports).then(
-      (html) => { if (alive) setPage(html) },
-      (reason: unknown) => { if (alive) setError(ErrorText.of(reason)) },
-    )
-    return () => { alive = false }
-  }, [props.source, props.documentId, props.ports])
+    const release = (previewId: string): void => {
+      void preview?.releaseHtmlPreview?.(previewId).catch(() => undefined)
+    }
+    const load = async (): Promise<void> => {
+      if (!allowScripts) {
+        const html = await FileHtmlPage.of(props.source, props.documentId, props.ports)
+        if (alive) setRendered({ kind: 'static', html })
+        return
+      }
+      if (!preview?.registerHtmlPreview || !preview.releaseHtmlPreview) {
+        if (alive) setError('Scripted HTML preview is unavailable.')
+        return
+      }
+      const html = await FileHtmlPage.scripted(props.source, props.documentId, props.ports)
+      if (!alive) return
+      const answer = await preview.registerHtmlPreview(html)
+      if (!answer.ok) {
+        if (alive) setError(answer.error)
+        return
+      }
+      if (!alive) {
+        release(answer.value)
+        return
+      }
+      registeredId = answer.value
+      setRendered({ kind: 'scripted', url: FileViewerProtocolUrl.html(answer.value) })
+    }
+    void load().catch((reason: unknown) => {
+      if (alive) setError(ErrorText.of(reason))
+    })
+    return () => {
+      alive = false
+      if (registeredId !== null) release(registeredId)
+    }
+  }, [props.source, props.documentId, props.ports, allowScripts, preview])
 
   if (error !== null) return <p className="file-viewer-error">{error}</p>
-  if (page === null) return <p className="file-viewer-note">Rendering the page...</p>
-  return <iframe className="file-viewer-html" title={props.name} sandbox="" srcDoc={page} />
+  if (rendered === null) return <p className="file-viewer-note">Rendering the page...</p>
+  const frame = rendered.kind === 'static'
+    ? <iframe className="file-viewer-html" title={props.name} sandbox="" srcDoc={rendered.html} />
+    : <iframe className="file-viewer-html" title={props.name} sandbox="allow-scripts allow-same-origin" src={rendered.url} />
+  if (!allowScripts && hasScripts && props.onAllowScriptsChange)
+    return (
+      <div className="file-viewer-html-host">
+        <div className="file-viewer-html-banner" role="status">
+          <span>Scripts are disabled in this preview.</span>
+          <button type="button" onClick={() => props.onAllowScriptsChange?.(true)}>
+            Enable scripts
+          </button>
+        </div>
+        {frame}
+      </div>
+    )
+  return frame
 }
 
 /** The document that goes into the frame: sanitised, its pictures granted, its own styling intact. */
@@ -66,9 +121,40 @@ export class FileHtmlPage {
    * in the app, so one page of thumbnails must not be able to evict what another window is reading.
    */
   private static readonly imagesMaxConst = 64
+  private static readonly scriptedBlockedSelectorConst =
+    'iframe,frame,frameset,object,embed,applet,base,link,meta[http-equiv]'
+  private static readonly scriptedBlockedAttributesConst = ['srcdoc', 'ping', 'formaction'] as const
+
+  static hasScripts(source: string): boolean {
+    const parsed = new DOMParser().parseFromString(source, 'text/html')
+    if (parsed.querySelector('script') !== null) return true
+    for (const element of parsed.querySelectorAll('*'))
+      for (const attribute of element.attributes)
+        if (/^on[a-z]/i.test(attribute.name)) return true
+    return false
+  }
 
   static async of(source: string, documentId: string, ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>): Promise<string> {
     const parsed = new DOMParser().parseFromString(MdExtSecurity.page(source), 'text/html')
+    return FileHtmlPage.finalize(parsed, documentId, ports)
+  }
+
+  /**
+   * Keeps inline scripts and event handlers while still stripping nested frames, plugins, base/link
+   * tags, meta redirects, `srcset` and non-image `src` attributes. The response CSP on
+   * `jamat-v3-html:` enforces the same offline boundary independently.
+   */
+  static async scripted(source: string, documentId: string, ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>): Promise<string> {
+    const parsed = new DOMParser().parseFromString(source, 'text/html')
+    for (const element of parsed.querySelectorAll(FileHtmlPage.scriptedBlockedSelectorConst))
+      element.remove()
+    for (const attribute of FileHtmlPage.scriptedBlockedAttributesConst)
+      for (const element of parsed.querySelectorAll(`[${attribute}]`))
+        element.removeAttribute(attribute)
+    return FileHtmlPage.finalize(parsed, documentId, ports)
+  }
+
+  private static async finalize(parsed: Document, documentId: string, ports: Pick<SessionFilePorts['viewer'], 'relativeResource'>): Promise<string> {
     FileHtmlPage.strip(parsed)
     await FileHtmlPage.images(parsed, documentId, ports)
     const style = parsed.createElement('style')

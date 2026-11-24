@@ -78,7 +78,8 @@ export class RemoteSessionSnapshots {
     return {
       sessionId, kind, title, titleParts, tabTitle, directory, project, life, activity, admits,
       parent: session.parent, script: session.script, agent: session.agent, color: session.color,
-      activityDetail: session.activityDetail, compacting: session.compacting, completed: session.completed,
+      activityDetail: session.activityDetail, compacting: session.compacting, shellsRunning: session.shellsRunning,
+      completed: session.completed,
       endedAt: session.endedAt, exitCode: session.exitCode, outcome: session.outcome,
       pending: session.workflow?.open === true || session.actions?.sections.some((section) => section.open) === true
         || session.worktree?.cleanup?.phase === 'pending' || session.retiredWorktree?.landing !== undefined,

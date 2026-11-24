@@ -87,6 +87,15 @@ export class AgentComposerReader {
    */
   private static readonly codexPlaceholderConst = /^askcodextodoanything$/
   /**
+   * Antigravity's hint for its permission mode, read by its words because only they reach a live
+   * frame: agy draws it in gray (SGR 90), and the Host's `screenLines` keep dim alone. agy 1.5.15
+   * shows `<Name> mode: ... (shift+tab to cycle)` for every mode but the default one, which leaves
+   * the box empty: `antigravity-live-composer-placeholder.json` ("Auto mode: edits & safe commands
+   * auto-approved") and `antigravity-live-composer-plan-mode.json` ("Plan mode: research & plan
+   * only"), and on screen "Accept-edits mode: file edits auto-approved". Normalized.
+   */
+  private static readonly antigravityModeHintConst = /^[a-z-]+mode:.*\(shift\+tabtocycle\)$/
+  /**
    * `codex-live-booting.json`: the update prompt Codex shows before its box draws its options with
    * the same `›`, as `› 1. Update now`. A numbered row under the marker is a menu, not a draft.
    */
@@ -184,7 +193,8 @@ export class AgentComposerReader {
       return AgentComposerReader.claudeSuggestionConst.test(normalized) ? { state: 'empty' } : read
     else if (agentId === 'codex')
       return AgentComposerReader.codexPlaceholderConst.test(normalized) ? { state: 'empty' } : read
-    else if (agentId === 'antigravity') return read
+    else if (agentId === 'antigravity')
+      return AgentComposerReader.antigravityModeHintConst.test(normalized) ? { state: 'empty' } : read
     else throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }
 

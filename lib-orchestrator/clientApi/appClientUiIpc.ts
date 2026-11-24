@@ -446,6 +446,12 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
    */
   'fileViewer:start-resource-drag': (resourceId: string) => boolean
   'fileViewer:open-external': (url: string) => boolean
+  /**
+   * Registers prepared HTML for one scripted preview frame on `jamat-v3-html://<previewId>/`, owned
+   * by the calling workspace window and revoked on release, reload or close.
+   */
+  'fileViewer:register-html-preview': (html: string) => string
+  'fileViewer:release-html-preview': (previewId: string) => void
   'fileViewer:release': (documentId: string) => void
   'remarkable:settings-get': () => RemarkableSettingsSnapshot
   'remarkable:settings-save': (value: RemarkableSettingsValue) => RemarkableResult
@@ -779,6 +785,8 @@ export const AppClientUiBridgeCallsConst = {
     startImageDrag: 'fileViewer:start-image-drag',
     startResourceDrag: 'fileViewer:start-resource-drag',
     openExternal: 'fileViewer:open-external',
+    registerHtmlPreview: 'fileViewer:register-html-preview',
+    releaseHtmlPreview: 'fileViewer:release-html-preview',
     release: 'fileViewer:release',
   },
   remarkable: {
@@ -1178,6 +1186,8 @@ export const AppClientUiChannelOwnersConst = {
   'fileViewer:start-image-drag': 'main',
   'fileViewer:start-resource-drag': 'main',
   'fileViewer:open-external': 'main',
+  'fileViewer:register-html-preview': 'main',
+  'fileViewer:release-html-preview': 'main',
   'fileViewer:release': 'orchestrator',
   'remarkable:settings-get': 'orchestrator',
   'remarkable:settings-save': 'orchestrator',

@@ -191,6 +191,7 @@ class SmokeUi extends SmokeHarness {
         // what is being proved. Reading them for real is `smoke:rate-monitor`, which exists for it.
         CLAUDE_CONFIG_DIR: configDir,
         CODEX_HOME: configDir,
+        JAMAT_V3_GEMINI_DIR: join(configDir, '.gemini'),
       },
     })
   }

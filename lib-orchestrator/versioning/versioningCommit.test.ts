@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { VersioningCommitReceipts, type VersioningCommitDraftDto } from './versioningCommit'
+import { VersioningCommitPaths, VersioningCommitReceipts, type VersioningCommitDraftDto } from './versioningCommit'
 import { versioningReviewSchema } from './versioningReviewSchemas'
+
+describe('commit review targets', () => {
+  const accepted = ['Q:/app/a.ts', { path: 'Q:/app', depth: 'empty' }, { path: 'Q:/app', depth: 'empty', checked: true },
+    { path: 'Q:/app', depth: 'infinity' }, { path: 'Q:/app', depth: 'infinity', checked: true }, { path: 'Q:/app', depth: 'infinity', checked: false }]
+  const refused = [{ path: 'Q:/app', depth: 'empty', checked: false }, { path: 'Q:/app', depth: 'infinity', checked: 'false' },
+    { path: 'Q:/app', checked: false }, { path: 'Q:/app', depth: 'infinity', checked: false, recursive: true }, { path: '', depth: 'infinity', checked: false }]
+
+  it('accepts checked: false only on an infinity target, in the helper and the review schema alike', () => {
+    for (const target of accepted) {
+      expect(VersioningCommitPaths.valid(target)).toBe(true)
+      expect(versioningReviewSchema.shape.paths.safeParse([target]).success).toBe(true)
+    }
+    for (const target of refused) {
+      expect(VersioningCommitPaths.valid(target)).toBe(false)
+      expect(versioningReviewSchema.shape.paths.safeParse([target]).success).toBe(false)
+    }
+  })
+
+  it('checks every form except checked: false', () => {
+    expect(accepted.filter(VersioningCommitPaths.valid).map(VersioningCommitPaths.checked)).toEqual([true, true, true, true, true, false])
+  })
+})
 
 describe('commit receipt omissions', () => {
   const draft: VersioningCommitDraftDto = {

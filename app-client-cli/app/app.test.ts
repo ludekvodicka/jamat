@@ -215,6 +215,18 @@ class FakeCliClient implements AppClientCliClientPort {
   openCommitError: RemoteControlError | null = null
   /** The status read throws, the way a client that went away makes it. */
   statusThrows = false
+  /** What `agents.describe` answers: the target's catalog, with Claude configured on an id it does not list. */
+  describedAgents: unknown = { agents: [
+    { agentId: 'antigravity', configuredModel: null, models: [
+      { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)', kind: 'version', context: 1_048_576, efforts: ['low', 'medium', 'high'] },
+      { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)', kind: 'version', context: 1_048_576, efforts: [] },
+    ] },
+    { agentId: 'claude', configuredModel: 'claude-next', models: [
+      { id: 'opus', label: 'Opus (newest)', kind: 'alias', context: 200_000, efforts: ['low', 'high', 'max'] },
+      { id: 'haiku', label: 'Haiku (newest)', kind: 'alias', context: 200_000, efforts: [] },
+    ] },
+  ] }
   cancelResponse: unknown = { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
     sessionId: 'session-001', vcs: 'svn', scopeRoot: 'Q:/Apps/One', state: 'cancelled', closed: true, revision: null, detail: null }
 
@@ -290,6 +302,7 @@ class FakeCliClient implements AppClientCliClientPort {
 
   private value(operation: RemoteControlRequestUnion['operation']): unknown {
     if (operation === 'accounts.list') return [{ agentId: 'claude', accountId: 'work-1', label: 'Work' }]
+    if (operation === 'agents.describe') return this.describedAgents
     if (operation === 'tabs.openCommit') return { kind: 'commit-opened', commitSessionId: '11111111-1111-4111-8111-111111111111',
       panelId: 'panel', windowId: 'main', scopeRoot: 'Q:/Apps/One', messageApplied: true }
     if (operation === 'tabs.commitStatus') return { kind: 'commit-status', commitSessionId: '11111111-1111-4111-8111-111111111111',
@@ -748,6 +761,36 @@ describe('app-client-cli/app/app', () => {
       expect(invalid.discoveries).toBe(0)
     }
   })
+  it('forwards a shown-only project beside its checked files, drops checked: true and refuses checked: false off infinity', async () => {
+    const h = new CliHarness()
+    h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
+    const input = [{ path: 'Q:/Group/Project', depth: 'infinity', checked: false }, 'Q:/Group/Project/a.ts',
+      { path: 'Q:/Group/Project/lib', depth: 'infinity', checked: true }, { path: 'Q:/Group', depth: 'empty', checked: true }]
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--paths-file', 'paths.json', '--fallback', 'report'],
+      { ...h.deps(), readJson: () => input }).run()).toBe(0)
+    const sent = h.client.requests[1]
+    if (sent?.operation !== 'tabs.openCommit') throw new Error('No review was opened')
+    expect(sent.body.paths).toEqual([
+      { path: resolve('Q:/Group/Project'), depth: 'infinity', checked: false }, resolve('Q:/Group/Project/a.ts'),
+      { path: resolve('Q:/Group/Project/lib'), depth: 'infinity' }, { path: resolve('Q:/Group'), depth: 'empty' }])
+    for (const target of [{ path: 'Q:/Group', depth: 'empty', checked: false }, { path: 'Q:/Group', depth: 'infinity', checked: 'false' },
+      { path: 'Q:/Group', depth: 'infinity', checked: null }, { path: 'Q:/Group', checked: false },
+      { path: 'Q:/Group', depth: 'infinity', checked: false, recursive: true }]) {
+      const invalid = new CliHarness()
+      expect(await new AppClientCli(['commit-svn-jamat', '--self', '--paths-file', 'paths.json'],
+        { ...invalid.deps(), readJson: () => [target] }).run()).toBe(2)
+      expect(invalid.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+      expect(invalid.discoveries).toBe(0)
+    }
+  })
+  it('refuses to hand a shown-only directory to Tortoise, which would check every row it shows', async () => {
+    const h = new CliHarness()
+    h.client.sessions = []
+    expect(await new AppClientCli(['commit-svn-jamat', '--session-id', 'session-001', '--paths-file', 'paths.json'],
+      { ...h.deps(), readJson: () => [{ path: 'Q:/Group/Project', depth: 'infinity', checked: false }, 'Q:/Group/Project/a.ts'] }).run()).toBe(2)
+    expect(h.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request', detail: expect.stringContaining('unchecked') } })
+    expect(h.asideCalls).toEqual([])
+  })
   it('exits with invalid-request and opens no Tortoise when an older Jamat refuses a node-only target', async () => {
     const h = new CliHarness()
     h.client.sessions[0] = { ...h.client.sessions[0]!, life: 'live' }
@@ -988,6 +1031,56 @@ describe('app-client-cli/app/app', () => {
     const unknown = new CliHarness()
     expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--account', 'Missing'], unknown.deps()).run()).toBe(2)
     expect(unknown.client.requests.map(request => request.operation)).toEqual(['accounts.list'])
+  })
+
+  it('passes --model and --effort after the target catalog offers them', async () => {
+    const h = new CliHarness()
+    const argv = ['sessions', 'create', '--directory', 'Q:/One', '--agent', 'antigravity', '--model', 'gemini-4-neon-high', '--effort', 'high']
+    expect(await new AppClientCli(argv, h.deps()).run(), JSON.stringify(h.parsedOutput())).toBe(0)
+    expect(h.client.requests.map((request) => request.operation)).toEqual(['agents.describe', 'sessions.create'])
+    const created = h.client.requests.at(-1)
+    if (created?.operation !== 'sessions.create') throw new Error('Expected create')
+    expect(created.body.spec.agent).toEqual({ agentId: 'antigravity', mode: 'new', model: 'gemini-4-neon-high', effort: 'high' })
+    const plain = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--agent', 'antigravity'], plain.deps()).run()).toBe(0)
+    expect(plain.client.requests.map((request) => request.operation)).toEqual(['sessions.create'])
+  })
+
+  it('refuses a model or an effort the target catalog does not offer, before the create', async () => {
+    const refused = async (extra: string[], detail: string): Promise<void> => {
+      const h = new CliHarness()
+      expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', ...extra], h.deps()).run()).toBe(2)
+      expect(h.client.requests.map((request) => request.operation)).toEqual(['agents.describe'])
+      expect(h.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request', detail: expect.stringContaining(detail) } })
+    }
+    await refused(['--agent', 'antigravity', '--model', 'gemini-9'], '--model gemini-9 is not offered for antigravity by the target; offered: gemini-4-neon-high, gemini-4-argon-low')
+    await refused(['--agent', 'antigravity', '--model', 'gemini-4-argon-low', '--effort', 'max'], 'offered: low, medium, high')
+    await refused(['--agent', 'antigravity', '--model', 'gemini-pro-orchestrator-neon', '--effort', 'high'], 'is not taken by antigravity model gemini-pro-orchestrator-neon')
+    await refused(['--agent', 'antigravity', '--effort', 'ultra'], '--effort ultra is not offered for antigravity; offered: low, medium, high, xhigh, max')
+    await refused(['--agent', 'codex', '--model', 'gpt-5.6-sol'], 'does not describe the codex agent')
+  })
+
+  it('accepts the model the target is configured on, and checks an effort without a model against it', async () => {
+    const configured = new CliHarness()
+    const argv = ['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--model', 'claude-next', '--effort', 'max']
+    expect(await new AppClientCli(argv, configured.deps()).run()).toBe(0)
+    const haiku = new CliHarness()
+    haiku.client.describedAgents = { agents: [{ agentId: 'claude', configuredModel: 'haiku',
+      models: [{ id: 'haiku', label: 'Haiku', kind: 'alias', context: 200_000, efforts: [] }] }] }
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--agent', 'claude', '--effort', 'high'], haiku.deps()).run()).toBe(2)
+    expect(haiku.parsedOutput()).toMatchObject({ error: { detail: expect.stringContaining('not taken by claude model haiku') } })
+  })
+
+  it('asks the peer that runs the session for its catalog, and needs --agent for a model', async () => {
+    const h = new CliHarness()
+    h.client.computers = [CliHarness.computer()]
+    const argv = ['sessions', 'create', '--directory', 'Q:/One', '--agent', 'antigravity', '--model', 'gemini-4-neon-high', '--computer', 'endpoint-remote']
+    expect(await new AppClientCli(argv, h.deps()).run()).toBe(0)
+    expect(h.client.remoteRequests.map((entry) => entry.request.operation)).toEqual(['agents.describe', 'sessions.create'])
+    expect(h.client.requests).toEqual([])
+    const bare = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/One', '--model', 'opus'], bare.deps()).run()).toBe(2)
+    expect(bare.client.requests).toEqual([])
   })
 
   it('lists target accounts and selects one, while an older peer keeps its default', async () => {

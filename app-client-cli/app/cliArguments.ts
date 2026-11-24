@@ -67,6 +67,8 @@ export class CliArguments {
         '--native-session-id',
         '--fork-parent-id',
         '--prompt',
+        '--model',
+        '--effort',
         '--worktree',
         '--worktree-owner',
         '--worktree-tag',

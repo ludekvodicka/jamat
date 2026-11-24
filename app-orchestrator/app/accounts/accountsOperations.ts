@@ -1,4 +1,5 @@
 import { AccountProblem } from '../../../lib-orchestrator/agentAccounts/accountProblem'
+import type { AntigravityLogins } from '../../../lib-orchestrator/agentAccounts/antigravityLogins'
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import { z } from 'zod'
 import type { AgentAccounts } from '../../../lib-orchestrator/agentAccounts/agentAccounts'
@@ -8,15 +9,29 @@ import type { AppOperationMap } from '../../../lib-orchestrator/clientApi/appOpe
 import type { AccountBroker } from '../../../lib-orchestrator/agentAccounts/accountBroker'
 import { AccountBrokerAnswers } from '../../../lib-orchestrator/agentAccounts/accountBrokerAnswer'
 
+export type AntigravityLoginsPort = Pick<
+  AntigravityLogins,
+  'list' | 'store' | 'update' | 'clear' | 'login' | 'switchTo' | 'remove'
+>
+
 export class AccountsOperations {
+  private static readonly slotIdPatternConst = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
   private readonly accounts: AgentAccounts
   private readonly broker: Pick<AccountBroker, 'pick' | 'report' | 'callers'>
   private readonly brokerCommand: () => string | null
+  private readonly antigravityLogins: AntigravityLoginsPort | undefined
 
-  constructor(accounts: AgentAccounts, broker: Pick<AccountBroker, 'pick' | 'report' | 'callers'>, brokerCommand: () => string | null) {
+  constructor(
+    accounts: AgentAccounts,
+    broker: Pick<AccountBroker, 'pick' | 'report' | 'callers'>,
+    brokerCommand: () => string | null,
+    antigravityLogins?: AntigravityLoginsPort,
+  ) {
     this.accounts = accounts
     this.broker = broker
     this.brokerCommand = brokerCommand
+    this.antigravityLogins = antigravityLogins
   }
 
   register(registry: Pick<RemoteControlRegistry, 'registrar'>): void {
@@ -36,6 +51,29 @@ export class AccountsOperations {
     op('accounts.remove', { kind: 'write', description: 'Remove an idle added profile without following its links.',
       input: z.strictObject({ accountId: RemoteControlZod.text() }),
       run: body => this.perform(async () => { await this.accounts.remove(body.accountId); return {} }) })
+    const slotId = z.string().min(1).max(64).regex(AccountsOperations.slotIdPatternConst, { error: 'must be a lowercase slug id' })
+    op('accounts.antigravity.list', { kind: 'read', description: 'Read the active and saved Antigravity logins from Windows Credential Manager.',
+      input: z.strictObject({}),
+      run: () => this.perform(() => this.requireAntigravity().list()) })
+    op('accounts.antigravity.store', { kind: 'write', description: 'Store the current active Antigravity login under a name.',
+      input: z.strictObject({ label: RemoteControlZod.text() }),
+      run: body => this.perform(() => this.requireAntigravity().store(body.label)) })
+    op('accounts.antigravity.update', { kind: 'write', description: 'Overwrite a saved Antigravity login with the current active login.',
+      input: z.strictObject({ slotId }),
+      run: body => this.perform(async () => { await this.requireAntigravity().update(body.slotId); return {} }) })
+    op('accounts.antigravity.clear', { kind: 'write', description: 'Clear the current active Antigravity login from Windows Credential Manager without revoking it.',
+      input: z.strictObject({}),
+      run: () => this.perform(async () => { await this.requireAntigravity().clear(); return {} }) })
+    op('accounts.antigravity.login', { kind: 'write', description: 'Open an Antigravity terminal to sign in to a new account.',
+      input: z.strictObject({}),
+      run: () => this.perform(() => this.requireAntigravity().login()) })
+    op('accounts.antigravity.switch', { kind: 'write', description: 'Activate a saved Antigravity login in Windows Credential Manager, optionally reopening running Antigravity sessions.',
+      input: z.strictObject({ slotId, reopenRunning: RemoteControlZod.boolean().optional() }),
+      run: body => this.perform(() => this.requireAntigravity().switchTo(body.slotId,
+        body.reopenRunning === undefined ? undefined : { reopenRunning: body.reopenRunning })) })
+    op('accounts.antigravity.remove', { kind: 'write', description: 'Remove a saved Antigravity login backup without touching the active login.',
+      input: z.strictObject({ slotId }),
+      run: body => this.perform(async () => { await this.requireAntigravity().remove(body.slotId); return {} }) })
     const id = z.string().regex(AccountBrokerAnswers.callerPatternConst, { error: 'must be 1 to 64 characters of A-Z a-z 0-9 . _ -' })
     op('accounts.pick', { kind: 'write', description: 'Choose the Claude account a local caller runs on; Main when the choice fails.',
       input: z.strictObject({ caller: id, purpose: z.enum(AccountBrokerAnswers.purposesConst) }),
@@ -50,6 +88,11 @@ export class AccountsOperations {
       run: async body => { await this.broker.report(body); return { ok: true, value: { recorded: true } } } })
     op('usage.callers', { kind: 'read', description: 'Callers of the Claude account broker in the last 30 days.', input: z.strictObject({}),
       run: async () => ({ ok: true, value: { ...await this.broker.callers(), command: this.brokerCommand() } }) })
+  }
+
+  private requireAntigravity(): AntigravityLoginsPort {
+    if (!this.antigravityLogins) throw new AccountProblem('Antigravity login switching is not available')
+    return this.antigravityLogins
   }
 
   private async perform<T>(action: () => Promise<T>): Promise<RemoteControlStepResult<T>> {

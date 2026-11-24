@@ -1420,8 +1420,117 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     expect((await checked([{ path: f.path, depth: 'empty' }])).opened.paths).toEqual([f.path])
   })
 
+  /** An agent checks only its own files, and the person still sees the project's other work, unchecked. */
+  it('shows a checked: false directory with every row unchecked except the rows another target names', async () => {
+    const f = await fixture()
+    const project = join(f.root, 'Project')
+    const other = join(f.root, 'Other')
+    await mkdir(project)
+    await mkdir(other)
+    const row = (path: string, nodeKind: 'file' | 'directory') => ({ ...f.snapshot.entries[0], fileId: path, path, displayPath: path, nodeKind })
+    f.snapshot.entries = [row(f.root, 'directory'), row(f.path, 'file'), row(project, 'directory'), row(join(project, 'a.ts'), 'file'),
+      row(join(project, 'deep', 'b.ts'), 'file'), row(join(project, 'foreign.ts'), 'file'), row(join(other, 'c.ts'), 'file')]
+    const open = async (paths: Parameters<VersioningCommitManager['prepare']>[4]) => {
+      const opened = await f.manager.prepare('session', 'svn', null, null, paths)
+      if (!opened.ok) throw new Error(opened.detail)
+      f.manager.attach(opened.value.draftId, 'window')
+      const shown = f.manager.files('window', opened.value.draftId, f.snapshot)
+      return { opened: opened.value, shown: shown.entries.map((entry) => entry.path),
+        checked: f.manager.checkedPaths('window', opened.value.draftId, shown),
+        selection: f.manager.read('window', opened.value.draftId)?.selection?.paths }
+    }
+    const agent = await open([{ path: project, depth: 'infinity', checked: false }, join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    expect(agent.opened.title).toBe('Commit SVN · 2 paths')
+    expect(agent.opened.paths).toEqual([{ path: project, depth: 'infinity', checked: false }, join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    expect(agent.shown).toEqual([project, join(project, 'a.ts'), join(project, 'deep', 'b.ts'), join(project, 'foreign.ts')])
+    expect(agent.checked).toEqual([join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    expect(agent.selection).toEqual([join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    expect(f.manager.read('window', agent.opened.draftId)?.scopeTooltip)
+      .toBe([project, '  . (shown unchecked)', `  a.ts`, `  ${join('deep', 'b.ts')}`].join('\n'))
+    // The rows a shown-only target reaches are the rows a commit accepts; a row beside it is refused.
+    const foreign = f.snapshot.entries.find((entry) => entry.path === join(other, 'c.ts'))!
+    expect(await f.manager.run('window', { ...f.request, draftId: agent.opened.draftId, fileIds: [foreign.fileId] }))
+      .toMatchObject({ ok: false, code: 'invalid-target' })
+    // A shown-only directory equal to its scope root stays a selection that checks nothing.
+    const whole = await open([{ path: f.root, depth: 'infinity', checked: false }])
+    expect(whole.opened).toMatchObject({ scopeRoot: f.root, paths: [{ path: f.root, depth: 'infinity', checked: false }] })
+    expect(whole.shown).toHaveLength(f.snapshot.entries.length)
+    expect(whole.checked).toEqual([])
+    // Named again in a checked form, the same directory keeps the widest check: subtree, own node, nothing.
+    const node = await open([{ path: project, depth: 'infinity', checked: false }, { path: project, depth: 'empty' }])
+    expect(node.opened.paths).toEqual([{ path: project, depth: 'empty' }])
+    expect(node.checked).toEqual([project])
+    expect((await open([project, { path: project, depth: 'infinity', checked: false }, f.path])).opened.paths).toEqual([project, f.path])
+    expect((await open([{ path: project, depth: 'infinity', checked: true }, f.path])).checked)
+      .toEqual([f.path, project, join(project, 'a.ts'), join(project, 'deep', 'b.ts'), join(project, 'foreign.ts')])
+    // The shown-only review is its own draft, apart from the plain review of the same paths.
+    const plain = await f.manager.prepare('session', 'svn', null, null, [project, join(project, 'a.ts'), join(project, 'deep', 'b.ts')])
+    expect(plain).toMatchObject({ ok: true })
+    expect(plain.ok && plain.value.draftId).not.toBe(agent.opened.draftId)
+    expect(await f.manager.prepare('session', 'svn', null, null, agent.opened.paths)).toMatchObject({ value: { draftId: agent.opened.draftId } })
+  })
+
+  it('keeps a checked: false target unchecked after a restart and refuses to hand it to Tortoise', async () => {
+    const f = await fixture()
+    const file = join(f.root, 'reviews.json')
+    f.deps.reviews = new VersioningReviewStore(file, f.report)
+    const project = join(f.root, 'Project')
+    await mkdir(project)
+    const row = (path: string) => ({ ...f.snapshot.entries[0], fileId: path, path, displayPath: path })
+    f.snapshot.entries = [row(join(project, 'a.ts')), row(join(project, 'foreign.ts'))]
+    const paths = [{ path: project, depth: 'infinity' as const, checked: false }, join(project, 'a.ts')]
+    const opened = await f.manager.prepare('session', 'svn', null, 'Mine only', paths)
+    if (!opened.ok) throw new Error(opened.detail)
+    f.manager.attach(opened.value.draftId, 'window')
+    f.manager.files('window', opened.value.draftId, f.snapshot)
+    expect(await readFile(file, 'utf8')).toMatch(/"checked":\s*false/)
+    f.manager.release(opened.value.draftId, 'window')
+    const manager = new VersioningCommitManager({ ...f.deps, reviews: new VersioningReviewStore(file, f.report),
+      messages: new VersioningCommitMessageStore(f.messageFile, f.report) })
+    const reopened = await manager.prepare('session', 'svn', null, null, paths)
+    expect(reopened).toMatchObject({ ok: true, value: { draftId: opened.value.draftId } })
+    manager.attach(opened.value.draftId, 'window')
+    expect(manager.read('window', opened.value.draftId)?.message).toBe('Mine only')
+    expect(manager.checkedPaths('window', opened.value.draftId, manager.files('window', opened.value.draftId, f.snapshot)))
+      .toEqual([join(project, 'a.ts')])
+    expect(await manager.openTortoise('window', opened.value.draftId, 'Mine only'))
+      .toMatchObject({ ok: false, code: 'invalid-target', detail: expect.stringContaining('unchecked') })
+  })
+
+  it('hands only the checked rows of a checked: false review to Tortoise', async () => {
+    const f = await fixture()
+    const project = join(f.root, 'Project')
+    await mkdir(project)
+    f.snapshot.entries = await Promise.all(['a.ts', 'foreign.ts'].map(async (name) => {
+      const path = join(project, name)
+      await writeFile(path, name)
+      return { ...f.snapshot.entries[0], fileId: path, path, displayPath: path, nodeKind: 'file' as const,
+        modifiedAt: Math.round((await lstat(path)).mtimeMs) }
+    }))
+    f.deps.fileAccess = (_owner, _snapshot, id) => {
+      const entry = f.snapshot.entries.find((candidate) => candidate.fileId === id)
+      return entry === undefined ? { ok: false, code: 'unknown-file', detail: 'unknown' }
+        : { ok: true, value: { sessionId: 'session', cwd: f.root, path: entry.path, nodeKind: entry.nodeKind,
+          status: entry.status, workingState: { vcsEntry: true, modifiedAt: entry.modifiedAt } } }
+    }
+    const opened = await f.manager.prepare('session', 'svn', null, null,
+      [{ path: project, depth: 'infinity', checked: false }, join(project, 'a.ts')])
+    if (!opened.ok) throw new Error(opened.detail)
+    const draftId = opened.value.draftId
+    f.manager.attach(draftId, 'window')
+    f.manager.files('window', draftId, f.snapshot)
+    const before = f.manager.read('window', draftId)!
+    const binding = { snapshotId: f.snapshot.snapshotId, fileIds: [join(project, 'a.ts')] }
+    expect(f.manager.edit('window', { draftId, epoch: before.epoch!, expectedRevision: before.revision,
+      message: 'Mine only', selection: binding })).toMatchObject({ ok: true })
+    f.deps.tortoise.open = vi.fn(async () => ({ ok: true as const, closed: Promise.resolve() }))
+    expect(await f.manager.openTortoise('window', draftId, 'Mine only', binding)).toEqual({ ok: true })
+    expect(f.deps.tortoise.open).toHaveBeenCalledWith(expect.objectContaining({ paths: [join(project, 'a.ts')] }))
+  })
+
   it.each([
     [[{ path: 'file.txt' }]], [[{ path: 'file.txt', depth: 'files' }]], [[{ path: 'file.txt', depth: 'empty', recursive: false }]],
+    [[{ path: 'file.txt', depth: 'empty', checked: false }]], [[{ path: 'file.txt', depth: 'infinity', checked: 'no' }]],
     [[{ path: '', depth: 'empty' }]], [['a\nb']], [[42]],
   ])('refuses the requested targets %j before reading anything', async (paths) => {
     const f = await fixture()

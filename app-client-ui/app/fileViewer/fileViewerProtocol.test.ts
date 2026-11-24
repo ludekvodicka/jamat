@@ -10,6 +10,7 @@ import type {
 import {
   FileContentReader,
 } from '../../../lib-orchestrator/fileViewer/content/fileContentReader'
+import { FileHtmlPreviewStore } from './fileHtmlPreviewStore'
 import { FileViewerProtocol } from './fileViewerProtocol'
 import { FileViewer } from '../../../lib-orchestrator/fileViewer/fileViewer'
 import { FileViewerMediaView } from '../../../lib-orchestrator/fileViewer/fileViewerMediaView'
@@ -17,14 +18,14 @@ import { LocalFileMediaSource } from './localFileMediaSource'
 
 const protocolMock = vi.hoisted(() => ({
   registrations: [] as unknown[],
-  handler: null as ((request: Request) => Promise<Response>) | null,
+  handlers: new Map<string, (request: Request) => Promise<Response> | Response>(),
 }))
 
 vi.mock('electron', () => ({
   protocol: {
     registerSchemesAsPrivileged: (value: unknown) => protocolMock.registrations.push(value),
-    handle: (_scheme: string, handler: (request: Request) => Promise<Response>) => {
-      protocolMock.handler = handler
+    handle: (scheme: string, handler: (request: Request) => Promise<Response> | Response) => {
+      protocolMock.handlers.set(scheme, handler)
     },
   },
 }))
@@ -48,12 +49,15 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
       contentVersion: FileContentReader.versionOf(info.size, info.mtimeMs, info),
     }
     protocolMock.registrations = []
-    protocolMock.handler = null
+    protocolMock.handlers.clear()
   })
 
   afterEach(async () => { await rm(directory, { recursive: true, force: true }) })
 
-  function initialize(): (request: Request) => Promise<Response> {
+  function initialize(htmlPreviews?: FileHtmlPreviewStore): {
+    file: (request: Request) => Promise<Response> | Response
+    html: (request: Request) => Promise<Response> | Response
+  } {
     new FileViewerProtocol({
       metadata: async (token) => {
         if (token !== 'token') return { kind: 'missing' }
@@ -67,12 +71,14 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
         if (result.kind !== 'chunk') throw new Error(result.kind)
         return result.value.bytes
       },
-    }).initialize()
-    if (!protocolMock.handler) throw new Error('Protocol handler was not installed')
-    return protocolMock.handler
+    }, htmlPreviews).initialize()
+    const file = protocolMock.handlers.get('jamat-v3-file')
+    const html = protocolMock.handlers.get('jamat-v3-html')
+    if (!file || !html) throw new Error('Protocol handler was not installed')
+    return { file, html }
   }
 
-  it('registers a secure standard streaming scheme before Electron becomes ready', () => {
+  it('registers the media streaming scheme and isolated HTML preview scheme before Electron becomes ready', () => {
     FileViewerProtocol.registerScheme()
     expect(protocolMock.registrations).toEqual([[
       {
@@ -85,11 +91,43 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
           corsEnabled: true,
         },
       },
+      {
+        scheme: 'jamat-v3-html',
+        privileges: {
+          standard: true,
+          secure: true,
+        },
+      },
     ]])
   })
 
+  it('serves registered scripted HTML previews with an offline CSP and rejects unknown or non-root paths', async () => {
+    const store = new FileHtmlPreviewStore()
+    const previewId = store.register('window-1', '<!doctype html><html><body><script>1</script></body></html>')
+    const { html } = initialize(store)
+
+    const response = await html(new Request(`jamat-v3-html://${previewId}/`))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(response.headers.get('content-security-policy')).toBe(FileViewerProtocol.htmlCspConst)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(await response.text()).toContain('<script>1</script>')
+
+    const head = await html(new Request(`jamat-v3-html://${previewId}/`, { method: 'HEAD' }))
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+
+    expect((await html(new Request(`jamat-v3-html://${previewId}/`, { method: 'POST' }))).status).toBe(405)
+    expect((await html(new Request(`jamat-v3-html://${previewId}/other`))).status).toBe(404)
+    expect((await html(new Request('jamat-v3-html://unknown/'))).status).toBe(404)
+
+    store.release('window-1', previewId)
+    expect((await html(new Request(`jamat-v3-html://${previewId}/`))).status).toBe(404)
+  })
+
   it('streams only granted resources and supports a single byte range', async () => {
-    const handle = initialize()
+    const handle = initialize().file
     const full = await handle(new Request('jamat-v3-file://resource/token'))
     expect(full.status).toBe(200)
     expect(full.headers.get('content-type')).toBe('application/octet-stream')
@@ -110,7 +148,7 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
   })
 
   it('refuses invalid ranges and resources changed after the token was issued', async () => {
-    const handle = initialize()
+    const handle = initialize().file
     expect((await handle(new Request('jamat-v3-file://resource/token', {
       headers: { Range: 'bytes=30-40' },
     }))).status).toBe(416)
@@ -132,8 +170,9 @@ describe('app-client-ui/app/fileViewer/fileViewerProtocol', () => {
     const open = vi.fn((request: Parameters<FileViewerMediaView['open']>[0]) => media.open(structuredClone(request)))
     const cancel = vi.fn((id: string) => media.cancel(id))
     new FileViewerProtocol(new LocalFileMediaSource({ mediaMetadata: token => media.metadata(token), mediaOpen: open, mediaCancel: cancel })).initialize()
-    if (!protocolMock.handler) throw new Error('Protocol handler was not installed')
-    return { handle: protocolMock.handler, media, open, cancel, url: `jamat-v3-file://resource/${granted.value.resourceId}` }
+    const handle = protocolMock.handlers.get('jamat-v3-file')
+    if (!handle) throw new Error('Protocol handler was not installed')
+    return { handle, media, open, cancel, url: `jamat-v3-file://resource/${granted.value.resourceId}` }
   }
 
   it('keeps HEAD and range rejection free of byte reads through the local request boundary', async () => {

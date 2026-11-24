@@ -714,4 +714,15 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorCodex', ()
     expect(inspection.hint).toBe('unknown')
     expect(inspection.evidence.some((item) => item.source === 'raw')).toBe(false)
   })
+
+  // The bare terminal count over an ended turn is a dev server, not work; a streaming turn over the
+  // same count stays working and says nothing about shells.
+  it('marks an ended turn over the bare terminal count as idle with shells', () => {
+    expect(AgentWorkInspectorCodex.inspect(recorded('codex-live-ended-background-count.json').frame))
+      .toMatchObject({ hint: 'idle', shellsRunning: true })
+    expect(AgentWorkInspectorCodex.inspect(recorded('codex-live-idle.json').frame).shellsRunning).toBeUndefined()
+    const streaming = AgentWorkInspectorCodex.inspect(recorded('codex-live-streaming-background-count.json').frame)
+    expect(streaming.hint).toBe('working')
+    expect(streaming.shellsRunning).toBeUndefined()
+  })
 })

@@ -15,7 +15,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/mainFinishWorkflow', () => {
     expect(MainFinishWorkflow.of(record())).toBeNull()
   })
 
-  it('waits at the changes with the four presses, each a finishMain command', () => {
+  it('waits at the changes with the five presses, each a finishMain command', () => {
     const section = MainFinishWorkflow.of(record(choosing))!
     expect(section).toMatchObject({ kind: 'main-finish', workflowId: 'main-finish:s1:10', title: 'Finish of 007 - plan',
       badge: 'changes to commit', open: true, startedAt: 10 })
@@ -24,15 +24,17 @@ describe('lib-orchestrator/sessionManager/lifecycle/mainFinishWorkflow', () => {
       state: 'waits', startedAt: 10, endedAt: null, target: { kind: 'none' }, body: { kind: 'files', paths: ['app/a.ts'], more: 2 } }])
     expect(section.actions.map((action) => [action.id, action.label, action.primary, action.command?.body.mainChoice]))
       .toEqual([['commit-close', 'Commit & close', true, 'commit-close'], ['commit-continue', 'Commit & continue', false, 'commit-continue'],
-        ['close-session', 'Close session', false, 'close'], ['cancel-finish', 'Back to work', false, 'cancel']])
+        ['check-finish', 'Check again', false, 'check'], ['close-session', 'Close session', false, 'close'],
+        ['cancel-finish', 'Back to work', false, 'cancel']])
     expect(section.actions.every((action) => action.command?.operation === 'sessions.finishMain')).toBe(true)
     expect(section.actions.find((action) => action.id === 'close-session')?.confirm).toBeDefined()
   })
 
-  it('offers only Close session and Back to work when no VCS was read', () => {
+  it('offers Check again, Close session and Back to work when no VCS was read', () => {
     const section = MainFinishWorkflow.of(record({ ...choosing, vcs: null, paths: [], more: 0, note: 'The changes could not be read' }))!
-    expect(section.actions.map((action) => action.id)).toEqual(['close-session', 'cancel-finish'])
+    expect(section.actions.map((action) => action.id)).toEqual(['check-finish', 'close-session', 'cancel-finish'])
     expect(section.actions[0]!.primary).toBe(true)
+    expect(section.actions[1]!.primary).toBe(false)
     expect(section.summary).toBe('The changes could not be read')
   })
 

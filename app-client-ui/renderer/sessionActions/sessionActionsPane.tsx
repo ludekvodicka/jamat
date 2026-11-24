@@ -8,7 +8,7 @@ import { WorkflowPane, WorkflowStepRow, WorkflowPlaces, WorkflowLive, WorkflowFo
   useRunLines, useSecondTicks, type WorkflowPorts } from '../workflow/workflowPane'
 import { CommitPane, type CommitPaneDraftState } from '../versioning/commitPane'
 import { CommitPaneChannel } from '../versioning/commitPanePorts'
-import { CommitTargets } from '../../shared/commitTargets'
+import type { CommitRepositoryMessageItem } from '../versioning/commitTargetsList'
 import type { FileViewerChangedOpen } from '../fileViewer/fileViewerPanel.types'
 import { StepBody } from './stepBody'
 import { useFollowEnd } from '../taskView/useFollowEnd'
@@ -123,6 +123,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   // A peer of an older build sends no separateMessages, only its several repositories.
   const multipleRepositories = repositoryReviews.length > 1 || props.review?.body?.kind === 'commit' && props.review.body.separateMessages === true && repositoryReviews.length > 0
   const [repositoryMessages, setRepositoryMessages] = useState<Record<string, string>>({})
+  const [openRepositories, setOpenRepositories] = useState<Record<string, boolean>>({})
   const [repositoryDrafts, setRepositoryDrafts] = useState<CommitPaneDraftState['repositories']>()
   const repositories = (repositoryDrafts ?? repositoryReviews).map((repository) => ({ ...repository, acknowledged: [] }))
   const unsavedRepositories = repositories.some((repository) => repositoryMessages[repositoryKey(repository)] !== undefined
@@ -200,12 +201,13 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
     catch (error) { setNote({ kind: 'refused', sentence: String(error) }) }
     finally { inFlight.current = false; setBusy(false); setPressing(null) }
   }
-  const buttons = (actions: SessionWorkflowAction[], state?: CommitPaneDraftState): React.JSX.Element => <>
+  const buttons = (actions: SessionWorkflowAction[], state?: CommitPaneDraftState, compactNotes = false): React.JSX.Element => <>
     {actions.map((action) => <button key={action.id} type="button"
       className={`workflow__action${action.primary ? ' workflow__action--primary' : ''}${action.confirm ? ' session-actions__danger' : ''}`}
+      title={action.note}
       disabled={busy || action.requiresCommit === true && (outdated || state?.ready !== true || missingSelection(state).length > 0 || unsavedRepositories || repositoryWaits(state).length > 0 || !multipleRepositories && state.checked.length > 0 && state.messageFindings?.some((finding) => finding.id === 'empty') === true || !multipleRepositories && (state.checked.length > 0 ? !state.message.trim() : state.hasChanges))}
       onClick={() => action.confirm === undefined ? void press(action, {}, state) : setConfirm(action)}>{action.label}</button>)}
-    {actions.some((action) => !action.primary && action.note !== undefined) && <ul className="workflow__action-notes">
+    {!compactNotes && actions.some((action) => !action.primary && action.note !== undefined) && <ul className="workflow__action-notes">
       {actions.filter((action) => !action.primary && action.note !== undefined).map((action) => <li key={action.id}>{action.label}: {action.note}</li>)}
     </ul>}
     {confirm !== null && actions.some((action) => action.id === confirm.id) && <div className="session-actions__confirm" role="alert">
@@ -219,7 +221,32 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
   </>
   const reviewButton = (open: () => void): React.JSX.Element =>
     <button type="button" className="workflow__action workflow__action--primary" disabled={busy} onClick={open}>Review changes</button>
+  const repositoryOpen = (repository: (typeof repositories)[number]): boolean => openRepositories[repositoryKey(repository)] ?? true
   const reviewBody = props.review?.body
+  const repositoryMessageItems: CommitRepositoryMessageItem[] | undefined = multipleRepositories && reviewBody?.kind === 'commit'
+    ? repositories.map((repository) => {
+      const key = repositoryKey(repository)
+      const displayPath = mountOf(reviewBody.scopeRoot, repository.root)
+      const findings = 'findings' in repository ? repository.findings ?? [] : []
+      return {
+        root: repository.root,
+        displayPath,
+        repositoryName: repository.repositoryName,
+        source: repository.source,
+        expectedPrefix: repository.expectedPrefix,
+        value: repositoryMessages[key] ?? (repository.message || `${repository.expectedPrefix} `),
+        findings,
+        disabled: busy,
+        open: repositoryOpen(repository),
+        onToggle: (next) => setOpenRepositories((held) => ({ ...held, [key]: next })),
+        onChange: (message) => {
+          setOpenRepositories((held) => held[key] === true ? held : { ...held, [key]: true })
+          setRepositoryMessages((messages) => ({ ...messages, [key]: message }))
+          void draft.current?.saveRepositoryMessage?.(repository.root, message)
+            .catch((error: unknown) => setNote({ kind: 'refused', sentence: ErrorText.of(error) }))
+        },
+      }
+    }) : undefined
   return <section className={`session-actions__section${props.reviewOpen ? ' session-actions__section--review' : ''}`} aria-label={section.title} hidden={props.hidden}>
     <div ref={historyPane} tabIndex={-1} hidden={props.reviewOpen}>
     <button className="session-actions__heading" type="button" aria-expanded={expanded} onClick={() => props.onExpand(!expanded)}>{section.title}
@@ -261,12 +288,17 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
     </div>
     {reviewBody?.kind === 'commit' && props.ports.reviews !== undefined && <section ref={reviewPane} tabIndex={-1} className="session-actions__review" aria-label="Review changes" hidden={!props.reviewOpen}>
       <header className="session-actions__review-header">
-        <div><h2 className="workflow__title">Review changes</h2><p className="workflow__summary">{section.title}</p>
-          <p className="workflow__summary" role="status">{section.badge}</p></div>
+        <div className="session-actions__review-heading">
+          <h2 className="workflow__title">Review changes</h2>
+          <span className="workflow__summary">{section.title}</span>
+          {section.badge !== '' && <span className="workflow__summary session-actions__review-badge" role="status">{section.badge}</span>}
+        </div>
         <button type="button" className="workflow__action" disabled={busy} onClick={props.onCloseReview}>Back to Session actions</button>
       </header>
-      {section.validation && <WorktreeValidation value={section.validation} ports={props.ports} />}
-      {section.validation && <div className="workflow__actions">{buttons(section.actions.filter((action) => action.place === 'step' && !action.requiresCommit))}</div>}
+      {section.validation && <div className="session-actions__review-tools">
+        <div className="workflow__actions">{buttons(section.actions.filter((action) => action.place === 'step' && !action.requiresCommit), undefined, true)}</div>
+        <WorktreeValidation value={section.validation} ports={props.ports} />
+      </div>}
       {reviewBody.marked !== undefined && reviewBody.marked.length > 0 && <p className="workflow__refusal" role="status">
         Changed during update. Review again: {reviewBody.marked.join(', ')}
       </p>}
@@ -279,29 +311,7 @@ function ActionsSection(props: ActionsPaneProps & { section: SessionWorkflowInfo
         }}>Reload current review</button></div>}
       {note.kind === 'refused' && <p role="alert">{note.sentence}</p>}
       <CommitPane ports={props.ports.reviews} key={`${props.review!.key}:${reviewReload}`} reviewOnly sessionId={props.session!.sessionId}
-        messageEditor={multipleRepositories ? <div className="session-actions__repositories">{repositories
-          .map((repository) => ({ repository, displayPath: mountOf(reviewBody.scopeRoot, repository.root) }))
-          // The file list shows the scope's own files first, then each external group by path; publication order stays as received.
-          .sort(CommitTargets.byPath).map(({ repository, displayPath }) => {
-          const mount = displayPath || '.'
-          const findings = 'findings' in repository ? repository.findings ?? [] : []
-          return <div key={repository.root} className="session-actions__repository">
-            <label className="session-actions__repository-message">
-              <span><strong>{repository.repositoryName}</strong> <span className="session-actions__repository-root" title={repository.root}>
-                {displayPath === '' ? 'Project files (.)' : `External: ${displayPath}`}</span>
-                <span className="session-actions__repository-source">Source: {repository.source}</span></span>
-              <textarea aria-label={`Commit message ${repository.repositoryName} (${mount})`} disabled={busy}
-                value={repositoryMessages[repositoryKey(repository)] ?? (repository.message || `${repository.expectedPrefix} `)} placeholder={`${repository.expectedPrefix} Describe the change`}
-                onChange={(event) => {
-                  const message = event.target.value
-                  setRepositoryMessages((messages) => ({ ...messages, [repositoryKey(repository)]: message }))
-                  void draft.current?.saveRepositoryMessage?.(repository.root, message)
-                    .catch((error: unknown) => setNote({ kind: 'refused', sentence: ErrorText.of(error) }))
-                }} />
-            </label>
-            {findings.map((finding) => <p key={finding.id} className="commit-warning" role="status">{finding.text}</p>)}
-          </div>
-        })}</div> : undefined}
+        repositoryMessages={repositoryMessageItems}
         item={{ kind: 'commit', key: `actions:${reviewBody.scopeRoot}`, title: props.review!.title, vcs: reviewBody.vcs, scopeRoot: reviewBody.scopeRoot }}
         onDraftState={(state) => {
           draft.current = state

@@ -46,6 +46,7 @@ export function FileViewerContent(props: {
   textReady?: boolean
   diff: FileDiffResult | null
   baselines: FileViewerBaselineState
+  wrapLines?: boolean
   location?: FileViewerLocation
   onOpenSource(source: FileViewerDocumentSource): void
   onReload?(): void
@@ -58,6 +59,11 @@ export function FileViewerContent(props: {
 }): React.JSX.Element {
   const [exportError, setExportError] = useState<string | null>(null)
   const [promptError, setPromptError] = useState<string | null>(null)
+  const [scriptsAllowedKey, setScriptsAllowedKey] = useState<string | null>(null)
+  const allowHtmlScripts = scriptsAllowedKey === props.document.documentKey
+  const setAllowHtmlScripts = useCallback((allow: boolean): void => {
+    setScriptsAllowedKey(allow ? props.document.documentKey : null)
+  }, [props.document.documentKey])
   const tasks = useFileViewerTasks(props.document, props.text, props.ports, props.onReload, props.textReady !== false)
   const insertPrompt = props.insertPrompt
   const currentInsert = useRef(insertPrompt)
@@ -92,6 +98,19 @@ export function FileViewerContent(props: {
     onSend={insertPrompt && props.textReady !== false ? sendResults : undefined}
     unavailable={!insertPrompt ? FileViewerPrompts.unavailable(sessionId)
       : props.textReady === false ? 'Waiting for the current document to load.' : undefined} /> : null
+  const htmlScriptsToggle = props.mode === 'rendered' && props.document.kind.kind === 'html' && source !== null ? (
+    <button
+      type="button"
+      className="file-viewer-html-scripts"
+      aria-pressed={allowHtmlScripts}
+      title={allowHtmlScripts
+        ? 'Inline scripts are running in a sandboxed offline frame; press to disable scripts'
+        : 'Run inline scripts in a sandboxed offline frame with no network or app access'}
+      onClick={() => setAllowHtmlScripts(!allowHtmlScripts)}
+    >
+      Allow scripts
+    </button>
+  ) : null
   let content: React.JSX.Element
   if (props.mode === 'hex') content = <FileHexView ports={props.ports} documentId={props.document.documentId} />
   else if (props.mode === 'preview') content = <FileMediaPreview ports={props.ports} document={props.document} />
@@ -102,6 +121,7 @@ export function FileViewerContent(props: {
         text={tasks.text}
         diff={props.diff}
         baselines={props.baselines}
+        wrapLines={props.wrapLines}
       />
     )
   else if (props.mode === 'raw')
@@ -114,6 +134,8 @@ export function FileViewerContent(props: {
         interaction={interaction}
         location={props.location}
         onOpenSource={props.onOpenSource}
+        allowHtmlScripts={allowHtmlScripts}
+        onAllowHtmlScriptsChange={setAllowHtmlScripts}
       />
     )
   else throw new Error(`Unknown file viewer mode: ${JSON.stringify(props.mode)}`)
@@ -124,6 +146,7 @@ export function FileViewerContent(props: {
     {tasks.error && <p className="file-viewer-error" role="alert">{tasks.error}</p>}
     {promptError && <p className="file-viewer-error" role="alert">{promptError}</p>}
     {checklist && (props.toolbarSlot === undefined ? checklist : props.toolbarSlot && createPortal(checklist, props.toolbarSlot))}
+    {htmlScriptsToggle && (props.toolbarSlot === undefined ? htmlScriptsToggle : props.toolbarSlot && createPortal(htmlScriptsToggle, props.toolbarSlot))}
     <FileImageSurface key={props.document.documentId} name={props.document.name} onAskSelection={onAskSelection}>
       {displayed}
     </FileImageSurface></>
@@ -203,6 +226,8 @@ function FileRenderedContent(props: {
   location?: FileViewerLocation
   onOpenSource(source: FileViewerDocumentSource): void
   interaction?: MdExtInteraction
+  allowHtmlScripts: boolean
+  onAllowHtmlScriptsChange(allow: boolean): void
 }): React.JSX.Element {
   /*
    * Both of these are memoised, and above the early return, because react-markdown takes the
@@ -249,6 +274,8 @@ function FileRenderedContent(props: {
         documentId={props.document.documentId}
         name={props.document.name}
         source={source}
+        allowScripts={props.allowHtmlScripts}
+        onAllowScriptsChange={props.onAllowHtmlScriptsChange}
       />
     )
   if (kind.kind === 'code')
@@ -422,6 +449,7 @@ function FileDiffContent(props: {
   text: FileViewerTextResult | null
   diff: FileDiffResult | null
   baselines: FileViewerBaselineState
+  wrapLines?: boolean
 }): React.JSX.Element {
   if (props.diff === null) {
     if (props.baselines.error !== null)
@@ -446,6 +474,7 @@ function FileDiffContent(props: {
       data={props.diff.data}
       currentText={current.ok ? current.value : null}
       language={FileViewerText.language(props.document)}
+      wrapLines={props.wrapLines}
     />
   )
 }

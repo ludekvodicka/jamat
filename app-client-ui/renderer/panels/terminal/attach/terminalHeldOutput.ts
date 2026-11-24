@@ -9,71 +9,84 @@
  * So a hidden panel holds its output as text and writes it once, when it is shown. Text is what
  * arrived; parsing it later is the same parse, done once, for the one tab somebody actually opens.
  *
- * It holds a BOUND, not a history. Past that bound the oldest characters go and the flush resets
- * the terminal first, which is what the Host itself does when its ring has outrun a client
- * (`terminal.snapshot` after `terminal.stream-truncated`): a screen that starts mid-sequence is
- * repainted by the next thing the agent draws.
+ * It holds a BOUND, not an unbounded log. Past that bound the raw bytes are dropped and the panel
+ * requests a clean serialized snapshot from the Host when it becomes visible again, rather than
+ * resetting xterm and replaying a mid-sequence raw tail that wipes the user's scrollback.
  */
-export interface TerminalHeldFlush {
-  /** Clear the terminal before writing: what is held does not continue what is on screen. */
-  reset: boolean
-  /** Resize before writing, where a snapshot arrived while hidden and named a new geometry. */
-  size: { cols: number; rows: number } | null
-  data: string
-}
+export type TerminalHeldFlush =
+  | {
+    kind: 'data'
+    /** Clear the terminal before writing: what is held does not continue what is on screen. */
+    reset: boolean
+    /** Resize before writing, where a snapshot arrived while hidden and named a new geometry. */
+    size: { cols: number; rows: number } | null
+    data: string
+  }
+  | {
+    /** Raw hidden output outgrew the bound; ask the Host for a clean serialized snapshot instead. */
+    kind: 'overflow'
+  }
 
 export class TerminalHeldOutput {
   /**
-   * Half a megabyte, the same figure the Host bounds its own ring at. It is about six thousand
-   * full-width rows: more than a viewport, less than the memory a hidden tab may cost while its
-   * agent works through the night.
+   * Two megabytes: large enough for a heavy agent turn (such as Antigravity TUI repaints) to finish
+   * in a hidden tab without re-attaching, while still capping hidden-tab memory before falling back
+   * to a clean Host snapshot on reveal.
    */
-  static readonly maxCharsConst = 512 * 1_024
-  /**
-   * How far past the bound the buffer is allowed to run before it is cut back to it.
-   *
-   * Cutting on every frame past the bound is what the slack prevents: `data += delta` makes a rope
-   * and `slice` flattens it, so a hidden panel printing a build log would copy half a megabyte per
-   * frame - on the thread that handles `keydown`, which is the cost this class exists to remove.
-   * With slack the copy happens once per slack's worth of output instead of once per frame.
-   */
-  private static readonly slackCharsConst = 256 * 1_024
+  static readonly maxCharsConst = 2 * 1_024 * 1_024
 
   private data = ''
   private reset = false
   private size: { cols: number; rows: number } | null = null
+  private overflowed = false
 
   /** Everything before a snapshot is superseded by it: that is what a snapshot means. */
   holdSnapshot(cols: number, rows: number, screen: string): void {
     this.data = screen
     this.reset = true
     this.size = { cols, rows }
-    this.trim()
+    this.overflowed = false
+    this.checkBound()
   }
 
   holdData(data: string): void {
+    if (this.overflowed) return
     this.data += data
-    this.trim()
+    this.checkBound()
   }
 
   get empty(): boolean {
-    return this.data.length === 0 && !this.reset && this.size === null
+    return !this.overflowed && this.data.length === 0 && !this.reset && this.size === null
+  }
+
+  get isOverflowed(): boolean {
+    return this.overflowed
   }
 
   /** What to do to the terminal now that somebody is looking. Null when nothing arrived. */
   take(): TerminalHeldFlush | null {
     if (this.empty) return null
-    const flush: TerminalHeldFlush = { reset: this.reset, size: this.size, data: this.data }
-    this.data = ''
-    this.reset = false
-    this.size = null
+    if (this.overflowed) {
+      this.clear()
+      return { kind: 'overflow' }
+    }
+    const flush: TerminalHeldFlush = { kind: 'data', reset: this.reset, size: this.size, data: this.data }
+    this.clear()
     return flush
   }
 
-  private trim(): void {
-    if (this.data.length
-      <= TerminalHeldOutput.maxCharsConst + TerminalHeldOutput.slackCharsConst) return
-    this.data = this.data.slice(-TerminalHeldOutput.maxCharsConst)
-    this.reset = true
+  private clear(): void {
+    this.data = ''
+    this.reset = false
+    this.size = null
+    this.overflowed = false
+  }
+
+  private checkBound(): void {
+    if (this.data.length <= TerminalHeldOutput.maxCharsConst) return
+    this.data = ''
+    this.reset = false
+    this.size = null
+    this.overflowed = true
   }
 }

@@ -9,6 +9,7 @@ const request = { revision: 7, workflowId: 'workflow', actionId: 'keep', agreeme
 function fixture() {
   const snapshot = { revision: 7, sessions: [{ sessionId: 'session', actions: { sections: [{ workflowId: 'workflow', actions: [
     { id: 'keep' }, { id: 'finish-again', requiresCommit: true }, { id: 'update-main', confirmLive: ['source-session'] },
+    { id: 'remove-row', label: 'Remove row', primary: false, confirm: 'Remove?' },
   ] }] } }] } as unknown as SessionsSnapshot
   WorktreeWords.decorate(snapshot.sessions[0])
   const execute = vi.fn(async () => ({ ok: true, value: {} }) as RemoteControlAnswer)
@@ -32,9 +33,11 @@ describe('source-owned session actions', () => {
     const f = fixture()
     await f.owner.press(view, { ...request, actionId: 'update-main' }, 'op')
     expect(f.execute).toHaveBeenCalledWith(expect.objectContaining({ operation: 'sessions.updateMain', body: { session: { kind: 'sessionId', sessionId: 'session' }, confirmLive: ['source-session'] } }), expect.anything())
+    await f.owner.press(view, { ...request, actionId: 'remove-row' }, 'rm')
+    expect(f.execute).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 'sessions.remove', body: { session: { kind: 'sessionId', sessionId: 'session' } } }), expect.objectContaining({ allowedOperations: ['sessions.remove'] }))
     f.snapshot.revision++
     expect(await f.owner.press(view, { ...request, actionId: 'update-main' }, 'next')).toMatchObject({ ok: false })
-    expect(f.execute).toHaveBeenCalledTimes(1)
+    expect(f.execute).toHaveBeenCalledTimes(2)
   })
 
   it('binds clearing and conflict choices to the source revision and currently offered path options', async () => {

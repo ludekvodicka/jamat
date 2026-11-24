@@ -51,7 +51,7 @@ export class LatencyClient {
     const env: NodeJS.ProcessEnv = { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: this.side.stateRoot,
       JAMAT_V3_HOST_STATE_DIR: join(this.side.stateRoot, 'host'), JAMAT_V3_CONFIG_DIR: this.side.configDir,
       JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1',
-      CLAUDE_CONFIG_DIR: this.side.configDir, CODEX_HOME: this.side.configDir }
+      CLAUDE_CONFIG_DIR: this.side.configDir, CODEX_HOME: this.side.configDir, JAMAT_V3_GEMINI_DIR: join(this.side.configDir, '.gemini') }
     delete env.ELECTRON_RUN_AS_NODE
     this.child = spawn(join(packageDir, 'node_modules/electron/dist/electron.exe'), [packageDir, '--smoke', '--smoke-driver',
       `--remote-debugging-port=${this.side.debugPort}`, '--remote-debugging-address=127.0.0.1'], { env, windowsHide: true })

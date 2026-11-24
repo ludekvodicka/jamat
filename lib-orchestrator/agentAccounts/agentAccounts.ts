@@ -300,6 +300,10 @@ export class AgentAccounts {
       .map(account => join(this.deps.accountsRoot, agentId, account.id))]
   }
 
+  invalidateProbe(agentId: AccountAgentId, accountId: AccountId): void {
+    this.probes.delete(`${agentId}/${accountId}`)
+  }
+
   /** `exclude` leaves accounts out of the choice, for a caller that knows them spent before the quota feed does. */
   defaultAccount(agentId: AccountAgentId, rule?: AccountChoiceRule, exclude?: ReadonlySet<AccountId>): DefaultAccountChoice | Promise<DefaultAccountChoice> {
     return this.list().then(async listed => {

@@ -25,6 +25,7 @@ import type {
   RemoteConnectionsSnapshot,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { ErrorText } from '../../../shared/errorText'
+import { VersioningCommitPaths } from '../../../shared/versioningCommit'
 import { TabControlTask } from '../../../shared/tabControl'
 import {
   type TerminalPanelReading,
@@ -167,10 +168,13 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   useEffect(() => workspace.start(), [workspace])
   const contentRevision = useSyncExternalStore(useCallback((listener) => workspace.subscribe(listener), [workspace]),
     useCallback(() => workspace.contentRevision(), [workspace]))
+  const openTerminalRef = useRef(props.openTerminal)
+  openTerminalRef.current = props.openTerminal
+  const hasOpenTerminal = props.openTerminal !== undefined
   const taskPorts = useMemo(() => {
     if (!workspace.tasks) return null
-    return { ...workspace.tasks, ...(props.openTerminal ? { openTerminal: (runId: string) => props.openTerminal!({ ...target, sessionId: runId }, 'Script output') } : {}) }
-  }, [workspace, contentRevision, props.openTerminal, targetKey])
+    return { ...workspace.tasks, ...(hasOpenTerminal ? { openTerminal: (runId: string) => openTerminalRef.current!({ ...target, sessionId: runId }, 'Script output') } : {}) }
+  }, [workspace, contentRevision, hasOpenTerminal, targetKey])
   const [attachEpoch, setAttachEpoch] = useState(0)
   const [restartNote, setRestartNote] = useState<string | null>(null)
   const [menu, setMenu] = useState<TerminalMenuContext | null>(null)
@@ -200,6 +204,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   )
   // The same signal for the split's task pane, which follows a running sub-agent only while on screen.
   const [panelVisible, setPanelVisible] = useState(props.api.isVisible)
+  const resync = useCallback(() => setAttachEpoch((epoch) => epoch + 1), [])
   const { state, focus, sendCommand, setActive, setVisible } = useTerminalAttachment(
     target,
     holder,
@@ -209,11 +214,12 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     onTyped,
     setMenuNote,
     workspace.paths?.detect,
+    resync,
   )
   const publish = useTabDecorationsPublisher(props.api.id)
   const glyph = info === null
     ? null
-    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
+    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
   const outcome = info?.outcome ?? null
   const endedAt = info?.endedAt ?? null
   const color = info?.color ?? null
@@ -730,8 +736,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     <section className="jamat-terminal" aria-label={transport.label} onDragOver={onSessionDragOver} onDrop={onSessionDrop}>
       {hiddenReviews.length > 0 && <div className="jamat-terminal__pending-reviews" role="region" aria-label="Pending commit reviews">
         <span>Pending commit reviews ({hiddenReviews.length})</span>
-        {hiddenReviews.map((review) => <button className="jamat-terminal__workspace-action" type="button" key={review.draftId}
-          title={JSON.stringify(review.paths ?? [review.scopeRoot])} onClick={() => setMenuNote(split.open(reviewItemOf(review), true))}>Open {review.vcs.toUpperCase()} review: {review.scopeRoot}{review.paths === undefined ? '' : ` (${review.paths.length} selected paths)`}</button>)}
+        {hiddenReviews.map((review) => {
+          const checkedCount = review.paths?.filter(VersioningCommitPaths.checked).length
+          return <button className="jamat-terminal__workspace-action" type="button" key={review.draftId}
+            title={JSON.stringify(review.paths ?? [review.scopeRoot])} onClick={() => setMenuNote(split.open(reviewItemOf(review), true))}>Open {review.vcs.toUpperCase()} review: {review.scopeRoot}{checkedCount === undefined ? '' : ` (${checkedCount} selected ${checkedCount === 1 ? 'path' : 'paths'})`}</button>
+        })}
       </div>}
       {sharedOverflow.length > 0 && <details><summary>Shared opens ({sharedOverflow.length})</summary>
         {sharedOverflow.map((item) => <button type="button" key={item.openId} onClick={() => shared.current?.openPending(item.openId)}>{item.title}</button>)}

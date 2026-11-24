@@ -1,4 +1,4 @@
-import { CommitPaneBridge, CommitPaneChannel } from '../versioning/commitPanePorts'
+import { CommitPaneBridge, CommitPaneChannel, type CommitPanePorts } from '../versioning/commitPanePorts'
 import type { FileViewerDocument } from '../../../lib-orchestrator/fileViewer/fileViewerApi.types'
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
 import type {
@@ -26,13 +26,14 @@ import type { WorkflowPorts, WorkflowPressAnswer, WorkflowCommit } from './workf
  */
 export class WorkflowPortsOf {
   /** `openInSplit` puts a granted file beside the workflow item and answers a refusal, or null. */
-  static of(sessionId: string, report: (sentence: string | null) => void, openInSplit: (document: FileViewerDocument) => string | null): WorkflowPorts {
+  static of(sessionId: string, report: (sentence: string | null) => void, openInSplit: (document: FileViewerDocument) => string | null,
+    reviews: CommitPanePorts = CommitPaneBridge.of()): WorkflowPorts {
     return {
       requestRun: async (command, cwd) => IpcFailure.of(await AppControl.sessions('sessions.runScript', {
         session: AppControl.sessionOf(sessionId), command, cwd, title: 'Worktree validation',
       }), 'Start validation run'),
       clearHistory: async () => IpcFailure.of(await AppControl.sessions('sessions.clearActions', { session: AppControl.sessionOf(sessionId) }), 'Clear'),
-      reviews: CommitPaneBridge.of(),
+      reviews,
       tasks: {
         openTerminal: async (runId) => {
           const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: runId } })

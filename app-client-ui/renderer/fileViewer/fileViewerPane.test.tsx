@@ -557,4 +557,37 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPane', () => {
     expect(onRememberReading).toHaveBeenCalledWith({ key: current.documentKey, scrollTop: 720 })
   })
 
+  it('scrolls the split viewer body with PageDown, PageUp, Home and End while keeping Find input keys intact', async () => {
+    const current = FileViewerPaneHarness.document()
+    FileViewerPaneHarness.install([current], 'body')
+    const view = render(
+      <FileViewerPane ports={{ viewer: window.appClient.fileViewer, changes: window.appClient.fileChanges }}
+        reloadRequest={0} backPath={null} onBack={vi.fn()} onClose={vi.fn()}
+        item={FileViewerPaneHarness.item(current)} changes={FileViewerPaneHarness.changes()}
+        workingTree={FileViewerPaneHarness.workingTree()} onOpenItem={vi.fn(() => null)} onRefused={vi.fn()} />,
+    )
+    await screen.findByText('body')
+    const viewer = screen.getByLabelText('Split file')
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 2000 },
+    })
+
+    viewer.focus()
+    expect(fireEvent.keyDown(viewer, { key: 'PageDown' })).toBe(false)
+    expect(body.scrollTop).toBe(360)
+    expect(fireEvent.keyDown(viewer, { key: 'End' })).toBe(false)
+    expect(body.scrollTop).toBe(1600)
+    expect(fireEvent.keyDown(viewer, { key: 'PageUp' })).toBe(false)
+    expect(body.scrollTop).toBe(1240)
+    expect(fireEvent.keyDown(viewer, { key: 'Home' })).toBe(false)
+    expect(body.scrollTop).toBe(0)
+
+    fireEvent.keyDown(viewer, { key: 'f', ctrlKey: true })
+    const search = screen.getByRole('textbox', { name: 'Find in file' })
+    expect(fireEvent.keyDown(search, { key: 'End' })).toBe(true)
+    expect(body.scrollTop).toBe(0)
+  })
+
 })

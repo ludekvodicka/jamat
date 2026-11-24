@@ -66,8 +66,11 @@ interface Draft {
   }>
   cwd: string
   lockRoot: string
-  /** What the request named; a directory that is not `recursive` names its own node only. */
-  targets?: readonly { path: string; directory: boolean; recursive: boolean }[]
+  /**
+   * What the request named; a directory that is not `recursive` names its own node only, and a
+   * `checked: false` target only shows its rows.
+   */
+  targets?: readonly { path: string; directory: boolean; recursive: boolean; checked?: false }[]
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string
   wake?: VersioningReviewWake
@@ -145,27 +148,32 @@ export class VersioningCommitManager {
     if (!Array.isArray(input) || input.length === 0 || input.length > VersioningCommitLimits.targetsMaxConst
       || !input.every(VersioningCommitPaths.valid))
       return { ok: false, code: 'no-working-copy', detail: 'Supply a nonempty list of literal commit paths' }
-    const requests = new Map<string, { path: string; nodeOnly: boolean }>()
+    const requests = new Map<string, { path: string; nodeOnly: boolean; checked: boolean }>()
     for (const request of input) {
       const path = resolve(cwd, VersioningCommitPaths.pathOf(request))
       const key = PathCompare.comparable(path)
-      // The same directory named twice keeps the wider selection.
-      requests.set(key, { path, nodeOnly: VersioningCommitPaths.nodeOnly(request) && (requests.get(key)?.nodeOnly ?? true) })
+      const named = { path, nodeOnly: VersioningCommitPaths.nodeOnly(request), checked: VersioningCommitPaths.checked(request) }
+      const previous = requests.get(key)
+      // The same directory named twice keeps the wider checked selection: subtree, then its own
+      // node, then nothing. Every form shows the same rows.
+      requests.set(key, previous === undefined || VersioningCommitManager.checksRank(named) > VersioningCommitManager.checksRank(previous) ? named : previous)
     }
     if (vcs === 'svn' && options.reviewOnly !== true)
       for (const path of requests.values())
         if (await this.isWorktree(path.path))
           return { ok: false, code: 'use-finish', detail: 'use-finish: press Finish in Session actions' }
     const selected = [...requests.values()].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)
-    const requestedKey = VersioningCommitManager.keyOf(selected.map(({ path, nodeOnly }) => nodeOnly ? { path, depth: 'empty' } : path))
+    const requestedKey = VersioningCommitManager.keyOf(selected.map(({ path, nodeOnly, checked }) =>
+      !checked ? { path, depth: 'infinity', checked: false } : nodeOnly ? { path, depth: 'empty' } : path))
     const retained = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
       && draft.dto.paths !== undefined && VersioningCommitManager.keyOf(draft.dto.paths) === requestedKey)
-    const targets = retained?.targets ?? await Promise.all(selected.map(async ({ path, nodeOnly }) => {
+    const targets: NonNullable<Draft['targets']> = retained?.targets ?? await Promise.all(selected.map(async ({ path, nodeOnly, checked }) => {
       const directory = await lstat(path).then((stat) => stat.isDirectory()).catch(() => false)
-      return { path, directory, recursive: directory && !nodeOnly }
+      return { path, directory, recursive: directory && !nodeOnly, ...(checked ? {} : { checked: false as const }) }
     }))
-    const normalized: readonly VersioningCommitPath[] = targets.map((target) =>
-      target.directory && !target.recursive ? { path: target.path, depth: 'empty' } : target.path)
+    const normalized: readonly VersioningCommitPath[] = targets.map((target) => target.checked === false
+      ? { path: target.path, depth: 'infinity', checked: false }
+      : target.directory && !target.recursive ? { path: target.path, depth: 'empty' } : target.path)
     const directories = targets.map((target) => target.directory ? target.path : dirname(target.path))
     let requested = retained?.dto.scopeRoot ?? directories[0]
     while (directories.some((directory) => !PathCompare.isInside(requested, directory))) {
@@ -178,7 +186,8 @@ export class VersioningCommitManager {
       return { ok: false, code: 'no-working-copy', detail: `The requested paths are not inside a ${vcs.toUpperCase()} working copy` }
     requested = workingCopy.scopeRoot
     const detection = workingCopy.detection
-    const restricted = targets.length !== 1 || !targets[0].recursive
+    // A shown-only target of the whole scope is still a selection: as a plain review it would check every row.
+    const restricted = targets.length !== 1 || !targets[0].recursive || targets[0].checked === false
       || PathCompare.comparable(targets[0].path) !== PathCompare.comparable(requested)
     const selectedPaths = restricted ? normalized : undefined
     const matching = [...this.drafts.values()].find((draft) => draft.dto.sessionId === sessionId && draft.dto.vcs === vcs
@@ -217,15 +226,24 @@ export class VersioningCommitManager {
     }
     this.drafts.set(draft.dto.draftId, draft)
     this.bump(draft)
+    const checkedTargets = selected.filter((target) => target.checked)
+    const titled = checkedTargets.length > 0 ? checkedTargets : selected
     return { ok: true, value: { draftId: draft.dto.draftId, scopeRoot: requested,
       ...(selectedPaths === undefined ? {} : { paths: selectedPaths }),
-      title: `Commit ${vcs.toUpperCase()} · ${selected.length === 1 ? basename(selected[0].path) : `${selected.length} paths`}` }, messageApplied }
+      title: `Commit ${vcs.toUpperCase()} · ${titled.length === 1 ? basename(titled[0].path) : `${titled.length} paths`}` }, messageApplied }
   }
 
   /** One comparable spelling of a selection, so a reopened review finds the draft it left. */
   private static keyOf(paths: readonly VersioningCommitPath[]): string {
-    return JSON.stringify(paths.map((path) => VersioningCommitPaths.nodeOnly(path)
-      ? [PathCompare.comparable(VersioningCommitPaths.pathOf(path)), 'empty'] : PathCompare.comparable(VersioningCommitPaths.pathOf(path))))
+    return JSON.stringify(paths.map((path) => !VersioningCommitPaths.checked(path)
+      ? [PathCompare.comparable(VersioningCommitPaths.pathOf(path)), 'unchecked']
+      : VersioningCommitPaths.nodeOnly(path)
+        ? [PathCompare.comparable(VersioningCommitPaths.pathOf(path)), 'empty'] : PathCompare.comparable(VersioningCommitPaths.pathOf(path))))
+  }
+
+  /** How much of what a target names starts checked: nothing, its own node, or its subtree. */
+  private static checksRank(target: { nodeOnly: boolean; checked: boolean }): number {
+    return !target.checked ? 0 : target.nodeOnly ? 1 : 2
   }
 
   /**
@@ -345,7 +363,7 @@ export class VersioningCommitManager {
   private static tooltipOf(root: string, paths: readonly VersioningCommitPath[] | null): string {
     if (paths === null) return root
     return [root, ...paths.map((path) => `  ${relative(root, VersioningCommitPaths.pathOf(path)) || '.'}${
-      VersioningCommitPaths.nodeOnly(path) ? ' (this folder only)' : ''}`)].join('\n')
+      !VersioningCommitPaths.checked(path) ? ' (shown unchecked)' : VersioningCommitPaths.nodeOnly(path) ? ' (this folder only)' : ''}`)].join('\n')
   }
 
   /**
@@ -392,18 +410,19 @@ export class VersioningCommitManager {
 
   /**
    * The rows a review that named its targets starts with checked: a named file, a named directory
-   * with every row below it, a node-only directory alone. Null for a plain scope, whose eligible rows
-   * all start checked. r345 committed 123 paths of other sessions' unfinished work because a
-   * review of one directory's property change started with the whole scope below it checked.
+   * with every row below it, a node-only directory alone. A `checked: false` target checks none of
+   * the rows it shows; another target naming one of them still checks it. Null for a plain scope,
+   * whose eligible rows all start checked. r345 committed 123 paths of other sessions' unfinished
+   * work because a review of one directory's property change started with the whole scope below it checked.
    */
   checkedPaths(ownerId: string, draftId: string, snapshot: FileChangesWorkingTreeSnapshot): readonly string[] | null {
     const draft = this.owned(ownerId, draftId)
     if (draft === null) throw new Error('The commit dialog no longer exists')
     const targets = draft.targets
     if (targets === undefined) return null
-    return snapshot.entries.filter((entry) => targets.some((target) =>
-      PathCompare.comparable(target.path) === PathCompare.comparable(entry.path)
-      || (target.recursive && PathCompare.isInside(target.path, entry.path)))).map((entry) => entry.path)
+    return snapshot.entries.filter((entry) => targets.some((target) => target.checked !== false
+      && (PathCompare.comparable(target.path) === PathCompare.comparable(entry.path)
+        || (target.recursive && PathCompare.isInside(target.path, entry.path))))).map((entry) => entry.path)
   }
 
   discovery(): { revision: number; pending: readonly string[]; results: readonly string[] } {
@@ -1082,6 +1101,9 @@ export class VersioningCommitManager {
     // Tortoise has no depth per target: it would list the work below the folder and check it.
     if (draft.targets?.some((target) => target.directory && !target.recursive))
       return { ok: false, code: 'invalid-target', detail: 'Tortoise cannot keep a folder to its own node; it would show and check the work below it. Commit this review here.' }
+    // With a binding Tortoise receives only the checked rows, so the shown-only rows stay out.
+    if (!binding && draft.targets?.some((target) => target.checked === false))
+      return { ok: false, code: 'invalid-target', detail: 'Tortoise cannot show rows unchecked; it would check every change this review only shows. Commit this review here.' }
     let selected: CommitTarget[] | undefined
     if (binding) {
       const snapshot = this.snapshotOf(ownerId, draft, binding.snapshotId)

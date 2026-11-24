@@ -1,5 +1,6 @@
 import type { RateMonitorDebugStatus, RateMonitorSnapshot } from '../rateMonitor/rateMonitorApi.types'
 import type { AccountBrokerAnswer, AccountBrokerRequest, AccountCallersView, AccountUsageReport } from '../agentAccounts/accountBrokerApi.types'
+import type { AntigravityLoginsView, AntigravitySwitchResult } from '../agentAccounts/antigravityLoginsApi.types'
 import type { SnapinKindState, SnapinsSettings, SnapinsSettingsView, SnapinView } from '../snapins/snapinsApi.types'
 import type { RemoteControlOperationMap } from '../remoteControl/remoteControlApi.types'
 import type { SessionErasure, SessionScriptOutput } from '../sessionManager/sessionManagerApi.types'
@@ -49,6 +50,14 @@ export interface AppOperationMap {
   'accounts.rename': { request: { accountId: string; label: string }; response: Done }
   'accounts.setEnabled': { request: { accountId: string; enabled: boolean }; response: Done }
   'accounts.remove': { request: { accountId: string }; response: Done }
+  /** Local only: never in `RemoteControlPeerConst.controlOperations`. */
+  'accounts.antigravity.list': { request: Record<string, never>; response: AntigravityLoginsView }
+  'accounts.antigravity.store': { request: { label: string }; response: { slotId: string } }
+  'accounts.antigravity.update': { request: { slotId: string }; response: Done }
+  'accounts.antigravity.clear': { request: Record<string, never>; response: Done }
+  'accounts.antigravity.login': { request: Record<string, never>; response: { sessionId: string } }
+  'accounts.antigravity.switch': { request: { slotId: string; reopenRunning?: boolean }; response: AntigravitySwitchResult }
+  'accounts.antigravity.remove': { request: { slotId: string }; response: Done }
   /** Local only: never in `RemoteControlPeerConst.controlOperations`. */
   'accounts.pick': { request: AccountBrokerRequest; response: AccountBrokerAnswer }
   'accounts.report': { request: AccountUsageReport; response: { recorded: true } }

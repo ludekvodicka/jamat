@@ -206,7 +206,8 @@ export class WorktreeWords {
   }
 
   static reviewReady(state: WorktreeLifecycle): boolean {
-    return state.review !== undefined && (state.hasWindow === true || state.wait?.kind === 'waiting-for-review' || state.wait?.kind === 'review')
+    return state.review !== undefined && state.preparation?.checkedAt !== undefined
+      && (state.hasWindow === true || state.wait?.kind === 'waiting-for-review' || state.wait?.kind === 'review')
   }
 
   /**
@@ -257,12 +258,18 @@ export class WorktreeWords {
         ...(merger === undefined ? [] : [{ id: 'open-merger' as const, label: 'Open merger', primary: false, runId: merger.runId },
           ...merger.endedAt === undefined ? [{ id: 'stop-agent' as const, label: 'Stop agent', primary: false, runId: merger.runId }] : []]), ...alternate]
     }
-    if (state.step === 'reviewing') return [...WorktreeWords.reviewReady(state) && state.preparation?.checkedAt !== undefined && state.knownIncoming === undefined
-      ? [{ id: 'finish-again' as const, label: state.review?.selection.length === 0 ? 'Complete without commit' : 'Publish verified changes',
-        primary: true, place: 'step' as const, requiresCommit: true as const }] : [],
-      { id: 'refresh-preparation', label: WorktreeWords.recheckConst, primary: false, place: 'step', note: 'Only after you edit files in the worktree' },
-      { id: 'prepare-worktree', label: WorktreeWords.prepareAgainConst, primary: state.knownIncoming !== undefined, place: 'step',
-        ...state.knownIncoming === undefined ? { note: 'Only to take newer repository changes first' } : {} }, ...back, keep, discard]
+    if (state.step === 'reviewing') {
+      const publishable = WorktreeWords.reviewReady(state) && state.knownIncoming === undefined
+      const needsPreparation = state.preparation?.checkedAt === undefined && state.knownIncoming === undefined
+        && (state.wait !== undefined || state.preparation !== undefined)
+      return [...publishable
+        ? [{ id: 'finish-again' as const, label: state.review?.selection.length === 0 ? 'Complete without commit' : 'Publish verified changes',
+          primary: true, place: 'step' as const, requiresCommit: true as const }] : [],
+        { id: 'refresh-preparation', label: WorktreeWords.recheckConst, primary: needsPreparation, place: 'step',
+          ...needsPreparation ? {} : { note: 'Only after you edit files in the worktree' } },
+        { id: 'prepare-worktree', label: WorktreeWords.prepareAgainConst, primary: state.knownIncoming !== undefined, place: 'step',
+          ...state.knownIncoming === undefined ? { note: 'Only to take newer repository changes first' } : {} }, ...back, keep, discard]
+    }
     // A stopped check or install waits with Retry and Solve with agent; Back to work ended the Finish
     // with nothing to press (worktree 103, J17).
     if (state.step === 'checking' && state.execution?.runId !== undefined && state.execution.verdict === undefined)
@@ -353,6 +360,7 @@ export class WorktreeWords {
       case 'check-finish': return { operation: 'sessions.finishMain', body: { mainChoice: 'check' } }
       case 'stop-agent': case 'stop-run': return action.runId === undefined ? undefined : { operation: 'sessions.finalize', sessionId: action.runId, body: { expect: 'stop' } }
       case 'remove-run': return action.runId === undefined ? undefined : { operation: 'sessions.remove', sessionId: action.runId, body: {} }
+      case 'remove-row': return { operation: 'sessions.remove', body: {} }
       default: throw new Error(`Unknown workflow action: ${JSON.stringify(action.id satisfies never)}`)
     }
   }

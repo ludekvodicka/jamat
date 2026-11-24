@@ -3,6 +3,7 @@ export class FileViewerSearchRanges {
   private static readonly excludedConst = 'script, style, button, input, select, textarea, '
     + '[hidden], [aria-hidden="true"], .file-viewer-note, .file-viewer-error, '
     + '.file-diff-toolbar, .file-diff-detail, .file-diff-gutter, .file-diff-marker, .file-diff-hunk, '
+    + '.file-diff-split-header, .file-diff-split-cell--empty, '
     + '.file-hex-summary, .file-hex-offset'
   private static readonly blockConst = 'address, article, aside, blockquote, br, dd, details, div, dl, dt, '
     + 'figcaption, figure, footer, h1, h2, h3, h4, h5, h6, header, hr, li, main, nav, ol, p, pre, '

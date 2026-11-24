@@ -120,6 +120,21 @@ describe('lib-orchestrator/sessionManager/workState/agentComposerReader', () => 
       .toEqual({ state: 'text', text: 'Press up to edit queued messages' })
   })
 
+  // A live frame carries no gray, only the Host's dim marks, so agy's mode hint is read by its words.
+  it('reads an Antigravity mode hint through unstyled Host rows as empty, and other words as a draft', () => {
+    const fixture = recorded('antigravity-live-composer-placeholder.json')
+    const plain = fixture.frame.wideScreenTail.split('\n').map((row) => ScreenTail.stripAnsi(row
+      .replace(/\x1b\[(\d*)C/g, (_, count: string) => ' '.repeat(Number(count || '1')))).trimEnd())
+    const hint = 'Auto mode: edits & safe commands auto-approved (shift+tab to cycle)'
+    expect(plain).toContain(`> ${hint}`)
+    const composerOf = (text: string): unknown => AgentComposerReader.read('antigravity', ScreenTail.frameOf({
+      screen: '', cols: 120, screenLines: plain.map((row) => row === `> ${hint}` ? `> ${text}` : row), screenLinesStyled: true,
+    })).composer
+    expect(composerOf(hint)).toEqual({ state: 'empty' })
+    expect(composerOf('Accept-edits mode: file edits auto-approved (shift+tab to cycle)')).toEqual({ state: 'empty' })
+    expect(composerOf('Plan mode: write the plan first')).toEqual({ state: 'text', text: 'Plan mode: write the plan first' })
+  })
+
   it.each([
     ['claude-live-queued-while-working.json', 'Press up to edit queued messages'],
     ['codex-live-idle.json', 'Ask Codex to do anything'],

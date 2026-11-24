@@ -332,13 +332,15 @@ export class LaunchPlanner {
   }
 
   /**
-   * What "ask me nothing" is, one agent at a time. Both CLIs keep the approval policy and the
+   * What "ask me nothing" is, one agent at a time. Each CLI keeps the approval policy and the
    * directory's trust apart, so both are needed and neither flag implies the other.
    *
    * **Only Codex's trust is here.** Codex takes it as a process argument, so it belongs in the
    * function that builds arguments; Claude has no flag for it at all - `claude --help` says the
    * workspace trust dialog is skipped only when the run is non-interactive - so its trust is a write
    * into `~/.claude.json`, and that lives in `SessionLifecycle` rather than in this pure class.
+   * Antigravity honours only the last `--settings` flag, so its session-only `trustedWorkspaces`
+   * rides inside the same settings file `AntigravityStatusLine` already builds for `SessionLifecycle`.
    *
    * `JSON.stringify` is doing two jobs at once and both are wanted: it is the TOML basic-string
    * escape as well as the JSON one, and Codex's dotted `-c` splits on every dot in the path, which

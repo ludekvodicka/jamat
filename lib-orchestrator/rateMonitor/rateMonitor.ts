@@ -84,6 +84,8 @@ export interface RateMonitorDeps {
   readings?: () => Promise<readonly RateExternalReading[]>
   accounts?: () => Promise<readonly AccountView[]>
   sourceForAccount?: (account: AccountView, hooks: RateSourceHooks) => RateLimitSource
+  /** Optional cutoff timestamp per account: cached entries and feed readings at or before this moment are ignored. */
+  readingFloorAt?: (key: RateAccountKey) => number | null
   historyDirectory?: string
   cacheFile?: string
   now?: () => number
@@ -136,6 +138,7 @@ export class RateMonitor {
   private readonly sources: Map<string, RateLimitSource>
   private readonly staticKeys = new Set<string>()
   private readonly readingSources = new Map<string, RateSampleSource>()
+  private readonly resetFloorAt = new Map<string, number>()
   private feedTimer: ReturnType<typeof setInterval> | null = null
   private feedReading = false
   private readonly labels = new Map<string, string>()
@@ -222,7 +225,8 @@ export class RateMonitor {
       const cached = await this.cache.load()
       this.hydrated = cached
       if (cached !== null) {
-        this.hydrate(cached)
+        const dropped = this.hydrate(cached)
+        if (dropped) this.save()
         this.changed()
       }
     } catch (error) {
@@ -419,7 +423,8 @@ export class RateMonitor {
   private async runRead(agentId: string): Promise<void> {
     const source = this.sources.get(agentId)
     if (source === undefined) return
-    this.attemptAt[agentId] = this.now()
+    const startedAttempt = this.now()
+    this.attemptAt[agentId] = startedAttempt
     let reading: RateSourceReading
     try {
       reading = await source.read()
@@ -430,7 +435,8 @@ export class RateMonitor {
       this.deps.onError(`Reading the ${agentId} rate limits threw: ${ErrorText.of(error)}`)
     }
     if (!this.started || this.sources.get(agentId) !== source) return
-    if ((this.lastGood.get(agentId)?.fetchedAt ?? -Infinity) > this.attemptAt[agentId]!) return
+    if (this.floorAtOf(agentId) >= startedAttempt) return
+    if ((this.lastGood.get(agentId)?.fetchedAt ?? -Infinity) > startedAttempt) return
     this.apply(agentId, reading)
     const accepted = this.lastGood.get(agentId)
     if (reading.kind === 'ok' && reading.windows.length > 0 && accepted)
@@ -518,14 +524,16 @@ export class RateMonitor {
     })
   }
 
-  private hydrate(cached: RateMonitorCacheContent): void {
-    this.hydrateProvider('claude', cached)
-    this.hydrateProvider('codex', cached)
-    this.hydrateProvider('antigravity', cached)
+  private hydrate(cached: RateMonitorCacheContent): boolean {
+    let dropped = false
+    if (this.hydrateProvider('claude', cached)) dropped = true
+    if (this.hydrateProvider('codex', cached)) dropped = true
+    if (this.hydrateProvider('antigravity', cached)) dropped = true
     for (const account of cached.accounts ?? []) {
       const key = this.keyOf(account.key.agentId, account.key.accountId)
-      if (this.sources.has(key)) this.hydrateEntry(key, account.entry, account.attemptAt)
+      if (this.sources.has(key) && this.hydrateEntry(key, account.entry, account.attemptAt)) dropped = true
     }
+    return dropped
   }
 
   /**
@@ -536,23 +544,26 @@ export class RateMonitor {
    * The attempt is hydrated on its own, because a provider may have been asked without ever
    * answering: that run is what leaves a floor to honour and no windows to carry it.
    */
-  private hydrateProvider(agentId: RateAgentId, cached: RateMonitorCacheContent): void {
-    this.hydrateEntry(agentId, cached.providers[agentId], cached.attempts[agentId])
+  private hydrateProvider(agentId: RateAgentId, cached: RateMonitorCacheContent): boolean {
+    return this.hydrateEntry(agentId, cached.providers[agentId], cached.attempts[agentId])
   }
 
-  private hydrateEntry(agentId: string, entry: RateMonitorCacheEntry | undefined, attemptAt: number | undefined): void {
+  private hydrateEntry(agentId: string, entry: RateMonitorCacheEntry | undefined, attemptAt: number | undefined): boolean {
     // Every gate here subtracts a persisted moment from `now()`, so one that is AHEAD of now never
     // elapses: a future attempt floors Claude for good and a future success is never due again,
     // while the tooltip reports it as read moments ago. A clock corrected backwards and a cache
     // file copied from a machine that was ahead both produce it. Dropping one costs a read.
     const now = this.now()
+    const floor = this.floorAtOf(agentId)
     const attempt = attemptAt ?? null
-    this.attemptAt[agentId] = attempt !== null && attempt <= now ? attempt : null
-    if (entry === undefined || entry.fetchedAt > now) return
+    this.attemptAt[agentId] = attempt !== null && attempt <= now && !(floor > 0 && attempt <= floor) ? attempt : null
+    if (entry === undefined) return false
+    if (entry.fetchedAt > now || (floor > 0 && entry.fetchedAt <= floor)) return true
     this.successAt[agentId] = entry.fetchedAt
     this.extras[agentId] = entry.extras
     this.lastGood.set(agentId, entry)
     this.providers[agentId] = { kind: 'ok', fetchedAt: entry.fetchedAt, windows: entry.windows }
+    return false
   }
 
   /**
@@ -622,7 +633,9 @@ export class RateMonitor {
       if (!this.started) return
       for (const reading of readings) {
         const key = this.keyOf(reading.key.agentId, reading.key.accountId)
+        const floor = this.floorAtOf(key)
         if (!this.sources.has(key) || reading.at > this.now()
+          || (floor > 0 && reading.at <= floor)
           || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity) || this.repeats(key, reading)
           || this.behind(key, reading)) continue
         if (reading.extras !== undefined) this.extras[key] = reading.extras
@@ -669,6 +682,57 @@ export class RateMonitor {
   accountsChanged(): void {
     if (this.stopped) return
     this.detach(this.syncAccounts().then(() => this.readDue()))
+  }
+
+  /**
+   * Clears held quota state for an account whose underlying login changed in place, and rejects
+   * any cached or feed reading at or before `floorAt` so stale samples cannot repopulate it.
+   */
+  resetAccount(agentId: RateAgentId, accountId = 'main', floorAt = this.now()): void {
+    if (this.stopped) return
+    const key = this.keyOf(agentId, accountId)
+    const previous = this.resetFloorAt.get(key) ?? 0
+    if (Number.isFinite(floorAt) && floorAt > previous) this.resetFloorAt.set(key, floorAt)
+    if (this.hydrated !== null) {
+      if (accountId === 'main') {
+        const { [agentId]: _droppedEntry, ...providers } = this.hydrated.providers
+        const { [agentId]: _droppedAttempt, ...attempts } = this.hydrated.attempts
+        this.hydrated = { ...this.hydrated, providers, attempts }
+      } else if (this.hydrated.accounts !== undefined) {
+        this.hydrated = {
+          ...this.hydrated,
+          accounts: this.hydrated.accounts.filter(item =>
+            item.key.agentId !== agentId || item.key.accountId !== accountId),
+        }
+      }
+    }
+    if (!this.sources.has(key)) return
+    this.providers[key] = { kind: 'never-read' }
+    this.lastGood.delete(key)
+    this.attemptAt[key] = null
+    this.successAt[key] = null
+    this.lastReason[key] = null
+    this.oauthExpiresAt[key] = null
+    this.extras[key] = []
+    this.raw[key] = null
+    this.readingSources.delete(key)
+    this.nudgedMidRead.delete(key)
+    this.nudgedWhileHidden.delete(key)
+    this.nudgedReadAt[key] = null
+    this.save()
+    this.changed()
+  }
+
+  private floorAtOf(key: string): number {
+    const local = this.resetFloorAt.get(key) ?? 0
+    if (!this.deps.readingFloorAt) return local
+    const source = this.sources.get(key)
+    const slash = key.indexOf('/')
+    const agentId = source?.agentId ?? (slash === -1 ? key : key.slice(0, slash)) as RateAgentId
+    const accountId = source?.accountId ?? (slash === -1 ? 'main' : key.slice(slash + 1))
+    const external = this.deps.readingFloorAt({ agentId, accountId })
+    if (typeof external !== 'number' || !Number.isFinite(external) || external <= 0) return local
+    return Math.max(local, external)
   }
 
   private syncAccounts(): Promise<void> {

@@ -53,6 +53,18 @@ describe('agent CLI providers', () => {
     } finally { await rm(directory, { recursive: true, force: true }) }
   })
 
+  it('detects update support when a CLI writes --help to stderr', async () => {
+    const run = vi.fn(async (invocation: CommandInvocation) => ({
+      code: 0,
+      failure: null,
+      stdout: invocation.args.includes('--version') ? '1.5.16\n' : '',
+      stderr: invocation.args.includes('--help') ? 'Available subcommands:\n  update  Update CLI\n' : '',
+    })) satisfies Pick<CommandInvoker, 'run'>['run']
+    vi.spyOn(AgentCommandView, 'resolve').mockResolvedValue({ path: '/bin/agy', command: '/bin/agy', prefixArgs: [] })
+    const installed = (await new CliUpdateCommand({}, { run }).inspect('agy', 'latest', /^(\S+)$/, new AbortController().signal))!
+    expect(installed).toMatchObject({ version: '1.5.16', channel: 'latest', updateSupported: true })
+  })
+
   it('does not hide updater failures and retains the failure text', async () => {
     const { commands: command, run } = commands('codex-cli 0.165.0', '  update Update\n')
     const source = new CodexCliUpdateSource(command, new ReleaseFeed())

@@ -6,6 +6,7 @@ type NativeViewer = { path: OrchestratorNativeApi['viewerPath']; imageDragPath: 
 import type { ServiceCaller } from '../shared/serviceTransport.types'
 import { ClipboardAccess } from '../shared/clipboardAccess'
 import { ErrorText } from '../../shared/errorText'
+import type { FileHtmlPreviewStore } from '../fileViewer/fileHtmlPreviewStore'
 import type { FileViewerDragExport } from '../fileViewer/fileViewerDragExport'
 import type { DocumentExport } from './documentExport'
 import { ElectronServiceIpcBase } from './electronServiceIpcBase'
@@ -17,20 +18,24 @@ export class ServiceFileViewerShellIpc extends ElectronServiceIpcBase<typeof Ser
     'fileViewer:start-image-drag': true,
     'fileViewer:start-resource-drag': true,
     'fileViewer:open-external': true,
+    'fileViewer:register-html-preview': true,
+    'fileViewer:release-html-preview': true,
   } as const
   private static readonly resourceDragMillisecondsConst = 30_000
   private readonly viewer: NativeViewer
   private readonly ownerIdOf: (sender: WebContents) => string | null
   private readonly exporter: Pick<DocumentExport, 'write'>
   private readonly drag: Pick<FileViewerDragExport, 'copy'>
+  private readonly htmlPreviews: Pick<FileHtmlPreviewStore, 'register' | 'release'>
 
   constructor(viewer: NativeViewer, ownerIdOf: (sender: WebContents) => string | null, exporter: Pick<DocumentExport, 'write'>,
-    drag: Pick<FileViewerDragExport, 'copy'>) {
+    drag: Pick<FileViewerDragExport, 'copy'>, htmlPreviews: Pick<FileHtmlPreviewStore, 'register' | 'release'>) {
     super()
     this.viewer = viewer
     this.ownerIdOf = ownerIdOf
     this.exporter = exporter
     this.drag = drag
+    this.htmlPreviews = htmlPreviews
   }
 
   initialize(): void {
@@ -41,6 +46,14 @@ export class ServiceFileViewerShellIpc extends ElectronServiceIpcBase<typeof Ser
     this.register('fileViewer:open-external', (caller, url) => {
       this.ownerId(caller)
       return this.openExternal(url)
+    })
+    this.register('fileViewer:register-html-preview', (caller, html) => {
+      const ownerId = this.ownerId(caller)
+      return this.htmlPreviews.register(ownerId, html)
+    })
+    this.register('fileViewer:release-html-preview', (caller, previewId) => {
+      const ownerId = this.ownerId(caller)
+      if (typeof previewId === 'string' && previewId.length > 0) this.htmlPreviews.release(ownerId, previewId)
     })
     this.assertComplete(ServiceFileViewerShellIpc.channelsConst)
   }

@@ -1,0 +1,37 @@
+{
+  "agent": "antigravity",
+  "expected": {
+    "hint": "unknown",
+    "composer": {
+      "state": "text",
+      "text": "draft probe"
+    },
+    "queuedRow": false,
+    "echoHead": "replywiththesinglewordpongandnothingelse.donotrunanytool.",
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "text",
+      "text": "draft probe",
+      "eraseBound": 20
+    }
+  },
+  "provenance": {
+    "origin": "AppJamatV3 live Host capture via scripts/dev/capture-workstate.ts (Antigravity CLI 1.5.15)",
+    "case": "antigravity-live-composer-text",
+    "capture": "the same session with \"draft probe\" typed and not sent: the draft follows SGR 0 after the marker and the \"? for shortcuts\" footer is gone",
+    "ported": "2026-11-23",
+    "identical": "verbatim frame; the account e-mail and workspace path in the banner replaced with neutral values"
+  },
+  "recorded": {
+    "build": "agy CLI 1.5.15 (2026-11-23)",
+    "capturedAt": "2026-11-23T18:24:55.400Z",
+    "cols": 120,
+    "rows": 30
+  },
+  "frame": {
+    "rawTail": "1H⣾  \u001b[90mGenerating..\u001b[13;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[10;1H⣷  \u001b[90mGenerating...\u001b[13;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[10;1H⣯ \u001b[13;3H\u001b[?25h\u001b[?25l\u001b[10;1H⣟ \u001b[13;3H\u001b[?25h\u001b[?25l\u001b[10;1H⡿ \u001b[13;3H\u001b[?25h\u001b[?25l\u001b[10;1H⢿ \u001b[13;3H\u001b[?25h\u001b[?25l\u001b[10;1H⣻  \u001b[94mG\u001b[13;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[10;3H \u001b[90mI'm thinking through how to approach this....\u001b[13;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[10;1H⣽ \u001b[13;3H\u001b[?25h\u001b[?25l\u001b[10;1H⣾  \u001b[94mI'm\u001b[13;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[10;1H⣷  \u001b[94mI'm t\u001b[13;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[10;1H\u001b[K\u001b[37m\r\n▸ Thought for 3s\u001b[K\u001b[m\r\n\u001b[K\r\n  PONG\u001b[K\r\n⣷  \u001b[90mI\u001b[94m'm th\u001b[90minking through how to approach this....\u001b[K\r\n└ Tip: Press ? to see keyboard shortcuts.\u001b[K\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[94m\r\n> \u001b[90mAuto mode: edits & safe commands auto-approved (shift+tab to cycle)\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\r\nesc to cancel                                                                                \u001b[K\u001b[33mauto\u001b[m\u001b[2m · Gemini 4 Neon · high\u001b[17;3H\u001b[?25h\u001b[?25l\u001b[22m\u001b[90m\u001b[14;5H'\u001b[94mm thi\u001b[90m\u001b[15;8HUse /skills to browse and manage agent skills.\u001b[17;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[14;1H⣯  \u001b[90mI'm \u001b[94mthin\u001b[17;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[37m\u001b[11;17H, 111 tokens\u001b[m\u001b[14;1H\u001b[K\u001b[90m\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[94m\r\n> \u001b[90mAuto mode: edits & safe commands auto-approved (shift+tab to cycle)\u001b[K\r\n────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\r\n? for shortcuts                                                                              \u001b[K\u001b[33mauto\u001b[m\u001b[2m · Gemini 4 Neon · high\u001b[22m                                                                                                                        \r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[16;3H\u001b[?25hd\u001b[K\u001b[?25lraft probe\u001b[18;1H\u001b[93X\u001b[33m\u001b[93Ca\u001b[16;14H\u001b[?25h",
+    "screenTail": "\u001b[37;22m▸ Thought for 3s, 111 tokens\n\n\u001b[0m  PONG\n\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m> \u001b[0mdraft probe\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[93C\u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "wideScreenTail": "\u001b[0m     \u001b[38;2;158;195;69;48;2;134;198;78m▀\u001b[38;2;181;180;62;48;2;117;180;94m▀\u001b[38;2;226;153;61;48;2;204;149;77m▀\u001b[38;2;246;122;52;48;2;239;121;71m▀\u001b[38;2;248;106;53;48;2;225;102;82m▀\u001b[38;2;239;84;66;48;2;225;79;89m▀\u001b[0m       \u001b[90muser@example.com (Google AI Pro)\n\u001b[0m    \u001b[38;2;124;194;81;48;2;128;198;84m▀\u001b[38;2;113;194;92;48;2;84;184;129m▀\u001b[38;2;92;169;143;48;2;64;151;222m▀\u001b[38;2;92;145;179;49m▀\u001b[38;2;131;115;176m▀\u001b[38;2;116;111;195;48;2;74;126;228m▀\u001b[38;2;153;93;168;48;2;112;110;206m▀\u001b[38;2;156;91;151;48;2;143;100;180m▀\u001b[0m      \u001b[90mGemini 4 Neon (High)\n\u001b[0m   \u001b[38;2;109;198;148m▄\u001b[38;2;97;195;125;48;2;98;186;213m▀\u001b[38;2;67;174;171;48;2;71;168;220m▀\u001b[0m    \u001b[38;2;74;128;234;48;2;61;137;251m▀\u001b[38;2;108;115;216;48;2;74;129;240m▀\u001b[38;2;101;121;225;49m▄\u001b[5C\u001b[90mC:/work/project\n\u001b[0m  \u001b[38;2;103;185;244m▄\u001b[38;2;107;199;163;48;2;100;182;246m▀\u001b[38;2;100;182;246;49m▀      \u001b[38;2;56;134;251m▀\u001b[38;2;72;129;244;48;2;56;131;249m▀\u001b[38;2;61;133;252;49m▄\n\n\u001b[90m────────────────────────────────────────────────────────────\n\u001b[34;1m> Reply with the single word PONG and nothing else. Do not run any tool.\n\n\u001b[37;22m▸ Thought for 3s, 111 tokens\n\n\u001b[0m  PONG\n\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m> \u001b[0mdraft probe\n\u001b[90m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[93C\u001b[33mauto\u001b[39;2m · Gemini 4 Neon · high",
+    "screenStyled": true
+  }
+}

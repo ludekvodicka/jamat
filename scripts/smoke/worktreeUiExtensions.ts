@@ -58,7 +58,7 @@ export class WorktreeUiExtensions {
       await writeFile(join(agents, 'claude.cmd'), `@"${process.execPath}" "%~dp0stand-in.cjs" %*\r\n`)
       const env: NodeJS.ProcessEnv = { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: source.stateRoot, JAMAT_V3_HOST_STATE_DIR: join(source.stateRoot, 'host'),
         JAMAT_V3_CONFIG_DIR: source.configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1',
-        CLAUDE_CONFIG_DIR: source.configDir, CODEX_HOME: source.configDir }
+        CLAUDE_CONFIG_DIR: source.configDir, CODEX_HOME: source.configDir, JAMAT_V3_GEMINI_DIR: join(source.configDir, '.gemini') }
       delete env.ELECTRON_RUN_AS_NODE
       const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
       env[pathKey] = `${agents}${delimiter}${env[pathKey] ?? ''}`

@@ -8,10 +8,29 @@ import { ContextMenu, type ContextMenuPosition } from '../widgets/contextMenu'
 
 import { CommitTargets } from '../../shared/commitTargets'
 
+export interface CommitRepositoryMessageItem {
+  root: string
+  displayPath: string
+  repositoryName: string
+  source: string
+  expectedPrefix: string
+  value: string
+  findings: readonly { id: string; text: string }[]
+  disabled: boolean
+  open: boolean
+  onToggle(open: boolean): void
+  onChange(message: string): void
+}
+
+const normalizePath = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+const firstLineOf = (value: string): string => value.split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? ''
+
 export function CommitTargetsList(props: {
   snapshot: FileChangesWorkingTreeSnapshot
   checked: ReadonlySet<string>
   disabled: boolean
+  scopeRoot?: string
+  scopeTooltip?: string
   onChange(ids: ReadonlySet<string>): void
   onOpen(entry: FileChangeEntry): void
   onMenuOpen(): void
@@ -19,11 +38,13 @@ export function CommitTargetsList(props: {
   onRevert(entry: FileChangeEntry): void
   onOpenSeparately(scopeRoot: string): void
   separateMessages?: boolean
+  repositoryMessages?: readonly CommitRepositoryMessageItem[]
 }): React.JSX.Element {
   const element = useRef<HTMLDivElement>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [menu, setMenu] = useState<{ path: string; position: ContextMenuPosition } | null>(null)
   const [propertiesPath, setPropertiesPath] = useState<string | null>(null)
+  const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({})
   const externalOf = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
   for (const root of [...props.snapshot.externalRoots].sort((left, right) => left.path.length - right.path.length))
     for (const id of root.fileIds) externalOf.set(id, root)
@@ -106,33 +127,167 @@ export function CommitTargetsList(props: {
       </span>
     </div>
   }
+  const eligible = CommitTargets.eligible(props.snapshot)
+  const eligibleIds = new Set(eligible.map((entry) => entry.fileId))
+  const allChecked = eligible.length > 0 && eligible.every((entry) => props.checked.has(entry.fileId))
+  const someChecked = eligible.some((entry) => props.checked.has(entry.fileId))
+  const selectAll = (): void => props.onChange(new Set(eligible.map((entry) => entry.fileId)))
+  const selectNone = (): void => props.onChange(new Set())
+
+  const remainingMessages = [...(props.repositoryMessages ?? [])]
+  const takeMessage = (rootPath: string | undefined, displayPath: string): CommitRepositoryMessageItem | undefined => {
+    const normalizedRoot = rootPath === undefined ? null : normalizePath(rootPath)
+    const normalizedDisplay = normalizePath(displayPath)
+    const index = remainingMessages.findIndex((item) =>
+      (normalizedRoot !== null && normalizePath(item.root) === normalizedRoot)
+      || normalizePath(item.displayPath) === normalizedDisplay)
+    return index === -1 ? undefined : remainingMessages.splice(index, 1)[0]
+  }
+
+  interface RenderGroup {
+    key: string
+    displayPath: string
+    rootPath?: string
+    isExternal: boolean
+    externalFileIds?: readonly string[]
+    entries: FileChangeEntry[]
+    repoMessage?: CommitRepositoryMessageItem
+  }
+
+  const groups: RenderGroup[] = []
+  const mainMessage = takeMessage(props.scopeRoot, '')
+  if (mainEntries.length > 0 || mainMessage !== undefined || props.snapshot.externalRoots.length === 0) {
+    groups.push({
+      key: 'main',
+      displayPath: '',
+      rootPath: props.scopeRoot,
+      isExternal: false,
+      entries: mainEntries,
+      repoMessage: mainMessage,
+    })
+  }
+  for (const root of [...props.snapshot.externalRoots].sort(CommitTargets.byPath)) {
+    const changes = entries.filter((entry) => externalOf.get(entry.fileId) === root)
+    const repoMessage = takeMessage(root.path, root.displayPath)
+    if (changes.length === 0 && repoMessage === undefined) continue
+    groups.push({
+      key: `ext:${root.path}`,
+      displayPath: root.displayPath,
+      rootPath: root.path,
+      isExternal: true,
+      externalFileIds: root.fileIds,
+      entries: changes,
+      repoMessage,
+    })
+  }
+  for (const extra of [...remainingMessages].sort(CommitTargets.byPath)) {
+    groups.push({
+      key: `repo:${extra.root}`,
+      displayPath: extra.displayPath,
+      rootPath: extra.root,
+      isExternal: extra.displayPath !== '',
+      entries: [],
+      repoMessage: extra,
+    })
+  }
+  groups.sort(CommitTargets.byPath)
+
+  const groupedView = groups.length > 1 || groups.some((group) => group.isExternal || group.repoMessage !== undefined)
+  const hasExternals = entries.some((entry) => externalOf.has(entry.fileId)) || (props.repositoryMessages?.length ?? 0) > 1
+  const groupCount = props.repositoryMessages?.length ?? groups.length
+  const groupNote = `${props.separateMessages ? 'Each repository has its own message.' : 'One message for all selected groups.'} Each group is committed separately.`
+
+  const toggleGroupSelection = (group: RenderGroup, check: boolean): void => {
+    const groupEligible = group.entries.filter((entry) => eligibleIds.has(entry.fileId))
+    const next = new Set(props.checked)
+    for (const entry of groupEligible) {
+      if (check) next.add(entry.fileId)
+      else next.delete(entry.fileId)
+    }
+    props.onChange(next)
+  }
+
   return <div className="commit-targets">
     <div className="commit-selection">
-      <button type="button" disabled={props.disabled} onClick={() => props.onChange(new Set(CommitTargets.eligible(props.snapshot).map((entry) => entry.fileId)))}>Select all</button>
-      <button type="button" disabled={props.disabled} onClick={() => props.onChange(new Set())}>Select none</button>
-      <span>{CommitTargets.selected(entries, props.checked).length} selected</span>
+      {groupedView && <input type="checkbox" aria-label="Include all" checked={allChecked}
+        ref={(input) => { if (input) input.indeterminate = someChecked && !allChecked }}
+        disabled={props.disabled || eligible.length === 0}
+        onChange={() => allChecked ? selectNone() : selectAll()} />}
+      <button type="button" disabled={props.disabled} onClick={selectAll}>Select all</button>
+      <button type="button" disabled={props.disabled} onClick={selectNone}>Select none</button>
+      <span className="commit-selection-count">{CommitTargets.selected(entries, props.checked).length} selected</span>
+      {props.scopeRoot !== undefined && <span className="commit-scope" title={props.scopeTooltip ?? props.scopeRoot}>{props.scopeRoot}</span>}
+      {hasExternals && <span className="commit-groups-note" title={groupNote}>
+        {props.separateMessages ? `${groupCount} ${groupCount === 1 ? 'repository' : 'repositories'} · separate commits` : 'One message · separate commits'}
+      </span>}
     </div>
-    {entries.some((entry) => externalOf.has(entry.fileId)) && <div className="commit-groups-note">
-      {props.separateMessages ? 'Each repository has its own message.' : 'One message for all selected groups.'} Each group is committed separately.</div>}
-    <div className="commit-files" ref={element} role="grid" aria-label="Commit files">
-      <div role="row" className="commit-files-heading"><span role="columnheader" aria-label="Include" /><span role="columnheader" aria-label="Status" /><span role="columnheader">Path</span></div>
-      <div role="rowgroup">{mainEntries.map((entry) => row(entry))}</div>
-      {[...props.snapshot.externalRoots].sort(CommitTargets.byPath).map((root) => {
-        const changes = entries.filter((entry) => externalOf.get(entry.fileId) === root)
-        if (changes.length === 0) return null
-        return <div key={root.path} role="rowgroup" className="commit-external">
-          <div role="row"><div role="gridcell" aria-colspan={3} className="commit-external-heading">
-            <strong>External: {root.displayPath}</strong>
-            <button type="button" disabled={props.disabled} title="Move this group to a separate tab for a different commit message"
+    {groupedView ? <div className="commit-groups" ref={element} role="grid" aria-label="Commit files">
+      {groups.map((group) => {
+        const groupEligible = group.entries.filter((entry) => eligibleIds.has(entry.fileId))
+        const groupAllChecked = groupEligible.length > 0 && groupEligible.every((entry) => props.checked.has(entry.fileId))
+        const groupSomeChecked = groupEligible.some((entry) => props.checked.has(entry.fileId))
+        const groupSelected = CommitTargets.selected(group.entries, props.checked).length
+        const filesCollapsed = collapsedFiles[group.key] === true
+        const repo = group.repoMessage
+        const mount = group.displayPath || '.'
+        const mountLabel = group.displayPath === '' ? 'Project files (.)' : `External: ${group.displayPath}`
+        const preview = repo === undefined ? '' : firstLineOf(repo.value)
+        return <div key={group.key} role="rowgroup" className={`commit-group${group.isExternal ? ' commit-external' : ''}${repo !== undefined ? ' session-actions__repository' : ''}`}>
+          <div className="commit-group-header">
+            {group.entries.length > 0 && <input type="checkbox" aria-label={`Include all in ${repo?.repositoryName ?? mountLabel}`}
+              checked={groupAllChecked}
+              ref={(input) => { if (input) input.indeterminate = groupSomeChecked && !groupAllChecked }}
+              disabled={props.disabled || groupEligible.length === 0}
+              onChange={() => toggleGroupSelection(group, !groupAllChecked)} />}
+            {repo !== undefined ? <>
+              <strong className="commit-group-name">{repo.repositoryName}</strong>
+              <span className="commit-group-mount" title={repo.root}>{mountLabel}</span>
+            </> : <strong className="commit-group-name">{mountLabel}</strong>}
+            {group.entries.length > 0 && <span className="commit-group-count">{groupSelected} / {group.entries.length} selected</span>}
+            {group.isExternal && !props.separateMessages && group.rootPath !== undefined && group.externalFileIds !== undefined && <button type="button"
+              disabled={props.disabled} title="Move this group to a separate tab for a different commit message"
               onClick={() => {
-                props.onChange(new Set([...props.checked].filter((id) => !root.fileIds.includes(id))))
-                props.onOpenSeparately(root.path)
-              }}>Commit separately</button>
-          </div></div>
-          {changes.map((entry) => row(entry))}
+                props.onChange(new Set([...props.checked].filter((id) => !group.externalFileIds!.includes(id))))
+                props.onOpenSeparately(group.rootPath!)
+              }}>Commit separately</button>}
+            {group.entries.length > 0 && <button type="button" className="commit-group-files-toggle" aria-expanded={!filesCollapsed}
+              onClick={() => setCollapsedFiles((held) => ({ ...held, [group.key]: !filesCollapsed }))}>
+              {filesCollapsed ? `▸ Files (${group.entries.length})` : '▾ Files'}
+            </button>}
+          </div>
+          {repo !== undefined && <>
+            <details className="commit-group-message" open={repo.open}
+              onToggle={(event) => {
+                const next = event.currentTarget.open
+                repo.onToggle(next)
+              }}>
+              <summary className="commit-group-message-summary">
+                {repo.open ? <span className="commit-group-message-title">Commit message</span>
+                  : <span className="commit-group-message-preview" title={repo.value}>{preview || `${repo.expectedPrefix} (empty)`}</span>}
+                <span className="commit-group-message-source">Source: {repo.source}</span>
+                <span className="commit-group-message-action">{repo.open ? 'Hide' : 'Edit'}</span>
+              </summary>
+              <div className="commit-group-message-body">
+                <textarea aria-label={`Commit message ${repo.repositoryName} (${mount})`} disabled={repo.disabled}
+                  value={repo.value} placeholder={`${repo.expectedPrefix} Describe the change`}
+                  onChange={(event) => repo.onChange(event.target.value)} />
+              </div>
+            </details>
+            {repo.findings.map((finding) => <p key={finding.id} className="commit-warning commit-group-finding" role="status">{finding.text}</p>)}
+          </>}
+          {!filesCollapsed && group.entries.length > 0 && <div className="commit-group-files">
+            {group.entries.map((entry) => row(entry))}
+          </div>}
         </div>
       })}
-    </div>
+    </div> : <div className="commit-files" ref={element} role="grid" aria-label="Commit files">
+      <div role="row" className="commit-files-heading"><span role="columnheader" aria-label="Include">
+        <input type="checkbox" aria-label="Include all" checked={allChecked}
+          ref={(input) => { if (input) input.indeterminate = someChecked && !allChecked }}
+          disabled={props.disabled || eligible.length === 0}
+          onChange={() => allChecked ? selectNone() : selectAll()} /></span><span role="columnheader" aria-label="Status" /><span role="columnheader">Path</span></div>
+      <div role="rowgroup">{mainEntries.map((entry) => row(entry))}</div>
+    </div>}
     {propertiesEntry?.properties !== undefined && <FilePropertyChanges properties={propertiesEntry.properties}
       label={`Property changes of ${nameOf(propertiesEntry)}`} onClose={() => setPropertiesPath(null)} />}
     {menu !== null && menuEntry !== undefined && <ContextMenu position={menu.position} ariaLabel={`Actions for ${menuEntry.displayPath}`}

@@ -40,6 +40,7 @@ import { SessionTitle } from '../../lib-orchestrator/sessionManager/records/sess
 import { SessionColors } from '../../lib-orchestrator/sessionManager/sessionColors'
 import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups'
 import type {
+  SessionAgentId,
   SessionColorName,
   SessionCreateSpec,
   SessionGroup,
@@ -247,6 +248,14 @@ export class AppClientCli {
             requestedAgent.accountId = match[0].accountId
           } else if (remoteEndpointId === null || response.error.code !== 'forbidden')
             return this.finishFailure(plan, response.error)
+        }
+        const chosen = plan.request.operation === 'sessions.create' ? plan.request.body.spec.agent : undefined
+        if (chosen !== undefined && (chosen.model !== undefined || chosen.effort !== undefined)) {
+          const describe = this.request('agents.describe', {}, this.deps.requestId())
+          const described = remoteEndpointId === null ? await client.execute(describe) : await client.executeRemote(remoteEndpointId, describe)
+          if (!described.ok) return this.finishFailure(plan, described.error)
+          const problem = AppClientCli.agentChoiceProblem(described.value, chosen.agentId, chosen.model, chosen.effort)
+          if (problem !== null) throw new AppClientCliError('invalid-request', problem)
         }
         const canonical = await this.canonicalRequest(
           client,
@@ -929,16 +938,24 @@ export class AppClientCli {
       const input = this.deps.readJson(pathsFile)
       if (scope !== null || !Array.isArray(input) || input.length === 0 || input.length > 2_000)
         throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 2000 paths and cannot be combined with --path')
-      paths = input.map((entry: unknown) => {
+      paths = input.map((entry: unknown): RemoteControlCommitPath => {
         const target = JsonShape.record(entry)
         const path = typeof entry === 'string' ? entry : target?.path
-        // Exact keys: a misspelled depth must never fall back to a whole directory.
+        const keys = target === null ? '' : Object.keys(target).sort().join(',')
+        // Exact keys: a misspelled depth must never fall back to a whole directory, and a node-only
+        // directory that checks nothing would name nothing.
         if (typeof path !== 'string' || !path.trim() || /[\0\r\n]/.test(path)
-          || (typeof entry !== 'string' && (target === null || Object.keys(target).length !== 2
-            || (target.depth !== 'empty' && target.depth !== 'infinity'))))
-          throw new AppClientCliError('invalid-request', '--paths-file entries must be literal paths or { "path": "...", "depth": "empty" | "infinity" }')
+          || (typeof entry !== 'string' && (target === null || (keys !== 'depth,path' && keys !== 'checked,depth,path')
+            || (target.checked !== undefined && typeof target.checked !== 'boolean')
+            || !(target.depth === 'infinity' || (target.depth === 'empty' && target.checked !== false)))))
+          throw new AppClientCliError('invalid-request',
+            '--paths-file entries must be literal paths or { "path": "...", "depth": "empty" | "infinity", "checked"?: boolean }; "checked": false needs "depth": "infinity"')
         const absolute = resolve(this.deps.cwd(), path)
-        return typeof entry === 'string' ? absolute : { path: absolute, depth: target?.depth as 'empty' | 'infinity' }
+        // `checked: true` is the default and is not sent, so an older Jamat still opens that review.
+        if (typeof entry === 'string') return absolute
+        else if (target?.depth === 'empty') return { path: absolute, depth: 'empty' }
+        else if (target?.depth === 'infinity') return target.checked === false ? { path: absolute, depth: 'infinity', checked: false } : { path: absolute, depth: 'infinity' }
+        else throw new Error(`Unknown commit path depth: ${JSON.stringify(target?.depth)}`)
       })
     }
     const fallback = args.option('--fallback') ?? 'tortoise'
@@ -1069,6 +1086,9 @@ export class AppClientCli {
     // Tortoise has no depth per target, so it would open the directory with its subtree.
     if (plan.paths?.some((path) => typeof path !== 'string' && path.depth === 'empty'))
       return this.finishFailure(plan, { code: 'invalid-request', detail: 'Tortoise cannot keep a directory to its own node; open this review in Jamat' })
+    // Tortoise checks every row it shows, so a shown-only project would be committed whole (r345).
+    if (plan.paths?.some((path) => typeof path !== 'string' && path.checked === false))
+      return this.finishFailure(plan, { code: 'invalid-request', detail: 'Tortoise cannot show rows unchecked; open this review in Jamat' })
     const messageFile = plan.messageFile === null
       ? plan.message === null ? null : await this.deps.writeMessageFile(plan.message)
       : resolve(this.deps.cwd(), plan.messageFile)
@@ -1130,8 +1150,10 @@ export class AppClientCli {
     const nativeSessionId = args.option('--native-session-id')
     const forkParentId = args.option('--fork-parent-id')
     const initialPrompt = args.option('--prompt')
+    const model = args.option('--model')
+    const effort = args.option('--effort')
     if (agentId === null
-      && [mode, nativeSessionId, forkParentId, initialPrompt, args.option('--account')].some((value) => value !== null))
+      && [mode, nativeSessionId, forkParentId, initialPrompt, model, effort, args.option('--account')].some((value) => value !== null))
       throw new AppClientCliError('invalid-request', 'Agent options require --agent')
     if (agentId !== null && agentId !== 'claude' && agentId !== 'codex' && agentId !== 'antigravity')
       throw new AppClientCliError('invalid-request', '--agent must be claude, codex or antigravity')
@@ -1187,6 +1209,8 @@ export class AppClientCli {
           ...(nativeSessionId === null ? {} : { nativeSessionId }),
           ...(forkParentId === null ? {} : { forkParentId }),
           ...(initialPrompt === null ? {} : { initialPrompt }),
+          ...(model === null ? {} : { model }),
+          ...(effort === null ? {} : { effort }),
         },
       }),
       ...(worktree === null ? {} : {
@@ -1224,6 +1248,44 @@ export class AppClientCli {
    */
   private static colorOf(value: string | null): SessionColorName | null {
     return value === null ? null : AppClientCli.colorNamed(value)
+  }
+
+  /**
+   * Checked against the catalog of the computer that will run the session (`agents.describe`),
+   * never this CLI's own: a peer on another build offers other models. The target's configured
+   * model counts as offered, because it already starts on it. An effort is checked against the
+   * model the session starts on, or against every level the catalog names when that model is not
+   * in it. The settings field stays free text; only this flag is held to the catalog.
+   */
+  private static agentChoiceProblem(
+    described: unknown,
+    agentId: SessionAgentId,
+    model: string | undefined,
+    effort: string | undefined,
+  ): string | null {
+    const agents = JsonShape.record(described)?.agents
+    const entry = Array.isArray(agents)
+      ? agents.map((agent: unknown) => JsonShape.record(agent)).find((agent) => agent?.agentId === agentId) ?? null
+      : null
+    if (entry === null) return `The target does not describe the ${agentId} agent, so --model and --effort cannot be checked`
+    const models = (Array.isArray(entry.models) ? entry.models : [])
+      .map((option: unknown) => JsonShape.record(option))
+      .filter((option): option is Record<string, unknown> => typeof option?.id === 'string')
+    const configured = typeof entry.configuredModel === 'string' ? entry.configuredModel : null
+    const offered = models.map((option) => option.id as string)
+    if (configured !== null && !offered.includes(configured)) offered.push(configured)
+    if (model !== undefined && !offered.includes(model))
+      return `--model ${model} is not offered for ${agentId} by the target; offered: ${offered.join(', ')}`
+    if (effort === undefined) return null
+    const startsOn = model ?? configured
+    const levelsOf = (option: Record<string, unknown>): string[] =>
+      Array.isArray(option.efforts) ? option.efforts.filter((level): level is string => typeof level === 'string') : []
+    const option = models.find((candidate) => candidate.id === startsOn)
+    const levels = option !== undefined ? levelsOf(option) : [...new Set(models.flatMap(levelsOf))]
+    const subject = option !== undefined ? `${agentId} model ${startsOn}` : agentId
+    if (levels.length === 0) return `--effort is not taken by ${subject}; omit it`
+    if (!levels.includes(effort)) return `--effort ${effort} is not offered for ${subject}; offered: ${levels.join(', ')}`
+    return null
   }
 
   /**

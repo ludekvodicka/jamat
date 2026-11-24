@@ -214,6 +214,18 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
       expect(SessionsSnapshotValidation.parse(snapshot([session(fields)]))).toBeNull()
   })
 
+  it('accepts running shells only beside idle activity', () => {
+    expect(SessionsSnapshotValidation.parse(snapshot([
+      session({ kind: 'agent', activity: 'idle', shellsRunning: true }),
+    ]))).not.toBeNull()
+    for (const fields of [
+      { activity: 'working', shellsRunning: true },
+      { activity: 'idle', shellsRunning: false },
+      { activity: 'idle', shellsRunning: 'true' },
+    ])
+      expect(SessionsSnapshotValidation.parse(snapshot([session({ kind: 'agent', ...fields })])), JSON.stringify(fields)).toBeNull()
+  })
+
   it('validates every optional worktree field before a caller reads its path', () => {
     const worktree = {
       worktreePath: 'Q:\\worktrees\\one',
@@ -477,11 +489,15 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
 
   it('keeps a remove-run action that names its run and drops one that does not', () => {
     const remove = { id: 'remove-run', label: 'Remove', primary: false, runId: 'r1' }
+    const removeRow = { id: 'remove-row', label: 'Remove row', primary: false, confirm: 'Remove?' }
     const workflow = { kind: 'script', workflowId: 'script:r1', title: 'j10-requested-fail', badge: 'failed', summary: 'exit 1', open: false,
-      rounds: [], actions: [remove, { id: 'remove-run', label: 'Remove', primary: false }] }
+      rounds: [], actions: [remove, { id: 'remove-run', label: 'Remove', primary: false }, removeRow] }
 
     const parsed = SessionsSnapshotValidation.parse(snapshot([session({ sessionId: 'p', workflow })]))
-    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([{ ...remove, command: { operation: 'sessions.remove', sessionId: 'r1', body: {} } }])
+    expect(parsed?.sessions[0]?.workflow?.actions).toEqual([
+      { ...remove, command: { operation: 'sessions.remove', sessionId: 'r1', body: {} } },
+      { ...removeRow, command: { operation: 'sessions.remove', body: {} } },
+    ])
   })
 
   it('keeps a confirm-stopped action that names its run and drops one that does not', () => {

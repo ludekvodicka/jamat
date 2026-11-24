@@ -293,6 +293,7 @@ class RemarkableSidecarPackageSmoke extends SmokeHarness {
           JAMAT_V3_SMOKE_MEDIA_PATH: mediaFile,
           CLAUDE_CONFIG_DIR: configDir,
           CODEX_HOME: configDir,
+          JAMAT_V3_GEMINI_DIR: join(configDir, '.gemini'),
         },
         maxBuffer: 2 * 1024 * 1024,
         timeout: 90_000,

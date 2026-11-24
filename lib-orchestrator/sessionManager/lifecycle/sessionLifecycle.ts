@@ -417,7 +417,7 @@ export class SessionLifecycle {
     let effort: string | undefined
     if (launch === 'create') {
       model = record.kind === 'agent' ? record.agent?.model : undefined
-      effort = record.kind === 'agent' && agentId !== undefined ? this.effortFor(agentId) : undefined
+      effort = record.kind === 'agent' && agentId !== undefined ? record.agent?.effort ?? this.effortFor(agentId) : undefined
     } else if (launch === 'reopen') {
       model = undefined
       effort = undefined
@@ -449,12 +449,18 @@ export class SessionLifecycle {
       // run draws no status line at all.
       // The launch generation binds the relay's report of the conversation to this runtime (UA1-J14-1).
       const launchId = record.agent?.identityLaunchId
+      const cwd = LaunchPlanner.cwdOf(record)
       const claudeSettingsFile = agentId === 'claude' && !record.agent?.oneShot
-        ? this.claudeStatusLine.settingsFileFor(LaunchPlanner.cwdOf(record),
+        ? this.claudeStatusLine.settingsFileFor(cwd,
           launchId === undefined ? undefined : { sessionId: record.sessionId, launchId }) ?? undefined
-        : agentId === 'antigravity' && !record.agent?.oneShot
+        : agentId === 'antigravity'
           ? this.antigravityStatusLine?.settingsFileFor(
-            launchId === undefined ? undefined : { sessionId: record.sessionId, launchId }) ?? undefined
+            record.agent?.oneShot || launchId === undefined ? undefined : { sessionId: record.sessionId, launchId },
+            {
+              includeStatusLine: !record.agent?.oneShot,
+              trustedDirectory: yolo && record.agent?.permission === undefined ? cwd : undefined,
+            },
+          ) ?? undefined
           : undefined
       const effective = { ...options, yolo, model, effort, claudeSettingsFile, jamatCli: this.agentCli(), workerCli: this.workerCli(record) }
       return LaunchPlanner.plan(record, { ...effective,
@@ -2209,6 +2215,7 @@ export class SessionLifecycle {
     // one still wins - it is answering for the machine that runs the session, not for this one.
     const model = agent.model ?? this.modelFor(agent.agentId)
     if (model) stored.model = model
+    if (agent.effort) stored.effort = agent.effort
     if (marks?.oneShot) stored.oneShot = marks.oneShot
     if (marks?.permission !== undefined) stored.permission = marks.permission
     return stored

@@ -136,7 +136,7 @@ export class SvnActionWorkflow {
     return {
       ...(driven && (record.worktreeLifecycle!.step === 'reviewing' || record.worktreeLifecycle!.environment?.pending === true) ? {
         validation: { cwd: action.root, checks: record.worktreeLifecycle!.preparation?.checks ?? 'pending',
-          requiredSelection: Object.keys(record.worktreeLifecycle!.review?.hashes ?? {}).map((path) => resolve(action.root, path)),
+          requiredSelection: reviewReady ? Object.keys(record.worktreeLifecycle!.review?.hashes ?? {}).map((path) => resolve(action.root, path)) : [],
           checkedAt: record.worktreeLifecycle!.preparation?.checkedAt, canRun: record.life === 'live' && record.worktreeLifecycle!.approvedAt === undefined,
           ...(record.worktreeLifecycle!.environment?.pending ? { environmentInputs: record.worktreeLifecycle!.environment.paths } : {}) },
       } : {}),
@@ -150,7 +150,9 @@ export class SvnActionWorkflow {
         : verifying !== null ? `Verifying the publication${verifying.revision === null ? '' : ` r${verifying.revision}`}` : idleWait ?? SvnActionWorkflow.runningSummaryOf(action)),
       open: true,
       rounds,
-      actions: action.kind !== 'update-main' && record.worktreeLifecycle?.execution !== undefined && record.worktreeLifecycle.phase !== 'landed' ? WorktreeWords.actions(record.worktreeLifecycle) : SvnActionWorkflow.actionsOf(action, SvnActionWorkflow.liveBodyOf(live).sessions, LandedRows.landingOf(record) !== null, mounts),
+      actions: action.kind !== 'update-main' && record.worktreeLifecycle?.execution !== undefined && record.worktreeLifecycle.phase !== 'landed'
+        ? WorktreeWords.actions(record.worktreeLifecycle)
+        : SvnActionWorkflow.actionsOf(action, SvnActionWorkflow.liveBodyOf(live).sessions, LandedRows.landingOf(record) !== null, mounts, SvnActionWorkflow.removableLandedOf(record)),
     }
   }
 
@@ -596,7 +598,12 @@ export class SvnActionWorkflow {
     }
   }
 
-  private static actionsOf(action: SessionRecordSvnAction, live: readonly SessionLiveBrief[], landed: boolean, mounts: ReadonlyMap<string, string>): SessionWorkflowAction[] {
+  private static removableLandedOf(record: SessionRecord): boolean {
+    return record.worktree === undefined && record.retiredWorktree !== undefined
+      && record.life !== 'live' && !(record.life === 'starting' && record.binding !== null)
+  }
+
+  private static actionsOf(action: SessionRecordSvnAction, live: readonly SessionLiveBrief[], landed: boolean, mounts: ReadonlyMap<string, string>, removableLanded = false): SessionWorkflowAction[] {
     // Text conflicts the rules left, and no resolver of this press is left: the press starts one (Finish 072).
     const open = action.conflictSet?.entries.filter((entry) => entry.state !== 'settled') ?? []
     const agent = action.kind === 'update-main' && action.needs?.kind === 'conflict' && action.resolverSpent === true
@@ -606,6 +613,8 @@ export class SvnActionWorkflow {
       { id: 'later', label: 'Later', primary: false, place: 'step', deferred: landed
         ? 'Main copy update left for later. It still waits on this step and in the session menu of the sessions tree: Update main copy.'
         : 'Main copy update left for later. It still waits on this step.' },
+      ...removableLanded ? [{ id: 'remove-row' as const, label: 'Remove row', primary: false,
+        confirm: 'Remove this session row without updating the main copy? Its published result stays in worktree results; update the main copy yourself if needed.' }] : [],
     ]
     const confirm = WorktreeWords.discardConfirm(action.evidence, undefined, [], mounts)
     if (action.stage === 'changes') return [

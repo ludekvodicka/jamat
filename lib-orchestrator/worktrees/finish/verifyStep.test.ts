@@ -37,6 +37,38 @@ describe('VerifyStep', () => {
     expect(h.records.get('worker')?.worktreeLifecycle?.wait).toMatchObject({ kind: 'published-with-differences', reason: expect.stringContaining('r487') })
   })
 
+  it('accepts a deleted child collapsed under a deleted parent directory in svn log', async () => {
+    const h = await fixture()
+    const review: WorktreeReviewSnapshot = {
+      version: 1,
+      selection: ['a', 'app/devicesAgent', 'app/devicesAgent/devicesAgentTexts.ts'],
+      hashes: { a: h.hashOf(), 'app/devicesAgent': 'missing', 'app/devicesAgent/devicesAgentTexts.ts': 'missing' },
+      deletions: ['app/devicesAgent', 'app/devicesAgent/devicesAgentTexts.ts'],
+      message: '[App] Move and delete dir', source: 'person-local', acknowledged: [], headMovedBy: 0,
+    }
+    const step = new VerifyStep(h.records, {
+      advancePublished: async () => ({ ok: true, value: undefined }),
+      commitHashes: async () => ({ ok: true, value: { a: h.hashOf() } }),
+      publicationHashes: async () => ({ ok: true, value: { a: h.hashOf() } }),
+      publicationRows: async () => ({ ok: true, value: {
+        items: [{ path: 'a', item: 'normal', props: 'normal', base: 487, changed: 487 }],
+        changed: [{ path: 'a', revision: 487, action: 'A' }, { path: 'app/devicesAgent', revision: 487, action: 'D' }],
+      } }),
+    })
+    expect(await step.run('worker', h.root, 487, review, 'disposing')).toEqual({ verified: true, differences: [] })
+    const modifiedDir = new VerifyStep(h.records, {
+      advancePublished: async () => ({ ok: true, value: undefined }),
+      commitHashes: async () => ({ ok: true, value: { a: h.hashOf() } }),
+      publicationHashes: async () => ({ ok: true, value: { a: h.hashOf() } }),
+      publicationRows: async () => ({ ok: true, value: {
+        items: [{ path: 'a', item: 'normal', props: 'normal', base: 487, changed: 487 }],
+        changed: [{ path: 'a', revision: 487, action: 'A' }, { path: 'app/devicesAgent', revision: 487, action: 'M' }],
+      } }),
+    })
+    expect(await modifiedDir.run('worker', h.root, 487, review, 'disposing'))
+      .toEqual({ verified: false, differences: ['app/devicesAgent', 'app/devicesAgent/devicesAgentTexts.ts'] })
+  })
+
   /** UA1-J09-2: the client that published r487 died before it gave its nodes that revision. */
   it('gives the published revision to nodes a killed commit left behind only when their bytes match', async () => {
     const h = await fixture()

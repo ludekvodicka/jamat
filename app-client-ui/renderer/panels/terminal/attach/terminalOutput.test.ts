@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { TerminalHeldOutput } from './terminalHeldOutput'
 import { TerminalOutput } from './terminalOutput'
 
 class TerminalFixture {
@@ -118,5 +119,66 @@ describe('TerminalOutput', () => {
     output.dispose()
     await start; await chunk
     expect(terminal.calls).toEqual([['write', 'held', 80, 24]])
+  })
+
+  it('requests a clean snapshot resync on reveal after hidden output overflows, without resetting xterm or writing a raw tail', async () => {
+    const terminal = new TerminalFixture()
+    let resyncs = 0
+    const output = new TerminalOutput(terminal, () => true, () => { resyncs++ })
+    await output.setVisible(false)
+    await output.frame({ type: 'terminal.data', runtimeSessionId: 'runtime', generation: 1,
+      outputEpoch: 1, outputSeq: 1, lastOutputAt: 1, delta: 'a'.repeat(TerminalHeldOutput.maxCharsConst + 1) })
+    // Hidden resize and non-resetting delta replay wait for reveal rather than resyncing off-screen.
+    await output.frame({ type: 'terminal.resize', runtimeSessionId: 'runtime', generation: 1, cols: 120, rows: 40 })
+    await output.frame({ type: 'terminal.snapshot-start', streamId: 's', index: 0, reset: false, projection: header })
+    await output.frame({ type: 'terminal.snapshot-chunk', streamId: 's', index: 1, data: 'delta-chunk' })
+    await output.frame({ type: 'terminal.snapshot-end', streamId: 's', index: 2 })
+    await output.frame({ type: 'terminal.snapshot-complete', streamId: 's' })
+    expect(resyncs).toBe(0)
+    expect(terminal.calls).toEqual([])
+
+    await output.setVisible(true)
+    expect(resyncs).toBe(1)
+    expect(terminal.calls).toEqual([])
+
+    // Frames arriving while the replacement attach is being minted are ignored.
+    await output.frame({ type: 'terminal.data', runtimeSessionId: 'runtime', generation: 1,
+      outputEpoch: 1, outputSeq: 2, lastOutputAt: 2, delta: 'late' })
+    expect(terminal.calls).toEqual([])
+    expect(resyncs).toBe(1)
+    output.dispose()
+  })
+
+  it('clears hidden overflow when a full resetting snapshot arrives while hidden', async () => {
+    const terminal = new TerminalFixture()
+    let resyncs = 0
+    const output = new TerminalOutput(terminal, () => true, () => { resyncs++ })
+    await output.setVisible(false)
+    await output.frame({ type: 'terminal.data', runtimeSessionId: 'runtime', generation: 1,
+      outputEpoch: 1, outputSeq: 1, lastOutputAt: 1, delta: 'a'.repeat(TerminalHeldOutput.maxCharsConst + 1) })
+    await output.frame({ type: 'terminal.snapshot-start', streamId: 's', index: 0, reset: true, projection: header })
+    await output.frame({ type: 'terminal.snapshot-chunk', streamId: 's', index: 1, data: 'fresh' })
+    await output.frame({ type: 'terminal.snapshot-end', streamId: 's', index: 2 })
+    await output.frame({ type: 'terminal.snapshot-complete', streamId: 's' })
+    await output.setVisible(true)
+
+    expect(resyncs).toBe(0)
+    expect(terminal.calls).toEqual([['reset'], ['resize', 100, 30], ['write', 'fresh', 100, 30]])
+    output.dispose()
+  })
+
+  it('drops hidden overflow without resyncing when the surface is lost', async () => {
+    const terminal = new TerminalFixture()
+    let resyncs = 0
+    const output = new TerminalOutput(terminal, () => true, () => { resyncs++ })
+    await output.setVisible(false)
+    await output.frame({ type: 'terminal.data', runtimeSessionId: 'runtime', generation: 1,
+      outputEpoch: 1, outputSeq: 1, lastOutputAt: 1, delta: 'a'.repeat(TerminalHeldOutput.maxCharsConst + 1) })
+    await output.lost()
+    await output.setVisible(true)
+
+    expect(resyncs).toBe(0)
+    expect(terminal.calls).toEqual([])
+    output.dispose()
   })
 })

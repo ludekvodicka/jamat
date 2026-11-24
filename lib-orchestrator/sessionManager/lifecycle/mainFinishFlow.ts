@@ -32,8 +32,9 @@ type MainFinishAnswer = SessionsOpResult<{ outcome: SessionMainFinishOutcome }>
  * left stops the session and removes its row, because nothing is left to come back to and the
  * conversation stays in Historic sessions; any left asks the person again. The stop and the Remove
  * are the only automatic acts, and they happen only when nothing of the session is left to commit.
- * **Check again** reads the changes at once, without the wait for an idle agent: a commit turn that
- * hangs on a review nobody will finish kept the section waiting with no way on (058, 2026-11-18).
+ * **Check again** reads the changes at once, both while a commit waits (without waiting for an idle
+ * agent: a commit turn that hangs on a review nobody will finish kept the section waiting with no
+ * way on, 058, 2026-11-18) and while choosing (e.g. after another session committed a shared file).
  */
 export class MainFinishFlow {
   static readonly tickMillisecondsConst = 3_000
@@ -120,9 +121,10 @@ export class MainFinishFlow {
       case 'commit-continue':
         return this.commit(sessionId, current, choice)
       case 'check':
-        if (current.phase !== 'committing') return { ok: false, code: 'invalid-spec', detail: 'No commit of this session runs now' }
         this.idleSince.delete(sessionId)
-        return { ok: true, value: { outcome: await this.check(sessionId, true) } }
+        if (current.phase === 'committing') return { ok: true, value: { outcome: await this.check(sessionId, 'committing') } }
+        else if (current.phase === 'choosing') return { ok: true, value: { outcome: await this.check(sessionId, 'choosing') } }
+        else throw new Error(`Unknown main Finish phase: ${JSON.stringify(current.phase satisfies never)}`)
       default: throw new Error(`Unknown main Finish choice: ${JSON.stringify(choice satisfies never)}`)
     }
   }
@@ -177,25 +179,32 @@ export class MainFinishFlow {
     this.idleSince.set(sessionId, since)
     if (now - since < MainFinishFlow.settleMillisecondsConst || this.port.reviewPending(sessionId)) return
     this.idleSince.delete(sessionId)
-    await this.check(sessionId, false)
+    await this.check(sessionId, 'watch')
   }
 
   /**
    * Reads the changes and goes on: none left stops the session and removes its row, any left asks
-   * the person again. `pressed` is Check again, which may come while the agent still works or a
-   * review is open; then a remainder keeps the commit waiting with a note, and an open review
-   * keeps the session, because stopping it would leave that review pending with no session.
+   * the person again. `committing` is Check again during a commit turn, which may come while the
+   * agent still works or a review is open; then a remainder keeps the commit waiting with a note,
+   * and an open review keeps the session, because stopping it would leave that review pending with
+   * no session. `choosing` is Check again from the choice step, e.g. after another session
+   * committed a shared file.
    */
-  private async check(sessionId: string, pressed: boolean): Promise<SessionMainFinishOutcome> {
+  private async check(sessionId: string, mode: 'watch' | 'committing' | 'choosing'): Promise<SessionMainFinishOutcome> {
     const activity = this.sessions.info(sessionId)?.activity
-    const busy = pressed && (activity === 'working' || activity === 'waiting')
+    const busy = mode === 'committing' && (activity === 'working' || activity === 'waiting')
     const changes = await this.port.changes(sessionId)
     if (changes.ok && (changes.vcs === null || changes.paths.length === 0)) {
-      if (pressed && this.port.reviewPending(sessionId))
-        return this.note(sessionId, 'Nothing of this session is left to commit, but a commit review of it is still open. Close the review, then check again.')
+      if (mode !== 'watch' && this.port.reviewPending(sessionId)) {
+        const message = 'Nothing of this session is left to commit, but a commit review of it is still open. Close the review, then check again.'
+        if (mode === 'committing') return this.note(sessionId, message)
+        else if (mode === 'choosing') { await this.ask(sessionId, message, MainFinishFlow.filesOf(changes)); return 'choose' }
+        else throw new Error(`Unknown main Finish check mode: ${JSON.stringify(mode satisfies never)}`)
+      }
       const stopped = await this.sessions.stop(sessionId)
       if (!stopped.ok) {
-        await this.ask(sessionId, `The changes are committed, but the session did not stop: ${stopped.detail}`)
+        const prefix = mode === 'choosing' ? 'Nothing of this session is left to commit' : 'The changes are committed'
+        await this.ask(sessionId, `${prefix}, but the session did not stop: ${stopped.detail}`, MainFinishFlow.filesOf(changes))
         return 'choose'
       }
       await this.close(sessionId, 'closed')
@@ -205,14 +214,28 @@ export class MainFinishFlow {
     }
     if (!changes.ok) {
       if (busy) return this.note(sessionId, `The changes could not be read: ${changes.detail}`)
-      await this.ask(sessionId, `The commit turn ended, but the changes could not be read: ${changes.detail}`)
+      const message = mode === 'choosing'
+        ? `The changes of this session could not be read: ${changes.detail}`
+        : `The commit turn ended, but the changes could not be read: ${changes.detail}`
+      await this.ask(sessionId, message)
       return 'choose'
     }
     const files = MainFinishFlow.filesOf(changes)
     const count = files.paths.length + files.more
     const remain = `${count} ${count === 1 ? 'file' : 'files'} of this session ${count === 1 ? 'is' : 'are'} still changed`
     if (busy) return this.note(sessionId, `${remain[0].toUpperCase()}${remain.slice(1)}; the agent still works on the commit.`)
-    await this.ask(sessionId, `The commit turn ended and ${remain}. Commit again, or close the session.`, files)
+    let message: string
+    switch (mode) {
+      case 'choosing':
+        message = `${remain[0].toUpperCase()}${remain.slice(1)}. Commit through the session's agent, or close the session.`
+        break
+      case 'committing':
+      case 'watch':
+        message = `The commit turn ended and ${remain}. Commit again, or close the session.`
+        break
+      default: throw new Error(`Unknown main Finish check mode: ${JSON.stringify(mode satisfies never)}`)
+    }
+    await this.ask(sessionId, message, files)
     return 'choose'
   }
 
@@ -222,9 +245,9 @@ export class MainFinishFlow {
     return 'committing'
   }
 
-  /** Back to the choice, keeping the commit step drawn as done. */
+  /** Back to (or refreshing) the choice, keeping any commit step drawn as done. */
   private async ask(sessionId: string, note: string, files?: Pick<SessionRecordMainFinish, 'vcs' | 'paths' | 'more'>): Promise<void> {
-    await this.sessions.write(sessionId, (latest) => latest?.phase === 'committing'
+    await this.sessions.write(sessionId, (latest) => latest !== undefined && latest.phase !== 'closed'
       ? { ...MainFinishFlow.plain(latest), ...files, phase: 'choosing', note } : null)
   }
 

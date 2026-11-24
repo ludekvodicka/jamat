@@ -214,4 +214,104 @@ describe('lib-orchestrator/sessionManager/launch/antigravityStatusLine', () => {
       runningSubagents: 1,
     })
   })
+
+  it('merges trustedWorkspaces into the session settings file without modifying user settings.json', () => {
+    const root = tempDir()
+    const antigravityHome = join(root, 'agy-home')
+    mkdirSync(antigravityHome, { recursive: true })
+    const userSettingsFile = join(antigravityHome, 'settings.json')
+    const userSettingsText = JSON.stringify({
+      trustedWorkspaces: ['Q:\\Existing\\Workspace', 'Q:\\Work\\Tree'],
+    })
+    writeFileSync(userSettingsFile, userSettingsText)
+    const relay = new AntigravityStatusLine({
+      directory: join(root, 'statusline'),
+      snapshots: join(root, 'snapshots'),
+      identities: join(root, 'identities'),
+      antigravityHome,
+      tools: { node: () => ({ ok: true, command: process.execPath }) },
+      report: () => undefined,
+      platform: 'win32',
+    })
+
+    const gatedFile = relay.settingsFileFor({ sessionId: 'sess-gated', launchId: 'launch-1' })
+    const gated = JSON.parse(readFileSync(gatedFile!, 'utf8')) as Record<string, unknown>
+    expect(gated.statusLine).toBeDefined()
+    expect(gated.trustedWorkspaces).toBeUndefined()
+
+    const yoloFile = relay.settingsFileFor(
+      { sessionId: 'sess-yolo', launchId: 'launch-1' },
+      { trustedDirectory: 'Q:/Work/Tree/' },
+    )
+    const yolo = JSON.parse(readFileSync(yoloFile!, 'utf8')) as {
+      statusLine?: { command: string }
+      trustedWorkspaces?: string[]
+    }
+    expect(yolo.statusLine?.command).toContain('--session sess-yolo --launch launch-1')
+    expect(yolo.trustedWorkspaces).toEqual([
+      'Q:\\Existing\\Workspace',
+      'Q:\\Work\\Tree',
+      'q:\\Work\\Tree',
+    ])
+    expect(readFileSync(userSettingsFile, 'utf8')).toBe(userSettingsText)
+  })
+
+  it('still writes trustedWorkspaces when statusLine is disabled or the relay cannot be installed', () => {
+    const root = tempDir()
+    const relay = new AntigravityStatusLine({
+      directory: join(root, 'statusline'),
+      snapshots: join(root, 'snapshots'),
+      identities: join(root, 'identities'),
+      antigravityHome: join(root, 'agy-home'),
+      tools: { node: () => ({ ok: false, detail: 'node missing' }) },
+      report: () => undefined,
+      platform: 'linux',
+    })
+
+    expect(relay.settingsFileFor(undefined, { includeStatusLine: false })).toBeNull()
+
+    const oneShotFile = relay.settingsFileFor(undefined, {
+      includeStatusLine: false,
+      trustedDirectory: '/work/project/',
+    })
+    expect(oneShotFile).not.toBeNull()
+    expect(JSON.parse(readFileSync(oneShotFile!, 'utf8'))).toEqual({
+      trustedWorkspaces: ['/work/project'],
+    })
+
+    const fallbackFile = relay.settingsFileFor(
+      { sessionId: 'sess-no-node', launchId: 'launch-1' },
+      { trustedDirectory: '/work/project/' },
+    )
+    expect(fallbackFile).not.toBeNull()
+    expect(JSON.parse(readFileSync(fallbackFile!, 'utf8'))).toEqual({
+      trustedWorkspaces: ['/work/project'],
+    })
+  })
+
+  it('normalizes trusted directory candidates on win32 and POSIX', () => {
+    expect(AntigravityStatusLine.trustedDirectoryCandidates('q:/Apps/Jamat/.worktrees/001/', 'win32')).toEqual([
+      'q:\\Apps\\Jamat\\.worktrees\\001',
+      'Q:\\Apps\\Jamat\\.worktrees\\001',
+    ])
+    expect(AntigravityStatusLine.trustedDirectoryCandidates('Q:\\', 'win32')).toEqual([
+      'Q:\\',
+      'q:\\',
+    ])
+    expect(AntigravityStatusLine.trustedDirectoryCandidates('/srv/repo///', 'linux')).toEqual([
+      '/srv/repo',
+    ])
+    expect(AntigravityStatusLine.trustedDirectoryCandidates('/', 'linux')).toEqual(['/'])
+  })
+
+  it.runIf(process.platform === 'win32')('includes on-disk NTFS casing with both drive-letter cases on Windows', () => {
+    const dir = tempDir()
+    const nested = join(dir, 'MixedCaseTree')
+    mkdirSync(nested)
+    const candidates = AntigravityStatusLine.trustedDirectoryCandidates(nested.toLowerCase(), 'win32')
+    const driveLower = `${nested[0].toLowerCase()}${nested.slice(1)}`
+    const driveUpper = `${nested[0].toUpperCase()}${nested.slice(1)}`
+    expect(candidates).toContain(driveLower)
+    expect(candidates).toContain(driveUpper)
+  })
 })

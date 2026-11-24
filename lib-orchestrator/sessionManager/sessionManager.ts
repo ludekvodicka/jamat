@@ -815,6 +815,12 @@ export class SessionManager {
     return SessionAccounts.ref(record)
   }
 
+  launchStartedAt(sessionId: string, launchId: string): number | null {
+    const record = this.records?.get(sessionId)
+    if (!record || record.agent?.identityLaunchId !== launchId) return null
+    return record.accountSegments?.at(-1)?.from ?? null
+  }
+
   hasAccountSession(agentId: SessionAgentId, accountId: string): boolean {
     return (this.records?.list() ?? []).some(record => {
       if (![SessionAccounts.ref(record), SessionAccounts.launchRef(record)]
@@ -1498,24 +1504,29 @@ export class SessionManager {
     } finally { this.switchingAccounts.delete(sessionId) }
   }
 
-  async restartSession(sessionId: string): Promise<SessionsOpResult> {
+  async stopAndWaitSession(sessionId: string): Promise<SessionsOpResult> {
     const refused = await this.restored(sessionId)
     if (refused !== null) return refused
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
-    if (record.life === 'live') {
-      const stopped = await this.stopSession(sessionId)
-      if (!stopped.ok) return stopped
-      // The Host answers a stop before the process is gone, and a reopen against a runtime that is
-      // still alive comes back `live-refused`. The wait for the exit is what closes that race.
-      if (!await this.awaitRuntimeExit(sessionId))
-        return {
-          ok: false,
-          code: 'live-refused',
-          detail: `Session ${sessionId} was asked to stop and was still running ${
-            SessionManager.exitBudgetMillisecondsConst / 1_000} s later`,
-        }
-    }
+    if (record.life !== 'live') return { ok: true, value: undefined }
+    const stopped = await this.stopSession(sessionId)
+    if (!stopped.ok) return stopped
+    // The Host answers a stop before the process is gone, and a reopen against a runtime that is
+    // still alive comes back `live-refused`. The wait for the exit is what closes that race.
+    if (!await this.awaitRuntimeExit(sessionId))
+      return {
+        ok: false,
+        code: 'live-refused',
+        detail: `Session ${sessionId} was asked to stop and was still running ${
+          SessionManager.exitBudgetMillisecondsConst / 1_000} s later`,
+      }
+    return { ok: true, value: undefined }
+  }
+
+  async restartSession(sessionId: string): Promise<SessionsOpResult> {
+    const stopped = await this.stopAndWaitSession(sessionId)
+    if (!stopped.ok) return stopped
     return this.reopenSession(sessionId)
   }
 
@@ -2855,6 +2866,7 @@ export class SessionManager {
     const activityDetail = this.monitor.activityDetail(record.sessionId)
     if (activityDetail !== null) info.activityDetail = activityDetail
     if (this.monitor.compacting(record.sessionId)) info.compacting = true
+    if (info.activity === 'idle' && this.monitor.shellsRunning(record.sessionId)) info.shellsRunning = true
     if (record.agent)
       info.agent = {
         agentId: record.agent.agentId,

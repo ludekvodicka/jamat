@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountView } from '../../../../../../lib-orchestrator/agentAccounts/agentAccountsApi.types'
+import type { AntigravityLoginsView } from '../../../../../../lib-orchestrator/agentAccounts/antigravityLoginsApi.types'
 import type { AppClientUiBridge } from '../../../../../shared/appClientUiIpc'
 import type { UsageSnapshot } from '../../../../../../lib-orchestrator/rateMonitor/usageApi.types'
 import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixture'
@@ -11,6 +12,7 @@ import { ConfigurationLastTab } from '../../configurationLastTab'
 
 const main: AccountView = { agentId: 'claude', accountId: 'main', label: 'Main', isMain: true, state: 'active', identity: null, profileProblem: null }
 let views: readonly AccountView[]
+let antigravityLogins: AntigravityLoginsView
 let bridge: ControlBridgeFixture
 let changed: () => void
 let usageChanged: () => void
@@ -18,6 +20,46 @@ let usage: UsageSnapshot
 let unsubscribe = vi.fn<() => void>()
 beforeEach(() => {
   views = [main, { ...main, accountId: 'work', label: 'Work', isMain: false, state: 'pending-login', profileProblem: 'Profile needs attention' }]
+  antigravityLogins = {
+    available: true,
+    unavailableReason: null,
+    currentPresent: true,
+    activeSlotId: 'alice-1234',
+    currentEmail: 'alice@example.com',
+    currentPlanTier: 'Pro',
+    runningSessionCount: 1,
+    reopenableSessionCount: 1,
+    loginInProgress: false,
+    capturedAt: Date.parse('2026-11-22T15:00:00Z'),
+    logins: [
+      {
+        id: 'alice-1234',
+        label: 'Alice',
+        email: 'alice@example.com',
+        planTier: 'Pro',
+        savedAt: 1,
+        active: true,
+        quota: {
+          capturedAt: Date.parse('2026-11-22T14:55:00Z'),
+          session: { durationMinutes: 300, usedPercent: 18, resetsAt: '2026-11-22T19:00:00Z' },
+          weekly: { durationMinutes: 10080, usedPercent: 32, resetsAt: '2026-11-26T12:00:00Z' },
+        },
+      },
+      {
+        id: 'bob-5678',
+        label: 'Bob',
+        email: 'bob@example.com',
+        planTier: 'Ultra',
+        savedAt: 2,
+        active: false,
+        quota: {
+          capturedAt: Date.parse('2026-11-22T14:00:00Z'),
+          session: { durationMinutes: 300, usedPercent: 100, resetsAt: '2026-11-22T18:30:00Z' },
+          weekly: { durationMinutes: 10080, usedPercent: 74, resetsAt: '2026-11-27T12:00:00Z' },
+        },
+      },
+    ],
+  }
   usage = { capturedAt: Date.parse('2026-11-17T12:00:00Z'), pools: [], accounts: [{ key: { agentId: 'claude', accountId: 'main' }, label: 'Main',
     enabled: true, accountState: 'active', source: 'poll', estimated: null, capacity: { weight: 1, tier: null }, state: { kind: 'ok', fetchedAt: 1, windows: [
       { durationMinutes: 300, usedPercent: 12, resetsAt: '2026-11-17T15:00:00Z' }, { durationMinutes: 10080, usedPercent: 64, resetsAt: '2026-11-22T15:00:00Z' },
@@ -25,6 +67,13 @@ beforeEach(() => {
   bridge = new ControlBridgeFixture().on('accounts.list', () => ({ ok: true, value: views })).on('usage.get', () => ({ ok: true, value: usage }))
     .on('accounts.add', { ok: true, value: { accountId: 'new' } }).on('accounts.login', { ok: true, value: { sessionId: 'terminal' } })
     .on('accounts.rename', { ok: true, value: {} }).on('accounts.setEnabled', { ok: true, value: {} }).on('accounts.remove', { ok: true, value: {} })
+    .on('accounts.antigravity.list', () => ({ ok: true, value: antigravityLogins }))
+    .on('accounts.antigravity.store', { ok: true, value: { slotId: 'new-slot' } })
+    .on('accounts.antigravity.update', { ok: true, value: {} })
+    .on('accounts.antigravity.clear', { ok: true, value: {} })
+    .on('accounts.antigravity.login', { ok: true, value: { sessionId: 'agy-login' } })
+    .on('accounts.antigravity.switch', { ok: true, value: { reopened: 1, failed: [] } })
+    .on('accounts.antigravity.remove', { ok: true, value: {} })
   unsubscribe = vi.fn<() => void>()
   vi.stubGlobal('appClient', { control: bridge.bridge(), onAgentSettingsChanged: listener => { changed = listener; return unsubscribe },
     onUsageChanged: listener => { usageChanged = listener; return () => {} } } satisfies Pick<AppClientUiBridge, 'control' | 'onAgentSettingsChanged' | 'onUsageChanged'>)
@@ -61,10 +110,11 @@ describe('AccountsTab', () => {
     const mainSection = screen.getByText('claude: Main').closest('section')!
     expect(within(mainSection).queryByRole('button')).toBeNull()
     expect(screen.getByRole('alert').textContent).toBe('Profile needs attention')
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    const workSection = screen.getByText('claude: Work').closest('section')!
+    fireEvent.click(within(workSection).getByRole('button', { name: 'Remove' }))
     expect(bridge.bodiesOf('accounts.remove')).toEqual([])
     expect(screen.getByText(/The main profile stays untouched/)).toBeTruthy()
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Confirm remove' })) })
+    await act(async () => { fireEvent.click(within(workSection).getByRole('button', { name: 'Confirm remove' })) })
     expect(bridge.bodiesOf('accounts.remove')).toEqual([{ accountId: 'work' }])
   })
   it('adds and logs in, renames, disables and retries login through operations', async () => {
@@ -128,5 +178,52 @@ describe('AccountsTab', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy sign-in link' })) })
     expect(screen.queryByRole('status')).toBeNull()
     expect(screen.getByRole('alert').textContent).toBe('Copying the sign-in link failed: clipboard busy')
+  })
+
+  it('stores, switches, clears, starts new login, and removes saved Antigravity logins', async () => {
+    await act(async () => { render(<AccountsTab onDirtyChange={() => {}} />) })
+    const section = screen.getByText('Antigravity logins').closest('section')!
+    expect(section.textContent).toContain('Current login: stored as Alice (alice@example.com · Pro)')
+    const bobQuota = within(section).getByRole('group', { name: 'Bob saved quota' })
+    expect(within(bobQuota).getByRole('progressbar', { name: 'Bob 5-hour used' }).getAttribute('aria-valuenow')).toBe('100')
+    expect(within(bobQuota).getByRole('progressbar', { name: 'Bob weekly used' }).getAttribute('aria-valuenow')).toBe('74')
+
+    fireEvent.change(within(section).getByLabelText('Store current login as'), { target: { value: 'Backup' } })
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'Store current login' })) })
+    expect(bridge.bodiesOf('accounts.antigravity.store')).toEqual([{ label: 'Backup' }])
+
+    const switchButtons = within(section).getAllByRole('button', { name: 'Switch login' })
+    expect((switchButtons[0] as HTMLButtonElement).disabled).toBe(true)
+    expect((switchButtons[1] as HTMLButtonElement).disabled).toBe(false)
+    await act(async () => { fireEvent.click(switchButtons[1]!) })
+    expect(bridge.bodiesOf('accounts.antigravity.switch')).toEqual([{ slotId: 'bob-5678' }])
+
+    const switchReopenButtons = within(section).getAllByRole('button', { name: 'Switch & reopen' })
+    expect((switchReopenButtons[0] as HTMLButtonElement).disabled).toBe(true)
+    expect((switchReopenButtons[1] as HTMLButtonElement).disabled).toBe(false)
+    await act(async () => { fireEvent.click(switchReopenButtons[1]!) })
+    expect(bridge.bodiesOf('accounts.antigravity.switch')).toEqual([
+      { slotId: 'bob-5678' },
+      { slotId: 'bob-5678', reopenRunning: true },
+    ])
+
+    const newLoginButton = within(section).getByRole('button', { name: 'New login' }) as HTMLButtonElement
+    expect(newLoginButton.disabled).toBe(true)
+
+    fireEvent.click(within(section).getByRole('button', { name: 'Clear current login' }))
+    expect(bridge.bodiesOf('accounts.antigravity.clear')).toEqual([])
+    antigravityLogins = { ...antigravityLogins, currentPresent: false, activeSlotId: null, currentEmail: null, currentPlanTier: null,
+      logins: antigravityLogins.logins.map(slot => ({ ...slot, active: false })) }
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'Confirm clear' })) })
+    expect(bridge.bodiesOf('accounts.antigravity.clear')).toEqual([{}])
+
+    expect((within(section).getByRole('button', { name: 'New login' }) as HTMLButtonElement).disabled).toBe(false)
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'New login' })) })
+    expect(bridge.bodiesOf('accounts.antigravity.login')).toEqual([{}])
+
+    const removeButtons = within(section).getAllByRole('button', { name: 'Remove' })
+    fireEvent.click(removeButtons[0]!)
+    await act(async () => { fireEvent.click(within(section).getByRole('button', { name: 'Confirm remove' })) })
+    expect(bridge.bodiesOf('accounts.antigravity.remove')).toEqual([{ slotId: 'alice-1234' }])
   })
 })

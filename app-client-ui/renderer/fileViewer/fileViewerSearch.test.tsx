@@ -42,9 +42,13 @@ describe('FileViewer search', () => {
       .toEqual(['[a.b]', '[A.B]'])
   })
 
-  it('ignores diff gutters and searches only the displayed line text', () => {
+  it('ignores diff gutters, split headers and filler cells and searches only the displayed line text', () => {
     const view = render(<div>
       <div className="file-diff-toolbar">needle</div>
+      <div className="file-diff-split-header">needle</div>
+      <div className="file-diff-split-cell file-diff-split-cell--empty">
+        <span className="file-diff-text">needle</span>
+      </div>
       <span className="file-diff-line">
         <span className="file-diff-gutter">123</span>
         <span className="file-diff-marker">+</span>

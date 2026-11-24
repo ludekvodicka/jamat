@@ -6,6 +6,12 @@
   background: var(--color-background);
   color: var(--color-text-2);
 }
+.file-viewer:focus,
+.file-viewer-body:focus,
+.file-diff-scroll:focus,
+.file-diff-split-pane:focus {
+  outline: none;
+}
 .file-viewer-toolbar,
 .file-viewer-path-control {
   display: flex;
@@ -87,8 +93,13 @@
 }
 .file-viewer-view-control,
 .file-viewer-copy-path,
+.file-viewer-html-scripts,
 .file-viewer-path-control button {
   padding: 2px var(--space-2);
+}
+.file-viewer-html-scripts[aria-pressed='true'] {
+  border-color: var(--color-attention);
+  color: var(--color-attention);
 }
 .file-viewer-view-control__prefix {
   color: var(--color-text-4);
@@ -220,6 +231,31 @@
   /* The ground the page paints on, named rather than themed: the frame carries `color-scheme: light`
      inside it, so this only covers the moment before it has painted anything at all. */
   background: white;
+}
+.file-viewer-html-host {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+.file-viewer-html-host > .file-viewer-html {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.file-viewer-html-banner {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+  color: var(--color-text-3);
+  font-size: var(--fs-status);
+}
+.file-viewer-html-banner button {
+  padding: 2px var(--space-2);
 }
 .file-viewer-code .shiki,
 .file-viewer-raw,
@@ -394,14 +430,30 @@
 .file-diff-toolbar {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--color-border-hairline);
   color: var(--color-text-4);
   font-size: var(--fs-status);
 }
-.file-diff-toolbar span { margin-right: auto; }
+.file-diff-toolbar-label {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-diff-toolbar-group {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+}
+.file-diff-toolbar button {
+  padding: 2px var(--space-2);
+}
 .file-diff-detail {
   flex: none;
   margin: 0;
@@ -459,6 +511,130 @@
   font-size: var(--fs-status);
 }
 .file-diff-line:has(.file-diff-hunk) { margin-top: 1.5em; }
+.file-diff-split-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.file-diff-split-headers {
+  display: grid;
+  flex: none;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+  color: var(--color-text-3);
+  font-size: var(--fs-status);
+}
+.file-diff-split-header {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px var(--space-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-diff-split-header + .file-diff-split-header {
+  border-left: 1px solid var(--color-border-frame);
+}
+.file-diff-split-panes {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.file-diff-split-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: auto;
+}
+.file-diff-split-pane--before {
+  scrollbar-width: auto;
+}
+.file-diff-split-pane--before::-webkit-scrollbar:vertical {
+  width: 0;
+}
+.file-diff-split-pane--after {
+  border-left: 1px solid var(--color-border-frame);
+}
+.file-diff-split-lines {
+  min-width: max-content;
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  tab-size: 2;
+}
+.file-diff-split-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.file-diff-split-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  font-family: var(--font-mono);
+  font-size: var(--fs-secondary);
+  line-height: 1.5;
+  tab-size: 2;
+}
+.file-diff-split-hunk {
+  position: static;
+  transform: none;
+  display: block;
+  min-width: 100%;
+  padding: 0 var(--space-2);
+  border-top: 1px solid var(--color-border-hairline);
+  border-bottom: 1px solid var(--color-border-hairline);
+  background: var(--color-surface-raised);
+  line-height: 1.6;
+  white-space: pre;
+}
+.file-diff-split-hunk--span {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-diff-split-cell {
+  display: flex;
+  align-items: flex-start;
+  min-width: 100%;
+  min-height: 1.5em;
+}
+.file-diff-split-cell .file-diff-gutter {
+  flex: none;
+  width: 46px;
+}
+.file-diff-split-cell .file-diff-marker {
+  flex: none;
+  width: 18px;
+}
+.file-diff-split-cell .file-diff-text {
+  flex: 1;
+  white-space: pre;
+}
+.file-diff-split-grid .file-diff-split-cell {
+  min-width: 0;
+}
+.file-diff-split-grid .file-diff-split-cell--after {
+  border-left: 1px solid var(--color-border-frame);
+}
+.file-diff-split-grid .file-diff-split-cell .file-diff-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.file-diff-split-cell--empty {
+  background:
+    repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 5px,
+      color-mix(in srgb, var(--color-border-hairline) 70%, transparent) 5px,
+      color-mix(in srgb, var(--color-border-hairline) 70%, transparent) 6px
+    ),
+    var(--color-surface-sunken);
+  user-select: none;
+}
 .file-diff-minimap {
   position: relative;
   flex: none;

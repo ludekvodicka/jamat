@@ -39,6 +39,7 @@ import { useFileChanges } from './useFileChanges'
 import { FileViewerDocumentState, useFileViewerDocument } from './useFileViewerDocument'
 import { useFileViewerFreshness } from './useFileViewerFreshness'
 import { FileViewerSearchBar, useFileViewerSearch } from './fileViewerSearch'
+import { FileViewerKeyboardScroll } from './fileViewerKeyboardScroll'
 import {
   FileViewerPlace,
   FileViewerScrollTop,
@@ -276,7 +277,10 @@ function FileViewerPanelBody(
         tabIndex={-1}
         data-file-search-open={search.open || undefined}
         data-file-wrap={wrapLines || undefined}
-        onKeyDown={search.onKeyDown}
+        onKeyDown={(event) => {
+          search.onKeyDown(event)
+          FileViewerKeyboardScroll.handle(event, body.current)
+        }}
         style={{
           '--file-viewer-zoom': FileViewerZoom.scaleOf(zoomPercent),
         } as React.CSSProperties}
@@ -322,7 +326,7 @@ function FileViewerPanelBody(
           </>
         )}
         <FileViewerSearchBar search={search} />
-        <div className="file-viewer-body" ref={body}>
+        <div className="file-viewer-body" ref={body} tabIndex={-1}>
           {model.error && <p className="file-viewer-error">{model.error}</p>}
           {!model.error && !model.document && <p className="file-viewer-note">Opening file...</p>}
           {model.document && (
@@ -335,6 +339,7 @@ function FileViewerPanelBody(
                 text={model.text}
                 textReady={model.textReady}
                 diff={model.diff}
+                wrapLines={wrapLines}
                 location={params.location === dismissedLocation ? undefined : params.location}
                 onOpenSource={openSource}
                 onReload={reload}

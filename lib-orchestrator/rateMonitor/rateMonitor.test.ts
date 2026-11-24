@@ -922,4 +922,126 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     })
   })
 
+  it('resets an account on login switch so lower post-switch readings within the same reset hour are accepted and pre-switch samples are ignored', async () => {
+    const file = cacheFile()
+    let clock = startClockConst
+    const antigravitySource: RateLimitSource = {
+      agentId: 'antigravity',
+      accountId: 'main',
+      label: 'Main',
+      passive: true,
+      read: async () => okReading([]),
+      stop: () => undefined,
+    }
+    let readings: readonly {
+      key: { agentId: 'antigravity'; accountId: 'main' }
+      at: number
+      source: 'statusline'
+      windows: readonly RateWindow[]
+    }[] = [{
+      key: { agentId: 'antigravity', accountId: 'main' },
+      at: clock - 1_000,
+      source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 100, resetsAt: '2026-11-24T16:47:12.000Z' },
+        { durationMinutes: 10_080, usedPercent: 56.3, resetsAt: '2026-11-30T20:25:11.000Z' },
+      ],
+    }]
+    const rate = new RateMonitor({
+      configIdentity: 'agy-reset',
+      channel: 'development',
+      cacheFile: file,
+      now: () => clock,
+      onChanged: () => {},
+      onError: () => {},
+      sources: () => [antigravitySource],
+      readings: async () => readings,
+    })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rate.snapshot().providers.antigravity).toMatchObject({ kind: 'ok', windows: [
+      { durationMinutes: 300, usedPercent: 100 },
+      { durationMinutes: 10_080, usedPercent: 56.3 },
+    ] })
+
+    // Switch account at `clock`: old cached windows clear and stale pre-switch receipts are rejected.
+    const switchedAt = clock
+    rate.resetAccount('antigravity', 'main', switchedAt)
+    expect(rate.snapshot().providers.antigravity).toEqual({ kind: 'never-read' })
+
+    clock += 5_000
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toEqual({ kind: 'never-read' })
+
+    // New account has a 5h reset 6m50s away from the old account's reset and much lower usage.
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' },
+      at: switchedAt + 6_000,
+      source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 5.9, resetsAt: '2026-11-24T16:54:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 2.1, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    clock += 5_000
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toEqual({
+      kind: 'ok',
+      fetchedAt: switchedAt + 6_000,
+      windows: [
+        { durationMinutes: 300, usedPercent: 5.9, resetsAt: '2026-11-24T16:54:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 2.1, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    })
+  })
+
+  it('drops cached entries at or before readingFloorAt during startup hydration', async () => {
+    const file = cacheFile()
+    const switchedAt = startClockConst - 10_000
+    writeFileSync(file, JSON.stringify({
+      schemaVersion: 2,
+      accounts: [{
+        key: { agentId: 'antigravity', accountId: 'main' },
+        entry: {
+          fetchedAt: switchedAt - 8_000,
+          windows: [{ durationMinutes: 300, usedPercent: 100, resetsAt: '2026-11-24T16:47:12.000Z' }],
+          extras: [],
+        },
+      }],
+    }), 'utf8')
+    const antigravitySource: RateLimitSource = {
+      agentId: 'antigravity',
+      accountId: 'main',
+      label: 'Main',
+      passive: true,
+      read: async () => okReading([]),
+      stop: () => undefined,
+    }
+    const rate = new RateMonitor({
+      configIdentity: 'agy-floor',
+      channel: 'development',
+      cacheFile: file,
+      now: () => startClockConst,
+      onChanged: () => {},
+      onError: () => {},
+      sources: () => [antigravitySource],
+      readingFloorAt: key => key.agentId === 'antigravity' && key.accountId === 'main' ? switchedAt : null,
+      readings: async () => [{
+        key: { agentId: 'antigravity', accountId: 'main' },
+        at: switchedAt + 5_000,
+        source: 'statusline',
+        windows: [{ durationMinutes: 300, usedPercent: 5.9, resetsAt: '2026-11-24T16:54:02.000Z' }],
+      }],
+    })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(rate.snapshot().providers.antigravity).toEqual({
+      kind: 'ok',
+      fetchedAt: switchedAt + 5_000,
+      windows: [{ durationMinutes: 300, usedPercent: 5.9, resetsAt: '2026-11-24T16:54:02.000Z' }],
+    })
+  })
+
 })

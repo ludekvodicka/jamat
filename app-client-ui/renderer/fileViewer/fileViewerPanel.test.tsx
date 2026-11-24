@@ -586,4 +586,26 @@ describe('app-client-ui/renderer/fileViewer/fileViewerPanel', () => {
     const reopenedBody = reopened.container.querySelector<HTMLElement>('.file-viewer-body')!
     await waitFor(() => expect(reopenedBody.scrollTop).toBe(540))
   })
+
+  it('scrolls the standalone viewer body with PageDown, PageUp, Home and End', async () => {
+    PanelHarness.install()
+    const view = render(<FileViewerPanel {...PanelHarness.props(PanelHarness.workspaceParams())} />)
+    await screen.findByText('export const answer = 42')
+    const viewer = screen.getByLabelText('File viewer')
+    const body = view.container.querySelector<HTMLElement>('.file-viewer-body')!
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, value: 400 },
+      scrollHeight: { configurable: true, value: 2000 },
+    })
+
+    viewer.focus()
+    expect(fireEvent.keyDown(viewer, { key: 'PageDown' })).toBe(false)
+    expect(body.scrollTop).toBe(360)
+    expect(fireEvent.keyDown(viewer, { key: 'End' })).toBe(false)
+    expect(body.scrollTop).toBe(1600)
+    expect(fireEvent.keyDown(viewer, { key: 'PageUp' })).toBe(false)
+    expect(body.scrollTop).toBe(1240)
+    expect(fireEvent.keyDown(viewer, { key: 'Home' })).toBe(false)
+    expect(body.scrollTop).toBe(0)
+  })
 })

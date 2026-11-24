@@ -99,7 +99,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(rowOf(container, 'main').querySelector('.jamat-sessions__agent')?.getAttribute('title')).toBe('claude')
   })
 
-  it.each(['together', 'states'] as const)('orders assigned groups and the submenu equally in %s', async (view) => {
+  it.each(['together', 'states'] as const)('orders assigned groups and puts None first in the submenu in %s', async (view) => {
     const source = SessionsFixtures.mixed()
     const base = sessionOf(source, 's-working')
     const seeded = ['pinned', 'priority', 'none', 'automation', 'waiting', 'completed', 'blocked']
@@ -117,7 +117,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(menuTitles().slice(0, 3)).toEqual(['Session Appearance', 'Groups', 'Session properties…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['Pinned', 'Priority', 'None', 'Automation', 'Waiting', 'Completed', 'Blocked', 'Hidden when remote'])
+      .toEqual(['None', 'Pinned', 'Priority', 'Automation', 'Waiting', 'Completed', 'Blocked', 'Hidden when remote'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'None' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked' }))
     await waitFor(() => expect(screen.getByRole('region', { name: 'Blocked' }).querySelector('[data-session="none"]')).not.toBeNull())
@@ -130,10 +130,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
 
   /*
    * The sections are the person's own list, not a literal in this file. What is pinned here is that
-   * ONE list decides both surfaces: an order they chose stacks the panel that way and offers the
-   * submenu in the same order, and a section they invented takes a session like any other.
+   * ONE list decides both surfaces: an order they chose stacks the panel that way and orders the
+   * named groups in the submenu beneath None, and a section they invented takes a session like any other.
    */
-  it('stacks the panel and the submenu in the order the settings hold, invented sections included', async () => {
+  it('stacks the panel in stored order and places None first in the submenu, invented sections included', async () => {
     const source = SessionsFixtures.mixed()
     const base = sessionOf(source, 's-working')
     const snapshot = { ...source, sessions: [{ ...base, sessionId: 'one', title: 'one' }] }
@@ -154,7 +154,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     fireEvent.contextMenu(rowOf(container, 'one'))
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['Ship it', 'None', 'Kept', 'Hidden when remote'])
+      .toEqual(['None', 'Ship it', 'Kept', 'Hidden when remote'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'Ship it' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Kept' }))
     await waitFor(() => expect(sections()).toEqual(['Sessions', 'Kept']))

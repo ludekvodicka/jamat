@@ -13,8 +13,8 @@
  * mean a person has to answer, which is why the monitor maps them to the same activity.
  *
  * `background` is current-screen evidence that work started by the turn remains alive: Claude's
- * task footer or Codex's background-terminal wait. The turn may be over, but the session is working
- * and its row is green. It is its own hint rather than a second kind of `working` because the two
+ * task footer with a sub-agent or a task other than a shell, or Codex's background-terminal wait.
+ * The turn may be over, but the session is working and its row is green. It is its own hint rather than a second kind of `working` because the two
  * age differently - see the evidence clock in `WorkStateMonitor.apply`.
  */
 export type AgentWorkHint =
@@ -55,4 +55,10 @@ export interface ComposerViewport {
 export interface AgentWorkInspection {
   hint: AgentWorkHint
   evidence: readonly AgentWorkEvidence[]
+  /**
+   * Only background shells the agent started still run: a dev server, a watcher. They are not the
+   * turn, so they never make it `background`; the turn's own evidence decides the hint, and a turn
+   * that is over reads `idle` with this beside it.
+   */
+  shellsRunning?: true
 }

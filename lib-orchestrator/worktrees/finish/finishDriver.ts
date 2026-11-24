@@ -196,7 +196,7 @@ export class FinishDriver {
         if (press.refreshPreparation === true) {
           if (state.phase !== 'active' && (state.step === undefined || !FinishStepPolicy.steps[state.step].prepare))
             return { ok: false, code: 'merge-pending', detail: 'Preparation cannot replace a running publication or recovery' }
-          if (state.execution?.runId !== undefined && state.execution.verdict === undefined)
+          if (state.step === 'checking' && state.execution?.runId !== undefined && state.execution.verdict === undefined)
             return { ok: false, code: 'merge-pending', detail: 'Wait for the current check to end' }
           await this.deps.commands.accept(initial.worktree!.worktreePath)
           await this.state.write(sessionId, (current) => ({ ...current, phase: 'finishing', step: 'checking', wait: undefined,

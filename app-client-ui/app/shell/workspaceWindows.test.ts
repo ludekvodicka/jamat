@@ -561,6 +561,26 @@ describe('app-client-ui/app/shell/workspaceWindows', () => {
     expect(context.rendererGone).toEqual([])
   })
 
+  it('allows only HTML preview and srcdoc URLs in subframe navigations', () => {
+    const context = harness()
+    context.registry.createMain()
+    const listeners = FakeWindow.created[0]!.webContents.listeners.get('will-frame-navigate') ?? []
+    expect(listeners).toHaveLength(1)
+    const fire = (url: string, isMainFrame = false): boolean => {
+      let prevented = false
+      listeners[0]!({ url, isMainFrame, preventDefault: () => { prevented = true } })
+      return prevented
+    }
+    expect(fire('jamat-v3-html://preview-1/')).toBe(false)
+    expect(fire('about:srcdoc')).toBe(false)
+    expect(fire('about:blank')).toBe(false)
+    expect(fire('https://example.test/', true)).toBe(false)
+    expect(fire('https://example.test/')).toBe(true)
+    expect(fire('file:///C:/secret.txt')).toBe(true)
+    expect(fire('jamat-v3-file://resource/token')).toBe(true)
+    expect(fire('jamat-v3-html://preview-1/other')).toBe(true)
+  })
+
   // A main frame that says it will not load used to change nothing here: the window stayed
   // `loading`, and everything waiting on it - a tab being moved in, a control command addressed
   // to it - waited until the process ended. Nothing else moves that window out of `loading`.

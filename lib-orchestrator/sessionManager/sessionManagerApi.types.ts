@@ -71,8 +71,8 @@ export interface SessionCreateSpec {
     initialPrompt?: string
     /**
      * The model this session is to be FOUNDED on, overriding whatever the machine that runs it has
-     * configured. Remote-only in practice: the local path never sets it, because a person choosing
-     * on their own computer changes the setting instead.
+     * configured. Sent by the remote create screen and by `jamat-cli sessions create --model`; a
+     * person creating on their own computer in the UI changes the setting instead.
      *
      * It travels only to a target that offered `agents.describe`. An older one validates this body
      * with exact keys and refuses the whole request over a key it does not know, so the capability
@@ -80,6 +80,13 @@ export interface SessionCreateSpec {
      * model from its own settings, exactly as it did before this field existed.
      */
     model?: string
+    /**
+     * The reasoning level this session is FOUNDED on, overriding the target's setting under the rule
+     * `model` follows: the create launch only, never a reopen. Sent by `sessions create --effort`,
+     * which checks it against the target's `agents.describe` first. A build older than this field
+     * refuses the key (exact keys), so the refusal names it. Absent means the target's own setting.
+     */
+    effort?: string
   }
   /**
    * The worktree of the session's directory: in `checkpoints` mode inside an SVN working copy any
@@ -517,7 +524,7 @@ export type SessionWorkflowTarget =
 
 /** A press a workflow admits now; each surface maps it onto an operation. */
 export type SessionWorkflowActionId = 'refresh-preparation' | 'prepare-worktree' | 'confirm-environment' | 'review-correction' | 'override-checks' | 'finish-again' | 'keep' | 'discard' | 'retry-setup' | 'stop-agent' | 'open-in-vscode'
-  | 'resolve-with-agent' | 'open-merger' | 'solve-with-agent' | 'agree-setup' | 'cancel-setup' | 'update-main' | 'later' | 'back-to-work' | 'confirm-stopped' | 'stop-run' | 'remove-run'
+  | 'resolve-with-agent' | 'open-merger' | 'solve-with-agent' | 'agree-setup' | 'cancel-setup' | 'update-main' | 'later' | 'remove-row' | 'back-to-work' | 'confirm-stopped' | 'stop-run' | 'remove-run'
   | 'confirm-busy' | 'resume-worker' | 'commit-close' | 'commit-continue' | 'close-session' | 'cancel-finish' | 'check-finish'
 
 export interface SessionWorkflowStep {
@@ -1141,6 +1148,12 @@ export interface SessionInfo {
   activityDetail?: SessionActivityDetail
   /** Separate optional field: older peers strictly validate the existing activityDetail values. */
   compacting?: true
+  /**
+   * Only with `activity` `idle`: the turn is over and only background shells the agent started still
+   * run (a dev server). A sub-agent is `activityDetail` `background` instead. Separate optional
+   * field for the reason `compacting` is one: older peers ignore it.
+   */
+  shellsRunning?: true
   /** Mandatory, and empty where nothing applies: "no operations" is an answer, absence is not. */
   admits: readonly SessionOperation[]
   /*

@@ -1,3 +1,4 @@
+import { FileHtmlPreviewStore } from '../fileViewer/fileHtmlPreviewStore'
 import { ServiceFileViewerShellIpc } from '../shell/serviceFileViewerShellIpc'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
@@ -121,7 +122,7 @@ describe('IpcServiceTransport', () => {
     const service = new ServiceFileViewerIpc(viewer, access, caller => transport.isCurrent(caller) ? caller.windowId : null)
     service.setTransport(transport).initialize()
     new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, sender => sender === one.contents() ? 'one' : sender === two.contents() ? 'two' : null,
-      { write: vi.fn() }, { copy: vi.fn() })
+      { write: vi.fn() }, { copy: vi.fn() }, new FileHtmlPreviewStore())
       .setTransport(transport).setCallerAccess(transport).initialize()
     return { root, viewer, one, two, workingContext, context }
   }

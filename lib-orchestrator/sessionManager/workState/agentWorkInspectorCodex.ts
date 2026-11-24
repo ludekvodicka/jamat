@@ -96,6 +96,11 @@ export class AgentWorkInspectorCodex {
    */
   private static readonly spinnerTitleConst = /^[\u2800-\u28ff]\s/
   /**
+   * The bare terminal count above the box. It never makes a turn work, see above; on a turn that has
+   * ended (`codex-live-ended-background-count.json`) it says shells still run, and nothing more.
+   */
+  private static readonly terminalCountConst = /\d+backgroundterminals?running\u00b7\/pstoview/
+  /**
    * Codex's approval prompt. The array was empty until 2026-08-20 for the reason this file exists
    * to enforce: no frame of one had ever been captured, and a pattern written from memory is a
    * guess about somebody else's TUI. `codex-live-approval.json` is that frame, and it took `-a
@@ -219,16 +224,17 @@ export class AgentWorkInspectorCodex {
     // live status, so the placeholder remains on screen while it is working.
     // A finished turn whose box holds a draft: the 072 worker sat here for hours as `unknown`, and its
     // Finish waited on it (Finish 072). A delivery still reads the box itself and waits on a draft.
+    const shallow = ScreenTail.normalizeTty(frame.screenTail)
+    const shells = AgentWorkInspectorCodex.terminalCountConst.test(shallow) ? { shellsRunning: true as const } : {}
     const ended = ScreenTail.normalizeTty(frame.wideScreenTail).match(AgentWorkInspectorCodex.turnEndedConst)?.[0]
     if (ended)
-      return { hint: 'idle', evidence: [{ source: 'wide-screen', signal: 'turnEnded', match: ended.slice(0, ended.indexOf('›') + 1) }] }
+      return { hint: 'idle', evidence: [{ source: 'wide-screen', signal: 'turnEnded', match: ended.slice(0, ended.indexOf('›') + 1) }], ...shells }
     const title = AgentWorkInspectorCodex.titleOf(frame.rawTail)
     if (title !== null && AgentWorkInspectorCodex.spinnerTitleConst.test(title))
       return { hint: 'working', evidence: [{ source: 'raw', signal: 'titleSpinner', match: title }] }
-    const emptyPrompt = ScreenTail.normalizeTty(frame.screenTail)
-      .match(AgentWorkInspectorCodex.emptyPromptConst)?.[0]
+    const emptyPrompt = shallow.match(AgentWorkInspectorCodex.emptyPromptConst)?.[0]
     if (emptyPrompt)
-      return { hint: 'idle', evidence: [{ source: 'screen', signal: 'emptyPrompt', match: emptyPrompt }] }
+      return { hint: 'idle', evidence: [{ source: 'screen', signal: 'emptyPrompt', match: emptyPrompt }], ...shells }
     return { hint: 'unknown', evidence: [] }
   }
 

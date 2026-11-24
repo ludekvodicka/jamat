@@ -164,6 +164,14 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     efforts: Map<SessionAgentId, string>
     /** What the relay answers, and every directory it was asked for. */
     statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] }
+    /** What the Antigravity settings relay answers, and every call it received. */
+    antigravityStatusLine: {
+      file: string | null
+      calls: {
+        identity: { sessionId: string; launchId: string } | undefined
+        options: { includeStatusLine?: boolean; trustedDirectory?: string } | undefined
+      }[]
+    }
     /** Every directory the Claude trust seed was asked to answer for. */
     seeded: string[]
     /** Every session id the reconciler asked to have its merge carried on. */
@@ -511,6 +519,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     const models = new Map<SessionAgentId, string>()
     const efforts = new Map<SessionAgentId, string>()
     const statusLine: { file: string | null; cwds: string[]; identities: ({ sessionId: string; launchId: string } | undefined)[] } = { file: null, cwds: [], identities: [] }
+    const antigravityStatusLine: Harness['antigravityStatusLine'] = { file: null, calls: [] }
     const seeded: string[] = []
     const resumed: string[] = []
     const finishing = new Set<string>()
@@ -595,6 +604,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       models,
       efforts,
       statusLine,
+      antigravityStatusLine,
       seeded,
       resumed,
       finishing,
@@ -624,6 +634,13 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
             const reported = claudeIdentities.get(sessionId)
             return reported?.launchId === launchId ? { nativeSessionId: reported.nativeSessionId, sequence: reported.sequence } : null
           },
+        },
+        antigravityStatusLine: {
+          settingsFileFor: (identity, options) => {
+            antigravityStatusLine.calls.push({ identity, options })
+            return antigravityStatusLine.file
+          },
+          identity: async () => null,
         },
         tools: { resolve: (tool) => tools.get(tool) ?? { ok: true, command: tool, prefixArgs: [], env: {} },
           node: () => ({ ok: true, command: process.execPath, prefixArgs: [], env: {} }),
@@ -6036,7 +6053,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       return launch.args[0] === '/d' ? launch.args.slice(4) : launch.args
     }
 
-    async function created(context: Harness, agentId: 'claude' | 'codex'): Promise<string> {
+    async function created(context: Harness, agentId: SessionAgentId): Promise<string> {
       const answer = await context.lifecycle.create({
         kind: 'agent',
         directory: { mode: 'adHoc', path: context.workDirectory },
@@ -6171,6 +6188,55 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(args).toContain('-p')
       expect(args.at(-1)).toBe('resolve it')
       expect(context.seeded).toEqual([context.workDirectory])
+    })
+
+    it('passes the session and worktree directories as trustedDirectory for Antigravity only in yolo mode', async () => {
+      const context = await harness()
+      context.antigravityStatusLine.file = join(context.workDirectory, 'agy-settings.json')
+
+      await created(context, 'antigravity')
+      expect(context.antigravityStatusLine.calls.at(-1)?.options).toEqual({
+        includeStatusLine: true,
+        trustedDirectory: undefined,
+      })
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create').at(-1)!)))
+        .not.toContain(claudeFlagConst)
+
+      context.yolo.add('antigravity')
+      await created(context, 'antigravity')
+      expect(context.antigravityStatusLine.calls.at(-1)?.options).toEqual({
+        includeStatusLine: true,
+        trustedDirectory: context.workDirectory,
+      })
+      const yoloArgs = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create').at(-1)!))
+      expect(yoloArgs).toContain(claudeFlagConst)
+      expect(yoloArgs).toContain('--settings')
+      expect(yoloArgs).toContain(context.antigravityStatusLine.file)
+
+      const worktreeCreate = await context.lifecycle.create({
+        ...worktreeSpec(),
+        kind: 'agent',
+        agent: { agentId: 'antigravity', mode: 'new' },
+      })
+      const worktreeSessionId = successOf(worktreeCreate).sessionId
+      const worktreePath = context.store.get(worktreeSessionId)!.worktree!.worktreePath
+      expect(context.antigravityStatusLine.calls.at(-1)?.options).toEqual({
+        includeStatusLine: true,
+        trustedDirectory: worktreePath,
+      })
+
+      await context.lifecycle.createInternal(
+        {
+          kind: 'agent',
+          directory: { mode: 'adHoc', path: context.workDirectory },
+          agent: { agentId: 'antigravity', mode: 'new', initialPrompt: 'check it' },
+        },
+        { sessionId: 'agy-oneshot', oneShot: true, scriptOf: { sessionId: 's1', phase: 'after', scriptId: 'merge-resolve', name: 'resolver' } },
+      )
+      expect(context.antigravityStatusLine.calls.at(-1)).toEqual({
+        identity: undefined,
+        options: { includeStatusLine: false, trustedDirectory: context.workDirectory },
+      })
     })
 
     // The SVN resolver edits files and runs nothing, so its own mode wins over the setting.
@@ -6569,7 +6635,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       return launch.args[0] === '/d' ? launch.args.slice(4) : launch.args
     }
 
-    async function created(context: Harness, agentId: 'claude' | 'codex'): Promise<string> {
+    async function created(context: Harness, agentId: SessionAgentId): Promise<string> {
       const answer = await context.lifecycle.create({
         kind: 'agent',
         directory: { mode: 'adHoc', path: context.workDirectory },
@@ -6766,6 +6832,48 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         .toEqual(['-c', 'model_reasoning_effort="xhigh"'])
     })
 
+    // `sessions create --effort`: the caller answers for the machine that runs it, as with `model`.
+    it('lets an effort named on the spec beat the setting, keeps it for a replay and drops it on a reopen', async () => {
+      const context = await harness()
+      context.efforts.set('claude', 'low')
+
+      const answer = await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId: 'claude', mode: 'new', model: 'opus', effort: 'high' },
+      })
+      const sessionId = successOf(answer).sessionId
+
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0])))
+        .toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high']))
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))).not.toContain('low')
+      expect(context.store.get(sessionId)?.agent?.effort).toBe('high')
+
+      await context.lifecycle.stop(sessionId)
+      expect(await context.lifecycle.reopen(sessionId)).toEqual({ ok: true, value: undefined })
+      expect(lastLaunchArgs(context)).not.toContain('--effort')
+    })
+
+    it('replays a create that named an effort with that effort, and stores none it was not given', async () => {
+      const context = await harness()
+      context.efforts.set('claude', 'low')
+      await context.store.put(record('s1', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1', effort: 'max' },
+        life: 'starting',
+        binding: null,
+        pendingOperationId: 'op-10',
+        pendingOperationKind: 'create',
+      }))
+
+      await context.lifecycle.reconcile(context.host.listing())
+
+      expect(agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0])).slice(0, 2))
+        .toEqual(['--effort', 'max'])
+      const plain = await created(context, 'claude')
+      expect(context.store.get(plain)?.agent?.effort).toBeUndefined()
+    })
+
     // Two independent settings: an effort with no model applies to the agent's own default.
     it('carries either setting without the other, and both together in order', async () => {
       const alone = await harness()
@@ -6840,7 +6948,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       return launch.args[0] === '/d' ? launch.args.slice(4) : launch.args
     }
 
-    async function created(context: Harness, agentId: 'claude' | 'codex'): Promise<string> {
+    async function created(context: Harness, agentId: SessionAgentId): Promise<string> {
       const answer = await context.lifecycle.create({
         kind: 'agent',
         directory: { mode: 'adHoc', path: context.workDirectory },

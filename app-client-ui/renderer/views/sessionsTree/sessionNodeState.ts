@@ -25,6 +25,8 @@ export type SessionGlyph =
   | 'background'
   | 'waiting'
   | 'idle'
+  /** Idle, with only background shells it started still running (a dev server). */
+  | 'idle-shells'
   | 'unknown'
   | 'shell'
   | 'ended'
@@ -94,11 +96,12 @@ export class SessionNodeState {
     activity: SessionActivity | null,
     activityDetail?: SessionInfo['activityDetail'],
     compacting?: SessionInfo['compacting'],
+    shellsRunning?: SessionInfo['shellsRunning'],
   ): SessionGlyph {
     if (life === 'starting') return 'starting'
     else if (life === 'ended') return 'ended'
     else if (life === 'lost') return 'lost'
-    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail, compacting)
+    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail, compacting, shellsRunning)
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
   }
@@ -402,6 +405,10 @@ export class SessionNodeState {
    *
    * Idle uses a square so it stays distinct from running even when colours are hard to distinguish.
    * Filling it preserves the unseen-result signal without adding another mark to the row.
+   *
+   * Idle over running shells is an empty ring: the session waits for the person like idle, and the
+   * ring says something of its own still runs. Its unseen mark is idle's filled square, because a
+   * filled ring is `working`.
    */
   static characterOf(glyph: SessionGlyph, marked: boolean): string {
     if (glyph === 'starting') return '◐'
@@ -410,6 +417,7 @@ export class SessionNodeState {
     else if (glyph === 'background') return '◉'
     else if (glyph === 'waiting') return '◆'
     else if (glyph === 'idle') return marked ? '■' : '□'
+    else if (glyph === 'idle-shells') return marked ? '■' : '○'
     else if (glyph === 'unknown') return '?'
     else if (glyph === 'shell') return '❯'
     else if (glyph === 'ended') return '×'
@@ -437,6 +445,7 @@ export class SessionNodeState {
     if (glyph === 'lost') return 'danger'
     else if (glyph === 'waiting') return 'attention'
     else if (glyph === 'idle') return 'idle'
+    else if (glyph === 'idle-shells') return marked ? 'idle' : 'ok'
     else if (glyph === 'ended') return marked ? 'accent' : 'muted'
     else if (glyph === 'working' || glyph === 'background' || glyph === 'compacting') return 'ok'
     else if (glyph === 'starting') return 'accent'
@@ -473,6 +482,7 @@ export class SessionNodeState {
   static glyphTitleOf(glyph: SessionGlyph, marked: boolean): string {
     if (!marked) {
       if (glyph === 'background') return 'background work'
+      else if (glyph === 'idle-shells') return 'idle - background shell running'
       else if (glyph === 'compacting') return 'compacting context'
       else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
         || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell'
@@ -482,6 +492,7 @@ export class SessionNodeState {
     if (glyph === 'ended') return 'ended - not seen since it ended'
     else if (glyph === 'lost') return 'lost - not seen since it was lost'
     else if (glyph === 'background') return 'background work - previous result not seen'
+    else if (glyph === 'idle-shells') return 'idle - background shell running - not seen since the turn finished'
     else if (glyph === 'compacting') return 'compacting context - previous result not seen'
     else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
       || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell')
@@ -532,9 +543,10 @@ export class SessionNodeState {
     activity: SessionActivity | null,
     activityDetail: SessionInfo['activityDetail'],
     compacting: SessionInfo['compacting'],
+    shellsRunning: SessionInfo['shellsRunning'],
   ): SessionGlyph {
     if (kind === 'shell') return 'shell'
-    else if (kind === 'agent') return SessionNodeState.activityGlyphOf(activity, activityDetail, compacting)
+    else if (kind === 'agent') return SessionNodeState.activityGlyphOf(activity, activityDetail, compacting, shellsRunning)
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(kind)}`)
   }
@@ -543,7 +555,12 @@ export class SessionNodeState {
     activity: SessionActivity | null,
     activityDetail: SessionInfo['activityDetail'],
     compacting: SessionInfo['compacting'],
+    shellsRunning: SessionInfo['shellsRunning'],
   ): SessionGlyph {
+    if (shellsRunning === true) {
+      if (activity === 'idle' && activityDetail === undefined && compacting === undefined) return 'idle-shells'
+      throw new Error(`Running shells require idle activity: ${JSON.stringify(activity)}`)
+    }
     if (compacting === true) {
       if (activity === 'working' && activityDetail === undefined) return 'compacting'
       throw new Error('Compacting requires foreground working activity')

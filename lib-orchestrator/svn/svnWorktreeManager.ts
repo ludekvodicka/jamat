@@ -751,8 +751,12 @@ export class SvnWorktreeManager {
       for (const receipt of landed) {
         const rows = SvnWorktreeEvidence.loggedRows(await this.landingLogOf(main, receipt), '', '').map((row) => ({ ...row, repositoryPath: row.path === '.' ? '' : `/${row.path}` }))
         const receiptPaths = receipt.paths?.map((path) => path === '/' ? '' : path)
-        const required = receiptPaths === undefined ? rows : rows.filter((row) => receiptPaths.some((path) => row.repositoryPath === path || row.repositoryPath.startsWith(path + '/')))
-        if (required.length === 0 || receiptPaths?.some((path) => !required.some((row) => row.repositoryPath === path || row.repositoryPath.startsWith(path + '/'))))
+        // `svn log -v` reports only the deleted directory when a moved/deleted child went with it.
+        const covers = (row: (typeof rows)[number], path: string): boolean => row.repositoryPath === path
+          || row.repositoryPath.startsWith(`${path}/`)
+          || (row.action === 'D' && (row.repositoryPath === '' ? path !== '' : path.startsWith(`${row.repositoryPath}/`)))
+        const required = receiptPaths === undefined ? rows : rows.filter((row) => receiptPaths.some((path) => covers(row, path)))
+        if (required.length === 0 || receiptPaths?.some((path) => !required.some((row) => covers(row, path))))
           throw new SvnRunFailure('refused', `r${receipt.revision} does not prove every landed path`)
         for (const row of required) {
           const mapped = roots.filter(({ info }) => info.repository === receipt.repository

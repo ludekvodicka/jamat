@@ -35,7 +35,8 @@ export class MainFinishWorkflow {
         ...finish.vcs === null ? [] : [
           MainFinishWorkflow.press('commit-close', 'Commit & close', 'commit-close', true),
           MainFinishWorkflow.press('commit-continue', 'Commit & continue', 'commit-continue', false)],
-        { ...MainFinishWorkflow.press('close-session', 'Close session', 'close', finish.vcs === null),
+        MainFinishWorkflow.press('check-finish', 'Check again', 'check', finish.vcs === null),
+        { ...MainFinishWorkflow.press('close-session', 'Close session', 'close', false),
           confirm: 'Close the session without a commit? Its changes stay in the working copy.' },
         MainFinishWorkflow.press('cancel-finish', 'Back to work', 'cancel', false, false),
       ]

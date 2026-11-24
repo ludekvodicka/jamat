@@ -8,7 +8,7 @@ describe('app-client-ui/renderer/panels/terminal/attach/terminalHeldOutput', () 
     held.holdData('one')
     held.holdData('two')
 
-    expect(held.take()).toEqual({ reset: false, size: null, data: 'onetwo' })
+    expect(held.take()).toEqual({ kind: 'data', reset: false, size: null, data: 'onetwo' })
     expect(held.take()).toBeNull()
   })
 
@@ -20,39 +20,45 @@ describe('app-client-ui/renderer/panels/terminal/attach/terminalHeldOutput', () 
     held.holdSnapshot(80, 24, 'screen')
     held.holdData('after')
 
-    expect(held.take()).toEqual({ reset: true, size: { cols: 80, rows: 24 }, data: 'screenafter' })
+    expect(held.take()).toEqual({ kind: 'data', reset: true, size: { cols: 80, rows: 24 }, data: 'screenafter' })
   })
 
   /**
-   * The bound is what keeps a hidden tab from holding a night of output in memory. Past it the
-   * oldest characters go and the flush resets first - a screen starting mid-sequence is what the
-   * Host's own truncation produces, and the next thing the agent draws repaints it.
+   * Past the bound, dropping the raw bytes and signalling overflow lets the panel request a clean
+   * serialized snapshot from the Host on reveal instead of wiping xterm's scrollback with a blind
+   * mid-sequence raw tail.
    */
-  it('keeps the tail and asks for a reset once it has outgrown its bound', () => {
-    const held = new TerminalHeldOutput()
-    held.holdData('x'.repeat(TerminalHeldOutput.maxCharsConst * 2))
-    held.holdData('tail')
-
-    // Cut back to the bound when it was passed, and what arrived after the cut is on the end of it.
-    const flush = held.take()
-    expect(flush?.reset).toBe(true)
-    expect(flush?.data).toHaveLength(TerminalHeldOutput.maxCharsConst + 'tail'.length)
-    expect(flush?.data.endsWith('tail')).toBe(true)
-  })
-
-  /**
-   * The slack is what keeps the cut from happening on every frame: cutting means flattening the
-   * rope `data +=` builds, and a hidden panel printing a build log would pay half a megabyte of copy
-   * per frame - on the thread this class exists to keep free.
-   */
-  it('runs past its bound before cutting, so the cut is not paid for on every frame', () => {
+  it('drops buffered bytes and reports overflow once it outgrows its bound', () => {
     const held = new TerminalHeldOutput()
     held.holdData('x'.repeat(TerminalHeldOutput.maxCharsConst))
-    held.holdData('tail')
+    expect(held.isOverflowed).toBe(false)
 
-    const flush = held.take()
-    expect(flush?.reset).toBe(false)
-    expect(flush?.data).toHaveLength(TerminalHeldOutput.maxCharsConst + 4)
+    held.holdData('1')
+    expect(held.isOverflowed).toBe(true)
+    expect(held.empty).toBe(false)
+
+    held.holdData('ignored while overflowed')
+    expect(held.take()).toEqual({ kind: 'overflow' })
+    expect(held.isOverflowed).toBe(false)
+    expect(held.take()).toBeNull()
+  })
+
+  it('clears overflow when superseded by an in-bound snapshot', () => {
+    const held = new TerminalHeldOutput()
+    held.holdData('x'.repeat(TerminalHeldOutput.maxCharsConst + 1))
+    expect(held.isOverflowed).toBe(true)
+
+    held.holdSnapshot(100, 30, 'clean')
+    expect(held.isOverflowed).toBe(false)
+    expect(held.take()).toEqual({ kind: 'data', reset: true, size: { cols: 100, rows: 30 }, data: 'clean' })
+  })
+
+  it('keeps up to the full bound without overflowing', () => {
+    const held = new TerminalHeldOutput()
+    const payload = 'x'.repeat(TerminalHeldOutput.maxCharsConst)
+    held.holdData(payload)
+
+    expect(held.take()).toEqual({ kind: 'data', reset: false, size: null, data: payload })
   })
 
   it('says nothing happened when nothing did', () => {

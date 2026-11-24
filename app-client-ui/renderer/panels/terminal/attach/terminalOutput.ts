@@ -8,22 +8,32 @@ type OutputFrame = Exclude<TerminalFrame, { type: 'terminal.attached' | 'termina
 export class TerminalOutput {
   private readonly terminal: Pick<Terminal, 'write' | 'reset' | 'resize' | 'cols' | 'rows'>
   private readonly measurable: () => boolean
+  private readonly onOverflow: () => void
   private readonly held: TerminalHeldOutput
   private readonly writes: Set<() => void>
   private rendering: Promise<void> | null
   private snapshotId: string | null
+  private skippingStream: boolean
+  private resyncing: boolean
   private deferredFit: Pick<FitAddon, 'fit' | 'proposeDimensions'> | null
   private fitVisible: boolean
   private visible: boolean
   private disposed: boolean
 
-  constructor(terminal: TerminalOutput['terminal'], measurable: () => boolean = () => true) {
+  constructor(
+    terminal: TerminalOutput['terminal'],
+    measurable: () => boolean = () => true,
+    onOverflow: () => void = () => {},
+  ) {
     this.terminal = terminal
     this.measurable = measurable
+    this.onOverflow = onOverflow
     this.held = new TerminalHeldOutput()
     this.writes = new Set()
     this.rendering = null
     this.snapshotId = null
+    this.skippingStream = false
+    this.resyncing = false
     this.deferredFit = null
     this.fitVisible = true
     this.visible = true
@@ -35,19 +45,27 @@ export class TerminalOutput {
   setVisible(visible: boolean): void | Promise<void> {
     this.fitVisible = visible
     return this.render(() => {
+      if (this.resyncing) return
       this.visible = visible
       if (!visible) return
       const shown = this.show()
-      if (shown) return shown.then(() => { if (this.snapshotId === null) this.fitDeferred() })
+      if (this.resyncing) return
+      if (shown) return shown.then(() => { if (!this.disposed && !this.resyncing && this.snapshotId === null) this.fitDeferred() })
       if (this.snapshotId === null) this.fitDeferred()
     })
   }
 
   lost(): void | Promise<void> {
-    return this.render(() => this.complete())
+    return this.render(() => {
+      this.skippingStream = false
+      // A lost surface cannot request a fresh snapshot on its own; drop overflow rather than resyncing.
+      if (this.held.isOverflowed) this.held.take()
+      return this.complete()
+    })
   }
 
   measure(fit: Pick<FitAddon, 'fit' | 'proposeDimensions'>): { cols: number; rows: number } | null {
+    if (this.resyncing) return null
     if (!this.fitVisible || !this.measurable()) { this.deferredFit = fit; return null }
     if (this.snapshotId !== null || this.rendering !== null) {
       this.deferredFit = fit
@@ -66,19 +84,28 @@ export class TerminalOutput {
   }
 
   private apply(frame: OutputFrame): void | Promise<void> {
+    if (this.resyncing) return
     if (frame.type === 'terminal.snapshot-start') {
       this.snapshotId = frame.streamId
       if (frame.reset) {
+        this.skippingStream = false
         this.held.take()
         this.terminal.reset()
         this.resize(frame.projection.cols, frame.projection.rows)
       } else {
+        if (!this.visible && this.held.isOverflowed) {
+          this.skippingStream = true
+          return
+        }
+        this.skippingStream = false
         const shown = this.show()
-        if (shown) return shown.then(() => { if (!this.disposed) this.resize(frame.projection.cols, frame.projection.rows) })
+        if (this.resyncing) return
+        if (shown) return shown.then(() => { if (!this.disposed && !this.resyncing) this.resize(frame.projection.cols, frame.projection.rows) })
         this.resize(frame.projection.cols, frame.projection.rows)
       }
     } else if (frame.type === 'terminal.snapshot-chunk') {
       if (this.snapshotId !== frame.streamId) throw new Error('Snapshot chunk belongs to a different terminal stream')
+      if (this.skippingStream) return
       return this.write(frame.data)
     } else if (frame.type === 'terminal.snapshot-end') {
       if (this.snapshotId !== frame.streamId) throw new Error('Snapshot end belongs to a different terminal stream')
@@ -86,6 +113,7 @@ export class TerminalOutput {
       if (this.snapshotId !== frame.streamId) return
       return this.complete()
     } else if (frame.type === 'terminal.snapshot') {
+      this.skippingStream = false
       this.held.take()
       this.terminal.reset()
       this.resize(frame.projection.cols, frame.projection.rows)
@@ -97,16 +125,20 @@ export class TerminalOutput {
       if (this.visible) return this.write(frame.data)
       this.held.holdData(frame.data)
     } else if (frame.type === 'terminal.resize') {
+      if (!this.visible && this.held.isOverflowed) return
       const shown = this.show()
-      if (shown) return shown.then(() => { if (!this.disposed) this.resize(frame.cols, frame.rows) })
+      if (this.resyncing) return
+      if (shown) return shown.then(() => { if (!this.disposed && !this.resyncing) this.resize(frame.cols, frame.rows) })
       this.resize(frame.cols, frame.rows)
     } else throw new Error(`Unknown terminal output frame: ${JSON.stringify(frame)}`)
   }
 
   private complete(): void | Promise<void> {
-    const finish = (): void => { this.snapshotId = null; this.fitDeferred() }
+    const finish = (): void => { this.skippingStream = false; this.snapshotId = null; this.fitDeferred() }
+    if (!this.visible && this.held.isOverflowed) { finish(); return }
     const shown = this.show()
-    if (shown) return shown.then(() => { if (!this.disposed) finish() })
+    if (this.resyncing) return
+    if (shown) return shown.then(() => { if (!this.disposed && !this.resyncing) finish() })
     finish()
   }
 
@@ -115,7 +147,7 @@ export class TerminalOutput {
   }
 
   private fitDeferred(): void {
-    if (this.disposed || !this.fitVisible || !this.measurable()) return
+    if (this.disposed || this.resyncing || !this.fitVisible || !this.measurable()) return
     const fit = this.deferredFit
     this.deferredFit = null
     fit?.fit()
@@ -124,9 +156,18 @@ export class TerminalOutput {
   private show(): void | Promise<void> {
     const flush = this.held.take()
     if (flush === null) return
-    if (flush.reset) this.terminal.reset()
-    if (flush.size !== null) this.resize(flush.size.cols, flush.size.rows)
-    return this.write(flush.data)
+    if (flush.kind === 'overflow') {
+      this.resyncing = true
+      this.deferredFit = null
+      this.onOverflow()
+      return
+    }
+    else if (flush.kind === 'data') {
+      if (flush.reset) this.terminal.reset()
+      if (flush.size !== null) this.resize(flush.size.cols, flush.size.rows)
+      return this.write(flush.data)
+    }
+    else throw new Error(`Unknown held output flush: ${JSON.stringify(flush satisfies never)}`)
   }
 
   private write(data: string): void | Promise<void> {
@@ -149,7 +190,7 @@ export class TerminalOutput {
     void settled.then(() => {
       if (this.rendering !== settled) return
       this.rendering = null
-      if (this.snapshotId === null) this.fitDeferred()
+      if (this.snapshotId === null && !this.resyncing) this.fitDeferred()
     })
     return task
   }

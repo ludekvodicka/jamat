@@ -98,6 +98,8 @@ export class RemoteControlZod {
  * is the agent's own answer and is never checked here.
  */
 const modelShapeConst = /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?$/
+/** The same deliberate copy, of `AgentSettings.effortShapeConst`: a bare word, never a flag. */
+const effortShapeConst = /^[A-Za-z][A-Za-z0-9]*$/
 const promptLengthConst = 1_000_000
 const terminalTextLengthConst = 1_000_000
 const messageLengthConst = 65_536
@@ -124,6 +126,7 @@ const agent = z.strictObject({
   forkParentId: RemoteControlZod.text().optional(),
   initialPrompt: RemoteControlZod.string(promptLengthConst).optional(),
   model: RemoteControlZod.text(128).regex(modelShapeConst, { error: 'model has an invalid shape' }).optional(),
+  effort: RemoteControlZod.text(32).regex(effortShapeConst, { error: 'effort has an invalid shape' }).optional(),
 })
 
 const worktreeTag = z.string({ error: 'must be a string' })
@@ -224,9 +227,15 @@ const tabsOpenCommit = z.strictObject({
     RemoteControlZod.text(RemoteControlZod.pathLengthConst),
     z.strictObject({
       path: RemoteControlZod.text(RemoteControlZod.pathLengthConst),
-      depth: z.enum(['empty', 'infinity'], { error: 'depth must be empty or infinity' }),
+      depth: z.literal('empty'),
+      checked: z.literal(true).optional(),
     }),
-  ], { error: 'must be a literal path or { path, depth }' }), {
+    z.strictObject({
+      path: RemoteControlZod.text(RemoteControlZod.pathLengthConst),
+      depth: z.literal('infinity'),
+      checked: z.boolean().optional(),
+    }),
+  ], { error: 'must be a literal path or { path, depth, checked? }; checked: false needs depth infinity' }), {
     error: 'paths must contain between 1 and 2000 literal paths',
   }).min(1, { error: 'paths must contain between 1 and 2000 literal paths' })
     .max(2_000, { error: 'paths must contain between 1 and 2000 literal paths' }).optional(),

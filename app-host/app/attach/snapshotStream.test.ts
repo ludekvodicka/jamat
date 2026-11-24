@@ -52,7 +52,7 @@ describe('SnapshotStream', () => {
   it('preserves the entire real oversized projection, both buffers, cursor, Unicode and mouse modes', async () => {
     const projection = new TerminalProjection('wide', 1, 1, 500, 40)
     const make = () => {
-      const terminal = new xtermHeadless.Terminal({ cols: 500, rows: 40, scrollback: 1_000, allowProposedApi: true })
+      const terminal = new xtermHeadless.Terminal({ cols: 500, rows: 40, scrollback: TerminalProjection.scrollbackRowsConst, allowProposedApi: true })
       terminal.loadAddon(new Unicode11Addon())
       terminal.unicode.activeVersion = '11'
       const serializer = new SerializeAddon()

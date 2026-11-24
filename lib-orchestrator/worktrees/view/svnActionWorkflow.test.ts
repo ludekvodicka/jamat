@@ -66,8 +66,23 @@ describe('lib-orchestrator/sessionManager/lifecycle/svnActionWorkflow', () => {
     const current = action({ stage: 'main-update', runId: undefined })
     const landed = record(current, { retiredWorktree: { worktreePath: worktreeConst, kind: 'svn', revisions: [], removedAt: 1, ownerDir: 'Q:/Work/App',
       landed: [{ repository: 'https://svn.test/app', revision: 7, label: 'receipt' }] } })
-    expect(SvnActionWorkflow.of(landed, current, runs({})).actions.find((entry) => entry.id === 'later')?.deferred)
+    const actions = SvnActionWorkflow.of(landed, current, runs({})).actions
+    expect(actions.find((entry) => entry.id === 'later')?.deferred)
       .toBe('Main copy update left for later. It still waits on this step and in the session menu of the sessions tree: Update main copy.')
+    expect(actions.find((entry) => entry.id === 'remove-row')).toMatchObject({ id: 'remove-row', label: 'Remove row', primary: false, confirm: expect.stringContaining('worktree results') })
+    expect(actions.find((entry) => entry.id === 'remove-row')?.place).toBeUndefined()
+  })
+
+  it('offers Remove row on a failed UPDATE of a removable landed row, and withholds it while live or while a worktree remains', () => {
+    const failed = action({ kind: 'update-main', root: 'Q:/Work/App', needs: { kind: 'svn-failed', reason: 'r1431 failed', at: 5 } })
+    const retired = { worktreePath: worktreeConst, kind: 'svn' as const, revisions: [], removedAt: 1, ownerDir: 'Q:/Work/App',
+      landed: [{ repository: 'https://svn.test/app', revision: 7, label: 'receipt' as const }] }
+    expect(SvnActionWorkflow.of(record(failed, { retiredWorktree: retired }), failed, runs({})).actions.map((entry) => entry.id))
+      .toEqual(['update-main', 'later', 'remove-row'])
+    expect(SvnActionWorkflow.of(record(failed, { life: 'live', retiredWorktree: retired }), failed, runs({})).actions.map((entry) => entry.id))
+      .toEqual(['update-main', 'later'])
+    expect(SvnActionWorkflow.of(record(failed, { retiredWorktree: retired, worktree: { kind: 'svn', repositoryRoot: 'Q:/Work/App', worktreePath: worktreeConst, branch: 'url', baseCommit: 'r1' } }), failed, runs({})).actions.map((entry) => entry.id))
+      .toEqual(['update-main', 'later'])
   })
 
   it('gives a Finish one done step per pass, the update running on its run, and the review and the removal pending', () => {

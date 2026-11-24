@@ -37,8 +37,10 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
   const claudeBlockedRawConst = frameOf('claude-blocked-prompt.json').rawTail
   const planApprovalScreenConst = frameOf('claude-live-plan-approval.json').screenTail
   const planApprovalRawConst = frameOf('claude-live-plan-approval.json').rawTail
-  const backgroundScreenConst = frameOf('claude-live-background-tasks.json').screenTail
-  const backgroundRawConst = frameOf('claude-live-background-tasks.json').rawTail
+  const backgroundScreenConst = frameOf('claude-live-background-agent.json').screenTail
+  const backgroundRawConst = frameOf('claude-live-background-agent.json').rawTail
+  const shellsScreenConst = frameOf('claude-live-background-tasks.json').screenTail
+  const shellsRawConst = frameOf('claude-live-background-tasks.json').rawTail
   const codexWorkingScreenConst = frameOf('codex-working-seconds.json').screenTail
   const codexLiveWideWorkingScreenConst = frameOf('codex-live-working-wide-screen.json').wideScreenTail
   const codexQuietScreenConst = frameOf('codex-unknown-prompt.json').screenTail
@@ -618,6 +620,31 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.changes()).toBe(2)
   })
 
+  // 2026-11-23: a turn that left only a dev server running is finished. It reads idle, raises the
+  // one change a finished turn raises, and keeps the shells beside it until the footer clears.
+  it('reads a finished turn over running shells as idle with shells, then as plain idle', async () => {
+    const context = harness()
+    context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('working')
+    expect(context.monitor.shellsRunning('a')).toBe(false)
+
+    context.emit('a', shellsScreenConst, shellsRawConst)
+    await context.observe()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('idle')
+    expect(context.monitor.activityDetail('a')).toBeNull()
+    expect(context.monitor.shellsRunning('a')).toBe(true)
+    expect(context.changes()).toBe(2)
+
+    context.emit('a', claudeIdleScreenConst, claudeIdleScreenConst)
+    await context.observe()
+    expect(context.monitor.activity('a')).toBe('idle')
+    expect(context.monitor.shellsRunning('a')).toBe(false)
+    expect(context.changes()).toBe(3)
+  })
+
   it('never classifies a shell', async () => {
     const context = harness()
     context.add({ runtimeSessionId: 'shell-1', agent: null, screen: claudeWorkingScreenConst })
@@ -1006,6 +1033,92 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     await observe()
     expect(monitor.activity('agy-bg')).toBe('idle')
     expect(monitor.activityDetail('agy-bg')).toBeNull()
+    expect(changes).toBe(2)
+  })
+
+  it('holds an Antigravity subagent session green when statusLine goes stale during ticking timer output', async () => {
+    const subagents = frameOf('antigravity-live-background-subagents.json')
+    const idle = frameOf('antigravity-live-idle.json')
+    let statusHint: { hint: 'background' | 'idle'; evidence: { source: 'screen'; signal: string; match: string }[] } | null = {
+      hint: 'background',
+      evidence: [{ source: 'screen', signal: 'statusLineBackgroundTasks', match: '1 task(s)' }],
+    }
+    const runtime = {
+      runtimeSessionId: 'agy-sub',
+      generation: 1,
+      alive: true,
+      cols: 120,
+      rows: 30,
+      outputSeq: 1,
+      outputEpoch: 1,
+      lastOutputAt: Date.now(),
+      startedAt: 0,
+    }
+    let screen = subagents.wideScreenTail
+    let raw = subagents.rawTail
+    let changes = 0
+    const monitor = new WorkStateMonitor({
+      client: {
+        runtimeInspect: async () => ({
+          ok: true,
+          value: {
+            session: { ...runtime },
+            projection: {
+              ...runtime,
+              raw,
+              screen,
+              cols: Math.max(120, ...screen.split(/\r?\n/).map((row) => row.length)),
+            },
+          },
+        }),
+      },
+      agentOf: () => 'antigravity',
+      statusHintOf: async () => statusHint,
+      onChanged: () => { changes += 1 },
+    })
+    const observe = () => monitor.observe({
+      sessions: [{ ...runtime }],
+      throughRevision: 1,
+      hostInstanceId: 'host-1',
+    })
+
+    await observe()
+    expect(monitor.activity('agy-sub')).toBe('working')
+    expect(monitor.activityDetail('agy-sub')).toBe('background')
+    expect(WorkStateMonitor.agedHint('antigravity', subagents, Date.now() - 60_000, Date.now())).toBe('background')
+
+    // statusLine stops ticking (>30 s stale -> null) while the drawer timer keeps redrawing every second.
+    statusHint = null
+    for (let tick = 0; tick < 3; tick += 1) {
+      await vi.advanceTimersByTimeAsync(10_000)
+      runtime.outputSeq += 1
+      runtime.lastOutputAt = Date.now()
+      await observe()
+      expect(monitor.activity('agy-sub')).toBe('working')
+      expect(monitor.activityDetail('agy-sub')).toBe('background')
+    }
+
+    // Even if statusLine reports idle while the subagent drawer is still on screen, screen wins.
+    statusHint = {
+      hint: 'idle',
+      evidence: [{ source: 'screen', signal: 'statusLineIdle', match: 'idle' }],
+    }
+    await vi.advanceTimersByTimeAsync(15_000)
+    await observe()
+    expect(monitor.activity('agy-sub')).toBe('working')
+    expect(monitor.activityDetail('agy-sub')).toBe('background')
+    expect(changes).toBe(1)
+
+    // Once the subagent finishes and disappears from the screen, the session settles to idle.
+    runtime.outputSeq += 1
+    runtime.lastOutputAt = Date.now()
+    screen = idle.wideScreenTail
+    raw = idle.rawTail
+    await observe()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await observe()
+    expect(monitor.activity('agy-sub')).toBe('idle')
+    expect(monitor.activityDetail('agy-sub')).toBeNull()
     expect(changes).toBe(2)
   })
 })

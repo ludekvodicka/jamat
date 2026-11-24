@@ -327,8 +327,26 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     await waitFor(() => expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ phase: expect.objectContaining({ kind: 'done' }) })))
     expect(close).not.toHaveBeenCalled()
   })
+  it('starts a single commit message open to read and collapses it to a one-line preview on toggle', async () => {
+    const prefilled = CommitPaneTest.fixture()
+    const view = render(<CommitPane sessionId="session" item={prefilled.item} ports={prefilled.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    const details = view.container.querySelector<HTMLDetailsElement>('.commit-message-details')!
+    expect(details.open).toBe(true)
+    expect(view.container.querySelector('.commit-editor-message')).toHaveClass('commit-editor-message--auto')
+    expect(screen.getByRole('separator')).toBeInTheDocument()
+    details.open = false
+    fireEvent(details, new Event('toggle'))
+    expect(screen.queryByRole('separator')).toBeNull()
+    expect(view.container.querySelector('.commit-message-preview')).toHaveTextContent('Proposed message')
+    details.open = true
+    fireEvent(details, new Event('toggle'))
+    expect(screen.getByRole('separator')).toBeInTheDocument()
+  })
+
   it('remembers the resized split for another commit and a remounted pane', async () => {
     const f = CommitPaneTest.fixture()
+    f.setDraft({ ...f.getDraft(), message: '', proposedByAgent: false })
     let commitSplitRatio = 0.6
     vi.mocked(f.ports.versioning.getSettings).mockImplementation(async () => ({ ok: true, value: { mode: 'checkpoints', diffTool: { kind: 'internal' }, commitSplitRatio } }))
     vi.mocked(f.ports.versioning.saveSettings).mockImplementation(async (value, field) => {
@@ -338,7 +356,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     })
     const first = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await waitFor(() => expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '60'))
-    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowUp' })
+    fireEvent.keyDown(screen.getByRole('separator'), { key: 'ArrowDown' })
     await waitFor(() => expect(commitSplitRatio).toBeCloseTo(0.55))
     first.unmount()
     await act(async () => { await Promise.resolve() })
@@ -348,12 +366,13 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
 
   it('keeps a user resize when the initial settings read arrives late and reports a save failure', async () => {
     const f = CommitPaneTest.fixture()
+    f.setDraft({ ...f.getDraft(), message: '', proposedByAgent: false })
     let finish!: (value: Awaited<ReturnType<CommitPanePorts['versioning']['getSettings']>>) => void
     vi.mocked(f.ports.versioning.getSettings).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
     vi.mocked(f.ports.versioning.saveSettings).mockResolvedValue({ ok: true, value: { ok: false, code: 'config-latched', detail: 'Cannot save layout' } })
     render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     const separator = await screen.findByRole('separator')
-    fireEvent.keyDown(separator, { key: 'ArrowUp' })
+    fireEvent.keyDown(separator, { key: 'ArrowDown' })
     await act(async () => finish({ ok: true, value: { mode: 'checkpoints', diffTool: { kind: 'internal' }, commitSplitRatio: 0.3 } }))
     expect(separator).toHaveAttribute('aria-valuenow', '70')
     expect(f.ports.reportError).toHaveBeenCalledWith('Cannot save layout')
@@ -464,19 +483,22 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     const view = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await screen.findByLabelText('Include a.txt')
     fireEvent.click(screen.getByLabelText('Include b.txt'))
+    const details = view.container.querySelector<HTMLDetailsElement>('.commit-message-details')!
+    details.open = true
+    fireEvent(details, new Event('toggle'))
     const splitter = screen.getByRole('separator', { name: 'Resize file list and commit message' })
     const editor = view.container.querySelector<HTMLElement>('.commit-editor')!
     vi.spyOn(editor, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 600, 408))
-    vi.spyOn(splitter, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 600, 8))
+    vi.spyOn(splitter, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 100, 600, 8))
 
-    fireEvent.pointerDown(splitter, { pointerId: 1, clientY: 304 })
+    fireEvent.pointerDown(splitter, { pointerId: 1, clientY: 104 })
     fireEvent.pointerMove(splitter, { pointerId: 2, clientY: 204 })
     expect(splitter).toHaveAttribute('aria-valuenow', '75')
     fireEvent.pointerMove(splitter, { pointerId: 1, clientY: 204 })
     expect(splitter).toHaveAttribute('aria-valuenow', '50')
     expect(view.container.querySelector('.commit-editor-files')).toHaveStyle({ flexGrow: 0.5 })
     expect(view.container.querySelector('.commit-editor-message')).toHaveStyle({ flexGrow: 0.5 })
-    fireEvent.pointerMove(splitter, { pointerId: 1, clientY: 244 })
+    fireEvent.pointerMove(splitter, { pointerId: 1, clientY: 164 })
     expect(splitter).toHaveAttribute('aria-valuenow', '60')
     expect(f.ports.versioning.saveSettings).not.toHaveBeenCalled()
     fireEvent.pointerUp(splitter, { pointerId: 1 })
@@ -493,21 +515,24 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     const f = CommitPaneTest.fixture()
     const view = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
     await screen.findByLabelText('Include a.txt')
+    const details = view.container.querySelector<HTMLDetailsElement>('.commit-message-details')!
+    details.open = true
+    fireEvent(details, new Event('toggle'))
     const splitter = screen.getByRole('separator')
     vi.spyOn(view.container.querySelector<HTMLElement>('.commit-editor')!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 600, 408))
-    vi.spyOn(splitter, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 600, 8))
-    fireEvent.pointerDown(splitter, { pointerId: 1, clientY: 304 })
-    fireEvent.pointerMove(splitter, { pointerId: 1, clientY: -1000 })
-    expect(splitter).toHaveAttribute('aria-valuenow', '15')
+    vi.spyOn(splitter, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 100, 600, 8))
+    fireEvent.pointerDown(splitter, { pointerId: 1, clientY: 104 })
     fireEvent.pointerMove(splitter, { pointerId: 1, clientY: 1000 })
+    expect(splitter).toHaveAttribute('aria-valuenow', '15')
+    fireEvent.pointerMove(splitter, { pointerId: 1, clientY: -1000 })
     expect(splitter).toHaveAttribute('aria-valuenow', '85')
     fireEvent[ending](splitter, { pointerId: 1 })
     fireEvent.pointerMove(splitter, { pointerId: 1, clientY: 304 })
     expect(splitter).toHaveAttribute('aria-valuenow', '85')
-    fireEvent.keyDown(splitter, { key: 'ArrowUp' })
+    fireEvent.keyDown(splitter, { key: 'ArrowDown' })
     expect(splitter).toHaveAttribute('aria-valuenow', '80')
-    fireEvent.keyDown(splitter, { key: 'ArrowDown' })
-    fireEvent.keyDown(splitter, { key: 'ArrowDown' })
+    fireEvent.keyDown(splitter, { key: 'ArrowUp' })
+    fireEvent.keyDown(splitter, { key: 'ArrowUp' })
     expect(splitter).toHaveAttribute('aria-valuenow', '85')
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
   })
@@ -584,6 +609,27 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(close).toHaveBeenCalledOnce()
     expect(f.ports.versioning.runCommit).not.toHaveBeenCalled()
   })
+
+  it('the heading checkbox checks every eligible file when some are unchecked and clears them when all are checked', async () => {
+    const f = CommitPaneTest.fixture()
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await screen.findByLabelText('Include a.txt')
+    const all = screen.getByLabelText<HTMLInputElement>('Include all')
+    expect(all).toBeChecked()
+    fireEvent.click(screen.getByLabelText('Include a.txt'))
+    expect(all).not.toBeChecked()
+    expect(all.indeterminate).toBe(true)
+    fireEvent.click(all)
+    expect(all).toBeChecked()
+    expect(all.indeterminate).toBe(false)
+    for (const path of ['a.txt', 'b.txt', 'shared/external.txt']) expect(screen.getByLabelText(`Include ${path}`)).toBeChecked()
+    expect(screen.getByLabelText('Include conflict.txt')).not.toBeChecked()
+    fireEvent.click(all)
+    for (const path of ['a.txt', 'b.txt', 'shared/external.txt']) expect(screen.getByLabelText(`Include ${path}`)).not.toBeChecked()
+    expect(all.indeterminate).toBe(false)
+    expect(screen.getByRole('button', { name: 'Commit files' })).toBeDisabled()
+  })
+
   it('includes directory property changes in the main and external selections', async () => {
     const f = CommitPaneTest.fixture()
     f.snapshot.entries = [CommitPaneTest.entry('src', 'modified', 'directory'), CommitPaneTest.entry('src/a.txt'),
@@ -1284,7 +1330,7 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
       CommitPaneTest.entry('app/bar.ts'),
     ] }
     render(<CommitTargetsList snapshot={snapshot} checked={new Set()} disabled={false} onChange={vi.fn()} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
-    expect(screen.getAllByRole('checkbox').map((box) => box.getAttribute('aria-label'))).toEqual([
+    expect(screen.getAllByRole('checkbox').map((box) => box.getAttribute('aria-label')).filter((label) => label !== 'Include all')).toEqual([
       'Include .aidocs/plan.md', 'Include app/bar.ts', 'Include app/foo', 'Include app/foo/x.ts', 'Include app/foo.ts', 'Include b.txt'])
   })
 

@@ -152,6 +152,14 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       { path: 'Q:/Group', depth: 'empty', recursive: false }, { depth: 'empty' }])
       expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths: [target] } }))
         .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    const shown = { ...valid, body: { ...valid.body, paths: [{ path: 'Q:/Group/Project', depth: 'infinity', checked: false },
+      'Q:/Group/Project/a.ts', { path: 'Q:/Group/Project/lib', depth: 'infinity', checked: true }, { path: 'Q:/Group', depth: 'empty', checked: true }] } }
+    expect(RemoteControlRequestValidation.parse(shown)).toEqual({ ok: true, request: shown })
+    // A node-only directory that checks nothing would name nothing.
+    for (const target of [{ path: 'Q:/Group', depth: 'empty', checked: false }, { path: 'Q:/Group', depth: 'infinity', checked: 'no' },
+      { path: 'Q:/Group', checked: false }, { path: 'Q:/Group', depth: 'infinity', checked: false, hidden: true }])
+      expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths: [target] } }))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
     expect(RemoteControlConst.optionalOperations).toContain('tabs.openCommit')
     expect(RemoteControlConst.mutatingOperations).toContain('tabs.openCommit')
     expect(RemoteControlRequestValidation.parse({ ...valid, operation: 'vcs.commit' }).ok).toBe(false)
@@ -560,6 +568,19 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
           agent: { agentId: 'claude', mode: 'new', model },
         },
       })), JSON.stringify(model)).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
+  it('takes an explicit agent effort held to a bare word', () => {
+    const spec = (effort: unknown): Record<string, unknown> => ({
+      spec: { kind: 'agent', directory: { mode: 'default' }, agent: { agentId: 'antigravity', mode: 'new', effort } },
+    })
+    expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create(spec('xhigh')))).toMatchObject({
+      ok: true,
+      request: { body: { spec: { agent: { agentId: 'antigravity', effort: 'xhigh' } } } },
+    })
+    for (const effort of ['--effort', '-c', 'high max', 'high&whoami', '', 'x'.repeat(33), 7])
+      expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create(spec(effort))), JSON.stringify(effort))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
 
   it('reads agents.describe with an empty body and refuses one carrying anything', () => {

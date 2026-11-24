@@ -71,8 +71,8 @@ export class VersioningCommitMessageStore extends JsonDocumentStore<MessageDocum
 
   private static key(scope: CommitScope): string {
     return JSON.stringify([scope.sessionId, scope.vcs, PathCompare.comparable(scope.scopeRoot),
-      // A node-only directory keys apart from the same directory with its subtree; files keep their old key.
+      // A node-only or shown-only directory keys apart from the same directory with its subtree; files keep their old key.
       scope.paths === undefined ? null : [...new Set(scope.paths.map((path) => `${PathCompare.comparable(VersioningCommitPaths.pathOf(path))}${
-        VersioningCommitPaths.nodeOnly(path) ? '\u0000empty' : ''}`))].sort()])
+        !VersioningCommitPaths.checked(path) ? '\u0000unchecked' : VersioningCommitPaths.nodeOnly(path) ? '\u0000empty' : ''}`))].sort()])
   }
 }

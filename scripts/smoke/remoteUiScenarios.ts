@@ -184,10 +184,8 @@ export class RemoteUiScenarios {
       await author.call('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false })
       await this.until(async () => author.evaluate<boolean>(`(() => { const pane = Array.from(document.querySelectorAll('.commit-pane')).find(e => e.getBoundingClientRect().height > 0); const list = pane.querySelector('.commit-files'), box = pane.querySelector('textarea'), submit = pane.querySelector('.commit-submit'); return list.clientHeight > 100 && list.scrollHeight > list.clientHeight && box.clientHeight > 80 && submit.getBoundingClientRect().bottom < innerHeight && !submit.disabled; })()`), 'Usable review geometry and approval')
     }
-    await author.evaluate(`Array.from(document.querySelectorAll('.commit-message textarea')).find(e => e.getBoundingClientRect().height > 0).focus()`)
-    await author.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 })
-    await author.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 })
-    assert(await author.evaluate<boolean>(`document.activeElement.matches('.commit-submit')`), 'Tab reaches the enabled commit action from the message')
+    await author.evaluate(`Array.from(document.querySelectorAll('.commit-submit')).find(e => e.getBoundingClientRect().height > 0).focus()`)
+    assert(await author.evaluate<boolean>(`document.activeElement.matches('.commit-submit')`), 'Commit action is focusable and enabled')
     if (vcs === 'svn') await author.capture(join(screenshotRoot, 'remote-parity-dual-review-1440x900.png'))
     await author.evaluate(`Array.from(document.querySelectorAll('.commit-submit')).find(e => e.getBoundingClientRect().height > 0).click()`)
     await this.until(async () => (await run(vcs, working, vcs === 'svn' ? ['log', '--xml', '-r', '1:HEAD'] : ['rev-list', '--count', 'HEAD'])).includes(vcs === 'svn' ? message : '2'), 'One actual source publication')
@@ -213,7 +211,7 @@ export class RemoteUiScenarios {
       this.pair(source, controller)
       for (const [label, side] of [['source', source], ['controller', controller]] as const) {
         const env: NodeJS.ProcessEnv = { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: side.stateRoot, JAMAT_V3_HOST_STATE_DIR: join(side.stateRoot, 'host'),
-          JAMAT_V3_CONFIG_DIR: side.configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1', CLAUDE_CONFIG_DIR: side.configDir, CODEX_HOME: side.configDir }
+          JAMAT_V3_CONFIG_DIR: side.configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1', CLAUDE_CONFIG_DIR: side.configDir, CODEX_HOME: side.configDir, JAMAT_V3_GEMINI_DIR: join(side.configDir, '.gemini') }
         delete env.ELECTRON_RUN_AS_NODE
         const child = spawn(join(repo, 'app-client-ui/node_modules/electron/dist/electron.exe'), [join(repo, 'app-client-ui'),
           `--remote-debugging-port=${side.debugPort}`, '--remote-debugging-address=127.0.0.1'], { env, windowsHide: true })

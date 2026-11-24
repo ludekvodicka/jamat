@@ -84,6 +84,7 @@ import { TerminalTargetCodec } from '../../lib-orchestrator/clientApi/terminalTa
 import { AgentSettingsSection } from './agents/agentSettingsSection'
 import { AgentSettingsOperations } from './agents/agentSettingsOperations'
 import { AgentAccounts } from '../../lib-orchestrator/agentAccounts/agentAccounts'
+import { AntigravityLogins } from '../../lib-orchestrator/agentAccounts/antigravityLogins'
 import { AccountBroker } from '../../lib-orchestrator/agentAccounts/accountBroker'
 import { AccountCallerLog, AccountUsageLog } from '../../lib-orchestrator/agentAccounts/accountCallerLogView'
 import { builtInAccountProfiles } from '../../lib-orchestrator/agentAccounts/builtInAccountsView'
@@ -269,6 +270,7 @@ export class OrchestratorHub {
 
   private remoteRevision: number
   private readonly accounts: AgentAccounts
+  private readonly antigravityLogins: AntigravityLogins
   private readonly callerLog: AccountCallerLog
 
   constructor(runtime: OrchestratorRuntime, shell: ShellPort, transport: ServiceTransport, gatewayCalls: ProcessCalls, perf: PerfMonitor, names: PerfNames, event: (event: OrchestratorEvent) => void) {
@@ -370,10 +372,11 @@ export class OrchestratorHub {
       new FileChangesSettingsOperations(configStore),
       new VersioningSettingsOperations(configStore),
     ]
+    const antigravityAccountFile = join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-account.json')
     const accounts = new AgentAccounts({
-      ...builtInAccountProfiles(process.env, join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-account.json')),
+      ...builtInAccountProfiles(process.env, antigravityAccountFile),
       accountsRoot: AccountsStorageSection.rootOf(configStore.readSection(AccountsStorageSection.spec), context.config.configDir),
-      rates: () => this.rateMonitor?.snapshot().accounts ?? [],
+      rates: () => this.rateMonitor?.snapshot?.()?.accounts ?? [],
       history: range => this.rateMonitor?.readHistory(range) ?? Promise.resolve([]),
       stored: () => configStore.readSection(AccountsSection.spec),
       store: value => {
@@ -406,7 +409,13 @@ export class OrchestratorHub {
     const statusLineRates = RateMonitorSources.statusLine(join(OrchestratorPaths.directory(configIdentity, channel), 'rates'),
       (sessionId, launchId, at) => {
         const account = this.sessions.accountForLaunch(sessionId, launchId, at)
-        return account !== null && (account.agentId === 'claude' || account.agentId === 'codex' || account.agentId === 'antigravity')
+        if (account === null) return null
+        if (account.agentId === 'antigravity') {
+          const switchedAt = this.antigravityLogins?.switchedAt() ?? 0
+          const startedAt = this.sessions.launchStartedAt(sessionId, launchId)
+          if (switchedAt > 0 && (at <= switchedAt || (startedAt !== null && startedAt < switchedAt))) return null
+        }
+        return account.agentId === 'claude' || account.agentId === 'codex' || account.agentId === 'antigravity'
           ? { agentId: account.agentId, accountId: account.accountId }
           : null
       })
@@ -418,11 +427,14 @@ export class OrchestratorHub {
       sourceForAccount: (account, hooks) => RateMonitorSources.forAccount(account,
         accounts.homeOf(account.agentId, account.accountId), hooks, accounts.homeOf(account.agentId, 'main'),
         undefined, read => accounts.withProfile(account.agentId, account.accountId, read)),
+      readingFloorAt: key => key.agentId === 'antigravity' && key.accountId === 'main'
+        ? (this.antigravityLogins?.switchedAt() || null)
+        : null,
       configIdentity,
       channel,
       // The same path the session snapshot takes: every workspace window draws the widget and the
       // Debug tab draws the section, and the monitor only says this when the content moved.
-      onChanged: () => { this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged(); this.limitRecovery?.ratesChanged() },
+      onChanged: () => { this.antigravityLogins?.ratesChanged(); this.broadcast('rate:changed'); this.broadcast('usage:changed'); this.sessions?.ratesChanged(); this.limitRecovery?.ratesChanged() },
       onError: (message) => this.report(message),
     })
     const remoteIdentity = {
@@ -459,7 +471,7 @@ export class OrchestratorHub {
       configIdentity,
       channel,
       autoStartHost: !context.smoke,
-      onChanged: () => { accounts.sessionsChanged(); this.sessionEvents.changed(); this.reconcileTabs() },
+      onChanged: () => { accounts.sessionsChanged(); this.antigravityLogins?.sessionsChanged(); this.sessionEvents.changed(); this.reconcileTabs() },
       onError: (message) => this.report(message),
       // A session whose worktree ended, or whose Commit & close left nothing, goes as Remove takes it, and Remove's caller closes the tab.
       onRemovedItself: (sessionId) =>
@@ -811,7 +823,57 @@ export class OrchestratorHub {
       reportCommand: (request, accountId) => AccountBrokerCommand.report(this.skillLinks.roots()[0]!, configIdentity, channel, request, accountId),
       now: Date.now, onLogged: () => this.broadcast('usage:callers-changed'), onReported: () => this.broadcast('usage:changed'),
       onError: message => this.report(message) })
-    new AccountsOperations(accounts, broker, () => AccountBrokerCommand.of(this.skillLinks.roots()[0]!, configIdentity, channel))
+    this.antigravityLogins = new AntigravityLogins({
+      accountFile: antigravityAccountFile,
+      quotaFile: join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-login-quotas.json'),
+      runningSessionCount: () => this.sessions.snapshot().sessions.filter(session =>
+        session.agent?.agentId === 'antigravity' && (session.life === 'live' || session.life === 'starting')).length,
+      reopenableSessionCount: () => this.sessions.snapshot().sessions.filter(session =>
+        session.agent?.agentId === 'antigravity' && session.life === 'live' && session.admits.includes('restart')).length,
+      stopRunningSessions: async () => {
+        const targets = this.sessions.snapshot().sessions.filter(session =>
+          session.agent?.agentId === 'antigravity' && session.life === 'live' && session.admits.includes('restart'))
+        const outcomes = await Promise.all(targets.map(async session => ({
+          session,
+          result: await this.sessions.stopAndWaitSession(session.sessionId),
+        })))
+        const stopped: { sessionId: string; title: string }[] = []
+        const failed: string[] = []
+        for (const { session, result } of outcomes) {
+          if (result.ok) stopped.push({ sessionId: session.sessionId, title: session.tabTitle })
+          else failed.push(`${session.tabTitle}: ${result.detail}`)
+        }
+        return { stopped, failed }
+      },
+      reopenSessions: async sessions => {
+        let reopened = 0
+        const failed: string[] = []
+        for (const session of sessions) {
+          const result = await this.sessions.reopenSession(session.sessionId)
+          if (result.ok) reopened += 1
+          else failed.push(`${session.title}: ${result.detail}`)
+        }
+        return { reopened, failed }
+      },
+      rates: () => this.rateMonitor?.snapshot?.()?.accounts ?? [],
+      resetRates: switchedAt => this.rateMonitor.resetAccount('antigravity', 'main', switchedAt),
+      openLogin: async () => {
+        const created = await this.sessions.createCommandSession(
+          { directory: { mode: 'adHoc', path: homedir() }, title: 'Login: Antigravity' },
+          'agy',
+        )
+        if (!created.ok) throw new AccountProblem(created.detail)
+        await this.tabControlBroker.openTab(created.value.sessionId, created.value.tabTitle, { activate: true })
+        return { sessionId: created.value.sessionId }
+      },
+      loginResult: sessionId => this.sessions.terminalResult(sessionId),
+      onChanged: () => {
+        accounts.invalidateProbe('antigravity', 'main')
+        this.broadcast('agents:settings-changed')
+        this.broadcast('usage:changed')
+      },
+    })
+    new AccountsOperations(accounts, broker, () => AccountBrokerCommand.of(this.skillLinks.roots()[0]!, configIdentity, channel), this.antigravityLogins)
       .register(remoteControl.registry)
     sessionModel.register(remoteControl.registry)
     new LimitRecoveryOperations(this.limitRecovery).register(remoteControl.registry)
@@ -938,6 +1000,7 @@ export class OrchestratorHub {
       skip: process.env.JAMAT_V3_SKIP_SKILL_LINKS === '1',
       privateStateRoot: context.privateStateRoot,
       ...(process.env.CODEX_HOME === undefined ? {} : { codexHome: process.env.CODEX_HOME }),
+      antigravityConfigHome: AntigravityConfigHome.globalConfigDirectory(),
       report: (message) => this.report(`Skill link: ${message}`),
     })
     this.pingLoop = new HostPingLoop({
@@ -1010,7 +1073,7 @@ export class OrchestratorHub {
       stopInbound: () => this.remoteInbound.stop(),
       stopRemoteConnections: () => this.remoteConnections.stop(),
       stopCliUpdates: () => this.cliUpdates.stop(),
-      stopAccounts: () => this.accounts.stop(),
+      stopAccounts: () => { this.accounts.stop(); this.antigravityLogins.stop() },
       stopRateMonitor: () => this.rateMonitor.stop(),
       stopSessionNotifier: () => this.sessionNotifier.stop(),
       stopLimitRecovery: () => this.limitRecovery.stop(),

@@ -53,9 +53,11 @@ export class TerminalProjection {
   /**
    * How much history the buffer itself holds, and therefore what "every row" means to the serializer.
    * Named because two things read it: the terminal that is constructed with it, and a snapshot that
-   * asks for all of it.
+   * asks for all of it. Sized at 3,000 rows to retain multi-turn agent transcripts across hidden-tab
+   * resyncs and reconnects while keeping typical serialized snapshots comfortably under the 1 MiB
+   * LAN peer plaintext frame ceiling.
    */
-  private static readonly scrollbackRowsConst = 1_000
+  static readonly scrollbackRowsConst = 3_000
   /**
    * An attach: the whole screen, and no ring. The renderer writes `screen` into a reset terminal and
    * the remote peek reads `screen` alone, so the ring was half a megabyte crossing a socket, an IPC

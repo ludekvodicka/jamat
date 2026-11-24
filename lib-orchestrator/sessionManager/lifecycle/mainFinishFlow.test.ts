@@ -225,14 +225,58 @@ describe('lib-orchestrator/sessionManager/lifecycle/mainFinishFlow', () => {
   it('Check again stops and removes a session with nothing left, even while its agent still waits', async () => {
     const world = new World()
     const flow = flowOf(world)
-    await flow.press('s1')
     expect(await flow.press('s1', 'check')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    await flow.press('s1')
     await flow.press('s1', 'commit-close')
     world.reads = [clean]
     world.activity('working')
     expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'stopped' } })
     expect(world.calls).toEqual(['read', 'deliver:/commit-svn', 'read', 'stop', 'remove'])
     expect(world.finish).toMatchObject({ phase: 'closed', result: 'closed' })
+  })
+
+  it('Check again while choosing stops and removes the session once nothing of it remains changed', async () => {
+    const world = new World()
+    const flow = flowOf(world)
+    await flow.press('s1')
+    await flow.press('s1', 'commit-close')
+    world.reads = [{ ok: true, vcs: 'svn', paths: ['docs/b.md'] }]
+    world.activity('working')
+    await flow.tick()
+    world.activity('idle')
+    await flow.tick()
+    world.at += MainFinishFlow.settleMillisecondsConst
+    await flow.tick()
+    expect(world.finish?.phase).toBe('choosing')
+    // Another session committed the shared file: Check again re-reads and closes the session.
+    world.reads = [clean]
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'stopped' } })
+    expect(world.calls).toEqual(['read', 'deliver:/commit-svn', 'read', 'read', 'stop', 'remove'])
+    expect(world.finish).toMatchObject({ phase: 'closed', result: 'closed', sentAt: 1_000 })
+  })
+
+  it('Check again while choosing updates the file list, recovers from read errors and respects an open review', async () => {
+    const world = new World()
+    world.reads = [{ ok: false, detail: 'svn locked' }]
+    const flow = flowOf(world)
+    await flow.press('s1')
+    expect(world.finish).toMatchObject({ phase: 'choosing', vcs: null, paths: [] })
+    world.reads = [{ ok: true, vcs: 'svn', paths: ['docs/b.md'] }]
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'choose' } })
+    expect(world.finish).toMatchObject({ phase: 'choosing', vcs: 'svn', paths: ['docs/b.md'],
+      note: "1 file of this session is still changed. Commit through the session's agent, or close the session." })
+    // A transient read failure keeps the known VCS/paths so Commit remains available.
+    world.reads = [{ ok: false, detail: 'svn status failed' }]
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'choose' } })
+    expect(world.finish).toMatchObject({ phase: 'choosing', vcs: 'svn', paths: ['docs/b.md'],
+      note: 'The changes of this session could not be read: svn status failed' })
+    // Nothing left, but an open commit review of this session keeps it open.
+    world.reads = [clean]
+    world.pending = true
+    expect(await flow.press('s1', 'check')).toEqual({ ok: true, value: { outcome: 'choose' } })
+    expect(world.calls).not.toContain('stop')
+    expect(world.finish).toMatchObject({ phase: 'choosing', vcs: 'svn', paths: [],
+      note: 'Nothing of this session is left to commit, but a commit review of it is still open. Close the review, then check again.' })
   })
 
   it('Check again keeps the session while a commit review of it is open', async () => {

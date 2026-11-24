@@ -75,7 +75,7 @@ export class SessionsSnapshotValidation {
   private static readonly conflictLossesConst: readonly string[] =
     ['nothing', 'mine', 'incoming'] satisfies readonly SvnConflictLoss[]
   private static readonly workflowActionsConst: readonly string[] =
-    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker', 'commit-close', 'commit-continue', 'close-session', 'cancel-finish', 'check-finish'] satisfies readonly SessionWorkflowActionId[]
+    ['refresh-preparation', 'prepare-worktree', 'confirm-environment', 'override-checks', 'review-correction', 'finish-again', 'keep', 'discard', 'retry-setup', 'stop-agent', 'open-in-vscode', 'resolve-with-agent', 'open-merger', 'solve-with-agent', 'agree-setup', 'cancel-setup', 'update-main', 'later', 'remove-row', 'back-to-work', 'confirm-stopped', 'stop-run', 'remove-run', 'confirm-busy', 'resume-worker', 'commit-close', 'commit-continue', 'close-session', 'cancel-finish', 'check-finish'] satisfies readonly SessionWorkflowActionId[]
 
   static parse(value: unknown): SessionsSnapshot | null {
     const snapshot = JsonShape.record(value)
@@ -443,6 +443,7 @@ export class SessionsSnapshotValidation {
       && SessionsSnapshotValidation.activityDetail(session.activity, session.activityDetail)
       && (session.compacting === undefined || (session.compacting === true
         && session.activity === 'working' && session.activityDetail === undefined))
+      && (session.shellsRunning === undefined || (session.shellsRunning === true && session.activity === 'idle'))
       && SessionsSnapshotValidation.worktree(session.worktree)
       && SessionsSnapshotValidation.retiredWorktree(session.retiredWorktree)
       && Array.isArray(session.admits)

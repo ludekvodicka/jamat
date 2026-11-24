@@ -22,15 +22,19 @@ class EditorCss {
 }
 
 /**
- * jsdom lays nothing out, so the editor's sizes are read off the stylesheets. A review with a long
- * file list and a long "Missing:" list drew the commit message 18 to 22 px high: the message share of
- * the split had no minimum, so its textarea shrank to what was left and was clipped.
+ * jsdom lays nothing out, so the editor's sizes are read off the stylesheets. Both single-message
+ * and per-group textareas size tightly to their content (`field-sizing: content`) without empty
+ * dead space inside the collapsible wrapper, while collapsing cleanly to one summary line.
  */
 describe('app-client-ui/renderer/versioning/commit editor layout', () => {
-  it('keeps several lines of the commit message whatever the file list holds', () => {
-    expect(EditorCss.declarationsOf('commitPane', '.commit-message textarea')).toMatch(/min-height:\s*5lh;/)
-    expect(EditorCss.declarationsOf('commitPane', '.commit-message textarea')).toMatch(/flex:\s*1 0 auto;/)
+  it('sizes a single commit message tightly to its content and collapses it cleanly to its summary', () => {
+    const textarea = EditorCss.declarationsOf('commitPane', '.commit-message textarea')
+    expect(textarea).toMatch(/field-sizing:\s*content;/)
+    expect(textarea).toMatch(/min-height:\s*4lh;/)
+    expect(textarea).toMatch(/flex:\s*1 0 auto;/)
     expect(EditorCss.declarationsOf('commitPane', '.commit-editor-message')).toMatch(/min-height:\s*min-content;/)
+    expect(EditorCss.declarationsOf('commitPane', '.commit-editor-message--collapsed')).toMatch(/flex:\s*none;/)
+    expect(EditorCss.declarationsOf('commitPane', '.commit-editor-message--auto')).toMatch(/flex:\s*none;/)
     expect(EditorCss.declarationsOf('commitPane', '.commit-editor')).toMatch(/min-height:\s*min-content;/)
   })
 
@@ -41,13 +45,12 @@ describe('app-client-ui/renderer/versioning/commit editor layout', () => {
     expect(EditorCss.declarationsOf('commitPane', '.commit-pane')).toMatch(/overflow:\s*auto;/)
   })
 
-  it('keeps one repository message in view when each repository has its own', () => {
-    const list = EditorCss.declarationsOf('sessionActions', '.session-actions__repositories')
-    expect(list).toMatch(/contain:\s*size;/)
-    expect(list).toMatch(/min-height:\s*calc\(/)
+  it('sizes each inline repository message tightly to its content and scrolls groups as one list', () => {
+    const list = EditorCss.declarationsOf('commitPane', '.commit-groups')
     expect(list).toMatch(/overflow:\s*auto;/)
-    const textarea = EditorCss.declarationsOf('sessionActions', '.session-actions__repository-message textarea')
-    expect(textarea).toMatch(/min-height:\s*5lh;/)
-    expect(textarea).toMatch(/flex:\s*none;/)
+    const textarea = EditorCss.declarationsOf('commitPane', '.commit-group-message-body textarea')
+    expect(textarea).toMatch(/field-sizing:\s*content;/)
+    expect(textarea).toMatch(/min-height:\s*4lh;/)
+    expect(textarea).toMatch(/resize:\s*vertical;/)
   })
 })

@@ -9,6 +9,7 @@ import { UiSettings } from '../../../../shared/uiSettings'
 import { UiSettingsStore } from '../../../uiSettings/uiSettingsStore'
 import { TerminalTheme } from '../view/terminalTheme'
 import type { TerminalAgentId } from '../input/terminalPromptNewline'
+import { TerminalHeldOutput } from './terminalHeldOutput'
 import { type TerminalMenuContext, useTerminalAttachment } from './useTerminalAttachment'
 
 /**
@@ -29,6 +30,8 @@ const xtermMock = vi.hoisted(() => ({
     options: { fontSize: number; theme: unknown; scrollSensitivity: number }
     /** Buffer rows a test seeded, so a click can be scanned into a token. */
     lines: string[]
+    /** Active buffer mode (`normal` vs `alternate`) for viewport-scroll key tests. */
+    bufferType: 'normal' | 'alternate'
     type(data: string): void
     select(text: string): void
     sendOsc52(data: string): void
@@ -69,6 +72,7 @@ vi.mock('@xterm/xterm', () => {
       /** What a drag would have left behind; a test sets it through `select`. */
       selection = ''
       lines: string[] = []
+      bufferType: 'normal' | 'alternate' = 'normal'
       private data: ((data: string) => void) | null = null
       private selectionChange: (() => void) | null = null
       private screen: HTMLElement | null = null
@@ -105,6 +109,7 @@ vi.mock('@xterm/xterm', () => {
             getCell(column: number, cell: FakeCell): void
           } | undefined
           getNullCell(): FakeCell
+          type: 'normal' | 'alternate'
           viewportY: number
           length: number
         }
@@ -124,6 +129,7 @@ vi.mock('@xterm/xterm', () => {
               }
             },
             getNullCell: () => new FakeCell(),
+            type: this.bufferType,
             viewportY: 0,
             length: this.lines.length,
           },
@@ -194,6 +200,7 @@ vi.mock('@xterm/xterm', () => {
       }
 
       reset(): void { this.calls.push({ method: 'reset', args: [] }) }
+      scrollPages(amount: number): void { this.calls.push({ method: 'scrollPages', args: [amount] }) }
       write(data: string, callback?: () => void): void {
         this.calls.push({ method: 'write', args: [data] })
         if (callback && xtermMock.holdWrites) xtermMock.writeCallbacks.push(callback)
@@ -451,6 +458,7 @@ function Harness(props: {
   attachEpoch?: number
   remoteEndpointId?: string
   detect?: Parameters<typeof useTerminalAttachment>[7]
+  onResync?: () => void
 }): React.JSX.Element {
   const holder = useRef<HTMLDivElement | null>(null)
   const target: TerminalTarget = props.remoteEndpointId === undefined
@@ -465,6 +473,7 @@ function Harness(props: {
     onTyped,
     onPasteNote,
     props.detect,
+    props.onResync,
   )
   return (
     <div>
@@ -1625,5 +1634,52 @@ describe('app-client-ui/renderer/panels/terminal/useTerminalAttachment', () => {
       expect(xtermMock.forwarded).toEqual([])
       expect(menus).toHaveLength(1)
     })
+  })
+
+  it('scrolls xterm by one page on Shift+PageUp/Shift+PageDown in normal buffer and passes them through on alternate buffer', () => {
+    render(<Harness sessionId="session-1" />)
+    const gate = terminal().keyHandler
+    if (gate === null) throw new Error('no key handler was attached')
+
+    const up = new KeyboardEvent('keydown', { key: 'PageUp', shiftKey: true, cancelable: true })
+    const down = new KeyboardEvent('keydown', { key: 'PageDown', shiftKey: true, cancelable: true })
+    expect(gate(up)).toBe(false)
+    expect(up.defaultPrevented).toBe(true)
+    expect(gate(down)).toBe(false)
+    expect(down.defaultPrevented).toBe(true)
+    expect(terminal().calls.filter((call) => call.method === 'scrollPages')).toEqual([
+      { method: 'scrollPages', args: [-1] },
+      { method: 'scrollPages', args: [1] },
+    ])
+    expect(typed).toEqual([])
+
+    terminal().bufferType = 'alternate'
+    const altUp = new KeyboardEvent('keydown', { key: 'PageUp', shiftKey: true, cancelable: true })
+    expect(gate(altUp)).toBe(true)
+    expect(altUp.defaultPrevented).toBe(false)
+    expect(terminal().calls.filter((call) => call.method === 'scrollPages')).toHaveLength(2)
+  })
+
+  it('asks the owner to resync when a hidden surface overflows and becomes visible again', async () => {
+    let resyncs = 0
+    const view = render(<Harness sessionId="session-1" onResync={() => { resyncs += 1 }} />)
+    bridge.serve(attachedFrame(true))
+    await waitFor(() => expect(view.getByTestId('status').textContent).toBe('live'))
+
+    act(() => { view.getByTestId('hide').click() })
+    await bridge.consume({
+      type: 'terminal.data',
+      runtimeSessionId: 'session-1',
+      generation: 1,
+      outputEpoch: 1,
+      delta: 'x'.repeat(TerminalHeldOutput.maxCharsConst + 1),
+      outputSeq: TerminalHeldOutput.maxCharsConst + 1,
+      lastOutputAt: 1,
+    })
+    expect(resyncs).toBe(0)
+
+    act(() => { view.getByTestId('show').click() })
+    await waitFor(() => expect(resyncs).toBe(1))
+    expect(terminal().calls.filter((call) => call.method === 'reset')).toEqual([])
   })
 })

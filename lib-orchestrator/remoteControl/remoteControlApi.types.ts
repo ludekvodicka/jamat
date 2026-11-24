@@ -230,9 +230,13 @@ export interface RemoteControlTabOpenFileDto {
 /**
  * One target of a commit review. A string is a file, or a directory with everything below it. The
  * object names the depth: `empty` is the directory's own node (its property change) and nothing
- * below it, `infinity` is the same as the string.
+ * below it, `infinity` is the same as the string. `checked: false` on an `infinity` target shows its
+ * rows without checking them: an agent checks only its own files, and the person still sees the
+ * other work of the project and may tick it.
  */
-export type RemoteControlCommitPath = string | { path: string; depth: 'empty' | 'infinity' }
+export type RemoteControlCommitPath = string
+  | { path: string; depth: 'empty'; checked?: true }
+  | { path: string; depth: 'infinity'; checked?: boolean }
 
 export interface RemoteControlTabOpenCommitDto {
   kind: 'commit-opened'

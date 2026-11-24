@@ -7,6 +7,9 @@ import type {
 import { FileHighlighter } from '../../../mdext-renderer/renderer'
 import { FilePropertyChanges } from './filePropertyChanges'
 
+export type FileDiffLayout = 'unified' | 'split'
+export type FileDiffMinimapMark = 'context' | 'add' | 'remove' | 'change'
+
 export interface FileDiffVisualLine {
   key: string
   kind: FileDiffLineKind
@@ -16,12 +19,26 @@ export interface FileDiffVisualLine {
   header: string | null
 }
 
+export interface FileDiffSplitCell {
+  line: FileDiffVisualLine
+  index: number
+}
+
+export interface FileDiffSplitRow {
+  key: string
+  header: string | null
+  left: FileDiffSplitCell | null
+  right: FileDiffSplitCell | null
+}
+
 export function FileDiffView(props: {
   data: FileDiffData
   currentText: string | null
   language: string
+  wrapLines?: boolean
 }): React.JSX.Element {
   const [full, setFull] = useState(false)
+  const [layout, setLayout] = useState<FileDiffLayout>(() => FileDiffLayoutPreference.read())
   /**
    * The rows AND what they were highlighted from, together.
    *
@@ -32,6 +49,8 @@ export function FileDiffView(props: {
   const [highlighted, setHighlighted] =
     useState<{ for: readonly FileDiffVisualLine[]; html: readonly string[] } | null>(null)
   const scroller = useRef<HTMLDivElement | null>(null)
+  const leftScroller = useRef<HTMLDivElement | null>(null)
+  const wrapLines = props.wrapLines === true
   const fullAvailable = props.data.completeness === 'full'
     && props.currentText !== null
     && FileDiffVisual.matchesCurrent(props.data, props.currentText)
@@ -42,6 +61,19 @@ export function FileDiffView(props: {
       : FileDiffVisual.changes(props.data),
     [props.currentText, props.data, showFull],
   )
+  const splitRows = useMemo(
+    () => layout === 'split' ? FileDiffVisual.split(lines) : [],
+    [layout, lines],
+  )
+  const minimapMarks = useMemo(
+    () => FileDiffVisual.minimapMarks(layout, lines, splitRows),
+    [layout, lines, splitRows],
+  )
+
+  const changeLayout = (next: FileDiffLayout): void => {
+    setLayout(next)
+    FileDiffLayoutPreference.write(next)
+  }
 
   useEffect(() => {
     let alive = true
@@ -51,22 +83,79 @@ export function FileDiffView(props: {
       .catch(() => undefined)
     return () => { alive = false }
   }, [lines, props.language])
+
+  useEffect(() => {
+    if (layout !== 'split' || wrapLines) return
+    const left = leftScroller.current
+    const right = scroller.current
+    if (!left || !right) return
+    // Recording the clamped read-back position suppresses the echo scroll event on the sibling pane
+    // without snapping the driving pane back when the two sides differ in scrollable width.
+    const seen = {
+      leftTop: left.scrollTop,
+      leftLeft: left.scrollLeft,
+      rightTop: right.scrollTop,
+      rightLeft: right.scrollLeft,
+    }
+    const onLeftScroll = (): void => {
+      if (left.scrollTop !== seen.leftTop) {
+        seen.leftTop = left.scrollTop
+        right.scrollTop = left.scrollTop
+        seen.rightTop = right.scrollTop
+      }
+      if (left.scrollLeft !== seen.leftLeft) {
+        seen.leftLeft = left.scrollLeft
+        right.scrollLeft = left.scrollLeft
+        seen.rightLeft = right.scrollLeft
+      }
+    }
+    const onRightScroll = (): void => {
+      if (right.scrollTop !== seen.rightTop) {
+        seen.rightTop = right.scrollTop
+        left.scrollTop = right.scrollTop
+        seen.leftTop = left.scrollTop
+      }
+      if (right.scrollLeft !== seen.rightLeft) {
+        seen.rightLeft = right.scrollLeft
+        left.scrollLeft = right.scrollLeft
+        seen.leftLeft = left.scrollLeft
+      }
+    }
+    left.addEventListener('scroll', onLeftScroll, { passive: true })
+    right.addEventListener('scroll', onRightScroll, { passive: true })
+    return () => {
+      left.removeEventListener('scroll', onLeftScroll)
+      right.removeEventListener('scroll', onRightScroll)
+    }
+  }, [layout, wrapLines, lines.length])
+
   const html = FileDiffHighlighting.forLines(highlighted, lines)
+  const scrollerKey = `${layout}:${wrapLines ? 'wrap' : 'nowrap'}`
 
   return (
     <div className="file-diff">
       <div className="file-diff-toolbar">
-        <span>{props.data.baseline.label} → {props.data.current.label}</span>
-        <button type="button" aria-pressed={!full} onClick={() => setFull(false)}>Changes</button>
-        <button
-          type="button"
-          aria-pressed={showFull}
-          disabled={!fullAvailable}
-          title={FileDiffVisual.fullUnavailableDetail(props.data, props.currentText)}
-          onClick={() => setFull(true)}
-        >
-          Full file
-        </button>
+        <span className="file-diff-toolbar-label">{props.data.baseline.label} → {props.data.current.label}</span>
+        <div className="file-diff-toolbar-group" role="group" aria-label="Diff layout">
+          <button type="button" aria-pressed={layout === 'unified'} onClick={() => changeLayout('unified')}>
+            Unified
+          </button>
+          <button type="button" aria-pressed={layout === 'split'} onClick={() => changeLayout('split')}>
+            Side by side
+          </button>
+        </div>
+        <div className="file-diff-toolbar-group" role="group" aria-label="Diff scope">
+          <button type="button" aria-pressed={!full} onClick={() => setFull(false)}>Changes</button>
+          <button
+            type="button"
+            aria-pressed={showFull}
+            disabled={!fullAvailable}
+            title={FileDiffVisual.fullUnavailableDetail(props.data, props.currentText)}
+            onClick={() => setFull(true)}
+          >
+            Full file
+          </button>
+        </div>
       </div>
       {(props.data.detail || props.data.completeness !== 'full') && (
         <p className="file-diff-detail">
@@ -81,39 +170,178 @@ export function FileDiffView(props: {
         ? <p className="file-viewer-note">No text changes.</p>
         : (
           <div className="file-diff-area">
-            <div className="file-diff-scroll" ref={scroller}>
-              <pre className="file-diff-lines">
-                {lines.map((line, index) => (
-                  <span
-                    key={line.key}
-                    className={`file-diff-line file-diff-line--${line.kind}`}
-                    data-file-line={line.afterLine ?? undefined}
-                  >
-                    {line.header && <span className="file-diff-hunk">{line.header}</span>}
-                    <span className="file-diff-gutter">{line.beforeLine ?? ''}</span>
-                    <span className="file-diff-gutter">{line.afterLine ?? ''}</span>
-                    <span className="file-diff-marker">
-                      {line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '}
-                    </span>
-                    <span
-                      className="file-diff-text"
-                      dangerouslySetInnerHTML={{ __html: html?.[index] || FileDiffVisual.escape(line.text) || ' ' }}
-                    />
-                    {'\n'}
-                  </span>
-                ))}
-              </pre>
-            </div>
-            <FileDiffMinimap lines={lines} scroller={scroller} />
+            {layout === 'unified'
+              ? (
+                <div className="file-diff-scroll" ref={scroller} tabIndex={-1}>
+                  <pre className="file-diff-lines">
+                    {lines.map((line, index) => (
+                      <span
+                        key={line.key}
+                        className={`file-diff-line file-diff-line--${line.kind}`}
+                        data-file-line={line.afterLine ?? undefined}
+                      >
+                        {line.header && <span className="file-diff-hunk">{line.header}</span>}
+                        <span className="file-diff-gutter">{line.beforeLine ?? ''}</span>
+                        <span className="file-diff-gutter">{line.afterLine ?? ''}</span>
+                        <span className="file-diff-marker">{FileDiffVisual.markerOf(line.kind)}</span>
+                        <span
+                          className="file-diff-text"
+                          dangerouslySetInnerHTML={{ __html: html?.[index] || FileDiffVisual.escape(line.text) || ' ' }}
+                        />
+                        {'\n'}
+                      </span>
+                    ))}
+                  </pre>
+                </div>
+              )
+              : layout === 'split'
+                ? (
+                  <FileDiffSplitContent
+                    data={props.data}
+                    rows={splitRows}
+                    html={html}
+                    wrapLines={wrapLines}
+                    leftScroller={leftScroller}
+                    rightScroller={scroller}
+                  />
+                )
+                : (() => { throw new Error(`Unknown diff layout: ${JSON.stringify(layout)}`) })()}
+            <FileDiffMinimap marks={minimapMarks} scroller={scroller} scrollerKey={scrollerKey} />
           </div>
         )}
     </div>
   )
 }
 
+function FileDiffSplitContent(props: {
+  data: FileDiffData
+  rows: readonly FileDiffSplitRow[]
+  html: readonly string[] | null
+  wrapLines: boolean
+  leftScroller: React.RefObject<HTMLDivElement | null>
+  rightScroller: React.RefObject<HTMLDivElement | null>
+}): React.JSX.Element {
+  return (
+    <div className="file-diff-split-main">
+      <div className="file-diff-split-headers">
+        <div className="file-diff-split-header" title={props.data.baseline.path}>
+          {props.data.baseline.label}
+        </div>
+        <div className="file-diff-split-header" title={props.data.current.path}>
+          {props.data.current.label}
+        </div>
+      </div>
+      {props.wrapLines
+        ? (
+          <div className="file-diff-scroll file-diff-split-scroll" ref={props.rightScroller} tabIndex={-1}>
+            <div className="file-diff-split-grid">
+              {props.rows.map((row) => (
+                <FileDiffSplitGridRow key={row.key} row={row} html={props.html} />
+              ))}
+            </div>
+          </div>
+        )
+        : (
+          <div className="file-diff-split-panes">
+            <div className="file-diff-split-pane file-diff-split-pane--before" ref={props.leftScroller} tabIndex={-1}>
+              <div className="file-diff-split-lines">
+                {props.rows.map((row) => (
+                  <FileDiffSplitPaneRow key={row.key} row={row} side="before" html={props.html} />
+                ))}
+              </div>
+            </div>
+            <div
+              className="file-diff-scroll file-diff-split-pane file-diff-split-pane--after"
+              ref={props.rightScroller}
+              tabIndex={-1}
+            >
+              <div className="file-diff-split-lines">
+                {props.rows.map((row) => (
+                  <FileDiffSplitPaneRow key={row.key} row={row} side="after" html={props.html} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+    </div>
+  )
+}
+
+function FileDiffSplitGridRow(props: {
+  row: FileDiffSplitRow
+  html: readonly string[] | null
+}): React.JSX.Element {
+  return (
+    <>
+      {props.row.header && (
+        <div className="file-diff-hunk file-diff-split-hunk file-diff-split-hunk--span">
+          {props.row.header}
+        </div>
+      )}
+      <FileDiffSplitCellView cell={props.row.left} side="before" html={props.html} />
+      <FileDiffSplitCellView cell={props.row.right} side="after" html={props.html} />
+    </>
+  )
+}
+
+function FileDiffSplitPaneRow(props: {
+  row: FileDiffSplitRow
+  side: 'before' | 'after'
+  html: readonly string[] | null
+}): React.JSX.Element {
+  const cell = props.side === 'before' ? props.row.left : props.row.right
+  return (
+    <>
+      {props.row.header && (
+        <div
+          className="file-diff-hunk file-diff-split-hunk"
+          aria-hidden={props.side === 'after' ? 'true' : undefined}
+        >
+          {props.side === 'before' ? props.row.header : '\u00A0'}
+        </div>
+      )}
+      <FileDiffSplitCellView cell={cell} side={props.side} html={props.html} />
+    </>
+  )
+}
+
+function FileDiffSplitCellView(props: {
+  cell: FileDiffSplitCell | null
+  side: 'before' | 'after'
+  html: readonly string[] | null
+}): React.JSX.Element {
+  if (props.cell === null)
+    return (
+      <div
+        className={`file-diff-split-cell file-diff-split-cell--${props.side} file-diff-split-cell--empty`}
+        aria-hidden="true"
+      >
+        <span className="file-diff-gutter" />
+        <span className="file-diff-marker" />
+        <span className="file-diff-text">{'\u00A0'}</span>
+      </div>
+    )
+  const { line, index } = props.cell
+  const lineNumber = props.side === 'before' ? line.beforeLine : line.afterLine
+  return (
+    <div
+      className={`file-diff-split-cell file-diff-split-cell--${props.side} file-diff-line--${line.kind}`}
+      data-file-line={props.side === 'after' ? (line.afterLine ?? undefined) : undefined}
+    >
+      <span className="file-diff-gutter">{lineNumber ?? ''}</span>
+      <span className="file-diff-marker">{FileDiffVisual.markerOf(line.kind)}</span>
+      <span
+        className="file-diff-text"
+        dangerouslySetInnerHTML={{ __html: props.html?.[index] || FileDiffVisual.escape(line.text) || ' ' }}
+      />
+    </div>
+  )
+}
+
 function FileDiffMinimap(props: {
-  lines: readonly FileDiffVisualLine[]
+  marks: readonly FileDiffMinimapMark[]
   scroller: React.RefObject<HTMLDivElement | null>
+  scrollerKey: string
 }): React.JSX.Element {
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const viewport = useRef<HTMLDivElement | null>(null)
@@ -132,18 +360,34 @@ function FileDiffMinimap(props: {
       const styles = getComputedStyle(document.documentElement)
       const add = styles.getPropertyValue('--color-ok').trim()
       const remove = styles.getPropertyValue('--color-danger').trim()
-      const height = element.clientHeight / Math.max(1, props.lines.length)
-      props.lines.forEach((line, index) => {
-        if (line.kind === 'context') return
-        context.fillStyle = line.kind === 'add' ? add : remove
-        context.fillRect(0, index * height, element.clientWidth, Math.max(1, height))
+      const height = element.clientHeight / Math.max(1, props.marks.length)
+      const barHeight = Math.max(1, height)
+      const half = element.clientWidth / 2
+      props.marks.forEach((mark, index) => {
+        const y = index * height
+        if (mark === 'context') return
+        else if (mark === 'add') {
+          context.fillStyle = add
+          context.fillRect(0, y, element.clientWidth, barHeight)
+        }
+        else if (mark === 'remove') {
+          context.fillStyle = remove
+          context.fillRect(0, y, element.clientWidth, barHeight)
+        }
+        else if (mark === 'change') {
+          context.fillStyle = remove
+          context.fillRect(0, y, half, barHeight)
+          context.fillStyle = add
+          context.fillRect(half, y, element.clientWidth - half, barHeight)
+        }
+        else throw new Error(`Unknown minimap mark: ${JSON.stringify(mark)}`)
       })
     }
     draw()
     const observer = new ResizeObserver(draw)
     observer.observe(element)
     return () => observer.disconnect()
-  }, [props.lines])
+  }, [props.marks])
 
   useEffect(() => {
     const scroller = props.scroller.current
@@ -162,10 +406,9 @@ function FileDiffMinimap(props: {
       scroller.removeEventListener('scroll', update)
       observer.disconnect()
     }
-    // `props.lines` and not only the element: content changes `scrollHeight`, not the box, so the
-    // observer never fires for it. Keyed on the element alone, the rectangle kept the size it had
-    // for a forty-line diff while a two-thousand-line file scrolled behind it.
-  }, [props.lines, props.scroller])
+    // `props.marks` and `props.scrollerKey` as well as the ref: content changes `scrollHeight`
+    // without resizing the box, and layout/wrap switches mount a new `.file-diff-scroll` element.
+  }, [props.marks, props.scroller, props.scrollerKey])
 
   return (
     <div
@@ -182,6 +425,30 @@ function FileDiffMinimap(props: {
       <div ref={viewport} />
     </div>
   )
+}
+
+export class FileDiffLayoutPreference {
+  static readonly storageKeyConst = 'jamat.fileDiff.layout'
+
+  static read(): FileDiffLayout {
+    try {
+      const stored = window.localStorage.getItem(FileDiffLayoutPreference.storageKeyConst)
+      if (stored === 'unified' || stored === 'split') return stored
+    }
+    catch {
+      return 'unified'
+    }
+    return 'unified'
+  }
+
+  static write(layout: FileDiffLayout): void {
+    try {
+      window.localStorage.setItem(FileDiffLayoutPreference.storageKeyConst, layout)
+    }
+    catch {
+      // Storage refusal only drops persistence across opens; the active view still switches.
+    }
+  }
 }
 
 /**
@@ -202,6 +469,13 @@ export class FileDiffHighlighting {
 }
 
 export class FileDiffVisual {
+  static markerOf(kind: FileDiffLineKind): string {
+    if (kind === 'add') return '+'
+    else if (kind === 'remove') return '-'
+    else if (kind === 'context') return ' '
+    else throw new Error(`Unknown diff line kind: ${JSON.stringify(kind)}`)
+  }
+
   static changes(data: FileDiffData): readonly FileDiffVisualLine[] {
     const lines: FileDiffVisualLine[] = []
     data.hunks.forEach((hunk, hunkIndex) => {
@@ -239,22 +513,96 @@ export class FileDiffVisual {
       }
     }
     const result: FileDiffVisualLine[] = []
+    let beforeCursor = 1
     for (let lineNumber = 1; lineNumber <= current.length; lineNumber++) {
       const changed = at.get(lineNumber) ?? []
       const removals = changed.filter((line) => line.kind === 'remove')
-      result.push(...removals)
+      for (const removal of removals) {
+        result.push(removal)
+        if (removal.beforeLine !== null) beforeCursor = removal.beforeLine + 1
+      }
       const currentChange = changed.find((line) => line.afterLine === lineNumber)
-      result.push(currentChange ?? {
-        key: `full:${lineNumber}`,
-        kind: 'context',
-        text: current[lineNumber - 1],
-        beforeLine: null,
-        afterLine: lineNumber,
-        header: null,
-      })
+      if (currentChange !== undefined) {
+        result.push(currentChange)
+        if (currentChange.beforeLine !== null) beforeCursor = currentChange.beforeLine + 1
+      }
+      else {
+        result.push({
+          key: `full:${lineNumber}`,
+          kind: 'context',
+          text: current[lineNumber - 1],
+          beforeLine: beforeCursor,
+          afterLine: lineNumber,
+          header: null,
+        })
+        beforeCursor += 1
+      }
     }
     result.push(...(at.get(current.length + 1) ?? []).filter((line) => line.kind === 'remove'))
     return result
+  }
+
+  static split(lines: readonly FileDiffVisualLine[]): readonly FileDiffSplitRow[] {
+    const rows: FileDiffSplitRow[] = []
+    let removes: FileDiffSplitCell[] = []
+    let adds: FileDiffSplitCell[] = []
+    let pendingHeader: string | null = null
+
+    const flush = (): void => {
+      const count = Math.max(removes.length, adds.length)
+      for (let i = 0; i < count; i++) {
+        const left = removes[i] ?? null
+        const right = adds[i] ?? null
+        rows.push({
+          key: `${left?.line.key ?? 'empty'}|${right?.line.key ?? 'empty'}`,
+          header: i === 0 ? pendingHeader : null,
+          left,
+          right,
+        })
+      }
+      removes = []
+      adds = []
+      pendingHeader = null
+    }
+
+    lines.forEach((line, index) => {
+      if (line.header !== null) flush()
+      if (line.kind === 'context') {
+        flush()
+        const cell: FileDiffSplitCell = { line, index }
+        rows.push({ key: line.key, header: line.header, left: cell, right: cell })
+      }
+      else if (line.kind === 'remove') {
+        if (adds.length > 0) flush()
+        if (line.header !== null) pendingHeader = line.header
+        removes.push({ line, index })
+      }
+      else if (line.kind === 'add') {
+        if (line.header !== null) pendingHeader = line.header
+        adds.push({ line, index })
+      }
+      else throw new Error(`Unknown diff line kind: ${JSON.stringify(line.kind)}`)
+    })
+    flush()
+    return rows
+  }
+
+  static minimapMarks(
+    layout: FileDiffLayout,
+    lines: readonly FileDiffVisualLine[],
+    splitRows: readonly FileDiffSplitRow[],
+  ): readonly FileDiffMinimapMark[] {
+    if (layout === 'unified') return lines.map((line) => line.kind)
+    else if (layout === 'split')
+      return splitRows.map((row) => {
+        const removed = row.left?.line.kind === 'remove'
+        const added = row.right?.line.kind === 'add'
+        if (removed && added) return 'change'
+        else if (removed) return 'remove'
+        else if (added) return 'add'
+        else return 'context'
+      })
+    else throw new Error(`Unknown diff layout: ${JSON.stringify(layout)}`)
   }
 
   static matchesCurrent(data: FileDiffData, currentText: string): boolean {

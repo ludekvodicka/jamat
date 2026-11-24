@@ -15,6 +15,7 @@ import { TerminalBufferScan } from '../menu/terminalBufferScan'
 import { TerminalClipboard } from '../input/terminalClipboard'
 import { TerminalInterrupt } from '../input/terminalInterrupt'
 import { TerminalKeyGate } from '../input/terminalKeyGate'
+import { TerminalViewportScroll } from '../input/terminalViewportScroll'
 import { TerminalWheelRepeat } from '../input/terminalWheelRepeat'
 import { TerminalOutput } from './terminalOutput'
 import { type TerminalRefusalCode, type TerminalAttachTransport, TerminalTransports } from './terminalTransport'
@@ -137,6 +138,11 @@ export function useTerminalAttachment(
    * arrive after the terminal attached, and a detector frozen at the attach was missing for good.
    */
   detect?: TerminalAttachTransport['detect'],
+  /**
+   * Called once when a hidden surface's held output outgrew its bound and became visible again, so
+   * the owner can mint a fresh attach and draw a clean serialized snapshot from the Host.
+   */
+  onResync?: () => void,
 ): TerminalAttachmentHandle {
   const [state, setState] = useState<TerminalSurfaceState>({
     status: 'connecting',
@@ -159,6 +165,7 @@ export function useTerminalAttachment(
   const onTypedRef = useRef(onTyped)
   const onPasteNoteRef = useRef(onPasteNote)
   const detectRef = useRef(detect)
+  const onResyncRef = useRef(onResync)
   // Committed rather than written mid-render. A render can be started and thrown away, and a
   // discarded one would leave these pointing at callbacks belonging to a tree that was never
   // committed - which in this surface means a wrong `readAgent` answer becoming wrong bytes, since
@@ -170,6 +177,7 @@ export function useTerminalAttachment(
     onTypedRef.current = onTyped
     onPasteNoteRef.current = onPasteNote
     detectRef.current = detect
+    onResyncRef.current = onResync
   })
 
   useEffect(() => {
@@ -294,6 +302,12 @@ export function useTerminalAttachment(
     // it takes away is not this terminal's to spell at all.
     terminal.attachCustomKeyEventHandler((event) => {
       if (!TerminalKeyGate.allowXterm(event)) return false
+      const scrollPages = TerminalViewportScroll.pagesOf(event, terminal.buffer.active.type)
+      if (scrollPages !== null) {
+        event.preventDefault()
+        terminal.scrollPages(scrollPages)
+        return false
+      }
       // Taken from xterm rather than left to it: xterm spells Ctrl+V as the control byte \x16 and
       // cancels the event, which also stops the browser's own paste from ever firing. Left alone,
       // the key reaches the agent as a byte it does nothing with and nothing is pasted at all.
@@ -426,10 +440,14 @@ export function useTerminalAttachment(
 
     terminalRef.current = terminal
 
-    const output = new TerminalOutput(terminal, () => {
-      const element = holderRef.current
-      return element !== null && element.offsetWidth > 0 && element.offsetHeight > 0
-    })
+    const output = new TerminalOutput(
+      terminal,
+      () => {
+        const element = holderRef.current
+        return element !== null && element.offsetWidth > 0 && element.offsetHeight > 0
+      },
+      () => { if (!disposed && !lost) onResyncRef.current?.() },
+    )
     visibleRef.current = next => { void output.setVisible(next)?.catch(error => AppClientUiReport.error(String(error))) }
 
     const onFrame = (frame: TerminalFrame): void | Promise<void> => {

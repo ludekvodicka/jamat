@@ -33,7 +33,7 @@ export class FinishUiScenario {
       RemoteUiScenarios.pair(source, controller)
       const { configDir, stateRoot } = source
       env = { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: stateRoot, JAMAT_V3_HOST_STATE_DIR: join(stateRoot, 'host'),
-        JAMAT_V3_CONFIG_DIR: configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1', CLAUDE_CONFIG_DIR: configDir, CODEX_HOME: configDir }
+        JAMAT_V3_CONFIG_DIR: configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1', CLAUDE_CONFIG_DIR: configDir, CODEX_HOME: configDir, JAMAT_V3_GEMINI_DIR: join(configDir, '.gemini') }
       if (realAgent) {
         if (process.env.CLAUDE_CONFIG_DIR === undefined) delete env.CLAUDE_CONFIG_DIR
         else env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
@@ -124,7 +124,7 @@ export class FinishUiScenario {
       ].join('\n'))
       for (const [label, side] of [['source', source], ['remote', controller]] as const) {
         const childEnv = { ...env, JAMAT_V3_LOCAL_STATE_DIR: side.stateRoot, JAMAT_V3_HOST_STATE_DIR: join(side.stateRoot, 'host'),
-          JAMAT_V3_CONFIG_DIR: side.configDir, ...realAgent ? {} : { CLAUDE_CONFIG_DIR: side.configDir }, CODEX_HOME: side.configDir }
+          JAMAT_V3_CONFIG_DIR: side.configDir, ...realAgent ? {} : { CLAUDE_CONFIG_DIR: side.configDir }, CODEX_HOME: side.configDir, JAMAT_V3_GEMINI_DIR: join(side.configDir, '.gemini') }
         const child = spawn(electron, [root,
           `--remote-debugging-port=${side.debugPort}`, '--remote-debugging-address=127.0.0.1'], { env: childEnv, windowsHide: true })
         await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
@@ -199,7 +199,7 @@ export class FinishUiScenario {
       const message = async (client: WorkspaceCdp, text: string, repositoryName = 'repository', mount = '.'): Promise<void> => {
         const selector = externals ? `.session-actions__review textarea[aria-label="Commit message ${repositoryName} (${mount})"]`
           : '.session-actions__review .commit-message textarea'
-        await RemoteUiScenarios.until(async () => client.evaluate<boolean>(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).some(e => !e.disabled && e.getBoundingClientRect().height > 0)`), `Ready message editor: ${repositoryName}`)
+        await RemoteUiScenarios.until(async () => client.evaluate<boolean>(`(() => { const el = Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(e => !e.disabled); if (!el) return false; const details = el.closest('details'); if (details && !details.open) details.open = true; return el.getBoundingClientRect().height > 0; })()`), `Ready message editor: ${repositoryName}`)
         await client.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(e => e.getBoundingClientRect().height > 0).focus()`)
         await client.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 })
         await client.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: 2, windowsVirtualKeyCode: 65 })

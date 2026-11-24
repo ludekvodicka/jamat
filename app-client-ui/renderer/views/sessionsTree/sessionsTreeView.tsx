@@ -1018,7 +1018,10 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     groupItem: (key, group, hiddenWhenRemote) => ({
       key: 'groups', label: 'Groups', disabled: !groupState.ready || groupState.saving,
       children: [
-        ...sections.map((section) => ({
+        ...[
+          ...sections.filter((section) => section.id === 'none'),
+          ...sections.filter((section) => section.id !== 'none'),
+        ].map((section) => ({
           key: section.id, label: SessionsGroupsState.labelOf(section), checked: group === section.id,
           disabled: !groupState.ready || groupState.saving,
           onSelect: () => groupState.assign(key, section.id),

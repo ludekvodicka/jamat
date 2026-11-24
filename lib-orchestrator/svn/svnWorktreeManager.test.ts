@@ -559,6 +559,29 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       .toMatchObject({ ok: true, value: { holds: false, reason: 'dir/child still at r40 (normal)' } })
   })
 
+  it('proves a deleted child covered by a deleted parent directory in svn log, while rejecting a modified or sibling prefix', async () => {
+    await mkdir(join(temporary, 'app'), { recursive: true })
+    const { manager } = scripted((_cwd, args) => {
+      if (args[0] === 'status' && !args.includes('--depth')) return { stdout: statusXml([]) }
+      if (args[0] === 'status') return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: infoXml({ revision: 50, entryUrl: args.at(-1)?.startsWith('app') ? `${url}/app` : url }) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'D', path: '/Project/app/devicesAgent' }]) }
+    })
+    const receipt = { repository, revision: 50, paths: ['/Project/app/devicesAgent', '/Project/app/devicesAgent/devicesAgentTexts.ts'] }
+    expect(await manager.landingPaths(temporary, [receipt]))
+      .toMatchObject({ ok: true, value: [{ root: temporary, path: 'app/devicesAgent', repositoryPath: '/Project/app/devicesAgent', action: 'D' }] })
+    expect(await manager.landingProof(temporary, [receipt])).toEqual({ ok: true, value: { holds: true } })
+    expect(await manager.landingPaths(temporary, [{ repository, revision: 50, paths: ['/Project/app/devicesAgentExtra/file.ts'] }]))
+      .toMatchObject({ ok: false, code: 'refused', detail: 'r50 does not prove every landed path' })
+    const { manager: modified } = scripted((_cwd, args) => {
+      if (args[0] === 'status') return { stdout: statusXml([]) }
+      if (args[0] === 'info') return { stdout: infoXml({ revision: 50 }) }
+      if (args[0] === 'log') return { stdout: logXml(50, [{ action: 'M', path: '/Project/app/devicesAgent' }]) }
+    })
+    expect(await modified.landingPaths(temporary, [receipt]))
+      .toMatchObject({ ok: false, code: 'refused', detail: 'r50 does not prove every landed path' })
+  })
+
   it('batches landing status without attributing a later conflict to an earlier path', async () => {
     for (const path of ['first', 'second']) await writeFile(join(temporary, path), 'local')
     const { manager, calls } = scripted((_cwd, args) => {

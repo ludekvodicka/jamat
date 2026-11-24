@@ -126,7 +126,7 @@ export class PublicationStep {
     }
     finally { if (this.deps.steps.clear(sessionId)) this.deps.changed() }
     if (!verified.verified) return
-    if (more && await this.preparation.advanceReceipt(sessionId, root.path, selection))
+    if (more && await this.preparation.advanceReceipt(sessionId, root.path, selection, deletions))
       await this.state.write(sessionId, (current) => ({ ...current, step: 'awaiting-idle', execution: { ...current.execution!, rootCursor: action.rootCursor + 1, runId: undefined } }))
     this.deps.landedDue(record.worktree!.repositoryRoot)
     try { await this.completion.recordResult(sessionId, undefined, true) }

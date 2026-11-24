@@ -11,9 +11,9 @@ import { ScreenTail } from './screenTail'
  *
  * Follows the work-state inspector discipline: every matched pattern names the recorded live fixture
  * that admits it (`antigravity-live-working.json`, `antigravity-live-background-tasks.json`,
- * `antigravity-live-permission-prompt.json`, `antigravity-live-trust-dialog.json`,
- * `antigravity-live-idle.json`), and only the rendered screen is read for active work (never the raw
- * ring).
+ * `antigravity-live-background-subagents.json`, `antigravity-live-permission-prompt.json`,
+ * `antigravity-live-trust-dialog.json`, `antigravity-live-idle.json`), and only the rendered screen
+ * is read for active work (never the raw ring).
  */
 export class AgentWorkInspectorAntigravity {
   /**
@@ -85,13 +85,32 @@ export class AgentWorkInspectorAntigravity {
    * `antigravity-live-background-tasks.json`: active task count in the footer (`· 1 task(s) · /tasks`)
    * beneath a closed composer box. Requires a positive count so `0 task(s)` never counts as active.
    */
-  private static readonly backgroundTasksFooterNormConst = /·[1-9]\d*task(?:\(s\)|s?)(?:·\/tasks|$)/
+  private static readonly backgroundTasksFooterNormConst = /·[1-9]\d*task(?:\(s\)|s?)(?:·\/tasks|·|$)/
+
+  /**
+   * `antigravity-live-background-subagents.json`: active subagent count in the footer
+   * (`· 1 subagent(s)`) beneath a closed composer box. Requires a positive count so `0 subagent(s)`
+   * never counts as active.
+   */
+  private static readonly backgroundSubagentsFooterNormConst = /·[1-9]\d*subagent(?:\(s\)|s?)(?:·|$)/
 
   /**
    * `antigravity-live-background-tasks.json`: a running task row (`● [10:08:11] cmd... running`)
    * drawn inside the ruled drawer directly between the composer bottom rule and the footer rule.
    */
   private static readonly backgroundTaskRowNormConst = /^[●•◦○]\[\d{2}:\d{2}:\d{2}\].*running$/
+
+  /**
+   * `antigravity-live-background-subagents.json`: a running subagent row
+   * (`● Agent(self: Group 3 Worker (U6-U9)) · Gemini 4 Neon  Generating · 9m15s`) drawn inside the
+   * ruled drawer directly between the composer bottom rule and the footer rule.
+   */
+  private static readonly backgroundSubagentRowNormConst =
+    /^[●•◦○]agent\(.+·(?:\d+h(?:\d+m)?(?:\d+s)?|\d+m(?:\d+s)?|\d+s)$/
+
+  /** Explicit terminal status label right before the elapsed counter inside a subagent drawer row. */
+  private static readonly finishedSubagentRowConst =
+    /\s{2}(?:done|completed|failed|stopped|cancel(?:led|ed))\s*·/i
 
   /** Maximum rows in the background-task drawer between the composer rule and the footer rule. */
   private static readonly maxDrawerRowsConst = 8
@@ -121,10 +140,16 @@ export class AgentWorkInspectorAntigravity {
         const footerTasks = layout.normFooter.match(AgentWorkInspectorAntigravity.backgroundTasksFooterNormConst)?.[0]
         if (footerTasks)
           background.push({ source, signal: 'backgroundTasksFooter', match: footerTasks })
+        const footerSubagents = layout.normFooter.match(AgentWorkInspectorAntigravity.backgroundSubagentsFooterNormConst)?.[0]
+        if (footerSubagents)
+          background.push({ source, signal: 'backgroundSubagentsFooter', match: footerSubagents })
         for (const row of layout.drawerRows) {
           const normRow = row.replace(/\s+/g, '')
           if (AgentWorkInspectorAntigravity.backgroundTaskRowNormConst.test(normRow))
             background.push({ source, signal: 'backgroundTaskRow', match: row.trim() })
+          else if (AgentWorkInspectorAntigravity.backgroundSubagentRowNormConst.test(normRow)
+            && !AgentWorkInspectorAntigravity.finishedSubagentRowConst.test(row))
+            background.push({ source, signal: 'backgroundSubagentRow', match: row.trim() })
         }
       }
     }

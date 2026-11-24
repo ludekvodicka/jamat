@@ -372,6 +372,79 @@ describe('FinishDriver', () => {
     expect(h.state().preparation?.checks).toBe('pending')
     expect(h.events).not.toContain('commit')
   })
+  it('advances a receipt across deleted descendants removed by committing a deleted directory, and hides the stale commit editor when advancement fails', async () => {
+    const h = await harness()
+    const mount = join(h.root, 'components')
+    let committed = false
+    const makeAssembly = (nodes: { path: string; content: string; metadata: string }[]) => ({
+      format: 1 as const, incoming: [], nodes,
+      content: SvnAssemblyReader.hash(nodes.filter((node) => node.content !== '').map(({ path, content }) => [path, content])),
+      metadata: SvnAssemblyReader.hash(nodes.map(({ path, metadata }) => [path, metadata])),
+    })
+    h.deps.svn.assembly = async () => ({
+      ok: true,
+      value: makeAssembly([
+        { path: '@mount/.', content: 'root-mount', metadata: '1' },
+        { path: '@mount/components', content: 'ext-mount', metadata: committed ? '128' : '127' },
+        { path: 'a.txt', content: 'unchanged', metadata: 'modified' },
+        ...(committed ? [] : [
+          { path: 'components/oldDir', content: '', metadata: 'deleted-dir' },
+          { path: 'components/oldDir/nested', content: '', metadata: 'deleted-sub' },
+          { path: 'components/oldDir/nested/file.ts', content: '', metadata: 'deleted-file' },
+        ]),
+      ]),
+    })
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    // Simulate a finished commit leaving its runId on execution before advanceReceipt invalidates.
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'finished-commit-run' } } }))
+    committed = true
+    // Without the directory in `deletions`, vanished descendants are rejected and the stale commit editor stays closed.
+    expect(await new PreparationStep(h.deps, new FinishState(h.deps)).advanceReceipt('worker', mount, ['oldDir'], [])).toBe(false)
+    expect(h.state().execution?.runId).toBeUndefined()
+    expect(WorktreeWords.reviewReady(h.state())).toBe(false)
+    const invalidated = SessionWorkflows.of(h.records.get('worker')!, () => null)!
+    expect(invalidated.rounds.flatMap((round) => round.steps).some((step) => step.body?.kind === 'commit')).toBe(false)
+    expect(invalidated.validation?.requiredSelection).toEqual([])
+    const recheck = invalidated.actions.find((action) => action.id === 'refresh-preparation')
+    expect(recheck?.primary).toBe(true)
+    expect(recheck?.note).toBeUndefined()
+    // Even if an older persisted record still carries a stale commit runId on `reviewing`, Recheck must not refuse it.
+    await h.records.update('worker', (record) => ({ ...record, worktreeLifecycle: { ...record.worktreeLifecycle!,
+      execution: { ...record.worktreeLifecycle!.execution!, runId: 'stale-commit-run' } } }))
+    // Re-prepare before commit, then advance with `oldDir` declared in `deletions`: vanished descendants pass.
+    committed = false
+    expect(await h.driver.start('worker', { choice: 'commit', requestedBy: 'window', refreshPreparation: true })).toMatchObject({ ok: true })
+    committed = true
+    expect(await new PreparationStep(h.deps, new FinishState(h.deps)).advanceReceipt('worker', mount, ['oldDir'], ['oldDir'])).toBe(true)
+    expect(h.state().preparation?.checkedAt).toBeDefined()
+    expect(h.state().wait).toBeUndefined()
+  })
+  it('refuses advanceReceipt when a vanished deleted node sits in a nested external mount under a deleted directory', async () => {
+    const h = await harness()
+    const mount = join(h.root, 'components')
+    let committed = false
+    const makeAssembly = (nodes: { path: string; content: string; metadata: string }[]) => ({
+      format: 1 as const, incoming: [], nodes,
+      content: SvnAssemblyReader.hash(nodes.filter((node) => node.content !== '').map(({ path, content }) => [path, content])),
+      metadata: SvnAssemblyReader.hash(nodes.map(({ path, metadata }) => [path, metadata])),
+    })
+    h.deps.svn.assembly = async () => ({
+      ok: true,
+      value: makeAssembly([
+        { path: '@mount/.', content: 'root-mount', metadata: '1' },
+        { path: '@mount/components', content: 'ext-mount', metadata: committed ? '128' : '127' },
+        { path: '@mount/components/oldDir/nestedExt', content: 'nested-mount', metadata: '5' },
+        ...(committed ? [] : [
+          { path: 'components/oldDir', content: '', metadata: 'deleted-dir' },
+          { path: 'components/oldDir/nestedExt/file.ts', content: '', metadata: 'deleted-in-nested' },
+        ]),
+      ]),
+    })
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    committed = true
+    expect(await new PreparationStep(h.deps, new FinishState(h.deps)).advanceReceipt('worker', mount, ['oldDir'], ['oldDir'])).toBe(false)
+  })
   it('stops an overdue declared check before recording its failure and never publishes it', async () => {
     const h = await harness()
     h.setChecks([{ key: 'hang', scriptId: 'checks', name: 'Hanging check', commands: [{ cwd: h.root, command: 'hang' }] }])

@@ -119,9 +119,66 @@ describe('AccountsOperations', () => {
     expect(bench.errors).toEqual([])
   })
 
-  it('keeps accounts.pick and accounts.report off the paired-computer allowlist', () => {
-    expect(RemoteControlPeerConst.controlOperations).not.toContain('accounts.pick')
-    expect(RemoteControlPeerConst.controlOperations).not.toContain('accounts.report')
+  it('keeps accounts.pick, accounts.report and accounts.antigravity.* off the paired-computer allowlist', () => {
+    for (const op of [
+      'accounts.pick',
+      'accounts.report',
+      'accounts.antigravity.list',
+      'accounts.antigravity.store',
+      'accounts.antigravity.update',
+      'accounts.antigravity.clear',
+      'accounts.antigravity.login',
+      'accounts.antigravity.switch',
+      'accounts.antigravity.remove',
+    ]) expect(RemoteControlPeerConst.controlOperations).not.toContain(op)
+  })
+
+  it('routes accounts.antigravity.* operations with strict validation and AccountProblem mapping', async () => {
+    const calls: string[] = []
+    const view = {
+      available: true,
+      unavailableReason: null,
+      currentPresent: true,
+      activeSlotId: 'alice-1234',
+      currentEmail: 'alice@example.com',
+      currentPlanTier: 'Pro',
+      runningSessionCount: 1,
+      reopenableSessionCount: 1,
+      loginInProgress: false,
+      capturedAt: 100,
+      logins: [{ id: 'alice-1234', label: 'Alice', email: 'alice@example.com', planTier: 'Pro', savedAt: 1, active: true, quota: null }],
+    }
+    const bench = new RegistryBench()
+    new AccountsOperations(
+      {} as AgentAccounts,
+      { pick: async () => { throw new Error('not picked') }, report: async () => {}, callers: async () => ({ capturedAt: 0, windowDays: 30, callers: [], recent: [] }) },
+      () => null,
+      {
+        list: async () => { calls.push('list'); return view },
+        store: async label => { calls.push(`store:${label}`); return { slotId: 'alice-1234' } },
+        update: async slotId => { calls.push(`update:${slotId}`) },
+        clear: async () => { calls.push('clear') },
+        login: async () => { calls.push('login'); return { sessionId: 'login-1' } },
+        switchTo: async (slotId, options) => { calls.push(`switch:${slotId}:${options?.reopenRunning === true}`); return { reopened: options?.reopenRunning ? 1 : 0, failed: [] } },
+        remove: async slotId => { calls.push(`remove:${slotId}`) },
+      },
+    ).register(bench.registry)
+    expect(bench.registry.isWrite('accounts.antigravity.list')).toBe(false)
+    for (const op of ['accounts.antigravity.store', 'accounts.antigravity.update', 'accounts.antigravity.clear',
+      'accounts.antigravity.login', 'accounts.antigravity.switch', 'accounts.antigravity.remove'])
+      expect(bench.registry.isWrite(op)).toBe(true)
+
+    expect(await bench.call('accounts.antigravity.list', {})).toEqual({ ok: true, value: view })
+    expect(await bench.call('accounts.antigravity.store', { label: 'Alice' })).toEqual({ ok: true, value: { slotId: 'alice-1234' } })
+    expect(await bench.call('accounts.antigravity.update', { slotId: 'alice-1234' })).toEqual({ ok: true, value: {} })
+    expect(await bench.call('accounts.antigravity.clear', {})).toEqual({ ok: true, value: {} })
+    expect(await bench.call('accounts.antigravity.login', {})).toEqual({ ok: true, value: { sessionId: 'login-1' } })
+    expect(await bench.call('accounts.antigravity.switch', { slotId: 'alice-1234' })).toEqual({ ok: true, value: { reopened: 0, failed: [] } })
+    expect(await bench.call('accounts.antigravity.switch', { slotId: 'alice-1234', reopenRunning: true })).toEqual({ ok: true, value: { reopened: 1, failed: [] } })
+    expect(await bench.call('accounts.antigravity.remove', { slotId: 'alice-1234' })).toEqual({ ok: true, value: {} })
+    expect(await bench.call('accounts.antigravity.switch', { slotId: '../bad' })).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(calls).toEqual(['list', 'store:Alice', 'update:alice-1234', 'clear', 'login', 'switch:alice-1234:false', 'switch:alice-1234:true', 'remove:alice-1234'])
+    expect(bench.errors).toEqual([])
   })
 
   it('lists the caller of a pick made just before through usage.callers', async () => {

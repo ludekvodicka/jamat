@@ -67,7 +67,7 @@ import { UsagePanel } from '../usage/usagePanel'
 import { DebugPanel } from '../debug/debugPanel'
 import { SnapinPanel } from '../snapins/snapinPanel'
 import { SessionFolder } from '../sessions/sessionFolder'
-import { TerminalPanel } from '../panels/terminal/terminalPanel'
+import { TerminalPanel, type TerminalPanelProps } from '../panels/terminal/terminalPanel'
 import type { TerminalSplitPinsStore } from '../panels/terminal/split/useTerminalSplitPins'
 import { WelcomePanel } from '../panels/welcomePanel'
 import { SessionOperations } from './sessionOperations'
@@ -739,6 +739,16 @@ class AppShellComposition {
       loadSplitPins: (sessionId) => window.appClient.state.loadSplitPins(sessionId),
       saveSplitPins: (sessionId, items) => window.appClient.state.saveSplitPins(sessionId, items),
     }
+    // Stable across dockview parameter re-renders; inline closures here churn TerminalPanel's
+    // memoized workflow/review ports and reset embedded commit reviews on every inner tab switch.
+    const openPanelTerminal: NonNullable<TerminalPanelProps['openTerminal']> = async (target, title) => {
+      const result = await WorkspacePanels.openTerminal(controller, target, title)
+      return result.kind === 'failed' ? result.detail : null
+    }
+    const openPanelFile: TerminalPanelProps['openFile'] = (source, documentKey, hint, location, target) =>
+      WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location, target)
+    const openPanelDirectoryAt: TerminalPanelProps['openDirectoryAt'] = (sessionId, path, directoryKey, target) =>
+      WorkspacePanels.openDirectoryAt(controller, sessionId, path, directoryKey, target)
     panels.register({
       key: PanelKeysConst.terminal,
       title: 'Terminal',
@@ -755,21 +765,19 @@ class AppShellComposition {
             drafts={terminalDrafts}
             panelFocus={panelFocus}
             sessions={sessionsSnapshot}
-            openTerminal={async (target, title) => { const result = await WorkspacePanels.openTerminal(controller, target, title); return result.kind === 'failed' ? result.detail : null }}
+            openTerminal={openPanelTerminal}
             remoteSessions={remoteSnapshot}
             sessionModel={sessionModel}
             settings={agentSettings}
             compact={contextCompact}
             compaction={contextCompaction}
             marks={sessionsMarks}
-              commitOpen={commitOpen}
+            commitOpen={commitOpen}
             fileTools={fileTools}
             history={panelHistory}
             splitPins={splitPins}
-            openFile={(source, documentKey, hint, location, target) =>
-              WorkspacePanels.openFileViewer(controller, source, documentKey, hint, location, target)}
-            openDirectoryAt={(sessionId, path, directoryKey, target) =>
-              WorkspacePanels.openDirectoryAt(controller, sessionId, path, directoryKey, target)}
+            openFile={openPanelFile}
+            openDirectoryAt={openPanelDirectoryAt}
           />
         </ErrorBoundary>
       ),

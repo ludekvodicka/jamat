@@ -68,7 +68,7 @@ export class FinalizeAsks {
       scope,
       sessionTitle: session.title,
       session: {
-        glyph: SessionNodeState.glyphOf(session.life, session.kind, session.activity, session.activityDetail, session.compacting),
+        glyph: SessionNodeState.glyphOf(session.life, session.kind, session.activity, session.activityDetail, session.compacting, session.shellsRunning),
         group,
         note: session.note ?? null,
       },

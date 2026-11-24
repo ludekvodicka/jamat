@@ -65,28 +65,31 @@ export class SessionWorkspaceProviders {
   }
 
   static forTarget(target: SessionTarget, remote?: SnapshotStore<RemoteConnectionsSnapshot>): SessionWorkspacePorts {
-    if (target.kind === 'local') return {
-      openCommit: async (vcs, scopeRoot) => {
-        const result = await window.appClient.versioning.openCommitTab(target.sessionId, vcs, scopeRoot)
-        return result.ok ? result.value.ok ? null : result.value.error.detail : result.error
-      },
-      notes: localTerminalNotesPorts,
-      todos: localProjectTodosPorts,
-      transcript: async () => { const answer = await AppControl.value('sessions.transcript', { session: AppControl.sessionOf(target.sessionId) }); return answer.ok ? { ok: true, value: answer.value.reading } : answer },
-      share: window.appClient.tabs?.openSharedItem ? (request) => window.appClient.tabs.openSharedItem(target.sessionId, request) : undefined,
-      items: window.appClient.tabs?.sessionItems ? { read: (cursor) => window.appClient.tabs.sessionItems(target.sessionId, cursor),
-        subscribe: (changed) => window.appClient.onTabsOpenTerminalTargets(() => changed()) } : null,
-      status: () => null, start: () => () => {}, subscribe: () => () => {}, contentRevision: () => 0, dispose: () => {},
-      changes: window.appClient.fileChanges,
-      files: SessionWorkspaceProviders.localFiles(),
-      reviews: CommitPaneBridge.of(),
-      tasks: {
-        openTerminal: async (runId) => { const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: runId } }); return !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null },
-        scriptOutput: (request) => AppControl.call('sessions.scriptOutput', request),
-        transcript: (request) => AppControl.call('sessionTasks.transcript', request),
-        shellOutput: (request) => AppControl.call('sessionTasks.shellOutput', request),
-      },
-      actions: (report, openFile) => WorkflowPortsOf.of(target.sessionId, report, openFile),
+    if (target.kind === 'local') {
+      const reviews = CommitPaneBridge.of()
+      return {
+        openCommit: async (vcs, scopeRoot) => {
+          const result = await window.appClient.versioning.openCommitTab(target.sessionId, vcs, scopeRoot)
+          return result.ok ? result.value.ok ? null : result.value.error.detail : result.error
+        },
+        notes: localTerminalNotesPorts,
+        todos: localProjectTodosPorts,
+        transcript: async () => { const answer = await AppControl.value('sessions.transcript', { session: AppControl.sessionOf(target.sessionId) }); return answer.ok ? { ok: true, value: answer.value.reading } : answer },
+        share: window.appClient.tabs?.openSharedItem ? (request) => window.appClient.tabs.openSharedItem(target.sessionId, request) : undefined,
+        items: window.appClient.tabs?.sessionItems ? { read: (cursor) => window.appClient.tabs.sessionItems(target.sessionId, cursor),
+          subscribe: (changed) => window.appClient.onTabsOpenTerminalTargets(() => changed()) } : null,
+        status: () => null, start: () => () => {}, subscribe: () => () => {}, contentRevision: () => 0, dispose: () => {},
+        changes: window.appClient.fileChanges,
+        files: SessionWorkspaceProviders.localFiles(),
+        reviews,
+        tasks: {
+          openTerminal: async (runId) => { const answer = await AppControl.call('tabs.open', { session: { kind: 'sessionId', sessionId: runId } }); return !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null },
+          scriptOutput: (request) => AppControl.call('sessions.scriptOutput', request),
+          transcript: (request) => AppControl.call('sessionTasks.transcript', request),
+          shellOutput: (request) => AppControl.call('sessionTasks.shellOutput', request),
+        },
+        actions: (report, openFile) => WorkflowPortsOf.of(target.sessionId, report, openFile, reviews),
+      }
     }
     else if (target.kind === 'remote') {
       if (!remote) throw new Error('Remote sessions store is required')

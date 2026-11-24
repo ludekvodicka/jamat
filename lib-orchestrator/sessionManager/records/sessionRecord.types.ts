@@ -89,6 +89,11 @@ export interface SessionRecordAgent {
    */
   model?: string
   /**
+   * The reasoning level the creator named, kept for a replayed create like `model`. Only a named
+   * one: absent, the create launch reads this machine's setting, as it did before the field existed.
+   */
+  effort?: string
+  /**
    * Print mode: the agent answers its one turn and the process exits, so the run can be judged by
    * how it ended. Internal - it is never accepted from the wire, because a session a person started
    * is not one anybody is waiting on the exit code of.

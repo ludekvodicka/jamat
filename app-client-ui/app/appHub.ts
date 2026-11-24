@@ -4,6 +4,7 @@ import { TabWindowRouter } from './shell/tabWindowRouter'
 import { ServiceFileViewerShellIpc } from './shell/serviceFileViewerShellIpc'
 import { DocumentExport } from './shell/documentExport'
 import { DocumentPdfPrinter } from './shell/documentPdfPrinter'
+import { FileHtmlPreviewStore } from './fileViewer/fileHtmlPreviewStore'
 import { FileViewerDragExport } from './fileViewer/fileViewerDragExport'
 import { FileViewerExport } from './fileViewer/fileViewerExport'
 import type { FileMediaSource } from './fileViewer/fileMediaSource'
@@ -113,6 +114,7 @@ export class MainHub {
   private readonly autolauncherIpc: ServiceAutolauncherIpc
   private readonly remoteIpc: ServiceRemoteControlIpc
   private readonly mediaDrag: FileViewerDragExport
+  private readonly htmlPreviews: FileHtmlPreviewStore
   private readonly remoteMedia: RemoteFileMediaSource
   private readonly contentClient: RemoteContentClient
   private readonly fileViewerProtocol: FileViewerProtocol
@@ -299,7 +301,8 @@ export class MainHub {
       read: (token, version, offset, length, signal) => (this.remoteMedia.owns(token) ? this.remoteMedia : localMedia).read(token, version, offset, length, signal),
     }
     this.mediaDrag = new FileViewerDragExport(join(ClientStatePaths.directory(configIdentity, channel), 'drag-exports'), media)
-    this.fileViewerProtocol = new FileViewerProtocol(media)
+    this.htmlPreviews = new FileHtmlPreviewStore()
+    this.fileViewerProtocol = new FileViewerProtocol(media, this.htmlPreviews)
     this.machineLoad = new MachineLoadSampler({
       emit: (event, at) => this.perf.record([{ ...event, v: 1, at, process: 'machine', pid: process.pid, build }]),
       roots: () => this.orchestrator.processTree().roots,
@@ -314,7 +317,7 @@ export class MainHub {
         ? this.workspaceWindows.windowIdOf(sender)
         : null
     this.fileViewerShellIpc = new ServiceFileViewerShellIpc({ path: (...args) => this.orchestrator.viewerPath(...args), imageDragPath: (...args) => this.orchestrator.viewerImageDragPath(...args) }, workspaceOwnerIdOf,
-      new DocumentExport(new DocumentPdfPrinter()), this.mediaDrag)
+      new DocumentExport(new DocumentPdfPrinter()), this.mediaDrag, this.htmlPreviews)
     this.tabsIpc = new ServiceTabsIpc(
       this.workspaceWindows,
       this.panelIndex,
@@ -441,6 +444,7 @@ export class MainHub {
     await this.settleStep('the client child processes', () => this.children.stopAll())
     this.orchestratorClient.close()
     this.gatewayCalls.close()
+    this.htmlPreviews.clear()
     await boundedNative
     powerMonitor.removeListener('suspend', this.onSuspend)
     powerMonitor.removeListener('resume', this.onResume)
@@ -544,6 +548,7 @@ export class MainHub {
     this.transferBroker.rendererGone(windowId)
     this.tabWindowRouter.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
+    this.htmlPreviews.revokeOwner(windowId)
     this.orchestrator.revokeOwner(windowId)
     this.updateWindowMenu()
     this.tabsPresenceChanged()
@@ -553,6 +558,7 @@ export class MainHub {
     this.transferBroker.rendererGone(windowId)
     this.tabWindowRouter.rendererGone(windowId)
     this.panelIndex.releaseWindow(windowId)
+    this.htmlPreviews.revokeOwner(windowId)
     this.orchestrator.revokeOwner(windowId)
     this.tabsPresenceChanged()
   }

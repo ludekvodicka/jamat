@@ -70,7 +70,7 @@ export class UsageUiScenario {
       const port = await RemoteUiScenarios.port()
       const env: NodeJS.ProcessEnv = { ...process.env, JAMAT_V3_CONFIG_DIR: config, JAMAT_V3_LOCAL_STATE_DIR: state,
         JAMAT_V3_HOST_STATE_DIR: join(state, 'host'), JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1',
-        CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex }
+        CLAUDE_CONFIG_DIR: claude, CODEX_HOME: codex, JAMAT_V3_GEMINI_DIR: join(root, 'gemini') }
       delete env.ELECTRON_RUN_AS_NODE
       delete env.CODEX_SQLITE_HOME
       child = spawn(join(repo, 'app-client-ui/node_modules/electron/dist/electron.exe'), [root,
@@ -164,11 +164,10 @@ export class UsageUiScenario {
       await ui.evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))')
       console.log('[smoke:ui] FileViewer toolbar: View as, icon buttons, Get document and Send to agent 1/3')
       const tokens = await ui.bridge<any>(`window.appClient.control.call('usage.tokens', { from: '${new Date(now - 6 * 86_400_000).toISOString().slice(0, 10)}', to: '${new Date(now + 86_400_000).toISOString().slice(0, 10)}', groupBy: 'project' })`)
-      // Antigravity transcripts are read from the user's own ~/.gemini/antigravity-cli, which this
-      // smoke cannot redirect, so only the agents of the fixture homes are counted here.
-      const fixtureRows = tokens.value.rows.filter((row: { agentId: string }) => row.agentId === 'claude' || row.agentId === 'codex')
-      assert.equal(fixtureRows.length, 2, JSON.stringify(fixtureRows))
-      assert.equal(fixtureRows.find((row: { agentId: string }) => row.agentId === 'codex').input, 2000)
+      // Every row comes from the fixture homes; JAMAT_V3_GEMINI_DIR keeps the user's Antigravity data out.
+      assert.equal(tokens.value.rows.length, 2, JSON.stringify(tokens.value.rows))
+      assert.deepEqual(tokens.value.rows.map((row: { agentId: string }) => row.agentId).sort(), ['claude', 'codex'])
+      assert.equal(tokens.value.rows.find((row: { agentId: string }) => row.agentId === 'codex').input, 2000)
       console.log('[smoke:ui] Tools > Usage opens one workspace tab however often it is chosen; account pools, reset projection and both agents token totals render')
     } catch (error) {
       console.error(log)

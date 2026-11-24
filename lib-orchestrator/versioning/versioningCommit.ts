@@ -29,14 +29,18 @@ export class VersioningCommitLimits {
 export type VersioningCommitPath = RemoteControlCommitPath
 
 export class VersioningCommitPaths {
-  /** Exact keys, so a misspelled `depth` never falls back to a whole subtree. */
+  /**
+   * Exact keys, so a misspelled `depth` never falls back to a whole subtree. `checked: false` is
+   * valid only on an `infinity` target: a node-only directory that checks nothing names nothing.
+   */
   static valid(value: unknown): value is VersioningCommitPath {
     if (typeof value === 'string') return VersioningCommitPaths.literal(value)
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-    const keys = Object.keys(value).sort()
+    const keys = Object.keys(value).sort().join(',')
     const target = value as Record<string, unknown>
-    return keys.length === 2 && keys[0] === 'depth' && keys[1] === 'path'
-      && (target.depth === 'empty' || target.depth === 'infinity')
+    return (keys === 'depth,path' || keys === 'checked,depth,path')
+      && (target.depth === 'empty' ? target.checked === undefined || target.checked === true
+        : target.depth === 'infinity' && (target.checked === undefined || typeof target.checked === 'boolean'))
       && typeof target.path === 'string' && VersioningCommitPaths.literal(target.path)
   }
 
@@ -49,7 +53,12 @@ export class VersioningCommitPaths {
     if (typeof value === 'string') return false
     else if (value.depth === 'empty') return true
     else if (value.depth === 'infinity') return false
-    else throw new Error(`Unknown commit path depth: ${JSON.stringify(value.depth satisfies never)}`)
+    else throw new Error(`Unknown commit path depth: ${JSON.stringify(value satisfies never)}`)
+  }
+
+  /** Whether the rows the target names start checked; `checked: false` only shows them. */
+  static checked(value: VersioningCommitPath): boolean {
+    return typeof value === 'string' || value.checked !== false
   }
 
   private static literal(path: string): boolean {

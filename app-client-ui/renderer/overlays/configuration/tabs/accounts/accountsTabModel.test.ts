@@ -34,4 +34,32 @@ describe('AccountsTabModel', () => {
     expect(await AccountsTabModel.run({ kind: 'add', agentId: 'codex', label: ' Work ' })).toBeNull()
     expect(call.mock.calls).toEqual([['accounts.add', { agentId: 'codex', label: 'Work' }], ['accounts.login', { accountId: 'codex-work' }]])
   })
+
+  it('dispatches every Antigravity login switcher action to its control operation', async () => {
+    const call = vi.spyOn(AppControl, 'value')
+      .mockResolvedValueOnce({ ok: true, value: { slotId: 'alice-1234' } })
+      .mockResolvedValueOnce({ ok: true, value: {} })
+      .mockResolvedValueOnce({ ok: true, value: {} })
+      .mockResolvedValueOnce({ ok: true, value: { sessionId: 'agy-login' } })
+      .mockResolvedValueOnce({ ok: true, value: { reopened: 0, failed: [] } })
+      .mockResolvedValueOnce({ ok: true, value: { reopened: 1, failed: ['Session A: locked'] } })
+      .mockResolvedValueOnce({ ok: true, value: {} })
+    expect(await AccountsTabModel.run({ kind: 'antigravity-store', label: ' Alice ' })).toBeNull()
+    expect(await AccountsTabModel.run({ kind: 'antigravity-update', slotId: 'alice-1234' })).toBeNull()
+    expect(await AccountsTabModel.run({ kind: 'antigravity-clear' })).toBeNull()
+    expect(await AccountsTabModel.run({ kind: 'antigravity-login' })).toBeNull()
+    expect(await AccountsTabModel.run({ kind: 'antigravity-switch', slotId: 'alice-1234' })).toBeNull()
+    expect(await AccountsTabModel.run({ kind: 'antigravity-switch', slotId: 'alice-1234', reopenRunning: true }))
+      .toBe('Switched login (reopened 1); failed to reopen: Session A: locked')
+    expect(await AccountsTabModel.run({ kind: 'antigravity-remove', slotId: 'alice-1234' })).toBeNull()
+    expect(call.mock.calls).toEqual([
+      ['accounts.antigravity.store', { label: 'Alice' }],
+      ['accounts.antigravity.update', { slotId: 'alice-1234' }],
+      ['accounts.antigravity.clear', {}],
+      ['accounts.antigravity.login', {}],
+      ['accounts.antigravity.switch', { slotId: 'alice-1234' }],
+      ['accounts.antigravity.switch', { slotId: 'alice-1234', reopenRunning: true }],
+      ['accounts.antigravity.remove', { slotId: 'alice-1234' }],
+    ])
+  })
 })

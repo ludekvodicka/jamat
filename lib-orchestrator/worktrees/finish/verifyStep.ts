@@ -53,7 +53,7 @@ export class VerifyStep {
       const changed = rows.value.changed.find((row) => row.path === path)
       const status = rows.value.items.find((row) => row.path === path)
       if (review.deletions?.includes(path)) {
-        if (changed?.action !== 'D' || status !== undefined && !['none', 'unversioned', 'ignored'].includes(status.item)) differences.push(path)
+        if (!VerifyStep.deletedIn(rows.value.changed, path) || status !== undefined && !['none', 'unversioned', 'ignored'].includes(status.item)) differences.push(path)
         if (!absent) retainedDeletions.push(path)
         continue
       }
@@ -83,5 +83,10 @@ export class VerifyStep {
             paths: review.selection.filter((path) => !unique.includes(path)), at: Date.now() }] } }
     })) throw new Error('Publication verification could not be saved')
     return { verified: unique.length === 0, differences: unique }
+  }
+
+  // `svn log -v` collapses deleted children (such as an `svn move` source) under their deleted parent directory.
+  private static deletedIn(changed: readonly { path: string; action: string }[], path: string): boolean {
+    return changed.some((row) => row.action === 'D' && (row.path === path || row.path === '.' || path.startsWith(`${row.path}/`)))
   }
 }

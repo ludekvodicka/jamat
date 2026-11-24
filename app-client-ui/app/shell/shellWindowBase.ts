@@ -3,6 +3,7 @@ import { BrowserWindow, screen, type Rectangle, type WebContents } from 'electro
 import type { AppClientUiEventArgs, AppClientUiIpcEventMap } from '../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import { ErrorText } from '../../shared/errorText'
+import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 import type {
   ClientStateStore,
   WindowBounds,
@@ -146,6 +147,11 @@ export abstract class ShellWindowBase {
       if (!ShellWindowBase.sameOrigin(url, entry.devUrl))
         event.preventDefault()
     })
+    window.webContents.on('will-frame-navigate', (details) => {
+      if (details.isMainFrame) return
+      if (!ShellWindowBase.allowedSubframeUrl(details.url))
+        details.preventDefault()
+    })
     window.on('resize', () => this.scheduleBoundsSave())
     window.on('move', () => this.scheduleBoundsSave())
     window.on('maximize', () => this.scheduleBoundsSave())
@@ -270,5 +276,9 @@ export abstract class ShellWindowBase {
     } catch {
       return false
     }
+  }
+
+  private static allowedSubframeUrl(url: string): boolean {
+    return url === 'about:blank' || url === 'about:srcdoc' || FileViewerProtocolUrl.isHtmlUrl(url)
   }
 }

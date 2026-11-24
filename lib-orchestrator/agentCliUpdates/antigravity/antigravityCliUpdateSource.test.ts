@@ -5,35 +5,23 @@ import type { CliUpdateCommand } from '../shared/cliUpdateCommand'
 import type { ReleaseFeed } from '../shared/releaseFeed'
 
 describe('lib-orchestrator/agentCliUpdates/antigravity/antigravityCliUpdateSource', () => {
-  it('parses the newest semver under the Antigravity CLI heading', () => {
-    const changelog = [
-      '## Antigravity App',
-      '### 2.9.0',
-      '- Desktop improvements',
-      '',
-      '## Antigravity CLI',
-      '### 1.5.14',
-      '- Added feature',
-      '### 1.5.13',
-      '- Bug fix',
-      '',
-      '## Antigravity SDK',
-      '### 0.4.0',
-    ].join('\n')
-    expect(AntigravityCliUpdateSource.parseLatestFromChangelog(changelog)).toBe('1.5.14')
+  it('builds the release manifest URL for supported platforms and rejects unsupported ones', () => {
+    expect(AntigravityCliUpdateSource.manifestUrl('win32', 'x64'))
+      .toBe('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json')
+    expect(AntigravityCliUpdateSource.manifestUrl('win32', 'arm64'))
+      .toBe('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_arm64.json')
+    expect(AntigravityCliUpdateSource.manifestUrl('darwin', 'arm64'))
+      .toBe('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json')
+    expect(AntigravityCliUpdateSource.manifestUrl('linux', 'x64'))
+      .toBe('https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json')
+    expect(() => AntigravityCliUpdateSource.manifestUrl('freebsd', 'x64')).toThrow(/Unsupported Antigravity CLI platform/)
+    expect(() => AntigravityCliUpdateSource.manifestUrl('win32', 'ia32')).toThrow(/Unsupported Antigravity CLI architecture/)
   })
 
-  it('rejects a changelog without an Antigravity CLI section or version', () => {
-    expect(() => AntigravityCliUpdateSource.parseLatestFromChangelog('## Antigravity App\n### 2.0.0'))
-      .toThrow(/no Antigravity CLI section/)
-    expect(() => AntigravityCliUpdateSource.parseLatestFromChangelog('## Antigravity CLI\n- Notes only'))
-      .toThrow(/no CLI version/)
-  })
-
-  it('inspects agy, fetches the changelog feed and delegates update to agy update', async () => {
+  it('inspects agy, fetches the manifest feed and delegates update to agy update', async () => {
     const installation = {
       command: { path: '/bin/agy', command: '/bin/agy', prefixArgs: [] },
-      version: '1.5.13',
+      version: '1.5.15',
       channel: 'latest',
       updateSupported: true,
     }
@@ -42,16 +30,42 @@ describe('lib-orchestrator/agentCliUpdates/antigravity/antigravityCliUpdateSourc
       update: vi.fn(async () => undefined),
     } as unknown as CliUpdateCommand
     const feed = {
-      text: vi.fn(async () => '## Antigravity CLI\n### v1.5.14\n- Fixed bug'),
+      text: vi.fn(async () => JSON.stringify({
+        version: '1.5.16',
+        url: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.16/windows-x64/cli_windows_x64.exe',
+        sha512: 'deadbeef',
+      })),
     } as unknown as ReleaseFeed
-    const source = new AntigravityCliUpdateSource(commands, feed)
+    const source = new AntigravityCliUpdateSource(commands, feed, 'win32', 'x64')
     const signal = new AbortController().signal
 
     expect(await source.inspect(signal)).toEqual(installation)
     expect(commands.inspect).toHaveBeenCalledWith('agy', 'latest', /^(\S+)$/, signal)
-    expect(await source.latest(installation, signal)).toBe('1.5.14')
+    expect(await source.latest(installation, signal)).toBe('1.5.16')
+    expect(feed.text).toHaveBeenCalledWith(
+      'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json',
+      signal,
+    )
     const out = vi.fn()
     await source.update(installation, signal, out)
     expect(commands.update).toHaveBeenCalledWith(installation, signal, out)
+  })
+
+  it('rejects a manifest without a valid version string', async () => {
+    const installation = {
+      command: { path: '/bin/agy', command: '/bin/agy', prefixArgs: [] },
+      version: '1.5.15',
+      channel: 'latest',
+      updateSupported: true,
+    }
+    const commands = {} as CliUpdateCommand
+    const missingVersionFeed = { text: vi.fn(async () => '{}') } as unknown as ReleaseFeed
+    const invalidVersionFeed = { text: vi.fn(async () => '{"version":"not-a-version"}') } as unknown as ReleaseFeed
+    const signal = new AbortController().signal
+
+    await expect(new AntigravityCliUpdateSource(commands, missingVersionFeed, 'win32', 'x64').latest(installation, signal))
+      .rejects.toThrow(/no CLI version/)
+    await expect(new AntigravityCliUpdateSource(commands, invalidVersionFeed, 'win32', 'x64').latest(installation, signal))
+      .rejects.toThrow(/Unrecognized CLI version/)
   })
 })

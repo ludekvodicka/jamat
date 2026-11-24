@@ -183,6 +183,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       ['working', {}], ['background', { activityDetail: 'background' }],
       ['compacting', { compacting: true }],
       ['question', { activity: 'waiting' }], ['idle', { activity: 'idle' }],
+      ['shells', { activity: 'idle', shellsRunning: true }],
       ['starting', { life: 'starting' }], ['unknown', { activity: 'unknown' }],
       ['ended', { life: 'ended' }], ['lost', { life: 'lost' }],
       ['completed', { life: 'ended', completed: true }],
@@ -190,9 +191,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     ]
     const snapshot = { ...source, sessions: cases.map(([sessionId, over]) => ({ ...base, sessionId, ...over })) }
     const wanted: Record<SessionFilterStatus, readonly string[]> = {
-      active: ['working', 'background', 'compacting', 'question', 'idle', 'starting', 'unknown', 'ended', 'lost', 'shell'],
+      active: ['working', 'background', 'compacting', 'question', 'idle', 'shells', 'starting', 'unknown', 'ended', 'lost', 'shell'],
       attention: ['idle'], running: ['working', 'background', 'compacting', 'shell'], question: ['question'],
-      idle: ['idle'], starting: ['starting'], background: ['background'], ended: ['ended', 'completed'],
+      idle: ['idle', 'shells'], starting: ['starting'], background: ['background'], ended: ['ended', 'completed'],
       lost: ['lost'], completed: ['completed'], unknown: ['unknown'],
       // None of these carries an end time, and that is the answer: a record with no `endedAt` has
       // not closed, whatever its life says.
@@ -207,7 +208,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       attention: ['question', 'unknown', 'ended', 'lost'],
       unread: ['idle'],
       running: ['working', 'background', 'compacting', 'starting', 'shell'],
-      read: ['completed'],
+      read: ['completed', 'shells'],
     }
     for (const group of SessionsTreeModel.groupsConst) {
       const result = build(snapshot, { ...all, stateGroup: group.key }, new Set(['idle']))
@@ -215,7 +216,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         .toEqual(grouped[group.key].map((id) => `session:${id}`).sort())
     }
     expect(everyId(build(snapshot, { ...all, stateGroup: 'read' }).nodes)
-      .filter((id) => id.startsWith('session:')).sort()).toEqual(['session:completed', 'session:idle'])
+      .filter((id) => id.startsWith('session:')).sort()).toEqual(['session:completed', 'session:idle', 'session:shells'])
     expect(build(snapshot, { ...all, stateGroup: 'unread' }).nodes).toEqual([])
   })
 

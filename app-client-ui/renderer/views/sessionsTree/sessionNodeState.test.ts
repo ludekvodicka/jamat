@@ -138,6 +138,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
     expect(() => SessionNodeState.glyphOf('live', 'agent', 'idle', undefined, true)).toThrow()
   })
 
+  it('draws idle over running shells as an empty green ring, and unseen as idle', () => {
+    expect(SessionNodeState.glyphOf('live', 'agent', 'idle', undefined, undefined, true)).toBe('idle-shells')
+    expect(SessionNodeState.glyphOf('ended', 'agent', 'idle', undefined, undefined, true)).toBe('ended')
+    expect(SessionNodeState.characterOf('idle-shells', false)).toBe('○')
+    expect(SessionNodeState.paintOf('idle-shells', false)).toBe('ok')
+    expect(SessionNodeState.characterOf('idle-shells', true)).toBe('■')
+    expect(SessionNodeState.paintOf('idle-shells', true)).toBe('idle')
+    expect(SessionNodeState.glyphTitleOf('idle-shells', false)).toBe('idle - background shell running')
+    expect(() => SessionNodeState.glyphOf('live', 'agent', 'working', undefined, undefined, true))
+      .toThrow('Running shells require idle activity: "working"')
+  })
+
   it('offers finish while there is a step left, and rerun or remove once there is none', () => {
     expect(SessionNodeState.actionsOf({ life: 'live', admits: ['finalize'] }, false))
       .toEqual(['finalize'])

@@ -411,4 +411,50 @@ describe('app-client-ui/renderer/fileViewer/fileViewerContent', () => {
     await act(async () => { fireEvent.dragStart(image) })
     expect(view.queryByRole('alert')).toBeNull()
   })
+
+  it('toggles Allow scripts for rendered HTML in the toolbar slot, keeps it across reload, and resets on another document', async () => {
+    const registerHtmlPreview = vi.fn(async () => ({ ok: true as const, value: 'preview-1' }))
+    const releaseHtmlPreview = vi.fn(async () => ({ ok: true as const, value: undefined }))
+    vi.stubGlobal('appClient', { fileViewer: { registerHtmlPreview, releaseHtmlPreview } })
+    const ports = { relativeResource: vi.fn() } as unknown as SessionFilePorts['viewer']
+    const slot = document.createElement('span')
+    document.body.append(slot)
+    const first = documentOf({ kind: 'html' }, 'C:/work/proto.html')
+    const htmlSource = textOf('<h1>Proto</h1><script>render()</script>')
+
+    const view = render(
+      <FileViewerContent ports={ports} toolbarSlot={slot} document={first} mode="rendered"
+        text={htmlSource} diff={null} baselines={{ error: null, loading: false, chosen: false }}
+        onOpenSource={vi.fn()} />,
+    )
+
+    const toggle = slot.querySelector<HTMLButtonElement>('button.file-viewer-html-scripts')
+    expect(toggle).not.toBeNull()
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false')
+    await waitFor(() => expect(view.getByText('Scripts are disabled in this preview.')).toBeInTheDocument())
+
+    fireEvent.click(toggle!)
+    await waitFor(() => expect(view.container.querySelector('iframe')?.getAttribute('src')).toBe('jamat-v3-html://preview-1/'))
+    expect(toggle?.getAttribute('aria-pressed')).toBe('true')
+
+    // Reloading the same document replaces its grant id while keeping documentKey and the opt-in.
+    view.rerender(
+      <FileViewerContent ports={ports} toolbarSlot={slot}
+        document={{ ...first, documentId: 'document-reloaded' }} mode="rendered"
+        text={htmlSource} diff={null} baselines={{ error: null, loading: false, chosen: false }}
+        onOpenSource={vi.fn()} />,
+    )
+    expect(slot.querySelector<HTMLButtonElement>('button.file-viewer-html-scripts')?.getAttribute('aria-pressed')).toBe('true')
+
+    // Switching to another document resets Allow scripts back to false.
+    const second = { ...documentOf({ kind: 'html' }, 'C:/work/other.html'), documentId: 'document-2', documentKey: 'key-2' }
+    view.rerender(
+      <FileViewerContent ports={ports} toolbarSlot={slot} document={second} mode="rendered"
+        text={htmlSource} diff={null} baselines={{ error: null, loading: false, chosen: false }}
+        onOpenSource={vi.fn()} />,
+    )
+    expect(slot.querySelector<HTMLButtonElement>('button.file-viewer-html-scripts')?.getAttribute('aria-pressed')).toBe('false')
+    await waitFor(() => expect(view.container.querySelector('iframe')?.getAttribute('sandbox')).toBe(''))
+    slot.remove()
+  })
 })

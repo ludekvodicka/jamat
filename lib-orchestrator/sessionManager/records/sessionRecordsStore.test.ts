@@ -722,6 +722,17 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       } as unknown as Partial<SessionRecord>))).rejects.toThrow(/oneShot must be true or absent/)
     })
 
+    /** The effort becomes an argv element of a replayed create, as `initialPrompt` does. */
+    it('refuses an effort that is not a non-empty string', async () => {
+      const store = await harness().load()
+
+      for (const effort of ['', 7])
+        await expect(store.put(record('a', {
+          kind: 'agent',
+          agent: { agentId: 'claude', launchMode: 'new', effort },
+        } as unknown as Partial<SessionRecord>)), JSON.stringify(effort)).rejects.toThrow(/effort must be a non-empty string/)
+    })
+
     /*
      * These four strings become a spawn's `cwd` and the target of `worktree remove --force`, which
      * is the furthest from this file a bad value in it can get.

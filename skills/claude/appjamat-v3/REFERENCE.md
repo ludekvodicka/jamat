@@ -115,10 +115,11 @@ node "<skill directory>/scripts/jamat-v3.mjs" terminal deliver --session-id ID -
   `queued` (the agent queued it behind a running turn), `working` (the agent started a turn) or
   `echo` (the agent echoed the message). `composeProof` is `text` or `placeholder`.
   On a busy Codex target the Enter is a steer, not a queue: Codex injects the message into the
-  running turn, and its proof is `transcript`.
+  running turn, and its proof is `transcript`. Antigravity's gray hint in an empty composer (`Auto
+  mode: edits & safe commands auto-approved`) counts as empty, not as a foreign draft.
 - **Add `--queue` to queue behind a running Codex turn instead of steering it.** On a Codex target
   that is busy when the composer is ready, the call presses Tab instead of Enter and accepts only
-  `queued` or `transcript` as proof. On Claude, or on an idle Codex, it changes nothing: Enter.
+  `queued` or `transcript` as proof. On Claude, Antigravity, or an idle Codex, it changes nothing: Enter.
   `submitKey` in the answer (`enter` or `tab`) says which key was pressed; an older Jamat omits it
   and pressed Enter.
 - **Refusal** carries `error.data` with `stage`, `reason`, `typed`, `entered`, `hint` and
@@ -183,7 +184,7 @@ command that starts with the words before it (`sessions --help`).
 | Sessions | `sessions list` |
 | Transcript history | `sessions transcript <session selector> [--working-directory PATH]` |
 | Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--number LABEL] [--color NAME] [--group ID] [--open-tab]` |
-| Create agent | `sessions create --agent claude\|codex [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT]` plus directory/title options. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. A `--prompt` that runs a skill starts with its selector (Deliver an inter-session message). |
+| Create agent | `sessions create --agent claude\|codex\|antigravity [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT] [--model ID] [--effort LEVEL]` plus directory/title options; see Agent, model and effort below. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. A `--prompt` that runs a skill starts with its selector (Deliver an inter-session message). |
 | Worktree session | Add `--worktree SLUG [--worktree-tag TAG] [--worktree-notify-session ID --worktree-notify-text TEXT]`; see Worktree sessions below |
 | Notify another session | Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]]` to `sessions create`; read with `sessions notifies [--session-id ID]` |
 | Session parent | Add `--parent-session ID --parent-kind worktree\|ticket\|worker` to `sessions create`; read with `sessions children --session-id ID`; see Session parent below |
@@ -235,6 +236,35 @@ readable; unknown fields or malformed values are refused.
 
 Mutations accept `--operation-id ID`; the CLI generates one when omitted and returns it. Session
 creation also accepts `--flow-id ID`, `--acknowledge-setup HASH` and `--open-tab`.
+
+### Agent, model and effort
+
+`--agent` names the CLI the session runs: `claude`, `codex` or `antigravity` (the `agy` CLI).
+`--model ID` and `--effort LEVEL` set the model and reasoning level the session starts on, instead of
+the target's settings. They apply to that first launch only; a reopen resumes on whatever the
+session runs then.
+
+- **The values must be in the target's catalog.** Before the create, the CLI reads
+  `agents.describe` from the computer that runs the session (local, or the `--computer` peer) and
+  refuses with `invalid-request` (exit 2) a model it does not list, unless it is the model the
+  target is already configured on. The refusal lists the offered ids. `call --operation
+  agents.describe` shows the catalog with each model's efforts.
+- **An effort must be one the starting model lists**: the `--model` given, else the target's
+  configured model. A model with no efforts (Claude `haiku`, Antigravity
+  `gemini-pro-orchestrator-neon`) refuses every `--effort`. With no model known, any level of the
+  agent's catalog passes.
+- Antigravity ids carry a level in their name (`gemini-4-neon-high`); `--effort` is still a
+  separate flag (`agy --effort`).
+- An AppJamatV3 older than these options refuses `--effort` as an unknown key (exit 2).
+
+```powershell
+node "<skill directory>/scripts/jamat-v3.mjs" sessions create --agent antigravity --category-id apps `
+  --project-path C:/Work/Projects/Example --model gemini-4-neon-high --effort high `
+  --prompt "Read C:/Work/Projects/Example/brief.md completely and follow it." --title "coop peer" --open-tab
+```
+
+An Antigravity session works with `sessions transcript` (the user and assistant messages of its
+conversation) and `terminal deliver` (pasted input; `proof` is usually `echo`) like a Claude session.
 
 ### Session notify
 
@@ -842,8 +872,12 @@ nothing below it; `"depth": "infinity"` equals the plain string. Keys are exact.
 only what the targets reach and checks only the named rows: a file's own row, a directory's subtree,
 a node-only directory's own row with the other changes below it shown unchecked. Other rows are
 hidden and a commit refuses them. Without a list the whole scope shows, all eligible rows checked.
-A Jamat older than 3.11.1 refuses the object form with exit 2, which is not a fallback reason;
-Tortoise, from the CLI fallback or the pane, refuses a node-only target. Required new parents join their files. Checked SVN
+`{ "path": "...", "depth": "infinity", "checked": false }` shows a directory's subtree with no row
+checked unless another target names it: list the project that way plus your own files, and the
+person sees the project's other changes unchecked. `checked: false` needs `depth: "infinity"`.
+A Jamat older than 3.11.1 refuses the object form, and 3.22.0 or older refuses `checked`, with exit 2,
+which is not a fallback reason; Tortoise, from the CLI fallback or the pane, refuses a node-only or
+`checked: false` target. Required new parents join their files. Checked SVN
 externals commit sequentially with the main selection and the same message after one human
 confirmation. For a different message, Commit separately unchecks that group in the parent and
 opens its own tab. Without a path, Jamat uses the session's working directory, never an enclosing

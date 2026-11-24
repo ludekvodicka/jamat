@@ -1585,6 +1585,8 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (value.initialPrompt !== undefined
       && !SessionRecordsStore.isFilledString(value.initialPrompt))
       return 'initialPrompt must be a non-empty string'
+    if (value.effort !== undefined && !SessionRecordsStore.isFilledString(value.effort))
+      return 'effort must be a non-empty string'
     if (value.launchMode !== 'new' && value.launchMode !== 'continue'
       && value.launchMode !== 'resume' && value.launchMode !== 'fork')
       return `unknown launch mode ${JSON.stringify(value.launchMode)}`

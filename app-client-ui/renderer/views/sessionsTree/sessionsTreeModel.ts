@@ -504,7 +504,7 @@ export class SessionsTreeModel {
 
   private static stateGroupOf(entry: SessionEntry): TreeStateGroup {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
     switch (glyph) {
       case 'waiting': return 'attention'
       case 'starting':
@@ -514,7 +514,8 @@ export class SessionsTreeModel {
       case 'shell': return 'running'
       case 'ended':
       case 'lost': return entry.badges.completed ? 'read' : 'attention'
-      case 'idle': return entry.badges.attention ? 'unread' : 'read'
+      case 'idle':
+      case 'idle-shells': return entry.badges.attention ? 'unread' : 'read'
       case 'unknown': return 'attention'
       default: throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
     }
@@ -522,7 +523,7 @@ export class SessionsTreeModel {
 
   private static inState(entry: SessionEntry, state: SessionFilterStatus, view: TreeViewState): boolean {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
     switch (state) {
       case 'active': return !entry.badges.completed
       // Viewing a marked row takes its mark; retain it so a double-click cannot open the next row.
@@ -530,7 +531,7 @@ export class SessionsTreeModel {
       case 'running': return glyph === 'working' || glyph === 'background'
         || glyph === 'compacting' || glyph === 'shell'
       case 'question': return glyph === 'waiting'
-      case 'idle': return glyph === 'idle'
+      case 'idle': return glyph === 'idle' || glyph === 'idle-shells'
       case 'starting': return glyph === 'starting'
       case 'background': return glyph === 'background'
       case 'ended': return glyph === 'ended'
@@ -643,7 +644,7 @@ export class SessionsTreeModel {
       note: info.note ?? null,
       worktreeLine: SessionsTreeModel.worktreeLineOf(info),
       color: info.color ?? null,
-      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting),
+      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning),
       badges: entry.badges,
       scriptsBadge: badge === null ? null : {
         ...badge,

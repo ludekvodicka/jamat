@@ -12,7 +12,7 @@ const recordSchema = z.object({
     try { return RemoteReviewSchemas.decision.safeParse(JSON.parse(value)).success } catch { return false }
   }, 'The saved decision is unreadable'), acceptedAt: z.number(), result: decisionResult.optional() }).strict()).optional(),
   dto: versioningReviewSchema.omit({ epoch: true }), cwd: literal, lockRoot: literal,
-  targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean() }).strict()).max(2_000).optional(),
+  targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean(), checked: z.literal(false).optional() }).strict()).max(2_000).optional(),
   committedPaths: z.array(literal).optional(), externalReview: z.enum(['running', 'closed']).optional(),
   rejectedSnapshotId: literal.optional(), closedAt: z.number().optional(), failure: z.string().max(8_388_608).optional(),
   wake: z.union([z.object({ state: z.literal('watching') }).strict(), z.object({
@@ -33,7 +33,7 @@ export interface VersioningReviewRecord {
   dto: VersioningCommitDraftDto
   cwd: string
   lockRoot: string
-  targets?: readonly { path: string; directory: boolean; recursive: boolean }[]
+  targets?: readonly { path: string; directory: boolean; recursive: boolean; checked?: false }[]
   committedPaths?: readonly string[]
   externalReview?: 'running' | 'closed'
   rejectedSnapshotId?: string

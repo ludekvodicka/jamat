@@ -215,21 +215,35 @@ describe('WorktreeWords', () => {
   })
 
   it('says beside each secondary press of the review when it is needed, so the one primary is the next step (Finish 072)', () => {
-    const reviewing: WorktreeLifecycle = { version: 1, actionId: 'a', phase: 'waiting', step: 'reviewing',
+    const review = { version: 2, selection: ['a.txt'], hashes: { 'a.txt': 'h' }, message: '[App] Change', source: 'person-local' as const, acknowledged: [], headMovedBy: 0 }
+    const prepared = { format: 1 as const, manifest: 'fixture', content: 'h', metadata: 'm', commands: 'c', checks: 'none' as const, checkedAt: 1, attempt: 0 }
+    const ready: WorktreeLifecycle = { version: 1, actionId: 'a', phase: 'waiting', step: 'reviewing', review, preparation: prepared,
       wait: { kind: 'review', reason: 'x', at: 1 }, outOfDate: 0, journal: [], facts: { worker: { liveness: 'alive', resumeFailures: 0 } } }
     const step = (state: WorktreeLifecycle) => WorktreeWords.actions(state).filter((action) => action.place === 'step')
       .map((action) => [action.label, action.primary, action.note])
-    expect(step(reviewing)).toEqual([
+    expect(step(ready)).toEqual([
+      ['Publish verified changes', true, undefined],
       [WorktreeWords.recheckConst, false, 'Only after you edit files in the worktree'],
       [WorktreeWords.prepareAgainConst, false, 'Only to take newer repository changes first'],
     ])
-    expect(step({ ...reviewing, knownIncoming: { paths: ['a.txt'], at: 1 } })[1]).toEqual([WorktreeWords.prepareAgainConst, true, undefined])
+    const needsPrep: WorktreeLifecycle = { ...ready, preparation: { ...prepared, checks: 'pending', checkedAt: undefined } }
+    expect(WorktreeWords.reviewReady(needsPrep)).toBe(false)
+    expect(step(needsPrep)).toEqual([
+      [WorktreeWords.recheckConst, true, undefined],
+      [WorktreeWords.prepareAgainConst, false, 'Only to take newer repository changes first'],
+    ])
+    expect(step({ ...needsPrep, knownIncoming: { paths: ['a.txt'], at: 1 } })).toEqual([
+      [WorktreeWords.recheckConst, false, 'Only after you edit files in the worktree'],
+      [WorktreeWords.prepareAgainConst, true, undefined],
+    ])
   })
 
-  it('removes an ended requested run as the CLI does, by the run id', () => {
+  it('removes an ended requested run as the CLI does, by the run id, and removes a landed row by its own session', () => {
     expect(WorktreeWords.command({ id: 'remove-run', label: 'Remove', primary: false, runId: 'r1' }))
       .toEqual({ operation: 'sessions.remove', sessionId: 'r1', body: {} })
     expect(WorktreeWords.command({ id: 'remove-run', label: 'Remove', primary: false })).toBeUndefined()
+    expect(WorktreeWords.command({ id: 'remove-row', label: 'Remove row', primary: false, confirm: 'Remove?' }))
+      .toEqual({ operation: 'sessions.remove', body: {} })
   })
 
   it('stops a requested run as a stop of that run, from its own section and from the validation', () => {

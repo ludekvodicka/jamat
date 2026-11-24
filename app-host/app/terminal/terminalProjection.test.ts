@@ -242,6 +242,21 @@ describe('app-host/app/terminal/terminalProjection', () => {
     expect(attached.screen.length).to.be.greaterThan(256 * 1_024)
     projection.dispose()
   })
+
+  it('retains scrollback up to scrollbackRowsConst across attach snapshots', async () => {
+    const projection = new TerminalProjection('runtime-scrollback', 1, 1, 40, 10)
+    try {
+      const totalRows = 2_000
+      for (let row = 0; row < totalRows; row += 1)
+        projection.append(`line-${row}\r\n`)
+      const attached = await projection.snapshot(true, TerminalProjection.attachOptionsConst)
+      expect(TerminalProjection.scrollbackRowsConst).to.be.greaterThanOrEqual(totalRows)
+      expect(attached.screen).to.include('line-0')
+      expect(attached.screen).to.include(`line-${totalRows - 1}`)
+    } finally {
+      projection.dispose()
+    }
+  })
 })
 
 /** What a screen looks like once a terminal has drawn it, which is the only thing a client sees. */

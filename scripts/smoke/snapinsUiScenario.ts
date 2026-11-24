@@ -32,7 +32,7 @@ export class SnapinsUiScenario {
       const { configIdentity } = ConfigIdentityStore.loadOrCreate(profile.configDir, 'development')
       env = { ...process.env, JAMAT_V3_LOCAL_STATE_DIR: profile.stateRoot, JAMAT_V3_HOST_STATE_DIR: join(profile.stateRoot, 'host'),
         JAMAT_V3_CONFIG_DIR: profile.configDir, JAMAT_V3_RUNTIME_CHANNEL: 'development', JAMAT_V3_SKIP_SKILL_LINKS: '1',
-        CLAUDE_CONFIG_DIR: profile.configDir, CODEX_HOME: profile.configDir }
+        CLAUDE_CONFIG_DIR: profile.configDir, CODEX_HOME: profile.configDir, JAMAT_V3_GEMINI_DIR: join(profile.configDir, '.gemini') }
       delete env.ELECTRON_RUN_AS_NODE
       const repository = join(root, 'repository'), tools = join(root, 'Tools'), owner = join(tools, 'Scratch')
       await run('svnadmin', root, ['create', repository])

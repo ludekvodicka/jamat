@@ -1,0 +1,34 @@
+{
+  "agent": "antigravity",
+  "expected": {
+    "hint": "idle",
+    "composer": {
+      "state": "empty"
+    },
+    "queuedRow": false,
+    "echoHead": "replywiththesinglewordsecondandnothingelse.",
+    "pastePlaceholders": 0,
+    "content": {
+      "kind": "empty"
+    }
+  },
+  "provenance": {
+    "origin": "AppJamatV3 live Host capture via scripts/dev/capture-workstate.ts (Antigravity CLI 1.5.15)",
+    "case": "antigravity-live-composer-plan-mode",
+    "capture": "idle after a second turn, switched to plan mode with shift+tab; the empty box shows the gray hint \"Plan mode: research & plan only (shift+tab to cycle)\"",
+    "ported": "2026-11-23",
+    "identical": "verbatim frame; the account e-mail in the banner replaced with user@example.com"
+  },
+  "recorded": {
+    "build": "agy CLI 1.5.15 (2026-11-23)",
+    "capturedAt": "2026-11-23T18:37:03.731Z",
+    "cols": 258,
+    "rows": 72
+  },
+  "frame": {
+    "rawTail": "────────────\u001b[K\u001b[34m\u001b[1m\r\n> Reply with the single word PONG and nothing else. Do not run any tool.\u001b[m\u001b[K\r\n\u001b[K\u001b[37m\r\n▸ Thought for 3s, 111 tokens\u001b[K\u001b[m\r\n\u001b[K\r\n  PONG\u001b[K\r\n\u001b[K\u001b[90m\r\n────────────────────────────────────────────────────────────\u001b[K\u001b[34m\u001b[1m\r\n> Reply with the single word SECOND and nothing else.\u001b[m\u001b[K\r\n\u001b[K\r\n  SECOND\u001b[K\r\n\u001b[K\u001b[90m\r\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\u001b[94m\r\n>\u001b[K\u001b[90m\r\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\r\n? for shortcuts                                                                                                                                                                                                                        \u001b[K\u001b[33mauto\u001b[m\u001b[2m · Gemini 4 Neon · high\u001b[22m\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\r\n\u001b[K\u001b[21;3H\u001b[?25h\u001b[?25l\u001b[90mAuto mode: edits & safe commands auto-approved (shift+tab to cycle)\u001b[21;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[90mPlan mode: research & plan only (shift+tab to cycle)\u001b[K\u001b[94m\u001b[23;232Hplan\u001b[21;3H\u001b[?25h\u001b[?25l\u001b[m\u001b[K\u001b[23;232H       \u001b[21;3H\u001b[?25h\u001b[?25l\u001b[90mAccept-edits mode: file edits auto-approved (shift+tab to cycle)\u001b[32m\u001b[23;224Haccept-edits\u001b[m\u001b[2m · \u001b[21;3H\u001b[?25h\u001b[22m\u001b[?25l\u001b[90m\u001b[1Cuto mode: edits & safe commands auto-approved (shift+tab to cycle)\u001b[m\u001b[23;224H        \u001b[33mauto\u001b[21;3H\u001b[?25h\u001b[m\u001b[?25l\u001b[90mPlan mode: research & plan only (shift+tab to cycle)\u001b[K\u001b[94m\u001b[23;232Hplan\u001b[21;3H\u001b[?25h\u001b[m",
+    "screenTail": "\u001b[34;1m> Reply with the single word SECOND and nothing else.\n\n\u001b[0m  SECOND\n\n\u001b[90m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m>\u001b[1C\u001b[90mPlan mode: research & plan only (shift+tab to cycle)\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n? for shortcuts                                                                                                                                                                                                                \u001b[0m        \u001b[94mplan\u001b[39;2m · Gemini 4 Neon · high\u001b[2A\u001b[256D\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "wideScreenTail": "\u001b[90m────────────────────────────────────────────────────────────\n\u001b[34;1m> Reply with the single word PONG and nothing else. Do not run any tool.\n\n\u001b[37;22m▸ Thought for 3s, 111 tokens\n\n\u001b[0m  PONG\n\n\u001b[90m────────────────────────────────────────────────────────────\n\u001b[34;1m> Reply with the single word SECOND and nothing else.\n\n\u001b[0m  SECOND\n\n\u001b[90m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\u001b[94m>\u001b[1C\u001b[90mPlan mode: research & plan only (shift+tab to cycle)\n──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n? for shortcuts                                                                                                                                                                                                                \u001b[0m        \u001b[94mplan\u001b[39;2m · Gemini 4 Neon · high\u001b[2A\u001b[256D\u001b[0m\u001b[?2004h\u001b[?1004h",
+    "screenStyled": true
+  }
+}

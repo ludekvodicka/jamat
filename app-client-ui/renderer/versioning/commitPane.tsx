@@ -14,7 +14,7 @@ import { CommitEditorLayout } from './commitEditorLayout'
 import { CommitMessageBox } from './commitMessageBox'
 import { CommitProgress } from './commitProgress'
 import type { CommitPanePorts } from './commitPanePorts'
-import { CommitTargetsList } from './commitTargetsList'
+import { CommitTargetsList, type CommitRepositoryMessageItem } from './commitTargetsList'
 import { CommitTargets } from '../../shared/commitTargets'
 import { useCommitDraft } from './useCommitDraft'
 import './commitPane.css'
@@ -40,10 +40,10 @@ export function CommitPane(props: {
   ports: CommitPanePorts
   reviewOnly?: boolean
   footer?(state: CommitPaneDraftState): React.ReactNode
-  /** Replaces the one message box when each repository of the review commits with its own message. */
-  messageEditor?: React.ReactNode
+  /** Per-repository inline message editors rendered inside each repository group card. */
+  repositoryMessages?: readonly CommitRepositoryMessageItem[]
   onDraftState?(state: CommitPaneDraftState): void
-  /** The host holds unsent text of its own, such as repository messages typed into `messageEditor`. */
+  /** The host holds unsent text of its own, such as repository messages edited inline. */
   unsentText?: boolean
   onReloadEdits?(): void
   onClose(): void
@@ -104,6 +104,8 @@ export function CommitPane(props: {
   const [commitStartedAt, setCommitStartedAt] = useState<number | null>(null)
   const [opening, setOpening] = useState(false)
   const [externalConfigured, setExternalConfigured] = useState(false)
+  const [messageOpen, setMessageOpen] = useState<boolean | null>(null)
+  useEffect(() => { setMessageOpen(null) }, [draftId])
   const settingsRead = useRef(0)
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
@@ -313,6 +315,16 @@ export function CommitPane(props: {
     working.requiredLoading, working.error, working.requiredError, model.error])
   useEffect(() => { props.onDraftState?.(footerState) }, [footerState, props.onDraftState])
   const changedMessages = model.conflict === null ? [] : CommitPaneConflict.changedRepositories(model.conflict, model.conflictHeld)
+  const separateMessages = props.repositoryMessages !== undefined
+  const scopeRoot = draft?.scopeRoot ?? props.item.scopeRoot
+  const scopeTooltip = draft?.scopeTooltip ?? props.item.scopeRoot
+  const singleMessageOpen = messageOpen ?? true
+  const filesNode = done ? null : snapshot !== null
+    ? <CommitTargetsList snapshot={snapshot} checked={checked} disabled={busy} separateMessages={separateMessages}
+      repositoryMessages={props.repositoryMessages} scopeRoot={scopeRoot} scopeTooltip={scopeTooltip}
+      onMenuOpen={() => { void refreshDiffSettings() }} onOpenExternal={externalConfigured ? (entry) => { void openExternal(entry) } : null}
+      onChange={setChecked} onOpen={(entry) => { void open(entry) }} onRevert={(entry) => { void revert([entry.fileId]) }} onOpenSeparately={(root) => { void openSeparate(root) }} />
+    : <div className="commit-targets commit-targets--loading" aria-busy="true" />
   return <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`}
     onKeyDownCapture={(event) => {
       if (props.reviewOnly) return
@@ -328,13 +340,11 @@ export function CommitPane(props: {
         if (canCommit) void run()
       }
     }}>
-    {/* The working copy, and only that: the paths this commit was restricted to are listed in the
-        tooltip, because the heading is one line and the list under it already names every file. */}
-    <strong className="commit-scope" title={draft?.scopeTooltip ?? props.item.scopeRoot}>{draft?.scopeRoot ?? props.item.scopeRoot}</strong>
-    {draft !== null && <CommitEditorLayout settings={ports.versioning} reportError={ports.reportError} files={snapshot !== null && !done ? <CommitTargetsList snapshot={snapshot} checked={checked} disabled={busy} separateMessages={props.messageEditor !== undefined}
-      onMenuOpen={() => { void refreshDiffSettings() }} onOpenExternal={externalConfigured ? (entry) => { void openExternal(entry) } : null}
-      onChange={setChecked} onOpen={(entry) => { void open(entry) }} onRevert={(entry) => { void revert([entry.fileId]) }} onOpenSeparately={(root) => { void openSeparate(root) }} /> : null}
-      message={props.messageEditor ?? <CommitMessageBox value={draft.message} disabled={busy || done || snapshot === null || working.loading || working.requiredLoading} source={draft.messageSource ?? 'unknown'} findings={props.reviewOnly ? draft.messageFindings : undefined} proposed={draft.proposedByAgent && !draft.editedByPerson} reviewOnly={props.reviewOnly} onChange={model.setMessage} />} />}
+    {/* While loading or finished the targets bar is absent, so keep the scope line at the top. */}
+    {(draft === null || snapshot === null || done) && <strong className="commit-scope" title={scopeTooltip}>{scopeRoot}</strong>}
+    {draft !== null && (separateMessages ? filesNode : <CommitEditorLayout settings={ports.versioning} reportError={ports.reportError} files={filesNode}
+      messageCollapsed={!singleMessageOpen}
+      message={<CommitMessageBox value={draft.message} disabled={busy || done || snapshot === null || working.loading || working.requiredLoading} source={draft.messageSource ?? 'unknown'} findings={props.reviewOnly ? draft.messageFindings : undefined} proposed={draft.proposedByAgent && !draft.editedByPerson} reviewOnly={props.reviewOnly} expanded={singleMessageOpen} onExpandedChange={setMessageOpen} onChange={(value) => { if (messageOpen === null) setMessageOpen(true); model.setMessage(value) }} />} />)}
     {phase?.kind === 'running' ? <CommitProgress phase={phase} />
       : commitStartedAt !== null && !done
         ? <CommitProgress phase={{ kind: 'running', startedAt: commitStartedAt }} /> : null}
@@ -345,7 +355,7 @@ export function CommitPane(props: {
     </div>
     {model.conflict !== null && <div role="alert">
       <p>{model.unsent || props.unsentText ? 'Shared review changed. Your unsent text is retained above.' : 'Shared review changed.'}</p>
-      <details><summary>Compare source message</summary>{props.messageEditor === undefined
+      <details><summary>Compare source message</summary>{!separateMessages
         ? <pre>{model.conflict.message}</pre>
         : changedMessages.length === 0 ? <p>No repository message changed.</p>
         : changedMessages.map((repository) => <div key={repository.root}>

@@ -1,5 +1,6 @@
 import { protocol } from 'electron'
 import { FileViewerLimits } from '../../../lib-orchestrator/fileViewer/fileViewerLimits'
+import type { FileHtmlPreviewStore } from './fileHtmlPreviewStore'
 import type { FileMediaSource } from './fileMediaSource'
 import { FileViewerProtocolUrl } from '../../shared/fileViewerProtocol'
 
@@ -9,26 +10,65 @@ interface FileByteRange {
 }
 
 export class FileViewerProtocol {
+  static readonly htmlCspConst =
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    + 'img-src data: jamat-v3-file: blob:; media-src data: jamat-v3-file: blob:; '
+    + "font-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; "
+    + "base-uri 'none'; form-action 'none'"
+
   static registerScheme(): void {
-    protocol.registerSchemesAsPrivileged([{
-      scheme: FileViewerProtocolUrl.scheme,
-      privileges: {
-        standard: true,
-        secure: true,
-        supportFetchAPI: true,
-        stream: true,
-        // Copying an image draws it on a canvas, and only a CORS load from this scheme leaves it readable.
-        corsEnabled: true,
+    protocol.registerSchemesAsPrivileged([
+      {
+        scheme: FileViewerProtocolUrl.scheme,
+        privileges: {
+          standard: true,
+          secure: true,
+          supportFetchAPI: true,
+          stream: true,
+          // Copying an image draws it on a canvas, and only a CORS load from this scheme leaves it readable.
+          corsEnabled: true,
+        },
       },
-    }])
+      {
+        scheme: FileViewerProtocolUrl.htmlScheme,
+        privileges: {
+          standard: true,
+          secure: true,
+        },
+      },
+    ])
   }
 
   private readonly source: FileMediaSource
+  private readonly htmlPreviews: Pick<FileHtmlPreviewStore, 'read'> | null
 
-  constructor(source: FileMediaSource) { this.source = source }
+  constructor(source: FileMediaSource, htmlPreviews: Pick<FileHtmlPreviewStore, 'read'> | null = null) {
+    this.source = source
+    this.htmlPreviews = htmlPreviews
+  }
 
   initialize(): void {
     protocol.handle(FileViewerProtocolUrl.scheme, (request) => this.handle(request))
+    protocol.handle(FileViewerProtocolUrl.htmlScheme, (request) => this.handleHtml(request))
+  }
+
+  private handleHtml(request: Request): Response {
+    if (request.method !== 'GET' && request.method !== 'HEAD')
+      return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } })
+    const url = new URL(request.url)
+    if (!url.hostname || url.pathname !== '/') return new Response(null, { status: 404 })
+    const bytes = this.htmlPreviews?.read(url.hostname) ?? null
+    if (bytes === null) return new Response(null, { status: 404 })
+    const headers = new Headers({
+      'Cache-Control': 'no-store',
+      'Content-Length': String(bytes.byteLength),
+      'Content-Security-Policy': FileViewerProtocol.htmlCspConst,
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cross-Origin-Resource-Policy': 'same-origin',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    return new Response(request.method === 'HEAD' ? null : new Uint8Array(bytes), { status: 200, headers })
   }
 
   private async handle(request: Request): Promise<Response> {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -13,6 +13,13 @@ export interface AntigravitySessionStatus {
   toolConfirmationPending: boolean
   taskCount: number
   runningSubagents: number
+}
+
+export interface AntigravitySettingsOptions {
+  /** Defaults to true; set false for one-shot (`-p`) launches that draw no status line. */
+  includeStatusLine?: boolean
+  /** Pre-approved session directory for yolo launches, passed via session-only `--settings`. */
+  trustedDirectory?: string
 }
 
 /** What an Antigravity settings file says about the status line, as far as a relay has to repeat it. */
@@ -217,23 +224,42 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
   }
 
   /**
-   * The `--settings` file for an Antigravity session, or null when the relay cannot be installed.
+   * The `--settings` file for an Antigravity session, or null when neither the relay nor a trusted
+   * directory is emitted.
+   *
+   * `agy` honours only the last `--settings` flag, so `statusLine` and `trustedWorkspaces` travel in
+   * one session-only file without mutating `~/.gemini/antigravity-cli/settings.json`.
    */
-  settingsFileFor(identity?: { sessionId: string; launchId: string }): string | null {
+  settingsFileFor(
+    identity?: { sessionId: string; launchId: string },
+    options?: AntigravitySettingsOptions,
+  ): string | null {
     try {
       const bad = identity === undefined ? undefined : [identity.sessionId, identity.launchId].find((id) => !AntigravityStatusLine.idPatternConst.test(id))
       if (bad !== undefined) {
         this.reportOnce(`identity:${bad}`, `Antigravity status line relay not installed: an identity that is not an id: ${JSON.stringify(bad)}`)
         return null
       }
-      const relay = this.relayCommand()
-      if (relay === null) return null
-      const command = identity === undefined ? relay : `${relay} --session ${identity.sessionId} --launch ${identity.launchId}`
-      const own = this.ownStatusLine()
-      const statusLine = own === null
-        ? { type: 'command', command, enabled: true, padding: 0, stack_with_default: true }
-        : { ...own, type: 'command', enabled: true, command: `${command} --pass | ${own.command}` }
-      const text = JSON.stringify({ statusLine })
+      const includeStatusLine = options?.includeStatusLine ?? true
+      const ownSettings = this.readOwnSettings()
+      const payload: Record<string, unknown> = {}
+      if (includeStatusLine) {
+        const relay = this.relayCommand()
+        if (relay !== null) {
+          const command = identity === undefined ? relay : `${relay} --session ${identity.sessionId} --launch ${identity.launchId}`
+          const own = AntigravityStatusLine.ownStatusLineOf(ownSettings)
+          payload['statusLine'] = own === null
+            ? { type: 'command', command, enabled: true, padding: 0, stack_with_default: true }
+            : { ...own, type: 'command', enabled: true, command: `${command} --pass | ${own.command}` }
+        }
+      }
+      if (options?.trustedDirectory) {
+        const trustedWorkspaces = this.trustedWorkspacesFor(options.trustedDirectory, ownSettings)
+        if (trustedWorkspaces.length > 0) payload['trustedWorkspaces'] = trustedWorkspaces
+      }
+      if (Object.keys(payload).length === 0) return null
+      mkdirSync(this.directory, { recursive: true })
+      const text = JSON.stringify(payload)
       const file = join(this.directory, identity === undefined
         ? `settings-${createHash('sha256').update(text).digest('hex').slice(0, 16)}.json` : `settings-${identity.sessionId}.json`)
       AntigravityStatusLine.writeIfChanged(file, text)
@@ -243,6 +269,33 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
       this.reportOnce('failed', `Antigravity status line relay not installed: ${error instanceof Error ? error.message : String(error)}`)
       return null
     }
+  }
+
+  /**
+   * Workspace path strings `agy` may check against `trustedWorkspaces` on launch.
+   *
+   * Measured against Antigravity CLI 1.5.16 on Windows: matching is case-sensitive on both the drive
+   * letter and path segments, rejects a trailing separator, and `cmd.exe` preserves the input drive
+   * letter case while normalizing directory segments to their on-disk NTFS casing. Emitting both
+   * drive-letter cases for the input path and its native realpath covers every form `agy` observes.
+   */
+  static trustedDirectoryCandidates(directory: string, platform: NodeJS.Platform = process.platform): string[] {
+    if (!directory) return []
+    const candidates = new Set<string>()
+    const add = (raw: string): void => {
+      const cleaned = AntigravityStatusLine.normalizeWorkspacePath(raw, platform)
+      if (!cleaned) return
+      candidates.add(cleaned)
+      if (platform === 'win32' && /^[A-Za-z]:/.test(cleaned)) {
+        candidates.add(`${cleaned[0].toUpperCase()}${cleaned.slice(1)}`)
+        candidates.add(`${cleaned[0].toLowerCase()}${cleaned.slice(1)}`)
+      }
+    }
+    add(directory)
+    if (platform === process.platform)
+      try { add(realpathSync.native(directory)) }
+      catch { /* Directory may not exist yet or be mocked; raw path variants still apply. */ }
+    return [...candidates]
   }
 
   async identity(sessionId: string, launchId: string): Promise<{ nativeSessionId: string; sequence: number } | null> {
@@ -329,19 +382,45 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
       throw new Error(`Unsupported platform for the Antigravity status line relay: ${this.platform}`)
   }
 
-  private ownStatusLine(): AntigravityStatusLineSetting | null {
+  private readOwnSettings(): Record<string, unknown> | null {
     const file = join(this.antigravityHome, 'settings.json')
     let parsed: unknown
     try { parsed = JSON.parse(readFileSync(file, 'utf8')) }
     catch { return null }
-    if (parsed === null || typeof parsed !== 'object') return null
-    const statusLine = (parsed as Record<string, unknown>)['statusLine']
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as Record<string, unknown>
+  }
+
+  private static ownStatusLineOf(parsed: Record<string, unknown> | null): AntigravityStatusLineSetting | null {
+    if (parsed === null) return null
+    const statusLine = parsed['statusLine']
     if (statusLine === null || typeof statusLine !== 'object' || Array.isArray(statusLine)) return null
     const setting = statusLine as Record<string, unknown>
     if (setting['enabled'] === false) return null
     if (setting['type'] !== undefined && setting['type'] !== 'command') return null
     if (typeof setting['command'] !== 'string' || setting['command'].trim() === '') return null
     return setting as AntigravityStatusLineSetting
+  }
+
+  private trustedWorkspacesFor(directory: string, ownSettings: Record<string, unknown> | null): string[] {
+    const merged = new Set<string>()
+    const existing = ownSettings?.['trustedWorkspaces']
+    if (Array.isArray(existing))
+      for (const entry of existing)
+        if (typeof entry === 'string' && entry.length > 0) merged.add(entry)
+    for (const candidate of AntigravityStatusLine.trustedDirectoryCandidates(directory, this.platform))
+      merged.add(candidate)
+    return [...merged]
+  }
+
+  private static normalizeWorkspacePath(value: string, platform: NodeJS.Platform): string {
+    if (platform === 'win32') {
+      const slashes = value.replaceAll('/', '\\')
+      if (/^[A-Za-z]:\\+$/.test(slashes)) return `${slashes[0]}:\\`
+      return slashes.replace(/\\+$/, '')
+    }
+    if (/^\/+$/.test(value)) return '/'
+    return value.replace(/\/+$/, '')
   }
 
   private reportOnce(key: string, message: string): void {

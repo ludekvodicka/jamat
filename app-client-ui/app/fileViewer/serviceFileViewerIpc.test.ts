@@ -1,4 +1,5 @@
 import { ServiceFileViewerShellIpc } from '../shell/serviceFileViewerShellIpc'
+import { FileHtmlPreviewStore } from './fileHtmlPreviewStore'
 import { bindService, callerSource } from '../shared/serviceIpcTestHarness'
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -64,6 +65,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   const roots: string[] = []
   let calls: { method: string; args: unknown[] }[]
   let sessionCwd: string
+  let htmlPreviews: FileHtmlPreviewStore
   /** The register `OrchestratorHub` hands the service, standing in for `TerminalDetector.wasOpened`. */
   let openedByDetection: Set<string>
 
@@ -86,6 +88,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
     calls = []
     sessionCwd = 'C:/work'
     openedByDetection = new Set()
+    htmlPreviews = new FileHtmlPreviewStore()
     const record = (method: string, value: unknown) => (...args: unknown[]) => {
       calls.push({ method, args })
       return value
@@ -137,7 +140,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       },
     }), (value) => callerSource(value) === sender ? 'window-1' : null)).initialize()
     bindService(new ServiceFileViewerShellIpc({ path: async (...args) => viewer.path(...args), imageDragPath: (...args) => viewer.imageDragPath(...args) }, value => value === sender ? 'window-1' : null,
-      { write: exported }, { copy: dragCopy })).initialize()
+      { write: exported }, { copy: dragCopy }, htmlPreviews)).initialize()
   })
 
   afterEach(async () => {
@@ -388,7 +391,7 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
   it('rejects every capability operation from an unknown workspace', async () => {
     const channels = Object.keys({ ...ServiceFileViewerIpc.channelsConst, ...ServiceFileViewerShellIpc.channelsConst }) as
       (keyof AppClientUiIpcInvokeMap)[]
-    expect(channels.length).toBe(21)
+    expect(channels.length).toBe(23)
 
     for (const channel of channels)
       expect(await invoke(channel, rejected, 'https://example.test/a', 'second', true), channel)
@@ -510,5 +513,16 @@ describe('app-client-ui/app/fileViewer/serviceFileViewerIpc', () => {
       .toEqual({ ok: true, value: { ok: false, detail: 'disk full' } })
     expect(await invoke('fileViewer:export', sender, 'document-1', 'docx', '<p>page</p>'))
       .toEqual({ ok: false, error: 'Unknown export format: "docx"' })
+  })
+
+  it('registers and releases owner-bound HTML previews through the shell IPC', async () => {
+    const registered = await invoke('fileViewer:register-html-preview', sender, '<!doctype html><script>1</script>') as
+      { ok: true; value: string }
+    expect(registered).toEqual({ ok: true, value: expect.any(String) })
+    expect(htmlPreviews.read(registered.value)).not.toBeNull()
+
+    expect(await invoke('fileViewer:release-html-preview', sender, registered.value))
+      .toEqual({ ok: true, value: undefined })
+    expect(htmlPreviews.read(registered.value)).toBeNull()
   })
 })

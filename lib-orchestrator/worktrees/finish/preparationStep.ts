@@ -257,10 +257,11 @@ export class PreparationStep {
       ...incoming.length === 0 ? {} : { knownIncoming: { paths: [...incoming], at: this.deps.now() } },
       preparation: state.preparation === undefined ? undefined : { ...state.preparation, checks: 'pending', checkedAt: undefined },
       phase: 'waiting', step: 'reviewing', wait: { kind: 'review', reason, at: this.deps.now() },
-      review: state.review === undefined ? undefined : { ...state.review, version: state.version + 1 } }))
+      review: state.review === undefined ? undefined : { ...state.review, version: state.version + 1 },
+      execution: state.execution === undefined ? undefined : { ...state.execution, runId: undefined, verdict: undefined } }))
   }
 
-  async advanceReceipt(sessionId: string, root: string, paths: readonly string[]): Promise<boolean> {
+  async advanceReceipt(sessionId: string, root: string, paths: readonly string[], deletions: readonly string[] = []): Promise<boolean> {
     const state = this.deps.records.get(sessionId)!.worktreeLifecycle!
     const previous = await this.saved(sessionId)
     if (previous === null) { await this.invalidate(sessionId, 'Published revision retained; prepare the remaining worktree before further publication'); return false }
@@ -269,9 +270,18 @@ export class PreparationStep {
     const current = new Map(next.nodes.map((node) => [node.path, node]))
     const changed = [...new Set([...old.keys(), ...current.keys()])].filter((path) => old.get(path)?.metadata !== current.get(path)?.metadata)
     const expected = paths.map((path) => resolve(root, path))
-    const allowed = changed.every((path) => path.startsWith('@mount/')
-      ? PathCompare.comparable(resolve(state.execution!.root, path.slice(7))) === PathCompare.comparable(root)
-      : expected.some((selection) => PathCompare.comparable(selection) === PathCompare.comparable(resolve(state.execution!.root, path))))
+    const deleted = deletions.map((path) => resolve(root, path)).filter((path) => PathCompare.comparable(path) !== PathCompare.comparable(root))
+    const mounts = previous.nodes.flatMap((node) => node.path.startsWith('@mount/') ? [resolve(state.execution!.root, node.path.slice(7))] : [])
+    const allowed = changed.every((path) => {
+      if (path.startsWith('@mount/')) return PathCompare.comparable(resolve(state.execution!.root, path.slice(7))) === PathCompare.comparable(root)
+      const absolute = resolve(state.execution!.root, path)
+      if (expected.some((selection) => PathCompare.comparable(selection) === PathCompare.comparable(absolute))) return true
+      // Committing a scheduled directory deletion also removes its deleted descendants from the working copy.
+      return old.get(path)?.content === '' && !current.has(path)
+        && deleted.some((ancestor) => PathCompare.isInside(ancestor, absolute)
+          && !mounts.some((mount) => PathCompare.comparable(mount) !== PathCompare.comparable(root)
+            && PathCompare.isInside(ancestor, mount) && PathCompare.isInside(mount, absolute)))
+    })
     if (previous.content !== next.content || !allowed) {
       await this.invalidate(sessionId, 'Published revision retained, but the assembly changed during publication; prepare the remaining repositories again')
       return false

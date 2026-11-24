@@ -660,6 +660,26 @@ describe('Session actions', () => {
     expect(call).toHaveBeenLastCalledWith('sessions.updateMain', { session: { kind: 'sessionId', sessionId: 's1' }, confirmLive: [] })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
+
+  it('confirms Remove row in the workflow footer and removes the landed session row', async () => {
+    const call = vi.spyOn(AppControl, 'sessionsDone').mockResolvedValue({ ok: true, value: { ok: true, value: undefined } })
+    const workflow = section('UPDATE of App', true)
+    workflow.kind = 'update-main'
+    workflow.rounds[0].steps = [{ key: '1:updating', title: 'svn update', detail: 'r1431 failed', state: 'waits', startedAt: 1, endedAt: 2, target: { kind: 'none' } }]
+    workflow.actions = [
+      { id: 'update-main', label: 'Update', primary: true, place: 'step', confirmLive: [], command: { operation: 'sessions.updateMain', body: { confirmLive: [] } } },
+      { id: 'later', label: 'Later', primary: false, place: 'step', deferred: 'Left for later.' },
+      { id: 'remove-row', label: 'Remove row', primary: false, confirm: 'Remove this session row without updating the main copy?',
+        command: { operation: 'sessions.remove', body: {} } },
+    ]
+    const updatePorts = { ...ports, press: (action: Parameters<WorkflowPorts['press']>[0]) => WorkflowPortsOf.press('s1', action, {}) }
+    render(<SessionActionsPane session={session([workflow])} sessions={store} visible ports={updatePorts} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove row' }))
+    expect(call).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain('Remove this session row without updating the main copy?')
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirm Remove row' })))
+    expect(call).toHaveBeenCalledWith('sessions.remove', { session: { kind: 'sessionId', sessionId: 's1' } })
+  })
 })
 
 it('shows each repository identity and sends its own checked message with one Finish press', async () => {
@@ -764,6 +784,51 @@ it('labels each repository editor with its mount and lists the editors in the fi
   await waitFor(() => expect(ports.press).toHaveBeenCalledWith(expect.anything(), {}, expect.objectContaining({ repositories: [
     expect.objectContaining({ root: 'Q:/work/zeta' }), expect.objectContaining({ root: 'Q:/work/shared' }), expect.objectContaining({ root: 'Q:/work' }),
   ] })))
+})
+
+it('places each repository message open inside its group above its files, allows collapsing it, hides Commit separately, and folds action notes into button tooltips', async () => {
+  const repositories = [
+    { root: 'Q:/work', repositoryName: 'app', repository: 'https://svn/app', expectedPrefix: '[app]', paths: ['a.txt'],
+      message: '[app] Ready proposal', source: 'agent-proposal' as const, acknowledged: [] },
+    { root: 'Q:/work/shared', repositoryName: 'lib', repository: 'https://svn/lib', expectedPrefix: '[lib]', paths: ['shared/b.txt'],
+      message: '', source: 'unknown' as const, findings: [{ id: 'empty' as const, text: 'Enter a commit message' }], acknowledged: [] },
+  ]
+  const entry = (displayPath: string) => ({ fileId: displayPath, path: `Q:/work/${displayPath}`, displayPath, nodeKind: 'file' as const, status: 'modified' as const,
+    location: 'workspace' as const, previousPath: null, previousDisplayPath: null, modifiedAt: 1, sources: ['vcs' as const], gitState: null })
+  const f = reviewFixture({ repositories }, { entries: ['a.txt', 'shared/b.txt'].map(entry), externalRoots: [
+    { path: 'Q:/work/shared', displayPath: 'shared', fileIds: ['shared/b.txt'] }] })
+  const body = f.workflow.rounds[0].steps[0].body!
+  if (body.kind !== 'commit') throw new Error('Expected review')
+  body.repositories = repositories.map(({ findings: _findings, ...row }) => row)
+  f.workflow.validation = { cwd: 'Q:/work', checks: 'none', canRun: true }
+  f.workflow.actions.push(
+    { id: 'refresh-preparation', label: 'Recheck local changes', primary: false, place: 'step', note: 'Only after you edit files in the worktree' },
+    { id: 'prepare-worktree', label: 'Update and prepare again', primary: false, place: 'step', note: 'Only to take newer repository changes first' },
+  )
+  const view = render(<SessionActionsPane session={session([f.workflow])} sessions={store} visible ports={ports} />)
+  const appEditor = await screen.findByLabelText('Commit message app (.)')
+  const libEditor = screen.getByLabelText('Commit message lib (shared)')
+  // Repository messages start open to read and can be collapsed per repository.
+  const appDetails = appEditor.closest('details') as HTMLDetailsElement
+  expect(appDetails.open).toBe(true)
+  expect(libEditor.closest('details')!.open).toBe(true)
+  appDetails.open = false
+  fireEvent(appDetails, new Event('toggle'))
+  expect(appDetails.querySelector('.commit-group-message-preview')).toHaveTextContent('[app] Ready proposal')
+  // Each message sits in the same group card as its files, and multi-repo Finish hides Commit separately.
+  const appGroup = appEditor.closest('.commit-group') as HTMLElement
+  expect(within(appGroup).getByText('a.txt')).toBeInTheDocument()
+  expect(within(appGroup).queryByText('shared/b.txt')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Commit separately' })).toBeNull()
+  // Group files can be collapsed and expanded independently.
+  fireEvent.click(within(appGroup).getByRole('button', { name: '▾ Files' }))
+  expect(within(appGroup).queryByText('a.txt')).toBeNull()
+  fireEvent.click(within(appGroup).getByRole('button', { name: '▸ Files (1)' }))
+  expect(within(appGroup).getByText('a.txt')).toBeInTheDocument()
+  // Action notes live in button tooltips rather than an inline list in the review bar.
+  expect(screen.getByRole('button', { name: 'Recheck local changes' })).toHaveAttribute('title', 'Only after you edit files in the worktree')
+  expect(screen.getByRole('button', { name: 'Update and prepare again' })).toHaveAttribute('title', 'Only to take newer repository changes first')
+  expect(view.container.querySelector('.session-actions__review .workflow__action-notes')).toBeNull()
 })
 
 describe('Session actions follow the end', () => {

@@ -446,6 +446,8 @@ class AppClientStub {
         startImageDrag: () => { throw new Error('No test of the shell drags an image') },
         startResourceDrag: () => { throw new Error('No test of the shell drags a document image') },
         openExternal: () => { throw new Error('No test of the shell opens an external URL') },
+        registerHtmlPreview: () => { throw new Error('No test of the shell registers an HTML preview') },
+        releaseHtmlPreview: () => { throw new Error('No test of the shell releases an HTML preview') },
         release: () => { throw new Error('No test of the shell releases a file') },
       },
       contextCompaction: {

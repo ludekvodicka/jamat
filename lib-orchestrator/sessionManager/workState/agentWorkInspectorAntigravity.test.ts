@@ -293,4 +293,141 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorAntigravit
       screenStyled: true,
     }).hint).toBe('idle')
   })
+
+  it('classifies Antigravity running subagents accurately and avoids prose collisions', () => {
+    const subagents = fixtures.find((fixture) => fixture.file === 'antigravity-live-background-subagents.json')!
+    const idle = fixtures.find((fixture) => fixture.file === 'antigravity-live-idle.json')!
+    const rule = '─'.repeat(80)
+
+    const inspected = AgentWorkInspectorAntigravity.inspect(subagents.frame)
+    expect(inspected.hint).toBe('background')
+    expect(inspected.evidence.map((item) => item.signal)).toContain('backgroundSubagentsFooter')
+    expect(inspected.evidence.map((item) => item.signal)).toContain('backgroundSubagentRow')
+
+    // Foreground working with a subagent drawer still reads as foreground working.
+    const workingWithSubagent = [
+      '⣾  Running command...',
+      rule,
+      '>',
+      rule,
+      '  ● Agent(self: Group 3 Worker (U6-U9)) · Gemini 4 Neon  Generating · 9m15s',
+      rule,
+      'esc to cancel                                 auto · Gemini 4 Neon · high · 1 subagent(s)',
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: workingWithSubagent,
+      wideScreenTail: workingWithSubagent,
+      screenStyled: true,
+    }).hint).toBe('working')
+
+    // Narrow footer that clips `· 1 subagent(s)` still reads as background from the subagent drawer row.
+    const clippedFooter = [
+      rule,
+      '>',
+      rule,
+      '  ● Agent(self: Group 3 Worker (U6-U9)) · Gemini 4 Neon  Verification shows... · 12m20s',
+      rule,
+      '? for shortcuts  auto · Gemini 4 Neon',
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: clippedFooter,
+      wideScreenTail: clippedFooter,
+      screenStyled: true,
+    }).hint).toBe('background')
+
+    // Narrow drawer row that truncates the role before `)` still reads as background.
+    const truncatedRole = [
+      rule,
+      '>',
+      rule,
+      '  ● Agent(self: Group 3 Wor... · 9m15s',
+      rule,
+      '? for shortcuts  auto · Gemini 4 Neon',
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: truncatedRole,
+      wideScreenTail: truncatedRole,
+      screenStyled: true,
+    }).hint).toBe('background')
+
+    // Footer-only subagent counter without a drawer still reads as background, including beside tasks.
+    const footerOnly = [
+      rule,
+      '>',
+      rule,
+      '? for shortcuts  auto · Gemini 4 Neon · high · 2 subagent(s)',
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: footerOnly,
+      wideScreenTail: footerOnly,
+      screenStyled: true,
+    }).hint).toBe('background')
+
+    const tasksAndSubagents = [
+      rule,
+      '>',
+      rule,
+      '? for shortcuts  auto · Gemini 4 Neon · high · 1 task(s) · /tasks · 1 subagent(s)',
+    ].join('\n')
+    const combined = AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: tasksAndSubagents,
+      wideScreenTail: tasksAndSubagents,
+      screenStyled: true,
+    })
+    expect(combined.hint).toBe('background')
+    expect(combined.evidence.map((item) => item.signal)).toContain('backgroundTasksFooter')
+    expect(combined.evidence.map((item) => item.signal)).toContain('backgroundSubagentsFooter')
+
+    // Quoted permission prompt above a subagent composer stays background (never blocked).
+    const quotedAboveSubagent = [
+      '  Requesting permission for:\n  Run this command?\n  > 1. Yes, run command\n  ↑/↓ Navigate',
+      subagents.frame.screenTail,
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: 'Run this command?\n> 1. Yes, run command\n↑/↓ Navigate',
+      screenTail: quotedAboveSubagent,
+      wideScreenTail: quotedAboveSubagent,
+      screenStyled: true,
+    }).hint).toBe('background')
+
+    // Prose mentioning subagent syntax above a normal idle composer stays idle.
+    const quotedSubagentAboveIdle = [
+      '  ● Agent(self: Group 3 Worker (U6-U9)) · Gemini 4 Neon  Generating · 9m15s',
+      '  Footer showed auto · Gemini 4 Neon · high · 1 subagent(s)',
+      idle.frame.screenTail,
+    ].join('\n')
+    expect(AgentWorkInspectorAntigravity.inspect({
+      rawTail: '',
+      screenTail: quotedSubagentAboveIdle,
+      wideScreenTail: quotedSubagentAboveIdle,
+      screenStyled: true,
+    }).hint).toBe('idle')
+
+    // Zero subagents or a finished subagent drawer row does not read as background.
+    for (const finishedRow of [
+      '  ● Agent(self: Group 3 Worker) · Gemini 4 Neon  Done',
+      '  ● Agent(self: Group 3 Worker) · Gemini 4 Neon  Completed · 9m15s',
+      '  ✓ Agent(self: Group 3 Worker) · Gemini 4 Neon  Generating · 9m15s',
+    ]) {
+      const zeroSubagents = [
+        rule,
+        '>',
+        rule,
+        finishedRow,
+        rule,
+        '? for shortcuts  auto · Gemini 4 Neon · high · 0 subagent(s)',
+      ].join('\n')
+      expect(AgentWorkInspectorAntigravity.inspect({
+        rawTail: '',
+        screenTail: zeroSubagents,
+        wideScreenTail: zeroSubagents,
+        screenStyled: true,
+      }).hint, finishedRow).toBe('idle')
+    }
+  })
 })

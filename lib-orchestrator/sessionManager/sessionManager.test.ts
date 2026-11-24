@@ -1298,9 +1298,13 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       await client.start()
       await writable(client)
 
-      await vi.waitFor(() => expect(storedRecord(context, 'old')).toBeUndefined(), { timeout: 5_000 })
+      // The records file lands inside the store's turn; the manager marks its snapshot changed only
+      // after that turn, so a poll between the two still reads the cached snapshot with `old`.
+      await vi.waitFor(() => {
+        expect(storedRecord(context, 'old')).toBeUndefined()
+        expect(client.manager.snapshot().sessions.map((session) => session.sessionId)).toEqual(['fresh'])
+      }, { timeout: 5_000 })
       expect(JSON.parse(readFileSync(archiveFileOf(context), 'utf8')).records.map((record: SessionRecord) => record.sessionId)).toEqual(['old'])
-      expect(client.manager.snapshot().sessions.map((session) => session.sessionId)).toEqual(['fresh'])
     }, 20_000)
   })
 
@@ -4205,6 +4209,29 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     } finally { idleness.mockRestore(); resumed.mockRestore() }
   }, 20_000)
 
+  // Shells alone over a finished turn: idle, with the shells beside it on the wire.
+  it('publishes an idle agent whose background shells still run', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+    const created = valueOf(await client.manager.createSession({
+      kind: 'agent',
+      directory: { mode: 'adHoc', path: context.root },
+      agent: { agentId: 'claude', mode: 'new' },
+    }))
+    const running = context.runtimes.get(created.sessionId)
+    if (!running) throw new Error('the fake Host lost the runtime it created')
+    context.screens.set(created.sessionId, screenOf('claude-live-background-tasks.json'))
+    context.runtimes.set(created.sessionId, { ...running, outputSeq: 7, lastOutputAt: Date.now() })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info).toMatchObject({ activity: 'idle', shellsRunning: true })
+      expect(info?.activityDetail).toBeUndefined()
+    }, { timeout: 10_000 })
+  })
+
   it('classifies an agent session from the listing it already fetched', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -4233,7 +4260,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       { timeout: 10_000 },
     )
 
-    context.screens.set(created.sessionId, screenOf('claude-live-background-tasks.json'))
+    context.screens.set(created.sessionId, screenOf('claude-live-background-agent.json'))
     context.runtimes.set(created.sessionId, {
       ...running,
       outputSeq: 8,

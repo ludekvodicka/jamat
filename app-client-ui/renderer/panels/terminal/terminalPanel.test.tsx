@@ -49,6 +49,7 @@ import { SessionDrag } from '../../sessions/sessionDrag'
 import { TabDecorationsStore } from '../../widgets/tabs/tabDecorations'
 import { TabDecorationsProvider } from '../../widgets/tabs/tabDecorationsContext'
 import { PanelSplitParams, type PanelSplitFileItem } from '../../widgets/tabs/panelSplit'
+import { TerminalHeldOutput } from './attach/terminalHeldOutput'
 import { TerminalPanel, type TerminalPanelProps } from './terminalPanel'
 import { ControlBridgeFixture } from '../../ipc/fixtures/controlBridgeFixture'
 
@@ -70,7 +71,7 @@ vi.mock('@xterm/xterm', () => ({
     readonly unicode = { activeVersion: '6' }
     /** Enough for a right click to be scanned: jsdom lays nothing out, so the scan finds no cell. */
     readonly buffer = {
-      active: { getLine: (): undefined => undefined, viewportY: 0, length: 0 },
+      active: { getLine: (): undefined => undefined, type: 'normal' as const, viewportY: 0, length: 0 },
     }
     /** Read per wheel event by the repeat the attachment installs. */
     attachCustomKeyEventHandler(): void {}
@@ -83,6 +84,7 @@ vi.mock('@xterm/xterm', () => ({
     open(): void {}
     reset(): void { xtermMock.resets += 1 }
     resize(): void {}
+    scrollPages(): void {}
     write(data: string, complete?: () => void): void { xtermMock.writes.push(data); complete?.() }
     dispose(): void {}
     focus(): void { xtermMock.focuses += 1 }
@@ -91,10 +93,14 @@ vi.mock('@xterm/xterm', () => ({
 
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit(): void {} } }))
 
+const commitPanePortsSeen: unknown[] = []
+
 /** The focus target and nothing else: the dialog's own reads have their own test. */
 vi.mock('../../versioning/commitPane', () => ({
-  CommitPane: (props: { item: { vcs: string } }) =>
-    <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`} />,
+  CommitPane: (props: { item: { vcs: string }; ports?: unknown }) => {
+    commitPanePortsSeen.push(props.ports)
+    return <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`} />
+  },
 }))
 
 /** The one dockview event this panel listens to, and the id its decorations are published under. */
@@ -933,6 +939,22 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
 
     api.emitVisibility(true)
     expect(xtermMock.writes).toEqual(['opened', 'hidden one and two'])
+  })
+
+  it('re-attaches for a clean snapshot when hidden output outgrows the held-output bound', async () => {
+    const api = new PanelApiFake('terminal:held-overflow')
+    mount(api)
+    await act(async () => { await Promise.resolve() })
+    const initialAttaches = attachIds.length
+
+    api.emitVisibility(false)
+    push(TerminalPanelTest.data('x'.repeat(TerminalHeldOutput.maxCharsConst + 1)))
+    expect(attachIds.length).toBe(initialAttaches)
+    expect(xtermMock.resets).toBe(0)
+
+    api.emitVisibility(true)
+    await waitFor(() => expect(attachIds.length).toBe(initialAttaches + 1))
+    expect(xtermMock.resets).toBe(0)
   })
 
   it('draws the context warning over a local agent terminal', async () => {
@@ -3023,6 +3045,56 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(inputs.submit('session-1', '/compact')).toBe(false)
       expect(inputCalls).toEqual([])
     })
+  })
+
+  it('keeps the embedded Session actions commit review ports stable across inner split switches and parent rerenders', async () => {
+    commitPanePortsSeen.length = 0
+    const workflow = {
+      kind: 'finish' as const, workflowId: 'finish-1', title: 'Finish', open: true, badge: 'Ready for validation', summary: '',
+      actions: [{ id: 'finish-again' as const, label: 'Publish verified changes', primary: true, place: 'step' as const, requiresCommit: true as const }],
+      rounds: [{ title: 'Finish', steps: [{ key: '1:changes', title: 'Changes', detail: '', state: 'waits' as const, startedAt: null, endedAt: null,
+        target: { kind: 'none' as const }, body: { kind: 'commit' as const, vcs: 'svn' as const, scopeRoot: 'Q:/work' } }] }],
+    }
+    const mixed = SessionsFixtures.mixed()
+    const baseSession = mixed.sessions[0]!
+    await withSessions({
+      ...mixed,
+      sessions: [{ ...baseSession, sessionId: 'session-1', actions: { sections: [workflow] } }],
+    })
+    const api = new PanelApiFake('terminal:1', true)
+    const workflowItem = { kind: 'workflow' as const, key: 'workflow:session-1', title: 'Session actions', sessionId: 'session-1' }
+    const fileItem = { kind: 'file' as const, key: 'file:a', title: 'a.ts', source: { kind: 'workspace' as const, sessionId: 'session-1', path: 'Q:/work/a.ts' } }
+    const renderWith = (active: string, openTerminal: TerminalPanelProps['openTerminal']) => (
+      <TabDecorationsProvider store={store}>
+        <TerminalPanel
+          {...api.props({ sessionId: 'session-1', split: { items: [workflowItem, fileItem], active, ratio: 0.5, preview: null, history: [active], historyIndex: 0 } })}
+          refresh={refresh}
+          inputs={inputs}
+          drafts={drafts}
+          panelFocus={panelFocus}
+          history={panelHistory}
+          sessions={sessions}
+          openTerminal={openTerminal}
+          remoteSessions={remoteSessions}
+          sessionModel={sessionModel}
+          settings={settings}
+          compact={compact}
+          compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
+          marks={marks}
+          commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
+          fileTools={new PanelFileToolsRegistry()}
+          splitPins={splitPins}
+          openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:default' })}
+          openDirectoryAt={() => undefined}
+        />
+      </TabDecorationsProvider>
+    )
+    const view = render(renderWith('workflow:session-1', async () => null))
+    await view.findByRole('region', { name: 'Review changes' })
+    view.rerender(renderWith('file:a', async () => null))
+    view.rerender(renderWith('workflow:session-1', async () => null))
+    expect(commitPanePortsSeen.length).toBeGreaterThanOrEqual(3)
+    expect(new Set(commitPanePortsSeen).size).toBe(1)
   })
 
   // The panel id is derived from the params, so a panel opened without one would look like a
