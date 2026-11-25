@@ -57,6 +57,7 @@ import {
 } from '../../lib-orchestrator/remoteControl/remoteControlTerminal.js'
 import { SessionManager } from '../../lib-orchestrator/sessionManager/sessionManager.js'
 import type {
+  AutomationState,
   SessionColorName,
   SessionCreated,
   SessionCreateSpec,
@@ -1366,6 +1367,10 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.setSessionColor(sessionId, color)
   }
 
+  setAutomationState(sessionId: string, state: AutomationState | null): Promise<SessionsOpResult<{ changed: boolean }>> {
+    return this.sessions.setAutomationState(sessionId, state)
+  }
+
   setSessionDetails(
     sessionId: string,
     update: SessionDetailsUpdate,
@@ -1800,6 +1805,10 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
   }
 
   setSessionColor(_sessionId: string, _color: SessionColorName | null): Promise<SessionsOpResult> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  setAutomationState(_sessionId: string, _state: AutomationState | null): Promise<SessionsOpResult<{ changed: boolean }>> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 

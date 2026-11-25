@@ -276,6 +276,7 @@ class RemoteControlServerHarness {
         scriptsOf: async (sessionId) => ({ ok: true, value: { sessionId, runs: [], log: null } }),
         clearActions: async () => ({ ok: true, value: undefined }),
         setSessionColor: async () => ({ ok: true, value: undefined }),
+        setAutomationState: async () => ({ ok: true, value: { changed: true } }),
         setSessionDetails: async () => ({ ok: true, value: { titleChanged: false, notifyAgent: null } }),
       },
       host: {

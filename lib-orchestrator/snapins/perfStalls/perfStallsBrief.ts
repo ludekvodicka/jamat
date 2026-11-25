@@ -9,7 +9,7 @@ export class PerfStallsBrief {
       + 'then record jamat-cli snapins pass event --pass {pass} --kind done --outcome ready --detail-file <absolute-detail-file>. '
       + 'For a real blocker use --outcome blocked with --detail-file instead. Stop at ready for human Finish. '
       + 'Do not publish, commit, update, or run Finish yourself. Do not invoke or imitate PP pass mode or supply ppVersion. '
-      + 'Pass events own presentation; do not change automation lifecycle groups or notes separately.'
+      + 'Pass events own presentation; do not change the automation state or notes separately.'
   }
 
   static of(item: SnapinItem): PassBrief['work'] {

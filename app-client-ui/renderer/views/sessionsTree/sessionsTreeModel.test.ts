@@ -248,6 +248,22 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(build(snapshot, { ...all, filters: { ...all.filters, colors: [null] } }).emptyState).toBe('noMatch')
   })
 
+  it('filters by bot state, reading a row without a chip as none', () => {
+    const source = SessionsFixtures.mixed()
+    const snapshot = { ...source, sessions: source.sessions.map((session) =>
+      session.sessionId === 's-working' ? { ...session, automationState: 'waiting' as const }
+        : session.sessionId === 's-waiting' ? { ...session, automationState: 'completed' as const }
+          : session) }
+    const sessionIds = (automation: readonly ('working' | 'waiting' | 'blocked' | 'completed' | 'none')[]): string[] =>
+      everyId(build(snapshot, { ...all, filters: { ...all.filters, automation } }).nodes)
+        .filter((id) => id.startsWith('session:'))
+    expect(sessionIds(['waiting'])).toEqual(['session:s-working'])
+    const hidden = sessionIds(SessionsFilterState.hideDoneConst)
+    expect(hidden).toContain('session:s-working')
+    expect(hidden).not.toContain('session:s-waiting')
+    expect(hidden.length).toBe(sessionIds([]).length - 1)
+  })
+
   it('roots the tree in catalog order, then AD-HOC, then NO PROJECT', () => {
     const result = build(SessionsFixtures.mixed())
 
@@ -479,6 +495,23 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
     expect(lost.exitCode).toBe(null)
     expect(lost.endedReason).toBe('no runtime answered for this record')
     expect(lost.actions).toEqual(['reopen', 'remove'])
+  })
+
+  it('carries a known bot state to the badges and maps none or an unknown one to null', () => {
+    const source = SessionsFixtures.mixed()
+    const sessions = source.sessions.map((session) =>
+      session.sessionId === 's-working' ? { ...session, automationState: 'blocked' as const }
+        : session.sessionId === 's-waiting' ? { ...session, automationState: 'paused' as never }
+          : session)
+    const nodes = build({ ...source, sessions }).nodes
+    const working = find(nodes, 'session:s-working')
+    const waiting = find(nodes, 'session:s-waiting')
+    const ended = find(nodes, 'session:s-ended')
+    if (working.kind !== 'session' || waiting.kind !== 'session' || ended.kind !== 'session')
+      throw new Error('The fixture sessions are not session nodes')
+    expect(working.badges.automationState).toBe('blocked')
+    expect(waiting.badges.automationState).toBeNull()
+    expect(ended.badges.automationState).toBeNull()
   })
 
   it('draws background work as its own green-state glyph', () => {

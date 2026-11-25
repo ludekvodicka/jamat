@@ -19,6 +19,7 @@ export class SessionCommandRun {
    */
   private static readonly targetedConst: ReadonlySet<CommandId> = new Set<CommandId>([
     'session.details',
+    'session.clearAutomationState',
     'session.newBeside',
     'session.newInClaude',
     'session.newInCodex',
@@ -45,6 +46,7 @@ export class SessionCommandRun {
   static at(commands: CommandRegistry, id: CommandId, sessionId: string, remoteEndpointId?: string): void {
     switch (id) {
       case 'session.details':
+      case 'session.clearAutomationState':
       case 'session.newBeside':
       case 'session.newInClaude':
       case 'session.newInCodex':

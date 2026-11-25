@@ -113,7 +113,7 @@ export class PassLauncher {
     }
     const stored = store.current.attempts.find((a) => a.attemptId === attemptId)!
     if (stored.sessionId && !stopped() && guard.open(grant.kind))
-      await this.options.presentation?.apply(grant.kind, stored, guard, context.log)
+      await this.options.presentation?.apply(grant.kind, stored, guard)
   }
 
   static prompt(template: string, directory: string): string { return template.replaceAll('{pass}', `"${directory}"`) }

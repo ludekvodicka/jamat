@@ -1,5 +1,6 @@
-import type { SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
-export type { SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
+import type { SessionFilterAutomation, SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
+export type { SessionFilterAutomation, SessionFilterStatus, SessionsFilterValue, SavedSessionsFilter } from '../../lib-orchestrator/clientApi/sessionsFilterState.types'
+import { AutomationStates } from '../../lib-orchestrator/sessionManager/automationStates'
 import type { SessionAgentId } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { JsonShape } from './jsonShape'
 import { SessionPalette } from './sessionPalette'
@@ -39,16 +40,30 @@ export class SessionsFilterState {
     closedRecently: `Last ${SessionsFilterState.closedWithinHoursConst}h closed`,
   } as const satisfies Record<SessionFilterStatus, string>
   static readonly agentChoicesConst = ['claude', 'codex', 'antigravity', null] as const satisfies readonly (SessionAgentId | null)[]
+  static readonly automationChoicesConst: readonly SessionFilterAutomation[] = [...AutomationStates.allConst, 'none']
+  /** The menu's Hide done: every bot state but `completed`, and the rows without a chip. */
+  static readonly hideDoneConst: readonly SessionFilterAutomation[] =
+    SessionsFilterState.automationChoicesConst.filter((value) => value !== 'completed')
+
+  /** Hide done narrows the bot state only; the state, color and type filters stay as they are. */
+  static hideDone(value: SessionsFilterValue): SessionsFilterValue {
+    return { ...value, automation: SessionsFilterState.hideDoneConst }
+  }
+
+  static automationOf(value: SessionsFilterValue): readonly SessionFilterAutomation[] {
+    return value.automation ?? []
+  }
 
   static isAll(value: SessionsFilterValue, text: string): boolean {
     return value.colors.length === 0 && value.states.length === 0
-      && value.agents.length === 0 && text.trim() === ''
+      && value.agents.length === 0 && SessionsFilterState.automationOf(value).length === 0 && text.trim() === ''
   }
 
   static equal(left: SessionsFilterValue, right: SessionsFilterValue): boolean {
     return SessionsFilterState.same(left.colors, right.colors)
       && SessionsFilterState.same(left.states, right.states)
       && SessionsFilterState.same(left.agents, right.agents)
+      && SessionsFilterState.same(SessionsFilterState.automationOf(left), SessionsFilterState.automationOf(right))
   }
 
   static toggle<T>(values: readonly T[], value: T): readonly T[] {
@@ -65,6 +80,8 @@ export class SessionsFilterState {
     return SessionsFilterState.isSelection(value.colors, [...SessionPalette.namesConst, null])
       && SessionsFilterState.isSelection(value.states, Object.keys(SessionsFilterState.stateLabelsConst))
       && SessionsFilterState.isSelection(value.agents, SessionsFilterState.agentChoicesConst)
+      && (value.automation === undefined
+        || SessionsFilterState.isSelection(value.automation, SessionsFilterState.automationChoicesConst))
   }
 
   static isSavedList(value: unknown): value is readonly SavedSessionsFilter[] {

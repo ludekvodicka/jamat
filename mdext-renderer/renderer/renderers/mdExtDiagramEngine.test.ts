@@ -246,6 +246,25 @@ describe('mdext-renderer/renderer/renderers/mdExtDiagramEngine', () => {
       }
       finally { vi.unstubAllGlobals() }
     })
+
+    it('inks a text mark with the theme text colour unless the spec sets one', async () => {
+      vi.useRealTimers()
+      const chart = (mark: Record<string, unknown>): string => JSON.stringify({
+        data: { values: [{ x: 1, y: 2, label: 'FF' }] },
+        mark,
+        encoding: {
+          x: { field: 'x', type: 'quantitative' },
+          y: { field: 'y', type: 'quantitative' },
+          text: { field: 'label' },
+        },
+      })
+
+      const themed = await MdExtDiagramEngine.render('vega-lite', chart({ type: 'text' }), undefined, 'paper')
+      const own = await MdExtDiagramEngine.render('vega-lite', chart({ type: 'text', color: '#ff0000' }), undefined, 'paper')
+
+      expect(themed).toMatch(/fill="#1f2328"[^>]*>FF</)
+      expect(own).toMatch(/fill="#ff0000"[^>]*>FF</)
+    })
   })
 
   describe('the Graphviz heap', () => {

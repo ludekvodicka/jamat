@@ -1,7 +1,9 @@
 import { SessionTreeHierarchy, type SessionTreeNesting, type SessionTreeParent } from '../../../../lib-orchestrator/sessionManager/sessionTreeHierarchy'
+import { AutomationStates } from '../../../../lib-orchestrator/sessionManager/automationStates'
 import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
 import type { ProjectBinding } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
 import type {
+  AutomationState,
   SessionAgentId,
   SessionColorName,
   SessionInfo,
@@ -75,6 +77,8 @@ export interface SessionBadges {
   /** A turn settled or a runtime exited while the person was looking somewhere else. */
   attention: boolean
   completed: boolean
+  /** The bot state a worker or snap-in wrote, drawn as an outlined chip; null for none or a value this build does not know. */
+  automationState: AutomationState | null
   /**
    * Whether this session has a terminal tab open in any workspace window. It is already what keeps
    * a completed row in the tree at all; the row reads it a second time to know whether its Close
@@ -453,6 +457,7 @@ export class SessionsTreeModel {
       mainUpdate: SessionNodeState.mainUpdateOf(info.svnAction),
       attention: marks.has(targetKey),
       completed: info.completed === true,
+      automationState: AutomationStates.readOf(info.automationState) ?? null,
       tabbed: tabbed.has(targetKey),
     }
     const searchText = [
@@ -491,6 +496,8 @@ export class SessionsTreeModel {
       return false
     const { colors, agents, states } = view.filters
     if (colors.length > 0 && !colors.includes(entry.info.color ?? null)) return false
+    const automation = SessionsFilterState.automationOf(view.filters)
+    if (automation.length > 0 && !automation.includes(entry.badges.automationState ?? 'none')) return false
     if (agents.length > 0 && !agents.includes(entry.badges.agentId)) return false
     if (states.length === 0) return true
     // A session keeps its row for as long as it has a tab open somewhere. Finalizing a session does

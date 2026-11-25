@@ -155,7 +155,6 @@ export class SnapinsManager {
   }
 
   private async tick(): Promise<void> {
-    this.presentation?.beginTick()
     const guard = new TickGuard(new Map([...this.kinds].map(([kind, value]) => [kind, value.store])),
       (kind) => { void this.log(this.kinds.get(kind)!, 'State write refused; remaining work of this kind skipped', 'warn') })
     for (const [kind, value] of this.kinds) {

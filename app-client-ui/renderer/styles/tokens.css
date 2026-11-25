@@ -27,6 +27,12 @@
   --color-warn: #f0a58a;
   --color-danger: #f14c4c;
 
+  /* The bot state chips (outline and text), bright enough to read on a coloured dark row. */
+  --automation-working: var(--color-accent);
+  --automation-waiting: #f29a4a;
+  --automation-blocked: var(--color-danger);
+  --automation-completed: var(--color-ok);
+
   --color-commit-modified: #6c9eff;
   --color-commit-added: #ee87ef;
   --color-commit-deleted: #ff8585;

@@ -3,6 +3,8 @@
 Relay 1.5.2 updates only the external Zod package to 4.6.7 while preserving the deployed
 application and runtime boundary. Use the [bounded release recipe](../docs/architecture/relay-zod-patch-2026-11-18.md)
 for this patch; a fresh HEAD source build includes later library changes outside its scope.
+Since 2026-11-25 the same 1.5.2 application bytes run on the shared `node-runtime:2.3.0`
+(Node 24.22.3); see the [runtime swap record](../docs/architecture/relay-runtime-2-3-0-2026-11-25.md).
 
 Build the Linux amd64 image from the repository root with Docker BuildKit:
 

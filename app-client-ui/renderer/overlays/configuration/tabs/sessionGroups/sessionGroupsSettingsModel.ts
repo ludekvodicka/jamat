@@ -1,5 +1,6 @@
 import { Slug } from '../../../../../../lib-orchestrator/shared/slug'
 import { SessionGroups } from '../../../../../../lib-orchestrator/sessionManager/sessionGroups'
+import { AutomationStates } from '../../../../../../lib-orchestrator/sessionManager/automationStates'
 import {
   SessionsGroupsState,
   type SessionGroup,
@@ -108,6 +109,9 @@ export class SessionGroupsSettingsModel {
    * A title that slugs to nothing - punctuation, or a script the slug drops - adds no group. The tab
    * disables the button for an empty field, so the only way here is a name that LOOKS like one and
    * cannot become an id, and inventing `root` for it would file sessions under a word nobody typed.
+   *
+   * The four former bot section ids count as taken: the startup cleanup (`AutomationGroupsCleanup`)
+   * would delete such a section.
    */
   private static added(buffer: SessionGroupsList, title: string): SessionGroupsList {
     const trimmed = title.trim()
@@ -115,7 +119,7 @@ export class SessionGroupsSettingsModel {
     if (base.length === 0 || !SessionGroups.isTitle(trimmed)) return buffer
     const taken = new Set(buffer.map((definition) => definition.id))
     let id = base
-    for (let suffix = 2; taken.has(id); suffix += 1) id = `${base}-${suffix}`
+    for (let suffix = 2; taken.has(id) || AutomationStates.isFormerSectionId(id); suffix += 1) id = `${base}-${suffix}`
     return [...buffer, { id, title: trimmed }]
   }
 

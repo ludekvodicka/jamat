@@ -2,7 +2,7 @@ import type { RemoteControlOperation, RemoteControlRequestBody } from './remoteC
 
 export class RemoteSessionCommandsContract {
   static readonly operations = ['sessions.restart', 'sessions.reopen', 'sessions.fork', 'sessions.remove',
-    'sessions.setDetails', 'sessions.color', 'sessions.group', 'sessions.setNote'] as const satisfies readonly RemoteControlOperation[]
+    'sessions.setDetails', 'sessions.color', 'sessions.automation', 'sessions.group', 'sessions.setNote'] as const satisfies readonly RemoteControlOperation[]
 }
 
 export type RemoteSessionCommandOperation = typeof RemoteSessionCommandsContract.operations[number]

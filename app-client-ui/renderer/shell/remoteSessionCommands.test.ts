@@ -51,6 +51,16 @@ describe('source session commands', () => {
       session: { kind: 'sessionId', sessionId: f.info.sessionId }, color: null } })])
   })
 
+  it('sends Clear bot state of a source row to its peer as sessions.automation with null', async () => {
+    const f = fixture()
+    f.commands.register('session.clearAutomationState', f.local)
+    f.commands.execute('session.clearAutomationState', { sessionId: f.info.sessionId, remoteEndpointId: 'source' })
+    await vi.waitFor(() => expect(f.command).toHaveBeenCalledOnce())
+    expect(f.command.mock.calls[0]).toEqual(['source', expect.objectContaining({ operation: 'sessions.automation', body: {
+      session: { kind: 'sessionId', sessionId: f.info.sessionId }, state: null } })])
+    expect(f.local).not.toHaveBeenCalled()
+  })
+
   it('refuses disconnected and old sources without invoking the local handler', async () => {
     const f = fixture()
     f.endpoint.status = 'disconnected'

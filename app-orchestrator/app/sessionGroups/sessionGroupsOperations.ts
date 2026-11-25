@@ -6,9 +6,11 @@ import type { RemoteControlRegistry } from '../../../lib-orchestrator/remoteCont
 import { RemoteControlZod } from '../../../lib-orchestrator/remoteControl/remoteControlSchemas'
 import type { AppOperationMap } from '../../../lib-orchestrator/clientApi/appOperationMap'
 import type {
+  SessionGroup,
   SessionGroupDefinition,
   SessionGroupsSaveResult,
 } from '../../../lib-orchestrator/clientApi/sessionsGroupsState'
+import { AutomationStates } from '../../../lib-orchestrator/sessionManager/automationStates'
 import type { ShellSessionGroups } from '../../../lib-orchestrator/shared/shellPort.types'
 import { SessionGroupsSection } from './sessionGroupsSection'
 
@@ -23,12 +25,6 @@ export class SessionGroupsOperations {
     store: ShellSessionGroups,
     onChanged: () => void,
   ) { this.configStore = configStore; this.store = store; this.onChanged = onChanged }
-
-  async ensure(groups: readonly SessionGroupDefinition[]): Promise<SessionGroupsSaveResult> {
-    const current = this.configStore.readSection(SessionGroupsSection.spec)
-    const missing = groups.filter((group) => !current.some((existing) => existing.id === group.id))
-    return missing.length ? this.save([...current, ...missing]) : { ok: true }
-  }
 
   register(registry: Pick<RemoteControlRegistry, 'registrar'>): void {
     const op = registry.registrar<AppOperationMap>()
@@ -46,6 +42,23 @@ export class SessionGroupsOperations {
       }),
       run: async (body) => RemoteControlOutcome.of(await this.save(body.groups)),
     })
+  }
+
+  /**
+   * Transition (dormant register): the startup cleanup's half of the list. It saves only when the
+   * stored list still holds one of the four former bot sections, so a computer on the defaults gets
+   * no `sessionGroups` key written, and every other section stays where the person put it.
+   */
+  async removeReserved(): Promise<{ ok: true; removed: number } | Extract<SessionGroupsSaveResult, { ok: false }>> {
+    const current = this.configStore.readSection(SessionGroupsSection.spec)
+    const kept = current.filter((group) => !AutomationStates.isFormerSectionId(group.id))
+    if (kept.length === current.length) return { ok: true, removed: 0 }
+    const saved = await this.save(kept)
+    return saved.ok ? { ok: true, removed: current.length - kept.length } : saved
+  }
+
+  sectionIds(): readonly SessionGroup[] {
+    return this.configStore.readSection(SessionGroupsSection.spec).map((group) => group.id)
   }
 
   /**

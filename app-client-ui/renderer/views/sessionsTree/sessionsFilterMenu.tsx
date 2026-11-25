@@ -70,6 +70,25 @@ export function SessionsFilterMenu(props: {
           else throw new Error(`Unknown session filter agent: ${agent satisfies never}`)
         }, (agents) => props.onChange({ ...props.filters, agents })),
     },
+    {
+      key: 'automation', label: 'Filter by bot state',
+      children: [
+        ...choices('automation', SessionsFilterState.automationChoicesConst, SessionsFilterState.automationOf(props.filters),
+          (value) => {
+            if (value === 'working') return 'auto'
+            else if (value === 'waiting') return 'wait'
+            else if (value === 'blocked') return 'block'
+            else if (value === 'completed') return 'done'
+            else if (value === 'none') return 'No bot state'
+            else throw new Error(`Unknown session filter bot state: ${value satisfies never}`)
+          }, (automation) => props.onChange({ ...props.filters, automation })),
+        { kind: 'separator', key: 'automation:shortcuts' },
+        {
+          key: 'automation:hideDone', label: 'Hide done', keepOpenOnSelect: true,
+          onSelect: () => props.onChange(SessionsFilterState.hideDone(props.filters)),
+        },
+      ],
+    },
     { kind: 'separator', key: 'shortcuts' },
     { key: 'all', label: 'All', onSelect: props.onReset, onContextMenu: props.onReset },
     {

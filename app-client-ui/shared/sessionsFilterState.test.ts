@@ -27,6 +27,31 @@ describe('app-client-ui/shared/sessionsFilterState', () => {
     ]) expect(SessionsFilterState.isValid(filters)).toBe(false)
   })
 
+  it('reads a preset without the bot state dimension as one with none selected', () => {
+    const older = { colors: ['red'], states: ['active'], agents: [] } as const
+    expect(SessionsFilterState.isValid(older)).toBe(true)
+    expect(SessionsFilterState.equal(older, { ...older, automation: [] })).toBe(true)
+    expect(SessionsFilterState.isAll({ ...SessionsFilterState.allConst }, '')).toBe(true)
+    expect(SessionsFilterState.isAll({ ...SessionsFilterState.allConst, automation: ['waiting'] }, '')).toBe(false)
+    expect(SessionsFilterState.isValid({ ...older, automation: ['waiting', 'none'] })).toBe(true)
+    expect(SessionsFilterState.isValid({ ...older, automation: ['paused'] })).toBe(false)
+    expect(SessionsFilterState.isValid({ ...older, automation: ['waiting', 'waiting'] })).toBe(false)
+    expect(SessionsFilterState.isSavedList([{ ...saved, filters: { ...older, automation: ['paused'] } }])).toBe(false)
+  })
+
+  it('hides done by narrowing only the bot state, also over the Active filter', () => {
+    expect(SessionsFilterState.hideDone(SessionsFilterState.defaultConst))
+      .toEqual({ colors: [], agents: [], states: ['active'], automation: ['working', 'waiting', 'blocked', 'none'] })
+    const narrowed = { colors: ['red' as const], states: ['question' as const], agents: ['codex' as const] }
+    expect(SessionsFilterState.hideDone(narrowed)).toMatchObject(narrowed)
+  })
+
+  it('round-trips a preset with the bot state through the saved list', () => {
+    const value = [{ ...saved, filters: { ...SessionsFilterState.allConst, automation: ['blocked', 'none'] as const } }]
+    const restored = SessionsFilterState.coerceSaved(JSON.parse(JSON.stringify(value)), () => { throw new Error('refused') })
+    expect(restored).toEqual(value)
+  })
+
   it('refuses empty, reserved or duplicate names and duplicate ids without changing stored values', () => {
     expect(SessionsFilterState.isSavedList([saved])).toBe(true)
     for (const values of [null, [saved, saved], [{ ...saved, name: '' }], [{ ...saved, name: 'All' }],

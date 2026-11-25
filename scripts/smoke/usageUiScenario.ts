@@ -127,7 +127,7 @@ export class UsageUiScenario {
         }, 'Usage chart hover readout')
         return text
       }
-      await ui.evaluate(`${card}.querySelector('[aria-label="Range"] button:nth-child(2)').click()`)
+      await ui.evaluate(`Array.from(${card}.querySelectorAll('[aria-label="Range"] button')).find(button => button.innerText.trim() === '7 days').click()`)
       await RemoteUiScenarios.until(async () => (await ui.evaluate<string>(`${card}.querySelector('[aria-label="Range"] [aria-pressed="true"]')?.innerText ?? ""`)) === '7 days'
         && await ui.evaluate<boolean>(`!!${card}.querySelector(".jamat-usage__graph svg")`), 'Usage 7-day pool chart')
       assert.match(await hover(card, 0.9), /Projected\s+\d+\.\d%/)

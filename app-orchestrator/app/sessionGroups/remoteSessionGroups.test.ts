@@ -7,8 +7,12 @@ import { RemoteSessionGroups } from './remoteSessionGroups'
 const session = { sessionId: 'session-1', project: { kind: 'project', categoryId: 'code', projectPath: 'Q:/apps/one' } } as SessionInfo
 const key = SessionsGroupsState.sessionKeyOf({ kind: 'local', sessionId: 'session-1' })
 
+/** The defaults plus four sections of a person's own. */
+const sectionsConst = [...SessionsGroupsState.defaultsConst, { id: 'review', title: 'Review' }, { id: 'parked', title: 'Parked' },
+  { id: 'shipped', title: 'Shipped' }, { id: 'later', title: 'Later' }]
+
 function fixture(initial: readonly ShellGroupAssignment[] = []) {
-  let sections = [...SessionsGroupsState.defaultsConst]
+  let sections = [...sectionsConst]
   let listener: ((assignments: readonly ShellGroupAssignment[]) => void) | undefined
   const unsubscribe = vi.fn(() => { listener = undefined })
   const assign = vi.fn<ShellSessionGroups['assign']>(async () => ({ ok: true, assignments: [] }))
@@ -24,11 +28,11 @@ function fixture(initial: readonly ShellGroupAssignment[] = []) {
 describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
   it('exports current custom titles and ordering without exposing assignments or config', () => {
     const rig = fixture()
-    const sections = [{ id: 'waiting', title: 'Na mě' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }]
+    const sections = [{ id: 'parked', title: 'Na mě' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }]
     rig.sections(sections)
     expect(rig.port.definitions()).toEqual(sections)
     expect(rig.port.definitions()).not.toBe(sections)
-    rig.sections([sections[2], { id: 'waiting', title: 'Review' }, sections[1]])
+    rig.sections([sections[2], { id: 'parked', title: 'Review' }, sections[1]])
     expect(rig.port.definitions().map(group => group.title)).toEqual(['Pinned', 'Review', 'Sessions'])
   })
 
@@ -37,31 +41,31 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
     expect(rig.port.read([session]).get('session-1')).toBeNull()
     rig.push([{ key: 'category:code', group: 'priority' }])
     expect(rig.port.read([session]).get('session-1')).toBe('priority')
-    const project = { key: 'project:category:code/q:/apps/one', group: 'automation' }
+    const project = { key: 'project:category:code/q:/apps/one', group: 'review' }
     rig.push([project])
-    expect(rig.port.read([session]).get('session-1')).toBe('automation')
-    rig.push([project, { key, group: 'waiting' }])
-    expect(rig.port.read([session]).get('session-1')).toBe('waiting')
+    expect(rig.port.read([session]).get('session-1')).toBe('review')
+    rig.push([project, { key, group: 'parked' }])
+    expect(rig.port.read([session]).get('session-1')).toBe('parked')
     rig.push([project, { key, group: 'none' }])
-    expect(rig.port.read([session]).get('session-1')).toBe('automation')
+    expect(rig.port.read([session]).get('session-1')).toBe('review')
     rig.push([{ key, group: 'removed-section' }])
     expect(rig.port.read([session]).get('session-1')).toBeNull()
-    rig.push([{ key: 'root:adhoc', group: 'blocked' }, { key: 'root:none', group: 'completed' }])
-    expect(rig.port.read([{ ...session, project: { kind: 'adHoc', path: 'Q:/scratch' } }]).get('session-1')).toBe('blocked')
-    expect(rig.port.read([{ ...session, project: { kind: 'none' } }]).get('session-1')).toBe('completed')
+    rig.push([{ key: 'root:adhoc', group: 'later' }, { key: 'root:none', group: 'shipped' }])
+    expect(rig.port.read([{ ...session, project: { kind: 'adHoc', path: 'Q:/scratch' } }]).get('session-1')).toBe('later')
+    expect(rig.port.read([{ ...session, project: { kind: 'none' } }]).get('session-1')).toBe('shipped')
   })
 
   it('files the session with the tree key, caches only a completed write and tells windows once', async () => {
-    const rig = fixture([{ key, group: 'waiting' }])
+    const rig = fixture([{ key, group: 'parked' }])
     let complete!: (value: Awaited<ReturnType<ShellSessionGroups['assign']>>) => void
     rig.assign.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
-    const pending = rig.port.assign('session-1', 'completed')
-    expect(rig.assign).toHaveBeenCalledExactlyOnceWith({ kind: 'assign', key, group: 'completed' })
-    expect(rig.port.read([session]).get('session-1')).toBe('waiting')
+    const pending = rig.port.assign('session-1', 'shipped')
+    expect(rig.assign).toHaveBeenCalledExactlyOnceWith({ kind: 'assign', key, group: 'shipped' })
+    expect(rig.port.read([session]).get('session-1')).toBe('parked')
     expect(rig.changed).not.toHaveBeenCalled()
-    complete({ ok: true, assignments: [{ key, group: 'completed' }] })
-    expect(await pending).toEqual({ ok: true, value: { group: 'completed' } })
-    expect(rig.port.read([session]).get('session-1')).toBe('completed')
+    complete({ ok: true, assignments: [{ key, group: 'shipped' }] })
+    expect(await pending).toEqual({ ok: true, value: { group: 'shipped' } })
+    expect(rig.port.read([session]).get('session-1')).toBe('shipped')
     expect(rig.changed).toHaveBeenCalledTimes(1)
     rig.assign.mockResolvedValueOnce({ ok: true, assignments: [] })
     expect(await rig.port.assign('session-1', 'none')).toEqual({ ok: true, value: { group: 'none' } })
@@ -72,19 +76,19 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
     const rig = fixture()
     expect(await rig.port.assign('session-1', 'invented-yesterday')).toEqual({ ok: false,
       error: { code: 'invalid-request', detail: 'This computer has no session group "invented-yesterday"; it has '
-        + 'pinned, priority, none, automation, waiting, completed, blocked' } })
+        + 'pinned, priority, none, review, parked, shipped, later' } })
     expect(rig.assign).not.toHaveBeenCalled()
     expect(rig.changed).not.toHaveBeenCalled()
   })
 
   it('keeps the cache and sends no event when a write is refused or rejects', async () => {
     const rig = fixture([{ key, group: 'priority' }])
-    rig.assign.mockResolvedValueOnce({ ok: false, assignments: [{ key, group: 'completed' }] })
-    expect(await rig.port.assign('session-1', 'completed')).toEqual({ ok: false,
+    rig.assign.mockResolvedValueOnce({ ok: false, assignments: [{ key, group: 'shipped' }] })
+    expect(await rig.port.assign('session-1', 'shipped')).toEqual({ ok: false,
       error: { code: 'unavailable', detail: 'Client state is not accepting writes' } })
     expect(rig.port.read([session]).get('session-1')).toBe('priority')
     rig.assign.mockRejectedValueOnce(new Error('offline'))
-    await expect(rig.port.assign('session-1', 'completed')).rejects.toThrow('offline')
+    await expect(rig.port.assign('session-1', 'shipped')).rejects.toThrow('offline')
     expect(rig.port.read([session]).get('session-1')).toBe('priority')
     expect(rig.changed).not.toHaveBeenCalled()
   })
@@ -92,7 +96,7 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
   it('reads the sections again for every request', async () => {
     const rig = fixture()
     expect(await rig.port.assign('session-1', 'ship-it')).toMatchObject({ ok: false })
-    rig.sections([...SessionsGroupsState.defaultsConst, { id: 'ship-it', title: 'Ship it' }])
+    rig.sections([...sectionsConst, { id: 'ship-it', title: 'Ship it' }])
     expect(await rig.port.assign('session-1', 'ship-it')).toEqual({ ok: true, value: { group: 'ship-it' } })
   })
 
@@ -102,24 +106,24 @@ describe('app-client-ui/app/sessionGroups/remoteSessionGroups', () => {
     await rig.port.inherit('parent', 'session-1')
     expect(rig.port.read([session]).get('session-1')).toBe('priority')
     expect(rig.changed).not.toHaveBeenCalled()
-    rig.assign.mockResolvedValueOnce({ ok: true, assignments: [{ key, group: 'waiting' }] })
+    rig.assign.mockResolvedValueOnce({ ok: true, assignments: [{ key, group: 'parked' }] })
     await rig.port.inherit('parent', 'session-1')
     expect(rig.assign).toHaveBeenLastCalledWith({ kind: 'inherit', parentKey: 'session:parent', key })
-    expect(rig.port.read([session]).get('session-1')).toBe('waiting')
+    expect(rig.port.read([session]).get('session-1')).toBe('parked')
     expect(rig.changed).toHaveBeenCalledTimes(1)
     rig.port.dispose()
     expect(rig.unsubscribe).toHaveBeenCalledTimes(1)
   })
   it.each(['assign', 'inherit'] as const)('retains a newer pushed snapshot after an older %s reply', async operation => {
-    const rig = fixture([{ key, group: 'waiting' }])
+    const rig = fixture([{ key, group: 'parked' }])
     let complete!: (value: Awaited<ReturnType<ShellSessionGroups['assign']>>) => void
     rig.assign.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
     let pending: Promise<unknown>
-    if (operation === 'assign') pending = rig.port.assign('session-1', 'completed')
+    if (operation === 'assign') pending = rig.port.assign('session-1', 'shipped')
     else if (operation === 'inherit') pending = rig.port.inherit('parent', 'session-1')
     else throw new Error(`Unknown operation: ${operation satisfies never}`)
     rig.push([{ key, group: 'priority' }])
-    complete({ ok: true, assignments: [{ key, group: 'completed' }] })
+    complete({ ok: true, assignments: [{ key, group: 'shipped' }] })
     await pending
     expect(rig.port.read([session]).get('session-1')).toBe('priority')
     expect(rig.changed).toHaveBeenCalledTimes(1)

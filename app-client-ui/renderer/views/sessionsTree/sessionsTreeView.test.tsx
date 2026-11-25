@@ -45,6 +45,10 @@ import {
 } from './sessionsTreeView'
 
 describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
+  /** The defaults plus four sections of a person's own; the bot sections left the defaults. */
+  const customSectionsConst: readonly SessionGroupDefinition[] = [...SessionsGroupsState.defaultsConst,
+    { id: 'review', title: 'Review' }, { id: 'parked', title: 'Parked' }, { id: 'shipped', title: 'Shipped' }, { id: 'later', title: 'Later' }]
+
   it('keeps a pending account dialog and its later error when the Active filter removes the session', async () => {
     const source = SessionsFixtures.mixed()
     const base = { ...sessionOf(source, 's-working'), openInWindowIds: [], worktree: undefined }
@@ -102,14 +106,14 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   it.each(['together', 'states'] as const)('orders assigned groups and puts None first in the submenu in %s', async (view) => {
     const source = SessionsFixtures.mixed()
     const base = sessionOf(source, 's-working')
-    const seeded = ['pinned', 'priority', 'none', 'automation', 'waiting', 'completed', 'blocked']
+    const seeded = customSectionsConst.map((section) => section.id)
     const snapshot = { ...source, sessions: seeded.map((key) => ({ ...base, sessionId: key, title: key })) }
     const groups: SessionGroupAssignment[] = seeded.filter((key) => key !== 'none')
       .map((key) => ({ key: `session:${key}`, group: key }))
-    const { container, ports } = await mount(snapshot, view, { revision: 1, outbound: [], inbound: [] }, [], [], groups)
+    const { container, ports } = await mount(snapshot, view, { revision: 1, outbound: [], inbound: [] }, [], [], groups, customSectionsConst)
     const sections = (): string[] => [...container.querySelectorAll('.jamat-sessions__stack > section')]
       .map((node) => node.getAttribute('aria-label')!)
-    const titles = ['Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Completed', 'Blocked']
+    const titles = ['Pinned', 'Priority', 'Sessions', 'Review', 'Parked', 'Shipped', 'Later']
     expect(sections()).toEqual(titles)
     for (const title of titles)
       expect(container.querySelector(`.jamat-sessions__stack > section[aria-label="${title}"]`)!.querySelector(`[data-session="${title === 'Sessions' ? 'none' : title.toLowerCase()}"]`)).not.toBeNull()
@@ -117,15 +121,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(menuTitles().slice(0, 3)).toEqual(['Session Appearance', 'Groups', 'Session properties…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Groups' }))
     expect(screen.getAllByRole('menuitemcheckbox').map((item) => item.textContent?.replace('✓', '')))
-      .toEqual(['None', 'Pinned', 'Priority', 'Automation', 'Waiting', 'Completed', 'Blocked', 'Hidden when remote'])
+      .toEqual(['None', 'Pinned', 'Priority', 'Review', 'Parked', 'Shipped', 'Later', 'Hidden when remote'])
     expect(screen.getByRole('menuitemcheckbox', { name: 'None' })).toHaveAttribute('aria-checked', 'true')
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked' }))
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Blocked' }).querySelector('[data-session="none"]')).not.toBeNull())
-    expect(ports.savedGroups).toContainEqual({ key: 'session:none', group: 'blocked' })
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Later' }))
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Later' }).querySelector('[data-session="none"]')).not.toBeNull())
+    expect(ports.savedGroups).toContainEqual({ key: 'session:none', group: 'later' })
     fireEvent.contextMenu(rowOf(container, 'priority'))
     chooseGroup('None')
     await waitFor(() => expect(sections())
-      .toEqual(['Pinned', 'Sessions', 'Automation', 'Waiting', 'Completed', 'Blocked']))
+      .toEqual(['Pinned', 'Sessions', 'Review', 'Parked', 'Shipped', 'Later']))
   })
 
   /*
@@ -217,8 +221,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
   it('shows inherited selection and returns a session to its root group with None', async () => {
     const { container, ports } = await mount(SessionsFixtures.mixed(), 'together',
       { revision: 1, outbound: [], inbound: [] }, [], [], [
-        { key: 'category:nodejs', group: 'priority' }, { key: 'session:s-working', group: 'waiting' },
-      ])
+        { key: 'category:nodejs', group: 'priority' }, { key: 'session:s-working', group: 'parked' },
+      ], customSectionsConst)
     const priority = await screen.findByRole('region', { name: 'Priority' })
     expect(priority.querySelector('[data-session="s-waiting"]')).not.toBeNull()
     fireEvent.contextMenu(rowOf(container, 's-waiting'))
@@ -231,10 +235,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     await waitFor(() => expect(priority.querySelector('[data-session="s-working"]')).not.toBeNull())
     expect(ports.savedGroups).toEqual([{ key: 'category:nodejs', group: 'priority' }])
     fireEvent.contextMenu(groupRowLabelled(priority, 'NodeJs'))
-    chooseGroup('Blocked')
-    const blocked = await screen.findByRole('region', { name: 'Blocked' })
-    expect(blocked.querySelector('[data-session="s-waiting"]')).not.toBeNull()
-    expect(blocked.querySelector('[data-session="s-working"]')).not.toBeNull()
+    chooseGroup('Later')
+    const later = await screen.findByRole('region', { name: 'Later' })
+    expect(later.querySelector('[data-session="s-waiting"]')).not.toBeNull()
+    expect(later.querySelector('[data-session="s-working"]')).not.toBeNull()
   })
 
   it.each(['together', 'states'] as const)('pins a session above the other groups in %s and removes the empty heading on unpin', async (view) => {
@@ -499,7 +503,8 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
      * session` where a live one gets `Restart session`, and a canned `false` drew the wrong one.
      */
     const sessionFacts = (sessionId: string): TabSessionFacts | null => {
-      const life = snapshot.sessions.find((one) => one.sessionId === sessionId)?.life
+      const found = snapshot.sessions.find((one) => one.sessionId === sessionId)
+      const life = found?.life
       return {
         agentId: 'claude',
         color: null,
@@ -508,6 +513,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         ended: life === 'ended' || life === 'lost',
         admits: ['newBeside', 'fork', 'restart', 'compact'],
         finish: false,
+        hasAutomationState: found?.automationState !== undefined,
       }
     }
     const finishRequests = new SessionFinishRequests()
@@ -888,7 +894,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     const menu = screen.getByRole('menu', { name: 'Session filters' })
     expect([...menu.querySelectorAll(':scope > .jamat-context-menu__row > button')]
       .map((item) => item.querySelector('.jamat-context-menu__label')?.textContent))
-      .toEqual(['Filter by color', 'Filter by state', 'Filter by type', 'All', 'Last 6h closed', 'Save filter…'])
+      .toEqual(['Filter by color', 'Filter by state', 'Filter by type', 'Filter by bot state', 'All', 'Last 6h closed', 'Save filter…'])
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Filter sessions' }), { target: { value: 'Beta' } })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Last 6h closed' }))
@@ -897,6 +903,38 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(screen.getByRole('textbox', { name: 'Filter sessions' }).getAttribute('value')).toBe('')
     expect(container.querySelectorAll('[data-session]')).toHaveLength(1)
     expect(container.querySelector('[data-session="s-done"]')).toBeTruthy()
+  })
+
+  it('hides done rows with the bot state shortcut and keeps the state filter', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const base = sessionOf(mixed, 's-working')
+    const rows = [
+      { ...base, sessionId: 'auto', title: 'auto row', automationState: 'working' as const },
+      { ...base, sessionId: 'wait', title: 'wait row', automationState: 'waiting' as const },
+      { ...base, sessionId: 'done', title: 'done row', automationState: 'completed' as const },
+      { ...base, sessionId: 'plain', title: 'plain row' },
+    ]
+    const { container, ports } = await mount({ ...mixed, sessions: rows })
+    const shown = (): string[] => [...container.querySelectorAll('[data-session]')]
+      .map((node) => node.getAttribute('data-session') ?? '').sort()
+    expect(shown()).toEqual(['auto', 'done', 'plain', 'wait'])
+
+    fireEvent.click(buttonNamed(container, 'Filter'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Filter by bot state' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide done' }))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(shown()).toEqual(['auto', 'plain', 'wait'])
+
+    filterBy(container, 'Filter by bot state', 'wait')
+    expect(shown()).toEqual(['auto', 'plain'])
+
+    fireEvent.click(buttonNamed(container, 'Filter'))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Save filter…' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Filter name' }), { target: { value: 'Bots' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(ports.savedFilters).toHaveLength(1))
+    expect(ports.savedFilters[0]).toMatchObject({ name: 'Bots',
+      filters: { states: ['active'], automation: ['working', 'blocked', 'none'] } })
   })
 
   it('saves the current search, restores its chip after remount, and deletes it from either menu', async () => {
@@ -3460,6 +3498,77 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(titleOf('s-dirty', '.jamat-sessions__worktree'))
       .toBe('Git worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/dirty, branch jamat/dirty')
     expect(titleOf('s-dirty', '.jamat-sessions__glyph')).toBe('ended')
+  })
+
+  describe('the bot state chip', () => {
+    const lastThree = (row: Element): string[] => {
+      const children = [...row.children]
+      const actions = children.findIndex((child) => child.classList.contains('jamat-sessions__actions'))
+      return children.slice(actions - 3, actions).map((child) => child.className.split(' ')[0])
+    }
+
+    it('draws each state as its text, outlined, with the note or the text as its title', async () => {
+      const source = SessionsFixtures.mixed()
+      const base = sessionOf(source, 's-working')
+      const states = ['working', 'waiting', 'blocked', 'completed'] as const
+      const { container } = await mount({ ...source, sessions: [
+        ...states.map((state) => ({ ...base, sessionId: state, title: state, automationState: state })),
+        { ...base, sessionId: 'noted', title: 'noted', automationState: 'waiting' as const, note: 'Waiting for the SVN review.' },
+      ] })
+      showAll(container)
+      const texts = { working: 'auto', waiting: 'wait', blocked: 'block', completed: 'done' }
+      for (const state of states) {
+        const chip = rowOf(container, state).querySelector('.jamat-sessions__automation')
+        expect(chip?.textContent).toBe(texts[state])
+        expect(chip?.getAttribute('data-automation')).toBe(state)
+        expect(chip?.getAttribute('title')).toBe(texts[state])
+        expect(chip?.className).toContain(`jamat-sessions__automation--${state}`)
+      }
+      expect(rowOf(container, 'noted').querySelector('.jamat-sessions__automation')?.getAttribute('title'))
+        .toBe('Waiting for the SVN review.')
+    })
+
+    it('puts the chip, the agent slot and the worktree slot last before the actions, and keeps empty slots', async () => {
+      const mixed = SessionsFixtures.mixed()
+      const base = sessionOf(mixed, 's-working')
+      const ended = { ...base, sessionId: 'ended', title: 'ended', life: 'ended' as const, exitCode: 3,
+        outcome: 'failed' as const, automationState: 'blocked' as const,
+        agent: { agentId: 'claude' as const, accountId: 'work', accountLabel: 'Work' } }
+      const plain = { ...base, sessionId: 'plain', title: 'plain', worktree: undefined }
+      const { container } = await mount({ ...mixed, sessions: [ended, plain] }, null, undefined, [], ['ended'])
+      showAll(container)
+      expect(lastThree(rowOf(container, 'ended')))
+        .toEqual(['jamat-sessions__automation', 'jamat-sessions__agent-slot', 'jamat-sessions__worktree-slot'])
+      expect(rowOf(container, 'ended').querySelector('[data-account-badge]')).not.toBeNull()
+      expect(rowOf(container, 'ended').querySelector('.jamat-sessions__exit')).not.toBeNull()
+      expect(rowOf(container, 'plain').querySelector('.jamat-sessions__automation')).toBeNull()
+      expect(lastThree(rowOf(container, 'plain')).slice(1))
+        .toEqual(['jamat-sessions__agent-slot', 'jamat-sessions__worktree-slot'])
+      expect(rowOf(container, 'plain').querySelector('.jamat-sessions__worktree-slot')?.childElementCount).toBe(0)
+    })
+
+    it('draws the completed pill and the done chip side by side with their own classes', async () => {
+      const source = SessionsFixtures.mixed()
+      const base = sessionOf(source, 's-working')
+      const { container } = await mount({ ...source, sessions: [
+        { ...base, sessionId: 'visible', title: 'visible' },
+        { ...base, sessionId: 'both', title: 'both', completed: true, automationState: 'completed' },
+      ] })
+      showAll(container)
+      const row = rowOf(container, 'both')
+      expect(row.querySelector('.jamat-sessions__pill--completed')?.textContent).toBe('completed')
+      expect(row.querySelector('.jamat-sessions__automation--completed')?.textContent).toBe('done')
+    })
+
+    it('draws the chip on a remote row too', async () => {
+      const mixed = SessionsFixtures.mixed()
+      const remoteSessions = { ...mixed, sessions: mixed.sessions.map((session) =>
+        session.sessionId === 's-working' ? { ...session, automationState: 'waiting' as const } : session) }
+      const { container } = await mount(mixed, null, remoteSnapshot([outboundEndpoint(remoteSessions, 'endpoint-a')]))
+      const remote = sectionAfter(container, 'Remote')
+      const chips = [...remote.querySelectorAll('.jamat-sessions__automation')]
+      expect(chips.map((chip) => chip.textContent)).toEqual(['wait'])
+    })
   })
 
   it('explains the completed pill', async () => {

@@ -8,7 +8,8 @@ import { SessionNotifyStore } from './sessionNotifyStore'
 
 describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
   const created: string[] = []
-  const spec = { sessionId: 'parent', text: 'wake', onGroups: ['waiting', 'blocked', 'completed'] }
+  // Manual section ids: the four bot sections are gone since 2026-11-25.
+  const spec = { sessionId: 'parent', text: 'wake', onGroups: ['review', 'hold', 'shipped'] }
   const dayConst = 86_400_000
 
   afterEach(() => {
@@ -31,7 +32,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     const it_ = harness()
     const store = it_.store()
     await Promise.all([store.watch('child', spec), store.watch('child', { ...spec, text: 'another line' })])
-    await store.observe('child', { life: 'gone', group: null }, it_.clock.now)
+    await store.observe('child', { life: 'gone', group: null, state: null }, it_.clock.now)
     await store.watch('child', spec)
 
     expect(store.list({})).toEqual([expect.objectContaining({ sessionId: 'child', target: 'parent', text: 'wake' })])
@@ -44,11 +45,11 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     const store = it_.store()
     await store.watch('child', spec)
 
-    expect(await store.observe('child', { life: 'gone', group: null }, 10)).toEqual(['ended'])
-    expect(await store.observe('child', { life: 'gone', group: null }, 11)).toEqual([])
-    expect(await store.observe('child', { life: 'live', group: null }, 12)).toEqual([])
+    expect(await store.observe('child', { life: 'gone', group: null, state: null }, 10)).toEqual(['ended'])
+    expect(await store.observe('child', { life: 'gone', group: null, state: null }, 11)).toEqual([])
+    expect(await store.observe('child', { life: 'live', group: null, state: null }, 12)).toEqual([])
     expect(store.watched()[0].endedAt).toBeNull()
-    expect(await store.observe('child', { life: 'gone', group: null }, 13)).toEqual(['ended'])
+    expect(await store.observe('child', { life: 'gone', group: null, state: null }, 13)).toEqual(['ended'])
     expect(store.watched()[0]).toMatchObject({ endedAt: 13, events: [{ cause: 'ended', at: 10 }, { cause: 'ended', at: 13 }] })
     expect(new Set(store.pending().map((event) => event.id)).size).toBe(2)
   })
@@ -58,14 +59,14 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     const store = it_.store()
     await store.watch('child', spec)
 
-    expect(await store.observe('child', { life: 'live', group: 'waiting' }, 10)).toEqual(['group:waiting'])
-    expect(await store.observe('child', { life: 'live', group: 'waiting' }, 11)).toEqual([])
-    expect(await store.observe('child', { life: 'live', group: 'automation' }, 12)).toEqual([])
-    expect(store.watched()[0].seenGroup).toBe('automation')
-    expect(await store.observe('child', { life: 'live', group: 'waiting' }, 13)).toEqual(['group:waiting'])
-    expect(await store.observe('child', { life: 'gone', group: 'completed' }, 14)).toEqual(['ended', 'group:completed'])
+    expect(await store.observe('child', { life: 'live', group: 'review', state: null }, 10)).toEqual(['group:review'])
+    expect(await store.observe('child', { life: 'live', group: 'review', state: null }, 11)).toEqual([])
+    expect(await store.observe('child', { life: 'live', group: 'other', state: null }, 12)).toEqual([])
+    expect(store.watched()[0].seenGroup).toBe('other')
+    expect(await store.observe('child', { life: 'live', group: 'review', state: null }, 13)).toEqual(['group:review'])
+    expect(await store.observe('child', { life: 'gone', group: 'shipped', state: null }, 14)).toEqual(['ended', 'group:shipped'])
     expect(store.list({ sessionId: 'child' })[0].events.map((event) => event.cause))
-      .toEqual(['group:waiting', 'group:waiting', 'ended', 'group:completed'])
+      .toEqual(['group:review', 'group:review', 'ended', 'group:shipped'])
     expect(store.list({ sessionId: 'missing' })).toEqual([])
   })
 
@@ -73,7 +74,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     const it_ = harness()
     const first = it_.store()
     await first.watch('child', spec)
-    await first.observe('child', { life: 'live', group: 'waiting' }, 10)
+    await first.observe('child', { life: 'live', group: 'review', state: null }, 10)
     await first.note(first.pending().map((event) => event.id), 'attempted', 11)
     const later = it_.store()
     const loading = later.load()
@@ -86,25 +87,25 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     writeFileSync(join(it_.directory, 'child.json'), '{}')
     await later.load()
     expect(later.watched()).toEqual(first.watched())
-    expect(await later.observe('child', { life: 'live', group: 'waiting' }, 12)).toEqual([])
+    expect(await later.observe('child', { life: 'live', group: 'review', state: null }, 12)).toEqual([])
   })
 
   it('keeps concurrent observations and attempts in one whole file, and never changes a settled event', async () => {
     const it_ = harness()
     const store = it_.store()
     await store.watch('child', spec)
-    await store.observe('child', { life: 'live', group: 'waiting' }, 10)
+    await store.observe('child', { life: 'live', group: 'review', state: null }, 10)
     const id = store.pending()[0].id
     await Promise.all([
       store.note([id], 'attempted', 11),
-      store.observe('child', { life: 'gone', group: 'waiting' }, 12),
+      store.observe('child', { life: 'gone', group: 'review', state: null }, 12),
       store.note([id], 'attempted', 13),
     ])
     await store.note([id], 'delivered', 14)
     await store.note([id, 'missing'], 'expired', 15)
 
     expect(store.watched()[0].events).toMatchObject([
-      { cause: 'group:waiting', state: 'delivered', attempts: 2, settledAt: 14 },
+      { cause: 'group:review', state: 'delivered', attempts: 2, settledAt: 14 },
       { cause: 'ended', state: 'pending', attempts: 0, settledAt: null },
     ])
     expect(JSON.parse(readFileSync(join(it_.directory, 'child.json'), 'utf8'))).toEqual(store.watched()[0])
@@ -115,13 +116,13 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     const store = it_.store()
     for (const id of ['old', 'pending', 'live', 'reopened']) {
       await store.watch(id, spec)
-      await store.observe(id, { life: 'gone', group: null }, it_.clock.now)
+      await store.observe(id, { life: 'gone', group: null, state: null }, it_.clock.now)
     }
     await store.note(store.pending().filter((event) => event.id !== store.watched().find((record) => record.sessionId === 'pending')!.events[0].id)
       .map((event) => event.id), 'delivered', it_.clock.now + 10)
-    await store.observe('live', { life: 'live', group: null }, it_.clock.now + 20)
-    await store.observe('reopened', { life: 'live', group: null }, it_.clock.now + 20)
-    await store.observe('reopened', { life: 'gone', group: null }, it_.clock.now + dayConst)
+    await store.observe('live', { life: 'live', group: null, state: null }, it_.clock.now + 20)
+    await store.observe('reopened', { life: 'live', group: null, state: null }, it_.clock.now + 20)
+    await store.observe('reopened', { life: 'gone', group: null, state: null }, it_.clock.now + dayConst)
     await store.note(store.watched().find((record) => record.sessionId === 'reopened')!.events.map((event) => event.id), 'expired', it_.clock.now + dayConst)
 
     it_.clock.now += SessionNotifyStore.keepMillisecondsConst - 1
@@ -158,10 +159,60 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifyStore', () => {
     rmSync(join(it_.directory, 'child.json'))
     mkdirSync(join(it_.directory, 'child.json'))
 
-    await expect(store.observe('child', { life: 'gone', group: null }, 10)).rejects.toThrow()
+    await expect(store.observe('child', { life: 'gone', group: null, state: null }, 10)).rejects.toThrow()
     expect(store.watched()[0]).toMatchObject({ seenLife: 'live', events: [] })
     rmSync(join(it_.directory, 'child.json'), { recursive: true })
-    expect(await store.observe('child', { life: 'gone', group: null }, 11)).toEqual(['ended'])
+    expect(await store.observe('child', { life: 'gone', group: null, state: null }, 11)).toEqual(['ended'])
     expect(store.pending()).toHaveLength(1)
+  })
+
+  describe('bot state entry', () => {
+    const states = { sessionId: 'parent', text: 'wake', onGroups: [], onStates: ['waiting' as const] }
+    const seen = (state: 'working' | 'waiting' | null) => ({ life: 'live' as const, group: null, state })
+
+    it('wakes on entry into a subscribed state, never on a repeat, and again on re-entry', async () => {
+      const it_ = harness()
+      const store = it_.store()
+      await store.watch('child', states)
+
+      expect(await store.observe('child', seen('working'), 10)).toEqual([])
+      expect(await store.observe('child', seen('waiting'), 11)).toEqual(['state:waiting'])
+      expect(await store.observe('child', seen('waiting'), 12)).toEqual([])
+      expect(await store.observe('child', seen('working'), 13)).toEqual([])
+      expect(await store.observe('child', seen('waiting'), 14)).toEqual(['state:waiting'])
+      expect(store.list({})[0]).toMatchObject({ onStates: ['waiting'],
+        events: [{ cause: 'state:waiting', at: 11 }, { cause: 'state:waiting', at: 14 }] })
+      expect(store.watched()[0].seenState).toBe('waiting')
+      // A reload keeps the state events and the seen state.
+      const later = it_.store()
+      await later.load()
+      expect(later.watched()).toEqual(store.watched())
+      expect(await later.observe('child', seen('waiting'), 15)).toEqual([])
+    })
+
+    it('loads a record written before bot states as one with no state subscription', async () => {
+      const it_ = harness()
+      mkdirSync(it_.directory, { recursive: true })
+      writeFileSync(join(it_.directory, 'child.json'), JSON.stringify({ sessionId: 'child', target: 'parent', text: 'wake',
+        onGroups: ['review'], seenLife: 'live', seenGroup: 'review', endedAt: null, events: [] }))
+      const store = it_.store()
+      await store.load()
+      expect(store.watched()[0]).toMatchObject({ onGroups: ['review'], onStates: [], seenGroup: 'review', seenState: null })
+      expect(await store.observe('child', { life: 'live', group: 'review', state: 'waiting' }, 10)).toEqual([])
+    })
+
+    it('reads a stored state event and refuses a record whose state event names an unknown state', async () => {
+      const it_ = harness()
+      mkdirSync(it_.directory, { recursive: true })
+      const record = (cause: string) => ({ sessionId: 'x', target: 'parent', text: 'wake', onGroups: [], onStates: ['blocked'],
+        seenLife: 'live', seenGroup: null, seenState: 'blocked', endedAt: null,
+        events: [{ id: 'e1', cause, at: 1, state: 'pending', attempts: 0, settledAt: null }] })
+      writeFileSync(join(it_.directory, 'good.json'), JSON.stringify({ ...record('state:blocked'), sessionId: 'good' }))
+      writeFileSync(join(it_.directory, 'bad.json'), JSON.stringify({ ...record('state:paused'), sessionId: 'bad' }))
+      const store = it_.store()
+      await store.load()
+      expect(store.watched().map((one) => one.sessionId)).toEqual(['good'])
+      expect(it_.reports).toHaveLength(1)
+    })
   })
 })

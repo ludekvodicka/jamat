@@ -1903,7 +1903,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const client = clientOf(context)
     await client.start()
     await writable(client)
-    const notify = { sessionId: 'parent', text: 'child moved or ended', onGroups: ['waiting', 'unknown-group'] }
+    // Manual section ids: the four bot sections are gone since 2026-11-25.
+    const notify = { sessionId: 'parent', text: 'child moved or ended', onGroups: ['priority', 'unknown-group'] }
     expect(await client.manager.createSession({ kind: 'agent', directory: { mode: 'default' }, notify }))
       .toMatchObject({ ok: false })
     expect(valueOf(await client.manager.notifies({})).notifies).toEqual([])
@@ -1913,17 +1914,17 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     const second = valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'default' }, notify: { ...notify, onGroups: [] } }))
     const store = client.manager.sessionNotifyStore()
     await store.watch(first.sessionId, { ...notify, text: 'must not replace the original watch' })
-    await store.observe(first.sessionId, { life: 'live', group: 'waiting' }, 10)
+    await store.observe(first.sessionId, { life: 'live', group: 'priority', state: null }, 10)
     await store.note(store.pending().map((event) => event.id), 'delivered', 11)
-    await store.observe(first.sessionId, { life: 'live', group: 'completed' }, 12)
-    await store.observe(first.sessionId, { life: 'gone', group: 'completed' }, Date.now())
+    await store.observe(first.sessionId, { life: 'live', group: 'pinned', state: null }, 12)
+    await store.observe(first.sessionId, { life: 'gone', group: 'pinned', state: null }, Date.now())
     await store.note(store.pending().map((event) => event.id), 'delivered', Date.now())
-    const expected = { sessionId: first.sessionId, target: 'parent', text: notify.text, onGroups: notify.onGroups, events: [
-      { cause: 'group:waiting', at: 10, state: 'delivered', attempts: 0, settledAt: 11 },
+    const expected = { sessionId: first.sessionId, target: 'parent', text: notify.text, onGroups: notify.onGroups, onStates: [], events: [
+      { cause: 'group:priority', at: 10, state: 'delivered', attempts: 0, settledAt: 11 },
       { cause: 'ended', at: expect.any(Number), state: 'delivered', attempts: 0, settledAt: expect.any(Number) },
     ] }
     expect(valueOf(await client.manager.notifies({})).notifies).toEqual([
-      expected, { sessionId: second.sessionId, target: 'parent', text: notify.text, onGroups: [], events: [] },
+      expected, { sessionId: second.sessionId, target: 'parent', text: notify.text, onGroups: [], onStates: [], events: [] },
     ])
     expect(valueOf(await client.manager.notifies({ sessionId: first.sessionId })).notifies).toEqual([expected])
     expect(valueOf(await client.manager.notifies({ sessionId: 'unknown' })).notifies).toEqual([])
@@ -1959,7 +1960,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(watch).toHaveBeenCalledTimes(1)
     expect(watch).toHaveBeenCalledWith(left.recordedSessionId, notify)
     expect(valueOf(await client.manager.notifies({ sessionId: left.recordedSessionId })).notifies).toEqual([
-      { sessionId: left.recordedSessionId, target: 'parent', text: notify.text, onGroups: [], events: [] },
+      { sessionId: left.recordedSessionId, target: 'parent', text: notify.text, onGroups: [], onStates: [], events: [] },
     ])
   }, 20_000)
 
@@ -1987,6 +1988,35 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       .toEqual({ ok: true, value: undefined })
     expect(sessionOf(client, session.sessionId)?.color).toBeUndefined()
     expect(storedRecord(context, session.sessionId)).not.toHaveProperty('color')
+    expect(client.errors).toEqual([])
+  }, 20_000)
+
+  it('carries a bot state to the snapshot, and a repeated write moves no revision', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+
+    const session = valueOf(await client.manager.createSession({
+      kind: 'shell',
+      directory: { mode: 'adHoc', path: join(context.root, 'elsewhere') },
+    }))
+    const before = client.manager.snapshot().revision
+    expect(await client.manager.setAutomationState(session.sessionId, 'waiting'))
+      .toEqual({ ok: true, value: { changed: true } })
+    expect(sessionOf(client, session.sessionId)?.automationState).toBe('waiting')
+    const after = client.manager.snapshot().revision
+    expect(after).toBeGreaterThan(before)
+
+    expect(await client.manager.setAutomationState(session.sessionId, 'waiting'))
+      .toEqual({ ok: true, value: { changed: false } })
+    expect(client.manager.snapshot().revision).toBe(after)
+
+    expect(await client.manager.setAutomationState(session.sessionId, null))
+      .toEqual({ ok: true, value: { changed: true } })
+    expect(sessionOf(client, session.sessionId)?.automationState).toBeUndefined()
+    expect(storedRecord(context, session.sessionId)).not.toHaveProperty('automationState')
     expect(client.errors).toEqual([])
   }, 20_000)
 

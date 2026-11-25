@@ -36,7 +36,7 @@ export interface AntigravityStoppedSession {
 }
 
 export interface AntigravityLoginsDeps {
-  keyring?: AntigravityKeyringPort
+  keyring: AntigravityKeyringPort
   accountFile: string
   quotaFile?: string
   runningSessionCount(): number
@@ -79,9 +79,14 @@ export class AntigravityLogins {
   private loginWatch: LoginWatch | null = null
   private loginTimer: ReturnType<typeof setInterval> | null = null
   private capturingRates = false
+  // Every keyring call starts PowerShell. Rate ticks read this copy; list() and every keyring write
+  // replace or drop it, and a read that started before a write never stores its result.
+  private inspected: AntigravityKeyringInspect | null = null
+  private keyringGeneration = 0
+  private lastRateCapturedAt: number | null = null
 
   constructor(deps: AntigravityLoginsDeps) {
-    this.keyring = deps.keyring ?? new WindowsAntigravityKeyring()
+    this.keyring = deps.keyring
     this.accountFile = deps.accountFile
     this.quotaFile = deps.quotaFile
     this.runningSessionCount = deps.runningSessionCount
@@ -94,6 +99,11 @@ export class AntigravityLogins {
     this.loginResult = deps.loginResult
     this.onChanged = deps.onChanged
     this.now = deps.now ?? Date.now
+  }
+
+  /** The Windows Credential Manager keyring; `assemblyDirectory` keeps its compiled helper. */
+  static windowsKeyring(assemblyDirectory: string): AntigravityKeyringPort {
+    return new WindowsAntigravityKeyring({ assemblyDirectory })
   }
 
   async list(): Promise<AntigravityLoginsView> {
@@ -116,7 +126,7 @@ export class AntigravityLogins {
         logins: [],
       }
     const [inspected, identity, cache] = await Promise.all([
-      this.keyring.inspect(),
+      this.readKeyring(),
       this.readObservedIdentity(),
       this.loadQuotaCache(),
     ])
@@ -157,7 +167,7 @@ export class AntigravityLogins {
     const cleanLabel = AntigravityLogins.validateLabel(label)
     return this.serialize(async () => {
       this.requireAvailable()
-      const inspected = await this.keyring.inspect()
+      const inspected = await this.readKeyring()
       if (!inspected.present)
         throw new AccountProblem('No current Antigravity login found in Windows Credential Manager')
       const duplicate = inspected.slots.find(slot => slot.label.toLowerCase() === cleanLabel.toLowerCase())
@@ -165,12 +175,12 @@ export class AntigravityLogins {
         throw new AccountProblem(`A saved Antigravity login named "${duplicate.label}" already exists`)
       const slotId = `${Slug.of(cleanLabel) || 'login'}-${randomBytes(4).toString('hex')}`
       const observed = await this.readObservedIdentity()
-      await this.keyring.store(slotId, {
+      await this.writeKeyring(() => this.keyring.store(slotId, {
         label: cleanLabel,
         email: observed.email,
         planTier: observed.planTier,
         savedAt: this.now(),
-      })
+      }))
       const cache = await this.loadQuotaCache()
       await this.captureCurrentQuota(cache, slotId)
       this.onChanged()
@@ -182,19 +192,19 @@ export class AntigravityLogins {
     WindowsAntigravityKeyring.assertSlotId(slotId)
     return this.serialize(async () => {
       this.requireAvailable()
-      const inspected = await this.keyring.inspect()
+      const inspected = await this.readKeyring()
       const existing = inspected.slots.find(slot => slot.id === slotId)
       if (!existing) throw new AccountProblem('Saved Antigravity login not found')
       if (!inspected.present)
         throw new AccountProblem('No current Antigravity login found in Windows Credential Manager')
       const observed = await this.readObservedIdentity()
       const sameBlob = inspected.currentHash !== null && inspected.currentHash === existing.hash
-      await this.keyring.store(slotId, {
+      await this.writeKeyring(() => this.keyring.store(slotId, {
         label: existing.label,
         email: observed.email ?? (sameBlob ? existing.email : null),
         planTier: observed.planTier ?? (sameBlob ? existing.planTier : null),
         savedAt: this.now(),
-      })
+      }))
       const cache = await this.loadQuotaCache()
       await this.captureCurrentQuota(cache, slotId)
       this.onChanged()
@@ -205,13 +215,13 @@ export class AntigravityLogins {
     return this.serialize(async () => {
       this.requireAvailable()
       const [inspected, observed, cache] = await Promise.all([
-        this.keyring.inspect(),
+        this.readKeyring(),
         this.readObservedIdentity(),
         this.loadQuotaCache(),
       ])
       const previousActive = AntigravityLogins.resolveActiveSlotId(inspected, inspected.present ? observed.email : null)
       if (previousActive !== null) await this.captureCurrentQuota(cache, previousActive)
-      await this.keyring.clear()
+      await this.writeKeyring(() => this.keyring.clear())
       await this.deleteObservedIdentity()
       cache.switchedAt = this.now()
       await this.saveQuotaCache(cache)
@@ -224,7 +234,7 @@ export class AntigravityLogins {
     return this.serialize(async () => {
       this.requireAvailable()
       if (!this.openLogin) throw new AccountProblem('Antigravity login terminal is not available')
-      const inspected = await this.keyring.inspect()
+      const inspected = await this.readKeyring()
       if (inspected.present)
         throw new AccountProblem('Clear the current login before starting a new login (store it first if you want to keep it)')
       const opened = await this.openLogin()
@@ -239,7 +249,7 @@ export class AntigravityLogins {
     return this.serialize(async () => {
       this.requireAvailable()
       const [inspected, observed, cache] = await Promise.all([
-        this.keyring.inspect(),
+        this.readKeyring(),
         this.readObservedIdentity(),
         this.loadQuotaCache(),
       ])
@@ -252,7 +262,7 @@ export class AntigravityLogins {
       const stopped = options?.reopenRunning && this.stopRunningSessions
         ? await this.stopRunningSessions()
         : { stopped: [] as readonly AntigravityStoppedSession[], failed: [] as readonly string[] }
-      await this.keyring.activate(slotId)
+      await this.writeKeyring(() => this.keyring.activate(slotId))
       if (slot.email !== null) await this.writeObservedIdentity(slot.email, slot.planTier)
       else await this.deleteObservedIdentity()
       cache.switchedAt = this.now()
@@ -285,7 +295,7 @@ export class AntigravityLogins {
     WindowsAntigravityKeyring.assertSlotId(slotId)
     return this.serialize(async () => {
       this.requireAvailable()
-      await this.keyring.remove(slotId)
+      await this.writeKeyring(() => this.keyring.remove(slotId))
       const cache = await this.loadQuotaCache()
       if (Object.prototype.hasOwnProperty.call(cache.slots, slotId)) {
         delete cache.slots[slotId]
@@ -307,7 +317,7 @@ export class AntigravityLogins {
     }
     if (!this.keyring.available || watch.seenPresent) return
     watch.checking = true
-    void this.keyring.inspect().then(inspected => {
+    void this.readKeyring().then(inspected => {
       if (this.loginWatch !== watch) return
       if (inspected.present) {
         watch.seenPresent = true
@@ -316,17 +326,34 @@ export class AntigravityLogins {
     }, () => {}).finally(() => { watch.checking = false })
   }
 
+  /**
+   * Remembers the active slot's quota when a new Antigravity reading arrives. It works only with two
+   * or more saved logins, because only then is there a slot to switch to whose quota matters. It
+   * reads the keyring only when no copy is held: once at start and once after each keyring write.
+   */
   ratesChanged(): void {
     if (!this.keyring.available || !this.rates || this.capturingRates) return
     const reading = this.readCurrentRateSnapshot()
-    if (reading === null) return
+    if (reading === null || reading.capturedAt === this.lastRateCapturedAt) return
+    this.lastRateCapturedAt = reading.capturedAt
+    if (this.inspected !== null && !AntigravityLogins.switchable(this.inspected)) return
     this.capturingRates = true
     void this.serialize(async () => {
       const cache = await this.loadQuotaCache()
       if (cache.switchedAt > 0 && reading.capturedAt <= cache.switchedAt) return
-      const [inspected, observed] = await Promise.all([this.keyring.inspect(), this.readObservedIdentity()])
+      const held = this.inspected
+      const inspected = held ?? await this.readKeyring()
+      if (!AntigravityLogins.switchable(inspected)) return
+      const observed = await this.readObservedIdentity()
       const activeSlotId = AntigravityLogins.resolveActiveSlotId(inspected, inspected.present ? observed.email : null)
       if (activeSlotId === null) return
+      // A held copy misses a login changed outside Jamat; a different observed email shows it. A
+      // fresh read that still disagrees is kept, so a stale identity file costs no read per reading.
+      const activeEmail = inspected.slots.find(slot => slot.id === activeSlotId)?.email ?? null
+      if (activeEmail !== null && observed.email !== null && activeEmail.toLowerCase() !== observed.email.toLowerCase()) {
+        if (held !== null) this.forgetKeyring()
+        return
+      }
       const saved = await this.captureCurrentQuota(cache, activeSlotId)
       if (saved) this.onChanged()
     }).catch(() => {}).finally(() => { this.capturingRates = false })
@@ -352,6 +379,27 @@ export class AntigravityLogins {
     if (this.loginTimer !== null) clearInterval(this.loginTimer)
     this.loginTimer = null
     this.loginWatch = null
+  }
+
+  private async readKeyring(): Promise<AntigravityKeyringInspect> {
+    const generation = this.keyringGeneration
+    const inspected = await this.keyring.inspect()
+    if (generation === this.keyringGeneration) this.inspected = inspected
+    return inspected
+  }
+
+  private async writeKeyring(write: () => Promise<void>): Promise<void> {
+    try { await write() }
+    finally { this.forgetKeyring() }
+  }
+
+  private forgetKeyring(): void {
+    this.keyringGeneration += 1
+    this.inspected = null
+  }
+
+  private static switchable(inspected: AntigravityKeyringInspect): boolean {
+    return inspected.slots.length >= 2
   }
 
   private requireAvailable(): void {

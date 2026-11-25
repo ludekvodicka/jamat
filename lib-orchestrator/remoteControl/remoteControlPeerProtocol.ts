@@ -31,6 +31,7 @@ export class RemoteControlPeerConst {
      * over the same link would be an asymmetry with no rule behind it. Neither reads anything back.
      */
     'sessions.color',
+    'sessions.automation',
     'sessions.group',
     /*
      * The note is the one field with a READ of its own, because it is the one a caller WRITES in

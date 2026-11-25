@@ -188,6 +188,9 @@ export class MdExtDiagramEngine {
         view: MdExtDiagramEngine.vegaSection(userConfig, 'view', {
           stroke: token('--color-border-frame'),
         }),
+        text: MdExtDiagramEngine.vegaSection(userConfig, 'text', {
+          color: token('--color-text-1'),
+        }),
       },
     }
     const compiled = vegaLite.compile(

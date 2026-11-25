@@ -16,6 +16,7 @@ export type CommandId =
   | 'debug.open'
   | 'session.details'
   | 'session.setColor'
+  | 'session.clearAutomationState'
   | 'session.newHere'
   | 'session.newBeside'
   | 'session.newInClaude'
@@ -97,6 +98,7 @@ export type NewSessionPlace =
 export interface CommandArgById {
   'session.details': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.setColor': { color: SessionColorName | null; sessionId?: string; remoteEndpointId?: string }
+  'session.clearAutomationState': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.newHere': { place: NewSessionPlace }
   'session.newBeside': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.newInClaude': { sessionId?: string; remoteEndpointId?: string } | undefined

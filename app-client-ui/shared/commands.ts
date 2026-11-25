@@ -125,6 +125,16 @@ export class AppCommands {
       carriesValue: true,
       terminalSafe: true,
     },
+    // Offered only on a row that carries a bot chip; it removes the state and keeps the note (D13).
+    {
+      id: 'session.clearAutomationState',
+      title: 'Clear bot state',
+      target: 'renderer',
+      windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'],
+      contextMenuGroup: 0,
+      terminalSafe: true,
+    },
     // The one session command with a key, which is V1's key for the same dialog. An accelerator is
     // registered by the native menu item and by nothing else, so it declares the `menu` surface as
     // well - legal here because it carries no value, only an optional target. It sits in the Tab

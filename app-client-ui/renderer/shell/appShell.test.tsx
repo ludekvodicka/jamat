@@ -2678,6 +2678,24 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(call).toHaveBeenCalledWith('sessionTasks.openWorkflow', { sessionId: 's-lost' }))
   })
 
+  it('clears the bot state of the named session through sessions.automation', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    await mount({ sidebars: null, failed: false })
+    const call = vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: true, value: { sessionId: 's-lost', automationState: null } } } as never)
+    act(() => void commandsOf().execute('session.clearAutomationState', { sessionId: 's-lost' }))
+    await waitFor(() => expect(call).toHaveBeenCalledWith('sessions.automation',
+      { session: { kind: 'sessionId', sessionId: 's-lost' }, state: null }))
+  })
+
+  it('reports a refused clear through the command error path and keeps the chip', async () => {
+    const commandsOf = AppShellTest.captureCommands()
+    await mount({ sidebars: null, failed: false })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(AppControl, 'call').mockResolvedValue({ ok: true, value: { ok: false, error: { code: 'operation-failed', detail: 'no such session', data: { sourceCode: 'not-found' } } } } as never)
+    act(() => void commandsOf().execute('session.clearAutomationState', { sessionId: 's-lost' }))
+    await waitFor(() => expect(errors).toHaveBeenCalledWith(expect.stringContaining('no such session')))
+  })
+
   it('logs and does nothing for a compact whose named session has no terminal here', async () => {
     const commandsOf = AppShellTest.captureCommands()
     await mount({ sidebars: null, failed: false })

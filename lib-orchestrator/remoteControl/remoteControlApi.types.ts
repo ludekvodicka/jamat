@@ -18,6 +18,7 @@ import type {
   HostStopWarnings,
   SessionAgentId,
   SessionChildInfo,
+  AutomationState,
   SessionColorName,
   SessionCreated,
   SessionCreateSpec,
@@ -1015,6 +1016,14 @@ export interface RemoteControlOperationMap {
   'sessions.color': {
     request: { session: RemoteControlSessionSelector; color: SessionColorName | null }
     response: { sessionId: string; color: SessionColorName | null }
+  }
+  /**
+   * A bot's state of a session, drawn as a chip in its row; `null` clears it and keeps the note.
+   * A repeated write changes nothing and announces nothing. The colour and section stay as they are.
+   */
+  'sessions.automation': {
+    request: { session: RemoteControlSessionSelector; state: AutomationState | null }
+    response: { sessionId: string; automationState: AutomationState | null }
   }
   'sessions.group': {
     request: { session: RemoteControlSessionSelector; group: SessionGroup }

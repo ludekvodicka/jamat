@@ -665,6 +665,27 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(context.reports[0]).toContain('note must be a string')
   })
 
+  it('loads a record with an unknown bot state without the state, and keeps a known one across a reload', async () => {
+    const context = harness({
+      schemaVersion: 1,
+      savedAt: 5,
+      records: [
+        record('a', { automationState: 'paused' } as unknown as Partial<SessionRecord>),
+        record('b', { life: 'ended', automationState: 'completed' }),
+      ],
+    })
+    const store = await context.load()
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['a', 'b'])
+    expect(store.get('a')).not.toHaveProperty('automationState')
+    expect(store.get('b')?.automationState).toBe('completed')
+    expect(context.reports).toEqual([])
+
+    await store.update('a', (current) => ({ ...current, title: 'touched' }))
+    const reloaded = await context.load()
+    expect(reloaded.get('a')).not.toHaveProperty('automationState')
+    expect(reloaded.get('b')?.automationState).toBe('completed')
+  })
+
   describe('the fields a merge and a resolver persist', () => {
     /*
      * The one unchecked value in this file that had a throw waiting for it:

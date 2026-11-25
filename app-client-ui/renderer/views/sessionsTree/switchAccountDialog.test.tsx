@@ -38,7 +38,7 @@ it('hands the account choice to its persistent owner and closes the transient me
   const close = vi.fn()
   const choose = vi.fn()
   const view = render(<SessionsTreeContextMenu sessionId="s" position={{ x: 0, y: 0 }} commands={new CommandRegistry()}
-    facts={{ agentId: 'claude', accountId: 'main', live: true, ended: false, admits: ['restart'], color: null, directoryPath: null, finish: false }}
+    facts={{ agentId: 'claude', accountId: 'main', live: true, ended: false, admits: ['restart'], color: null, directoryPath: null, finish: false, hasAutomationState: false }}
     actions={[]} onAction={() => {}} onSwitchAccount={choose} onClose={close} />)
   const item = await view.findByRole('menuitem', { name: 'Continue on another account…' })
   const labels = view.getAllByRole('menuitem').map((entry) => entry.textContent)
@@ -53,7 +53,7 @@ it('hides the action for the single Codex account', async () => {
   const fixture = new ControlBridgeFixture().on('accounts.list', { ok: true, value: [{ ...account('main'), agentId: 'codex' }] })
   control(fixture)
   const view = render(<SessionsTreeContextMenu sessionId="s" position={{ x: 0, y: 0 }} commands={new CommandRegistry()}
-    facts={{ agentId: 'codex', live: true, ended: false, admits: ['restart'], color: null, directoryPath: null, finish: false }}
+    facts={{ agentId: 'codex', live: true, ended: false, admits: ['restart'], color: null, directoryPath: null, finish: false, hasAutomationState: false }}
     actions={[]} onAction={() => {}} onSwitchAccount={() => {}} onClose={() => {}} />)
   await waitFor(() => expect(fixture.calls).toHaveLength(1))
   expect(view.queryByRole('menuitem', { name: 'Continue on another account…' })).toBeNull()

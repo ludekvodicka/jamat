@@ -1,5 +1,6 @@
 import { WorktreeWords } from '../worktrees/worktreeViews'
 import { WorktreeStateValidation } from '../worktrees/worktreeStateValidation'
+import { AutomationStates } from './automationStates'
 import type {
   OrphanInfo,
   SessionInfo,
@@ -123,6 +124,8 @@ export class SessionsSnapshotValidation {
         delete session.retiredWorktree.landing.local
       // A newer peer's kind costs the link, so the child is drawn as a root.
       if (session.parent !== undefined && !SessionsSnapshotValidation.parent(session.parent)) delete session.parent
+      // A newer peer's bot state costs the chip, never the session.
+      if (session.automationState !== undefined && !AutomationStates.isState(session.automationState)) delete session.automationState
       if (session.step !== undefined && !SessionsSnapshotValidation.step(session.step)) delete session.step
       if (session.workflow !== undefined) {
         const workflow = SessionsSnapshotValidation.workflow(session.workflow)

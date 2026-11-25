@@ -53,6 +53,7 @@ describe('app-client-ui/shared/commands', () => {
       ['settings.open', 'Ctrl+,'],
       ['app.quit', 'Ctrl+Q'],
       ['session.setColor', null],
+      ['session.clearAutomationState', null],
       ['session.details', 'F2'],
       ['session.newHere', null],
       ['session.newBeside', null],
@@ -205,6 +206,7 @@ describe('app-client-ui/shared/commands', () => {
     expect(contextMenu)
       .toEqual([
         'session.setColor',
+        'session.clearAutomationState',
         'session.details',
         'session.newBeside',
         'session.newInClaude',
@@ -321,6 +323,7 @@ describe('app-client-ui/shared/commands', () => {
     expect(AppCommands.forSurface('sessionsTree').map((descriptor) => descriptor.id))
       .toEqual([
         'session.setColor',
+        'session.clearAutomationState',
         'session.details',
         'session.newBeside',
         'session.newInClaude',

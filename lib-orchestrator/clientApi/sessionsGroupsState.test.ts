@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SessionGroups } from '../sessionManager/sessionGroups'
+import { AutomationStates } from '../sessionManager/automationStates'
 import { SessionsGroupsState, type SessionGroupDefinition } from './sessionsGroupsState'
 
 describe('app-client-ui/shared/sessionsGroupsState', () => {
@@ -14,16 +15,16 @@ describe('app-client-ui/shared/sessionsGroupsState', () => {
   /*
    * What a computer that has never been told otherwise draws. Both structural ids are in it and in
    * the ORDER, because where Sessions and Pinned sit is what decides which sections a person reads
-   * above their own work and which below.
+   * above their own work and which below. The four bot sections left the defaults: a bot state is
+   * a chip on the row now, and the startup cleanup removes them from a stored list.
    */
-  it('seeds the sections in the order they are stacked, Completed above Blocked', () => {
+  it('seeds the sections in the order they are stacked, with no bot section', () => {
     const seeded = SessionsGroupsState.defaultsConst.map((definition) => definition.id)
 
-    expect(seeded).toEqual([
-      'pinned', 'priority', 'none', 'automation', 'waiting', 'completed', 'blocked',
-    ])
+    expect(seeded).toEqual(['pinned', 'priority', 'none'])
     expect(SessionsGroupsState.problemOf(SessionsGroupsState.defaultsConst)).toBeNull()
     for (const id of SessionGroups.structuralConst) expect(seeded).toContain(id)
+    expect(seeded.filter((id) => AutomationStates.isFormerSectionId(id))).toEqual([])
   })
 
   it('names the default section None in a menu and Sessions in a heading', () => {
@@ -95,7 +96,7 @@ describe('app-client-ui/shared/sessionsGroupsState', () => {
 
   /** A stored None used to outrank the root above it, so pinning a root left those sessions behind. */
   it('treats None as no assignment when writing and when reading', () => {
-    const held = [{ key: 'category:cvut', group: 'pinned' }, { key: 'session:one', group: 'waiting' }]
+    const held = [{ key: 'category:cvut', group: 'pinned' }, { key: 'session:one', group: 'priority' }]
     expect(SessionsGroupsState.assigned(held, 'session:one', 'none')).toEqual([held[0]])
     expect(SessionsGroupsState.assigned(held, 'session:two', 'none')).toEqual(held)
     const legacy = [...held, { key: 'session:two', group: 'none' }]

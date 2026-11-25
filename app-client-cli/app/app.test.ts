@@ -1892,6 +1892,32 @@ describe('app-client-cli/app/app', () => {
     expect(h.client.requests.at(-1)).toMatchObject({ body: { spec: { notify: { onGroups: [] } } } })
   })
 
+  it('subscribes to bot state entry with --notify-on-state, gated on sessions.automation', async () => {
+    const h = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:/Apps/One', '--notify-session', 'parent',
+      '--notify-text', 'wake', '--notify-on-state', 'waiting, blocked,completed,waiting'], h.deps()).run()).toBe(0)
+    expect(h.client.requests.at(-1)).toMatchObject({ body: { spec: {
+      notify: { sessionId: 'parent', text: 'wake', onGroups: [], onStates: ['waiting', 'blocked', 'completed'] } } } })
+
+    for (const args of [
+      ['--notify-session', 'parent', '--notify-text', 'wake', '--notify-on-state', 'paused'],
+      ['--notify-on-state', 'waiting'],
+    ]) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(['sessions', 'create', ...args], refused.deps()).run()).toBe(2)
+      expect(refused.discoveries).toBe(0)
+      expect(refused.client.requests).toEqual([])
+    }
+
+    // A 3.23 controller has sessions.notifies, and its strict notify schema refuses onStates.
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.automation')
+    expect(await new AppClientCli(['sessions', 'create', '--notify-session', 'parent', '--notify-text', 'wake',
+      '--notify-on-state', 'waiting'], old.deps()).run()).toBe(6)
+    expect(old.client.requests).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({ error: { code: 'unavailable', detail: expect.stringContaining('--notify-on-state needs sessions.automation') } })
+  })
+
   it('refuses incomplete or remote notify options before discovery', async () => {
     for (const args of [
       ['--notify-session', 'parent'], ['--notify-text', 'wake'], ['--notify-on-group', 'waiting'],
@@ -2204,6 +2230,63 @@ describe('app-client-cli/app/app', () => {
       ok: false,
       error: { code: 'invalid-request', detail: '--note and --clear cannot be used together' },
     })
+  })
+
+  it('sets and clears a bot state, by --self or a selector, and refuses a bad state before discovery', async () => {
+    const set = new CliHarness()
+    set.env.JAMAT_V3_SESSION_ID = 'session-001'
+    expect(await new AppClientCli(['sessions', 'automation', '--self', '--state', 'waiting'], set.deps()).run()).toBe(0)
+    expect(set.client.requests.at(-1)).toMatchObject({
+      operation: 'sessions.automation',
+      body: { session: { kind: 'sessionId', sessionId: 'session-001' }, state: 'waiting' },
+    })
+    expect(set.client.requests.at(-1)?.operationId).toEqual(expect.any(String))
+
+    const cleared = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'automation', '--number', '001', '--clear'], cleared.deps()).run()).toBe(0)
+    expect(cleared.client.requests.at(-1)).toMatchObject({ operation: 'sessions.automation', body: { state: null } })
+
+    for (const args of [
+      ['sessions', 'automation', '--session-id', 'session-001', '--state', 'paused'],
+      ['sessions', 'automation', '--session-id', 'session-001', '--state', 'waiting', '--clear'],
+      ['sessions', 'automation', '--session-id', 'session-001'],
+      ['sessions', 'create', '--directory', 'Q:\\One', '--automation-state', 'paused'],
+    ]) {
+      const refused = new CliHarness()
+      expect(await new AppClientCli(args, refused.deps()).run(), args.join(' ')).toBe(2)
+      expect(refused.client.requests).toEqual([])
+      expect(refused.discoveries, args.join(' ')).toBe(0)
+      expect(refused.parsedOutput()).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    }
+  })
+
+  it('carries --automation-state in the create spec and refuses it on a build without sessions.automation', async () => {
+    const built = new CliHarness()
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:\\One', '--automation-state', 'working'], built.deps()).run()).toBe(0)
+    expect(built.client.requests.at(-1)).toMatchObject({ operation: 'sessions.create', body: { spec: { automationState: 'working' } } })
+
+    // A 3.23 controller: sessions.children is there, sessions.automation is not.
+    const old = new CliHarness()
+    old.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.automation')
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:\\One', '--automation-state', 'working',
+      '--parent-session', 'session-001', '--parent-kind', 'worker'], old.deps()).run()).toBe(6)
+    expect(old.client.requests.filter((request) => request.operation === 'sessions.create')).toEqual([])
+    expect(old.parsedOutput()).toMatchObject({ ok: false,
+      error: { code: 'unavailable', detail: expect.stringContaining('--automation-state needs sessions.automation') } })
+
+    const command = new CliHarness()
+    command.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.automation')
+    expect(await new AppClientCli(['sessions', 'automation', '--session-id', 'session-001', '--state', 'waiting'], command.deps()).run()).toBe(6)
+    expect(command.client.requests.filter((request) => request.operation === 'sessions.automation')).toEqual([])
+    expect(command.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+
+    // A single-feature refusal keeps its option text and operation.
+    const children = new CliHarness()
+    children.descriptor.optionalOperations = RemoteControlConst.optionalOperations.filter((operation) => operation !== 'sessions.children')
+    expect(await new AppClientCli(['sessions', 'create', '--directory', 'Q:\\One',
+      '--parent-session', 'session-001', '--parent-kind', 'worker'], children.deps()).run()).toBe(6)
+    expect(children.parsedOutput()).toMatchObject({ ok: false,
+      error: { code: 'unavailable', detail: expect.stringContaining('--parent-session needs sessions.children') } })
   })
 
   it('builds the full create spec and reports the actual operation id on unavailable retry', async () => {

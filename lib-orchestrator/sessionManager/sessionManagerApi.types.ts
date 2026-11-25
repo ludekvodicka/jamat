@@ -110,8 +110,11 @@ export interface SessionCreateSpec {
     tag?: string
     notify?: { sessionId: string; text: string }
   }
-  /** Local only; wakes the target on end or a move into a named group. Version marker: sessions.notifies. */
-  notify?: { sessionId: string; text: string; onGroups: string[] }
+  /**
+   * Local only; wakes the target on end, a move into a named group, or entry into a bot state.
+   * Version marker: sessions.notifies; `onStates` needs sessions.automation (a 3.23 build refuses it).
+   */
+  notify?: { sessionId: string; text: string; onGroups: string[]; onStates?: AutomationState[] }
   /**
    * The session that started this one, set at create and never changed. Local only; version marker
    * sessions.children. A build before 3.13 refuses the key (exact keys).
@@ -151,6 +154,11 @@ export interface SessionCreateSpec {
    * to an older computer therefore omits it, exactly as it does for `agent.model`.
    */
   color?: SessionColorName
+  /**
+   * The bot state this session is born with, so a scheduler's worker never shows without its chip.
+   * An older target refuses the whole create (exact keys); the CLI checks the capability first.
+   */
+  automationState?: AutomationState
   /**
    * Which flow composed this session, if one did. Opaque here on purpose: the library stores it and
    * never branches on it, so a new flow is a change to the renderer's catalog and to nothing else.
@@ -239,6 +247,12 @@ export type SessionActivityDetail = 'background'
  * Absent means None. There is no `'none'` member on purpose: a session without a colour has no
  * colour, and a name for that would be a second way to say the same thing.
  */
+/**
+ * A bot's own state of its session, drawn as a chip in the row (`auto`, `wait`, `block`, `done`).
+ * Written by automation through `sessions.automation`; it never moves the session or its colour.
+ */
+export type AutomationState = 'working' | 'waiting' | 'blocked' | 'completed'
+
 export type SessionColorName =
   | 'red' | 'orange' | 'amber' | 'green' | 'teal' | 'cyan'
   | 'sky' | 'blue' | 'indigo' | 'violet' | 'magenta' | 'rose'
@@ -892,7 +906,7 @@ export interface WorktreeResultDto {
   acknowledgedAt: number | null
 }
 
-export type SessionNotifyCause = 'ended' | `group:${string}`
+export type SessionNotifyCause = 'ended' | `group:${string}` | `state:${AutomationState}`
 
 export interface SessionNotifyEventDto {
   cause: SessionNotifyCause
@@ -907,6 +921,7 @@ export interface SessionNotifyDto {
   target: string
   text: string
   onGroups: string[]
+  onStates: AutomationState[]
   events: SessionNotifyEventDto[]
 }
 
@@ -1125,6 +1140,8 @@ export interface SessionInfo {
   color?: SessionColorName
   /** The person's note about this session. Absent = none. */
   note?: string
+  /** The bot state, drawn as a chip. Absent = none; a value this build does not know reads as absent. */
+  automationState?: AutomationState
   /** The control operation id of the sessions.create that made this session. Absent = none. */
   callerOperationId?: string
   life: 'starting' | 'live' | 'ended' | 'lost'

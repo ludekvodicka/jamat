@@ -65,17 +65,6 @@ describe('app-client-ui/app/sessionGroups/sessionGroupsOperations', () => {
 
   const save = () => bench.call('sessionGroups.save', { groups: keptConst })
 
-  it('ensures a deleted waiting group without replacing other groups or their titles', async () => {
-    const config = configUnderTest()
-    config.readSection = (() => [{ id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' },
-      { id: 'custom', title: 'My group' }]) as ConfigStore['readSection']
-    const operations = new SessionGroupsOperations(config, stateUnderTest(), () => { changed++ })
-    expect(await operations.ensure([{ id: 'waiting', title: 'Waiting' }])).toEqual({ ok: true })
-    expect(written[0]).toEqual([{ id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' },
-      { id: 'custom', title: 'My group' }, { id: 'waiting', title: 'Waiting' }])
-    expect(changed).toBe(1)
-  })
-
   it('preserves an assignment queued before pruning from an older pushed snapshot', async () => {
     const snapshot = structuredClone(assignments)
     let current = structuredClone(assignments)

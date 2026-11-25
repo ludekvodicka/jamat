@@ -1,6 +1,6 @@
 {
   "name": "jamat-v3-client-ui",
-  "version": "3.23.0",
+  "version": "3.24.0",
   "private": true,
   "license": "MIT",
   "author": "ludekvodicka",
@@ -59,7 +59,7 @@
     "scheduler": "0.27.0",
     "typescript": "5.9.3",
     "vite": "7.3.6",
-    "vitest": "4.1.10"
+    "vitest": "5.1.1"
   },
   "build": {
     "appId": "com.jamat.app",

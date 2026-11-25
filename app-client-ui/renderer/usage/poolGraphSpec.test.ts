@@ -25,6 +25,13 @@ describe('poolGraphSpec', () => {
     expect(spec && 'layer' in spec ? spec.layer[0] : null).toMatchObject({ encoding: { x: { title: null,
       axis: { format: '%a %d %b', tickCount: { interval: 'day', step: 1 } } } } })
   })
+  it('labels bounds of two days or less with a local time every three hours', () => {
+    const from = new Date(2026, 10, 24, 10, 50).getTime(), to = new Date(2026, 10, 25, 16, 50).getTime()
+    const spec = poolGraphSpec({ ...series, now: to, recorded: [{ at: from, remaining: 90 }] }, theme, { from, to })
+    const axis = spec && 'layer' in spec ? (spec.layer[0] as { encoding: { x: { axis: { format: string; values: { date: number; hours: number }[] } } } }).encoding.x.axis : null
+    expect(axis?.format).toBe('%H:%M')
+    expect(axis?.values.map(value => `${value.date} ${value.hours}`)).toEqual(['24 12', '24 15', '24 18', '24 21', '25 0', '25 3', '25 6', '25 9', '25 12', '25 15'])
+  })
   it('fixes historical bounds and omits the projection and Now layers outside them', () => {
     const spec = poolGraphSpec({ ...series, now: 10, displayRange: { from: 2, to: 4 },
       recorded: [{ at: 1, remaining: 100 }, { at: 3, remaining: 90 }], projected: [{ at: 10, remaining: 70 }] }, theme)

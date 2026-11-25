@@ -1,5 +1,6 @@
 import { ErrorText } from '../../shared/errorText'
-import type { SessionInfo } from '../sessionManagerApi.types'
+import { AutomationStates } from '../automationStates'
+import type { AutomationState, SessionInfo } from '../sessionManagerApi.types'
 
 /**
  * Types one line into a session. `delivered`: the agent took it (a proven submit, or its transcript
@@ -39,6 +40,7 @@ export interface NotifySource {
 export interface NotifyObservation {
   life: 'live' | 'gone'
   group: string | null
+  state: AutomationState | null
 }
 
 export interface SessionNotifierDeps {
@@ -150,6 +152,7 @@ export class SessionNotifier {
     for (const record of this.watch.watched())
       await this.watch.observe(record.sessionId, {
         life: SessionNotifier.lifeOf(byId.get(record.sessionId)), group: groups.get(record.sessionId) ?? null,
+        state: AutomationStates.readOf(byId.get(record.sessionId)?.automationState) ?? null,
       }, now)
     const pending = this.sources.flatMap((source) => source.pending().map((item) => ({ source, item })))
     const old = pending.filter(({ item }) => now - item.at > SessionNotifier.giveUpMillisecondsConst)

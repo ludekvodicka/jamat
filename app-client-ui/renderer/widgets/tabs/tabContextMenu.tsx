@@ -37,6 +37,8 @@ export interface TabSessionFacts {
   admits: readonly SessionOperation[]
   /** Whether the sessions tree row offers Finish for this worktree session; the tab runs that same Finish. */
   finish: boolean
+  /** Whether the session carries a bot state chip, which is what offers Clear bot state. */
+  hasAutomationState: boolean
 }
 
 /** Labels that name the session's own agent, shared by the tab menu and the sessions tree's menu. */
@@ -138,6 +140,7 @@ class TabContextMenuItems {
       // No admits gate on purpose: an ended or lost session is still renameable.
       .filter((descriptor) => descriptor.id !== 'session.details' || onSession)
       .filter((descriptor) => descriptor.id !== 'session.setColor' || onSession)
+      .filter((descriptor) => descriptor.id !== 'session.clearAutomationState' || onSession && facts.hasAutomationState)
       .filter((descriptor) => descriptor.id !== 'session.newBeside'
         || onSession && placed && admits('newBeside'))
       // Only ever OTHER agents: the one this tab already runs is not an alternative to itself.

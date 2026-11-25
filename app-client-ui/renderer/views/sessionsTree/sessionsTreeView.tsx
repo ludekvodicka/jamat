@@ -28,6 +28,7 @@ import type {
 import type {
   RemoteConnectionsSnapshot,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
+import type { AutomationState } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
   RemoteControlResponse,
 } from '../../../../lib-orchestrator/remoteControl/remoteControlApi.types'
@@ -1870,6 +1871,11 @@ function SessionRow(props: {
         {node.badges.mainUpdate !== null && node.actionsMark === undefined && <MainUpdateMark update={node.badges.mainUpdate} />}
         {node.badges.landing !== null && node.badges.mainUpdate === null && node.actionsMark === undefined && <LandingMark landing={node.badges.landing}
           onOpen={node.target.kind === 'local' ? () => chrome.request(node, 'updateMain') : null} />}
+        {node.badges.automationState !== null && <AutomationChip state={node.badges.automationState} note={node.note} />}
+        <AgentSlot badges={node.badges} />
+        <span className="jamat-sessions__worktree-slot">
+          {node.badges.worktree !== null && <WorktreeMark worktree={node.badges.worktree} />}
+        </span>
         <span className="jamat-sessions__actions">
           {SessionsTreeActions.opensActions(node) && <SessionsTreeActionButton label="Open actions" title={node.actionsMark?.title}
             onClick={() => WorkflowPortsOf.openWorkflow(node.sessionId)} />}
@@ -1993,17 +1999,45 @@ function ScriptsBadge(props: {
   )
 }
 
-function Badges(props: { badges: SessionBadges }): React.JSX.Element {
+/**
+ * The agent mark in a slot of fixed width at the right end of every session row, so `A` and `WT` stand
+ * in the same columns whatever marks a row carries before them (D4). An empty slot keeps the column.
+ */
+function AgentSlot(props: { badges: SessionBadges }): React.JSX.Element {
   const { badges } = props
   return (
-    <>
+    <span className="jamat-sessions__agent-slot">
       {badges.agentId !== null && (
         <span className="jamat-sessions__agent"
           title={badges.accountLabel === undefined ? badges.agentId : `${badges.agentId} · ${badges.accountLabel}`}>
           {AgentGlyph.markOf(badges.agentId)}
         </span>
       )}
-      {badges.worktree !== null && <WorktreeMark worktree={badges.worktree} />}
+    </span>
+  )
+}
+
+/**
+ * A bot's state of the session, outlined and text only so it reads as automation's mark rather than
+ * one of the row's own filled pills. Third from the right, before the agent and worktree slots.
+ */
+function AutomationChip(props: { state: AutomationState; note: string | null }): React.JSX.Element {
+  const text = SessionsTreeGlyphs.automationTextOf(props.state)
+  return (
+    <span
+      className={`jamat-sessions__automation jamat-sessions__automation--${props.state}`}
+      data-automation={props.state}
+      title={props.note ?? text}
+    >
+      {text}
+    </span>
+  )
+}
+
+function Badges(props: { badges: SessionBadges }): React.JSX.Element {
+  const { badges } = props
+  return (
+    <>
       {badges.accountExhausted && <span className="jamat-sessions__pill" data-account-exhausted>Account exhausted</span>}
       {badges.accountLabel !== undefined && (
         <span className="jamat-sessions__pill" data-account-badge title={`Account: ${badges.accountLabel}`}>
@@ -2639,6 +2673,15 @@ class SessionsTreeGlyphs {
    * nothing is starting while the Host is still refusing the launch. Why it is refused is in the
    * title, which carries the Host's own sentence.
    */
+  static automationTextOf(state: AutomationState): string {
+    if (state === 'working') return 'auto'
+    else if (state === 'waiting') return 'wait'
+    else if (state === 'blocked') return 'block'
+    else if (state === 'completed') return 'done'
+    else
+      throw new Error(`Unknown automation state: ${JSON.stringify(state satisfies never)}`)
+  }
+
   static launchTextOf(launch: SessionLaunchBadge): string {
     if (launch === 'waiting') return 'waiting for the host'
     else

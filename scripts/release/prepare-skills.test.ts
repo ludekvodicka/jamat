@@ -59,7 +59,7 @@ test('distributed skills run outside the checkout with no tsx or node_modules', 
         'session-automation-groups/scripts/session-automation-groups.mjs'), 'describe', '--state', 'completed'],
       { encoding: 'utf8', windowsHide: true, cwd: output })
       assert.equal(helper.status, 0, helper.stderr)
-      assert.deepEqual(JSON.parse(helper.stdout), { ok: true, value: { group: 'completed', color: 'green' } })
+      assert.deepEqual(JSON.parse(helper.stdout), { ok: true, value: { state: 'completed', color: 'blue' } })
     }
     const sourceCli = new CliClient({ cwd: output, timeoutMilliseconds: 5000,
       configDir: join(output, 'missing-private-config'), stateRoot: join(output, 'private-state') })

@@ -96,6 +96,7 @@ import {
   SvnWorktreeProvisioner,
 } from '../worktrees/worktreeProvision'
 import { SessionColors } from './sessionColors'
+import { AutomationStates } from './automationStates'
 import { SessionNumberStore } from './records/sessionNumberStore'
 import { SessionOutcomes } from './records/sessionOutcomes'
 import type {
@@ -128,6 +129,7 @@ import type {
   OrphanInfo,
   SessionActivity,
   SessionAgentId,
+  AutomationState,
   SessionColorName,
   SessionCommitReceipt,
   SessionCreated,
@@ -1708,6 +1710,23 @@ export class SessionManager {
   }
 
   /**
+   * A bot's state of its session, or none with `null`. On `serialize` for the reason
+   * `setSessionColor` is, but unlike it a repeated write announces nothing: a worker re-asserting
+   * its state each pass must not bump the snapshot revision every time.
+   */
+  async setAutomationState(
+    sessionId: string,
+    state: AutomationState | null,
+  ): Promise<SessionsOpResult<{ changed: boolean }>> {
+    return this.serialize(async () => {
+      const lifecycle = await this.lifecycle()
+      const result = await lifecycle.setAutomationState(sessionId, state)
+      if (result.ok && result.value.changed) this.changed()
+      return result
+    })
+  }
+
+  /**
    * The details dialog's Save: whichever of name, note and colour the update carries, as one
    * mutation. On `serialize` rather than `operate` for the reason `setSessionColor` is: this
    * touches the records file and nothing else, and a rename must not cost a round trip to the Host.
@@ -2936,6 +2955,8 @@ export class SessionManager {
     // work in, so it loses its colour here and keeps everything else.
     if (SessionColors.isName(record.color)) info.color = record.color
     if (record.note !== undefined) info.note = record.note
+    const automationState = AutomationStates.readOf(record.automationState)
+    if (automationState !== undefined) info.automationState = automationState
     if (record.callerOperationId !== undefined) info.callerOperationId = record.callerOperationId
     if (record.parent !== undefined)
       info.parent = { ...record.parent, sameProject: SessionManager.sameProject(project, bindings.get(record.parent.sessionId)) }

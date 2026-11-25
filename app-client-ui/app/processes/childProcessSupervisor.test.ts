@@ -80,7 +80,9 @@ describe('ChildProcessSupervisor', () => {
     expect(done).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
     expect(h.orchestrator.kills).toBe(1)
-    expect(h.gateway.messages.at(-1)).toEqual({ type: 'stop' })
+    // The gateway's 15 s heartbeat tick is due at the same instant as the orchestrator deadline;
+    // fake timers do not promise which of the two runs first.
+    expect(h.gateway.messages.filter(message => message.type !== 'heartbeat').at(-1)).toEqual({ type: 'stop' })
     await vi.advanceTimersByTimeAsync(2_999)
     expect(done).toBe(false)
     await vi.advanceTimersByTimeAsync(1)

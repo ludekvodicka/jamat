@@ -30,6 +30,7 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     live: over.ended !== true,
     admits: everyOperationConst,
     finish: false,
+    hasAutomationState: false,
     ...over,
   }
 }
@@ -194,6 +195,19 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       expect(MenuView.all()).not.toContain('Finish…')
       other.unmount()
     }
+  })
+
+  it('offers Clear bot state on a session tab only while that session carries a bot state', () => {
+    const commands = new CommandRegistry()
+    const clear = vi.fn()
+    commands.register('session.clearAutomationState', clear)
+    const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf({ hasAutomationState: true })} />)
+    fireEvent.click(MenuView.itemTitled('Clear bot state'))
+    expect(clear).toHaveBeenCalledWith({ sessionId: 'clicked' })
+    view.unmount()
+    const plain = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
+    expect(MenuView.all()).not.toContain('Clear bot state')
+    plain.unmount()
   })
 
   it('routes commit to the clicked local or remote session and hides it for ended tabs', () => {

@@ -8,21 +8,23 @@ const COLORS = ['red', 'orange', 'amber', 'green', 'teal', 'cyan', 'sky', 'blue'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const failure = (detail, extra = {}) => ({ ok: false, error: { code: 'automation-groups', detail, ...extra } })
 const sameField = (session, field, value) => (field === 'note' ? session.note ?? '' : session[field]) === value
+const writes = { automationState: ['automation', '--state'], note: ['note', '--note'] }
 
 export class SessionAutomationGroups {
+  // `color` is the active color PP still passes with `apply`; `describe` answers it unchanged.
   static presentation(state, activeColor = 'blue') {
     if (!COLORS.includes(activeColor)) throw new Error(`Unknown active color: ${activeColor}`)
     switch (state) {
-      case 'working': return { group: 'automation', color: activeColor }
-      case 'waiting': return { group: 'waiting', color: 'orange' }
-      case 'blocked': return { group: 'blocked', color: 'red' }
-      case 'completed': return { group: 'completed', color: 'green' }
+      case 'working':
+      case 'waiting':
+      case 'blocked':
+      case 'completed': return { state, color: activeColor }
       default: throw new Error(`Unknown automation state: ${state}`)
     }
   }
 
   static apply(client, request) {
-    const desired = SessionAutomationGroups.presentation(request.state, request.activeColor)
+    const desired = { automationState: SessionAutomationGroups.presentation(request.state, request.activeColor).state }
     if (!UUID.test(request.sessionId ?? '')) return failure('An exact Jamat session UUID is required')
     if (!UUID.test(request.configIdentity ?? '') || !['development', 'production'].includes(request.channel))
       return failure('An exact controller UUID and development/production channel are required')
@@ -40,11 +42,12 @@ export class SessionAutomationGroups {
     const before = SessionAutomationGroups.read(client, request.sessionId)
     if (!before.ok) return before
     const changed = []
-    // Group first: a removed/customized group must fail before color or note is changed.
+    // State first: a controller without the state operation must fail before the note is replaced.
     for (const [field, value] of Object.entries(desired)) {
       if (sameField(before.value, field, value)) continue
-      const result = client(['sessions', field, '--session-id', request.sessionId,
-        `--${field}`, value, '--operation-id', randomUUID()])
+      const [verb, option] = writes[field]
+      const result = client(['sessions', verb, '--session-id', request.sessionId,
+        option, value, '--operation-id', randomUUID()])
       if (!result.ok)
         return failure(`${field} was not confirmed: ${result.error?.detail ?? 'CLI failed'}`, {
           changed, failedField: field, observed: SessionAutomationGroups.read(client, request.sessionId),
@@ -52,7 +55,7 @@ export class SessionAutomationGroups {
       changed.push(field)
     }
     const after = SessionAutomationGroups.read(client, request.sessionId)
-    if (!after.ok) return failure('Could not verify the resulting session presentation', { changed, observed: after })
+    if (!after.ok) return failure('Could not verify the resulting session state', { changed, observed: after })
     const different = Object.entries(desired).filter(([field, value]) => !sameField(after.value, field, value)).map(([field]) => field)
     if (different.length)
       return failure(`Read-back differs for ${different.join(', ')}`, { changed, observed: after.value })

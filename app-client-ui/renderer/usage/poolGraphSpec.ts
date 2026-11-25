@@ -17,7 +17,7 @@ export function poolAccountLines(accounts: readonly { accountId: string; label: 
   return accounts.length > 1 ? accounts.map((account, index) => ({ ...account, color: theme.series[index] ?? theme.text })) : []
 }
 
-/** `range` overrides the series' display bounds: the 7 and 30 day views draw less than they read. */
+/** `range` overrides the series' display bounds: the 24 hour, 7 and 30 day views draw less than they read. */
 export function poolGraphSpec(series: PoolSeries, theme: UsageChartTheme, range = series.displayRange,
   lines: readonly PoolAccountLine[] = []): TopLevelSpec | null {
   const inRange = (point: { at: number }): boolean => !range || point.at >= range.from && point.at <= range.to
@@ -29,9 +29,11 @@ export function poolGraphSpec(series: PoolSeries, theme: UsageChartTheme, range 
     const own = series.accounts.find(account => account.accountId === line.accountId)
     return own ? [{ line, recorded: own.recorded.filter(inRange), projected: visible(own.projected) }] : []
   })
-  // One tick per day labelled by its date: the hours of a week-long range are noise.
+  // One tick per day labelled by its date: the hours of a week-long range are noise. Bounds of two
+  // days or less have one or two dates, so they get a tick every three hours.
   const encoding = { x: { field: 'at', type: 'temporal' as const, title: null,
-    axis: { format: '%a %d %b', tickCount: { interval: 'day' as const, step: 1 }, labelOverlap: true },
+    axis: range && range.to - range.from <= 2 * 86_400_000 ? { format: '%H:%M', values: threeHourTicks(range), labelOverlap: true }
+      : { format: '%a %d %b', tickCount: { interval: 'day' as const, step: 1 }, labelOverlap: true },
     ...(range ? { scale: { domain: [localDateTime(range.from), localDateTime(range.to)] } } : {}) },
     y: { field: 'remaining', type: 'quantitative' as const, title: null, scale: { domain: [0, 100] }, axis: { tickCount: 5, labelExpr: "datum.label + '%'" } } }
   return { width: 'container', height: 180, background: 'transparent',
@@ -84,6 +86,20 @@ function valueAt(points: readonly PoolPoint[], at: number): number | null {
 function crossesInto(point: PoolPoint, before: PoolPoint | undefined, after: PoolPoint | undefined, range: { from: number; to: number }): boolean {
   return point.at > range.to && before !== undefined && before.at <= range.to
     || point.at < range.from && after !== undefined && after.at >= range.from
+}
+
+/**
+ * Local whole hours divisible by three inside the bounds. Explicit values, not a tick interval:
+ * vega-lite types the interval as `hour`, but vega only knows `hours` and fails the whole view.
+ */
+function threeHourTicks(range: { from: number; to: number }): ReturnType<typeof localDateTime>[] {
+  const tick = new Date(range.from)
+  tick.setMinutes(0, 0, 0)
+  tick.setHours(Math.ceil((tick.getTime() < range.from ? tick.getHours() + 1 : tick.getHours()) / 3) * 3)
+  const ticks: ReturnType<typeof localDateTime>[] = []
+  for (; tick.getTime() <= range.to; tick.setHours(tick.getHours() + 3))
+    ticks.push(localDateTime(tick.getTime()))
+  return ticks
 }
 
 /**

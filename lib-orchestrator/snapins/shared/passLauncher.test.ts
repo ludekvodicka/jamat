@@ -67,7 +67,7 @@ describe('pass launch', () => {
     await rig.list(); await rig.press('solveSelected', ['r900'])
     expect(order).toEqual(['spec', 'brief-before-pending', 'create'])
     expect(launch).toHaveBeenCalledOnce()
-    expect(rig.presentation.assign).toHaveBeenCalledWith('worker', 'automation')
+    expect(rig.presentation.setState).toHaveBeenCalledWith('worker', 'working')
     expect(PassLauncher.prompt('a {pass} b {pass}', 'C:\\a b')).toBe('a "C:\\a b" b "C:\\a b"')
   })
 
@@ -80,7 +80,7 @@ describe('pass launch', () => {
     rig.snapshot.sessions.push(SnapinTestRig.session('found', attempt.attemptId))
     await rig.tick()
     expect(rig.store().current.attempts[0]).toMatchObject({ sessionId: 'found' })
-    expect(rig.presentation.assign).toHaveBeenCalledWith('found', 'automation')
+    expect(rig.presentation.setState).toHaveBeenCalledWith('found', 'working')
     expect(rig.presentation.setNote).toHaveBeenCalledWith('found', 'Starting')
     expect(rig.store().current.attempts[0]?.createUndecided).toBeUndefined()
     expect(rig.sessions.createSession).toHaveBeenCalledOnce()

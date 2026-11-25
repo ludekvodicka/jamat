@@ -32,9 +32,13 @@ describe('app-client-ui/renderer/views/sessionsTree/row layout', () => {
     expect(RowCss.declarationsOf('.jamat-sessions__actions')).toMatch(/flex:\s*none;/)
   })
 
-  it('keeps the agent and worktree marks whole beside a long name', () => {
-    expect(RowCss.declarationsOf('.jamat-sessions__row > :is(.jamat-sessions__agent, .jamat-sessions__worktree)'))
-      .toMatch(/flex:\s*none;/)
+  it('keeps the bot chip and the agent and worktree slots whole beside a long name', () => {
+    const marks = RowCss.declarationsOf(
+      '.jamat-sessions__row > :is(.jamat-sessions__automation, .jamat-sessions__agent-slot, .jamat-sessions__worktree-slot)')
+    expect(marks).toMatch(/flex:\s*none;/)
+    expect(marks).toMatch(/overflow:\s*visible;/)
+    expect(RowCss.declarationsOf('.jamat-sessions__agent-slot')).toMatch(/width:\s*[\d.]+em;/)
+    expect(RowCss.declarationsOf('.jamat-sessions__worktree-slot')).toMatch(/width:\s*[\d.]+em;/)
   })
 
   // Measured in Electron 43 with this stylesheet: the marks at flex-shrink 1000 still left the title

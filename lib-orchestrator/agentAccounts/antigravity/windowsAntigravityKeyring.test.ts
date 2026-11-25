@@ -1,16 +1,52 @@
-import { describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { CommandInvocation, CommandOutcome } from '../../shared/commandInvoker.types'
 import { AccountProblem } from '../accountProblem'
 import { WindowsAntigravityKeyring } from './windowsAntigravityKeyring'
 
 describe('lib-orchestrator/agentAccounts/antigravity/windowsAntigravityKeyring', () => {
+  const roots: string[] = []
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  function directory(): string {
+    const root = mkdtempSync(join(tmpdir(), 'jamat-agy-keyring-'))
+    roots.push(root)
+    return root
+  }
+
+  const ok = (stdout: string): CommandOutcome => ({ code: 0, stdout, stderr: '', failure: null })
+  const failed = (stderr: string): CommandOutcome => ({ code: 1, stdout: '', stderr, failure: null })
+  const emptyInspect = JSON.stringify({ present: false, currentHash: null, slots: [] })
+
+  /** Stands in for powershell.exe: a compile writes the requested file, an operation answers from `answers`. */
+  function powershell(answers: CommandOutcome[]) {
+    return vi.fn(async (invocation: CommandInvocation): Promise<CommandOutcome> => {
+      const env = invocation.env ?? {}
+      if (env.JAMAT_V3_AGY_OP === undefined) {
+        writeFileSync(env.JAMAT_V3_AGY_ASSEMBLY!, 'compiled')
+        return ok('')
+      }
+      const next = answers.shift()
+      if (!next) throw new Error('unexpected operation')
+      return next
+    })
+  }
+
+  const operations = (run: ReturnType<typeof powershell>) =>
+    run.mock.calls.map(([invocation]) => invocation.env?.JAMAT_V3_AGY_OP ?? 'compile')
   it('disables itself off Windows and when JAMAT_V3_GEMINI_DIR is set', async () => {
     const run = vi.fn()
-    const linux = new WindowsAntigravityKeyring({ platform: 'linux', environment: {}, invoker: { run } })
+    const linux = new WindowsAntigravityKeyring({ assemblyDirectory: directory(), platform: 'linux', environment: {}, invoker: { run } })
     expect(linux.available).toBe(false)
     expect(linux.unavailableReason).toContain('Windows')
     await expect(linux.inspect()).rejects.toThrow(AccountProblem)
 
     const smoke = new WindowsAntigravityKeyring({
+      assemblyDirectory: directory(),
       platform: 'win32',
       environment: { JAMAT_V3_GEMINI_DIR: 'C:\\temp\\fixture' },
       invoker: { run },
@@ -81,28 +117,20 @@ describe('lib-orchestrator/agentAccounts/antigravity/windowsAntigravityKeyring',
   })
 
   it('passes parameters through JAMAT_V3_AGY_* env vars and maps PowerShell error codes', async () => {
-    const run = vi.fn().mockResolvedValueOnce({
-      code: 0,
-      stdout: JSON.stringify({ present: false, currentHash: null, slots: [] }),
-      stderr: '',
-      failure: null,
-    }).mockResolvedValueOnce({
-      code: 1,
-      stdout: '',
-      stderr: 'NO_CURRENT_LOGIN',
-      failure: null,
-    }).mockResolvedValueOnce({
-      code: 1,
-      stdout: '',
-      stderr: 'SLOT_NOT_FOUND',
-      failure: null,
-    })
-    const keyring = new WindowsAntigravityKeyring({ platform: 'win32', environment: {}, invoker: { run } })
+    const run = powershell([ok(emptyInspect), failed('NO_CURRENT_LOGIN'), failed('SLOT_NOT_FOUND')])
+    const assemblyDirectory = directory()
+    const keyring = new WindowsAntigravityKeyring({ assemblyDirectory, platform: 'win32', environment: {}, invoker: { run } })
 
     expect(await keyring.inspect()).toEqual({ present: false, currentHash: null, slots: [] })
-    expect(run.mock.calls[0]![0]).toMatchObject({
+    expect(run.mock.calls[1]![0]).toMatchObject({
       command: 'powershell.exe',
-      env: { JAMAT_V3_AGY_OP: 'inspect', JAMAT_V3_AGY_SLOT: '', JAMAT_V3_AGY_META: '' },
+      cwd: assemblyDirectory,
+      env: {
+        JAMAT_V3_AGY_ASSEMBLY: join(assemblyDirectory, WindowsAntigravityKeyring.assemblyFileName()),
+        JAMAT_V3_AGY_OP: 'inspect',
+        JAMAT_V3_AGY_SLOT: '',
+        JAMAT_V3_AGY_META: '',
+      },
     })
 
     await expect(keyring.store('alice-1234', { label: 'Alice', email: null, planTier: null, savedAt: 1 }))
@@ -110,5 +138,46 @@ describe('lib-orchestrator/agentAccounts/antigravity/windowsAntigravityKeyring',
     await expect(keyring.activate('missing-1234'))
       .rejects.toThrow('Saved Antigravity login not found')
     await expect(keyring.activate('../bad')).rejects.toThrow('Invalid Antigravity login id')
+  })
+
+  it('compiles the helper once per source version and only loads it afterwards', async () => {
+    expect(WindowsAntigravityKeyring.operationScriptConst).not.toContain('-TypeDefinition')
+    expect(WindowsAntigravityKeyring.compileScriptConst).toContain('-OutputAssembly')
+    const assemblyDirectory = directory()
+    writeFileSync(join(assemblyDirectory, 'JamatWinCred-0000000000000000.dll'), 'older helper')
+    const run = powershell([ok(emptyInspect), ok(emptyInspect), ok(emptyInspect)])
+    const first = new WindowsAntigravityKeyring({ assemblyDirectory, platform: 'win32', environment: {}, invoker: { run } })
+
+    await Promise.all([first.inspect(), first.inspect()])
+    const second = new WindowsAntigravityKeyring({ assemblyDirectory, platform: 'win32', environment: {}, invoker: { run } })
+    await second.inspect()
+
+    expect(operations(run)).toEqual(['compile', 'inspect', 'inspect', 'inspect'])
+    expect(readdirSync(assemblyDirectory)).toEqual([WindowsAntigravityKeyring.assemblyFileName()])
+  })
+
+  it('rebuilds a helper that no longer loads and runs the operation again', async () => {
+    const assemblyDirectory = directory()
+    const assembly = join(assemblyDirectory, WindowsAntigravityKeyring.assemblyFileName())
+    writeFileSync(assembly, 'truncated')
+    const run = powershell([failed('ASSEMBLY_LOAD_FAILED'), ok('{"ok":true}')])
+    const keyring = new WindowsAntigravityKeyring({ assemblyDirectory, platform: 'win32', environment: {}, invoker: { run } })
+
+    await keyring.clear()
+
+    expect(operations(run)).toEqual(['clear', 'compile', 'clear'])
+    expect(existsSync(assembly)).toBe(true)
+  })
+
+  it('reports a failed build without leaving a helper file behind', async () => {
+    const assemblyDirectory = directory()
+    const run = vi.fn(async (): Promise<CommandOutcome> => failed('csc failed'))
+    const keyring = new WindowsAntigravityKeyring({ assemblyDirectory, platform: 'win32', environment: {}, invoker: { run } })
+
+    await expect(keyring.inspect()).rejects.toThrow('Windows Credential Manager operation failed')
+    await expect(keyring.inspect()).rejects.toThrow('Windows Credential Manager operation failed')
+
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(readdirSync(assemblyDirectory)).toEqual([])
   })
 })

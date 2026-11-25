@@ -3,9 +3,10 @@ import { worktreeRepositoryReviewSchema } from '../sessionManager/worktreeReview
 
 import { SessionTitle } from '../sessionManager/records/sessionTitle'
 import { SessionColors } from '../sessionManager/sessionColors'
+import { AutomationStates } from '../sessionManager/automationStates'
 import { SessionGroups } from '../sessionManager/sessionGroups'
 import { SessionLimits } from '../sessionManager/sessionLimits'
-import type { SessionColorName, SessionGroup, SessionParentKind } from '../sessionManager/sessionManagerApi.types'
+import type { AutomationState, SessionColorName, SessionGroup, SessionParentKind } from '../sessionManager/sessionManagerApi.types'
 import type { RemoteControlOperation, RemoteControlRequestBody } from './remoteControlApi.types'
 import { RemoteControlDeliverConst } from './remoteControlProtocol'
 
@@ -57,6 +58,12 @@ export class RemoteControlZod {
   static color(): z.ZodType<SessionColorName> {
     return z.custom<SessionColorName>(SessionColors.isName, {
       error: `must be one of ${SessionColors.namesConst.join(', ')}`,
+    })
+  }
+
+  static automationState(): z.ZodType<AutomationState> {
+    return z.custom<AutomationState>(AutomationStates.isState, {
+      error: `must be one of ${AutomationStates.allConst.join(', ')}`,
     })
   }
 
@@ -155,6 +162,7 @@ const sessionSpec = z.strictObject({
     text: RemoteControlZod.text(SessionLimits.worktreeNotifyCharacters)
       .regex(/^[^\x00-\x1f\x7f\u2028\u2029]+$/, { error: 'must be one line without control characters' }),
     onGroups: z.array(RemoteControlZod.group()).max(8, { error: 'onGroups names at most 8 groups' }),
+    onStates: z.array(RemoteControlZod.automationState()).max(4, { error: 'onStates names at most 4 states' }).optional(),
   }).optional(),
   parent: z.strictObject({
     sessionId: RemoteControlZod.text(),
@@ -167,6 +175,7 @@ const sessionSpec = z.strictObject({
     error: 'number must be one to three letters then up to six digits, such as "i34"',
   }).optional(),
   color: RemoteControlZod.color().optional(),
+  automationState: RemoteControlZod.automationState().optional(),
   flowId: RemoteControlZod.text().optional(),
   acknowledgeSetup: RemoteControlZod.text().optional(),
   deferSetupAgreement: z.literal(true).optional(),
@@ -395,6 +404,10 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
   'sessions.color': z.strictObject({
     session: RemoteControlZod.sessionSelector,
     color: RemoteControlZod.color().nullable(),
+  }),
+  'sessions.automation': z.strictObject({
+    session: RemoteControlZod.sessionSelector,
+    state: RemoteControlZod.automationState().nullable(),
   }),
   'sessions.fork': z.strictObject({
     session: RemoteControlZod.sessionSelector,

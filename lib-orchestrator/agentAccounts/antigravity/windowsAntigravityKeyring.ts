@@ -1,6 +1,10 @@
-import { tmpdir } from 'node:os'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdir, readdir, rename, stat, unlink } from 'node:fs/promises'
+import { join } from 'node:path'
 import { CommandInvoker } from '../../shared/commandInvoker'
+import type { CommandOutcome } from '../../shared/commandInvoker.types'
 import { AntigravityConfigHome } from '../../shared/antigravityConfigHome'
+import { ErrnoCode } from '../../shared/errnoCode'
 import { JsonShape } from '../../shared/jsonShape'
 import { AccountProblem } from '../accountProblem'
 
@@ -30,6 +34,10 @@ export interface AntigravityKeyringInspect {
  * Raw credential bytes stay inside Windows Credential Manager and the child process: nothing secret
  * is written to disk, logged, or printed to stdout/stderr. Only SHA-256 digests and non-secret slot
  * metadata cross back into Node.
+ *
+ * The C# helper is compiled once into `assemblyDirectory` and loaded from there: an inline
+ * `Add-Type` per call runs csc.exe and leaves a fresh unsigned DLL in %TEMP% that antivirus scans
+ * every time.
  */
 export class WindowsAntigravityKeyring {
   static readonly activeTargetConst = 'gemini:antigravity'
@@ -40,10 +48,10 @@ export class WindowsAntigravityKeyring {
   /** Win32 CREDENTIALW.Comment is bounded by CRED_MAX_STRING_LENGTH (256 UTF-16 code units incl. NUL). */
   static readonly maxCommentLengthConst = 250
   private static readonly timeoutMsConst = 15_000
+  private static readonly assemblyNamePatternConst = /^JamatWinCred-[0-9a-f]{16}\.dll$/
 
-  static readonly scriptConst = `
-$ErrorActionPreference = 'Stop'
-Add-Type -Language CSharp -TypeDefinition @"
+  /** Compiled once per source version into `JamatWinCred-<hash>.dll`; every operation only loads it. */
+  static readonly csharpSourceConst = `
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -241,7 +249,18 @@ public static class JamatWinCred {
     }
   }
 }
-"@
+`
+
+  static readonly compileScriptConst = `
+$ErrorActionPreference = 'Stop'
+$source = @'${WindowsAntigravityKeyring.csharpSourceConst}'@
+Add-Type -Language CSharp -TypeDefinition $source -OutputAssembly $env:JAMAT_V3_AGY_ASSEMBLY
+`
+
+  static readonly operationScriptConst = `
+$ErrorActionPreference = 'Stop'
+try { Add-Type -LiteralPath $env:JAMAT_V3_AGY_ASSEMBLY }
+catch { [Console]::Error.WriteLine('ASSEMBLY_LOAD_FAILED'); exit 1 }
 $op = $env:JAMAT_V3_AGY_OP
 $slot = $env:JAMAT_V3_AGY_SLOT
 $meta = $env:JAMAT_V3_AGY_META
@@ -290,17 +309,18 @@ try {
 
   private readonly invoker: Pick<CommandInvoker, 'run'>
   private readonly environment: NodeJS.ProcessEnv
-  private readonly cwd: string
-  private readonly encodedScript: string
+  private readonly assemblyDirectory: string
+  private readonly assemblyPath: string
+  private assemblyReady: Promise<void> | null = null
 
-  constructor(options?: {
+  constructor(options: {
+    assemblyDirectory: string
     invoker?: Pick<CommandInvoker, 'run'>
     platform?: NodeJS.Platform
     environment?: NodeJS.ProcessEnv
-    cwd?: string
   }) {
-    const platform = options?.platform ?? process.platform
-    const environment = options?.environment ?? process.env
+    const platform = options.platform ?? process.platform
+    const environment = options.environment ?? process.env
     const geminiOverride = (environment[AntigravityConfigHome.variableConst] ?? '').trim()
     if (platform !== 'win32') {
       this.available = false
@@ -312,10 +332,16 @@ try {
       this.available = true
       this.unavailableReason = null
     }
-    this.invoker = options?.invoker ?? new CommandInvoker({ timeoutMilliseconds: WindowsAntigravityKeyring.timeoutMsConst })
+    this.invoker = options.invoker ?? new CommandInvoker({ timeoutMilliseconds: WindowsAntigravityKeyring.timeoutMsConst })
     this.environment = environment
-    this.cwd = options?.cwd ?? tmpdir()
-    this.encodedScript = Buffer.from(WindowsAntigravityKeyring.scriptConst, 'utf16le').toString('base64')
+    this.assemblyDirectory = options.assemblyDirectory
+    this.assemblyPath = join(options.assemblyDirectory, WindowsAntigravityKeyring.assemblyFileName())
+  }
+
+  /** The helper file name carries the source digest, so a changed helper compiles into a new file. */
+  static assemblyFileName(): string {
+    const digest = createHash('sha256').update(WindowsAntigravityKeyring.csharpSourceConst).digest('hex').slice(0, 16)
+    return `JamatWinCred-${digest}.dll`
   }
 
   async inspect(): Promise<AntigravityKeyringInspect> {
@@ -400,21 +426,81 @@ try {
 
   private async execute(operation: 'inspect' | 'store' | 'activate' | 'clear' | 'remove', slotId = '', meta = ''): Promise<string> {
     if (!this.available) throw new AccountProblem(this.unavailableReason ?? 'Antigravity login switching is not available')
-    const outcome = await this.invoker.run({
-      command: 'powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', this.encodedScript],
-      cwd: this.cwd,
-      env: {
-        ...this.environment,
-        JAMAT_V3_AGY_OP: operation,
-        JAMAT_V3_AGY_SLOT: slotId,
-        JAMAT_V3_AGY_META: meta,
-      },
-      timeoutMs: WindowsAntigravityKeyring.timeoutMsConst,
-    })
+    await this.ensureAssembly()
+    let outcome = await this.runOperation(operation, slotId, meta)
+    // A helper that no longer loads (truncated, or built for another runtime) is rebuilt once. The
+    // load fails before the operation touches a credential, so running it again is safe.
+    if (outcome.code !== 0 && outcome.stderr.includes('ASSEMBLY_LOAD_FAILED')) {
+      this.assemblyReady = null
+      await WindowsAntigravityKeyring.unlinkQuietly(this.assemblyPath)
+      await this.ensureAssembly()
+      outcome = await this.runOperation(operation, slotId, meta)
+    }
     if (outcome.failure !== null || outcome.code !== 0)
       throw WindowsAntigravityKeyring.problemOf(outcome.stderr.trim(), outcome.failure)
     return outcome.stdout
+  }
+
+  private runOperation(operation: string, slotId: string, meta: string): Promise<CommandOutcome> {
+    return this.runPowerShell(WindowsAntigravityKeyring.operationScriptConst, {
+      JAMAT_V3_AGY_ASSEMBLY: this.assemblyPath,
+      JAMAT_V3_AGY_OP: operation,
+      JAMAT_V3_AGY_SLOT: slotId,
+      JAMAT_V3_AGY_META: meta,
+    })
+  }
+
+  private runPowerShell(script: string, variables: Record<string, string>): Promise<CommandOutcome> {
+    return this.invoker.run({
+      command: 'powershell.exe',
+      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      cwd: this.assemblyDirectory,
+      env: { ...this.environment, ...variables },
+      timeoutMs: WindowsAntigravityKeyring.timeoutMsConst,
+    })
+  }
+
+  private ensureAssembly(): Promise<void> {
+    this.assemblyReady ??= this.prepareAssembly().catch(error => {
+      this.assemblyReady = null
+      throw error
+    })
+    return this.assemblyReady
+  }
+
+  private async prepareAssembly(): Promise<void> {
+    if (await WindowsAntigravityKeyring.exists(this.assemblyPath)) return
+    await mkdir(this.assemblyDirectory, { recursive: true })
+    const temporary = `${this.assemblyPath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp.dll`
+    try {
+      const outcome = await this.runPowerShell(WindowsAntigravityKeyring.compileScriptConst, { JAMAT_V3_AGY_ASSEMBLY: temporary })
+      if (outcome.failure !== null || outcome.code !== 0)
+        throw WindowsAntigravityKeyring.problemOf(outcome.stderr.trim(), outcome.failure)
+      try { await rename(temporary, this.assemblyPath) }
+      catch (error) {
+        // Another Jamat process built and loaded the same file first; its copy is identical.
+        if (!await WindowsAntigravityKeyring.exists(this.assemblyPath)) throw error
+      }
+    } finally {
+      await WindowsAntigravityKeyring.unlinkQuietly(temporary)
+    }
+    const current = WindowsAntigravityKeyring.assemblyFileName()
+    for (const name of await readdir(this.assemblyDirectory))
+      if (WindowsAntigravityKeyring.assemblyNamePatternConst.test(name) && name !== current)
+        await WindowsAntigravityKeyring.unlinkQuietly(join(this.assemblyDirectory, name))
+  }
+
+  private static async exists(path: string): Promise<boolean> {
+    try { return (await stat(path)).isFile() }
+    catch (error) {
+      if (ErrnoCode.of(error) === 'ENOENT') return false
+      throw error
+    }
+  }
+
+  // An older helper may still be loaded by another running Jamat process and stays until a later build.
+  private static async unlinkQuietly(path: string): Promise<void> {
+    try { await unlink(path) } catch { /* Missing or locked files stay. */ }
   }
 
   private static problemOf(stderr: string, failure: string | null): AccountProblem {
@@ -424,6 +510,8 @@ try {
       return new AccountProblem('Saved Antigravity login not found')
     if (stderr.includes('INVALID_SLOT'))
       return new AccountProblem('Invalid Antigravity login id')
+    if (stderr.includes('ASSEMBLY_LOAD_FAILED'))
+      return new AccountProblem('Could not load the Windows Credential Manager helper')
     if (failure === 'timeout')
       return new AccountProblem('Timed out accessing Windows Credential Manager')
     if (failure === 'command-missing')

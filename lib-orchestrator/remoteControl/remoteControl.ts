@@ -16,6 +16,7 @@ import type {
   HostDebugStatus,
   HostPingResult,
   HostStopWarnings,
+  AutomationState,
   SessionColorName,
   SessionCreated,
   SessionCreateOrigin,
@@ -158,6 +159,8 @@ export interface RemoteControlSessionsPort {
    * in the client's own state.
    */
   setSessionColor(sessionId: string, color: SessionColorName | null): Promise<SessionsOpResult>
+  /** A bot's state of the session; `null` clears it. `changed` is false for a repeated write. */
+  setAutomationState(sessionId: string, state: AutomationState | null): Promise<SessionsOpResult<{ changed: boolean }>>
   /**
    * The details dialog's Save, of which this library asks for one field: the note. The whole method
    * rather than a note-only one, because it is the production contract the client already holds and
@@ -620,6 +623,11 @@ export class RemoteControl {
       const result = await this.deps.sessions.setSessionColor(session.sessionId, body.color)
       if (!result.ok) return RemoteControl.sessionError(result)
       return RemoteControl.success({ sessionId: session.sessionId, color: body.color })
+    })
+    bySession('sessions.automation', "Set or clear the session's bot state, drawn as a chip in its row.", async (session, body) => {
+      const result = await this.deps.sessions.setAutomationState(session.sessionId, body.state)
+      if (!result.ok) return RemoteControl.sessionError(result)
+      return RemoteControl.success({ sessionId: session.sessionId, automationState: body.state })
     })
     bySession('sessions.group', 'File the session under a section of the sessions tree.', async (session, body) => {
       /*

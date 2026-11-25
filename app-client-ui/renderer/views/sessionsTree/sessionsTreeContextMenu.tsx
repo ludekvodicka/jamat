@@ -203,6 +203,7 @@ export class SessionsTreeMenuItems {
       .filter((descriptor) => descriptor.id !== 'session.restart'
         || admits('restart') && !facts.ended)
       .filter((descriptor) => descriptor.id !== 'session.compact' || admits('compact'))
+      .filter((descriptor) => descriptor.id !== 'session.clearAutomationState' || facts.hasAutomationState)
       .filter((descriptor) => (descriptor.id !== 'session.commitSvn' && descriptor.id !== 'session.commitGit') || facts.live)
       .filter((descriptor) => (descriptor.id !== 'tab.copyProjectFolder' && descriptor.id !== 'session.openInVsCode')
         || facts.directoryPath !== null)

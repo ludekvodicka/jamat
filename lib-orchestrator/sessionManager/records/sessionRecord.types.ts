@@ -7,6 +7,7 @@ export type { SessionRecordSetupCommand, SessionRecordProcess, SessionRecordScri
 import type { WorktreeLifecycle } from '../../worktrees/worktreeState'
 import type {
   SessionAgentId,
+  AutomationState,
   SessionColorName,
   SessionParentKind,
   SessionScriptId,
@@ -428,6 +429,11 @@ export interface SessionRecord {
    * it follows the session through tabs, the tree and a second window via the snapshot.
    */
   note?: string
+  /**
+   * The bot state a worker or snap-in wrote (`sessions.automation`). It stays on an ended or archived
+   * record until cleared; a fork and a new child start without one. An unknown value is dropped on read.
+   */
+  automationState?: AutomationState
   worktree?: SessionRecordWorktree
   /** Present only while this session's worktree is being merged back. Cleared by the teardown. */
   worktreeMerge?: SessionRecordMerge

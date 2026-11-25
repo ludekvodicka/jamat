@@ -1,13 +1,17 @@
 import { SessionTreeHierarchy as Hierarchy } from '../../lib-orchestrator/sessionManager/sessionTreeHierarchy';
 import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups';
+import { AutomationStates } from '../../lib-orchestrator/sessionManager/automationStates';
+import type { AutomationState } from '../../lib-orchestrator/sessionManager/sessionManagerApi.types';
 import type { RemoteControlOperationMap } from '../../lib-orchestrator/remoteControl/remoteControlApi.types';
 
 export type ComputerSnapshot = RemoteControlOperationMap['sessions.list']['response'];
 export type ComputerSession = ComputerSnapshot['sessions'][number];
 export type ComputerFilter = 'live' | 'all';
+/** The bot state chip of a row: read only here, and drawn only for a state this build knows. */
+export type ComputerAutomation = { state: AutomationState; text: string; title: string };
 export type ComputerNode =
   | { kind: 'group' | 'category' | 'project'; key: string; collapseKey: string; label: string; count: number; children: ComputerNode[] }
-  | { kind: 'session'; key: string; session: ComputerSession; count: number; children: ComputerNode[] };
+  | { kind: 'session'; key: string; session: ComputerSession; automation: ComputerAutomation | null; count: number; children: ComputerNode[] };
 
 export class ComputerTree {
   static build(snapshot: ComputerSnapshot, search: string, filter: ComputerFilter): ComputerNode[] {
@@ -31,7 +35,7 @@ export class ComputerTree {
     const rows = (list: readonly typeof entries[number][]): ComputerNode[] => Hierarchy.sorted(list).map(entry => {
       const descendants = rows(children.get(entry.info.sessionId) ?? []);
       return { kind: 'session', key: `session:${entry.info.sessionId}`, session: entry.info,
-        count: 1 + ComputerTree.count(descendants), children: descendants };
+        automation: ComputerTree.automationOf(entry.info), count: 1 + ComputerTree.count(descendants), children: descendants };
     });
     const categories = (list: readonly typeof entries[number][], prefix: string): ComputerNode[] =>
       Hierarchy.categories(list, snapshot.categories).map(category => ComputerTree.branch('category',
@@ -57,6 +61,17 @@ export class ComputerTree {
     });
   }
 
+  /**
+   * A state a newer computer knows and this page does not reads as none, so it draws no chip rather
+   * than breaking the page. The state never projects a section: the row stays where its group puts it.
+   */
+  static automationOf(session: ComputerSession): ComputerAutomation | null {
+    const state = AutomationStates.readOf(session.automationState);
+    if (state === undefined) return null;
+    const text = ComputerTree.automationTextOf(state);
+    return { state, text, title: session.note ?? text };
+  }
+
   static status(session: ComputerSession): string {
     switch (session.life) {
       case 'starting': return 'Spouští se';
@@ -75,6 +90,16 @@ export class ComputerTree {
         }
       }
       default: throw new Error(`Unknown session life: ${session.life}`);
+    }
+  }
+
+  private static automationTextOf(state: AutomationState): string {
+    switch (state) {
+      case 'working': return 'auto';
+      case 'waiting': return 'wait';
+      case 'blocked': return 'block';
+      case 'completed': return 'done';
+      default: throw new Error(`Unknown automation state: ${state satisfies never}`);
     }
   }
 

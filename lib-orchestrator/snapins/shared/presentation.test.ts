@@ -12,44 +12,64 @@ describe('phase presentation', () => {
   afterEach(async () => { await rig.close(); vi.restoreAllMocks(); vi.useRealTimers() })
 
   it.each([
-    ['pending', 'automation', 'Starting'], ['working', 'automation', 'Working'],
+    ['pending', 'working', 'Starting'], ['working', 'working', 'Working'],
     ['waiting', 'waiting', 'Waits for your answer'], ['review', 'waiting', 'Waits for your review: Finish or commit'],
     ['blocked', 'blocked', 'Blocked: '], ['completed', 'completed', 'Done'],
-  ] as const)('maps %s to its group and note', (phase, group, note) => {
-    expect(Presentation.of({ phase } as AttemptRecord)).toEqual({ group, note })
+  ] as const)('maps %s to its state and note', (phase, state, note) => {
+    expect(Presentation.of({ phase } as AttemptRecord)).toEqual({ state, note })
   })
 
-  it('leaves ended unchanged, caps blocked detail and distinguishes deploy waits', () => {
+  it('leaves ended unchanged, caps blocked detail and maps every waiting reason to waiting', () => {
     expect(Presentation.of({ phase: 'ended' } as AttemptRecord)).toBeNull()
     expect(Presentation.of({ phase: 'blocked', outcome: { detail: 'x'.repeat(65_536) } } as AttemptRecord)?.note.length).toBeLessThanOrEqual(209)
+    expect(Presentation.of({ phase: 'blocked', outcome: { detail: 'no access\nsecond line' } } as AttemptRecord))
+      .toEqual({ state: 'blocked', note: 'Blocked: no access' })
     for (const waiting of ['deploy', 'foreign-deploy'] as const)
-      expect(Presentation.of({ phase: 'waiting', outcome: { waiting } } as AttemptRecord)?.note).toBe('Waits for deploy')
+      expect(Presentation.of({ phase: 'waiting', outcome: { waiting } } as AttemptRecord)).toEqual({ state: 'waiting', note: 'Waits for deploy' })
+    for (const waiting of ['user', 'blocked'] as const)
+      expect(Presentation.of({ phase: 'waiting', outcome: { waiting } } as AttemptRecord)).toEqual({ state: 'waiting', note: 'Waits for your answer' })
+    expect(() => Presentation.of({ phase: 'waiting', outcome: { waiting: 'later' } } as unknown as AttemptRecord)).toThrow(/Unknown waiting reason/)
+    expect(() => Presentation.of({ phase: 'paused' } as unknown as AttemptRecord)).toThrow(/Unknown attempt phase/)
   })
 
-  it('preserves a person-edited note until the next phase and ensures groups only once per tick', async () => {
+  it('preserves a person-edited note until the next phase', async () => {
     const a = await rig.attempt({ sessionId: 'worker' })
     rig.snapshot.sessions.push(SnapinTestRig.session('worker', a.attemptId))
     await rig.tick()
     expect(rig.presentation.setNote).toHaveBeenCalledWith('worker', 'Working')
     rig.snapshot.sessions[0]!.note = 'Person note'
-    vi.mocked(rig.presentation.setNote).mockClear(); vi.mocked(rig.presentation.assign).mockClear()
+    vi.mocked(rig.presentation.setNote).mockClear(); vi.mocked(rig.presentation.setState).mockClear()
     await rig.tick()
     expect(rig.presentation.setNote).not.toHaveBeenCalled()
-    expect(rig.presentation.assign).not.toHaveBeenCalled()
+    expect(rig.presentation.setState).not.toHaveBeenCalled()
     await (await PassInbox.open(rig.pass(a))).append({ kind: 'done', at: rig.now, outcome: 'ready', detail: '' })
     await rig.tick()
+    expect(rig.presentation.setState).toHaveBeenCalledWith('worker', 'waiting')
     expect(rig.presentation.setNote).toHaveBeenCalledWith('worker', 'Waits for your review: Finish or commit')
-    expect(rig.presentation.ensureGroups).toHaveBeenCalledTimes(2)
   })
 
-  it('applies the note and records the phase when a missing group cannot be restored', async () => {
+  it('writes the state before the note and calls nothing but the state and note port', async () => {
     const a = await rig.attempt({ sessionId: 'worker' }); rig.snapshot.sessions.push(SnapinTestRig.session('worker', a.attemptId))
-    vi.mocked(rig.presentation.ensureGroups).mockResolvedValue(false)
-    vi.mocked(rig.presentation.assign).mockResolvedValue('missing-group')
-    await rig.tick(); await rig.tick()
-    expect(rig.presentation.setNote).toHaveBeenCalledOnce()
+    await rig.tick()
+    expect(Object.keys(rig.presentation).sort()).toEqual(['setNote', 'setState'])
+    expect(rig.presentation.setState).toHaveBeenCalledExactlyOnceWith('worker', 'working')
+    expect(vi.mocked(rig.presentation.setState).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(rig.presentation.setNote).mock.invocationCallOrder[0]!)
     expect(rig.store().current.attempts[0]?.presentedPhase).toBe('working')
-    expect((await rig.manager['kinds'].get('test')!.log.read()).filter((line) => line.text.includes('presentation group missing'))).toHaveLength(1)
+  })
+
+  it('retries a failed state write after sixty seconds and writes no note', async () => {
+    const a = await rig.attempt({ sessionId: 'worker' }); rig.snapshot.sessions.push(SnapinTestRig.session('worker', a.attemptId))
+    vi.mocked(rig.presentation.setState).mockResolvedValueOnce('failed')
+    await rig.tick()
+    expect(rig.presentation.setNote).not.toHaveBeenCalled()
+    expect(rig.store().current.attempts[0]?.presentedPhase).toBeUndefined()
+    expect(rig.store().current.attempts[0]?.presentationRetryAt).toBe(rig.now + 60_000)
+    rig.now += 60_000; await rig.tick()
+    expect(rig.presentation.setState).toHaveBeenCalledTimes(2)
+    expect(rig.presentation.setNote).toHaveBeenCalledExactlyOnceWith('worker', 'Working')
+    expect(rig.store().current.attempts[0]).toMatchObject({ presentedPhase: 'working' })
+    expect(rig.store().current.attempts[0]?.presentationRetryAt).toBeUndefined()
   })
 
   it('retries a failed note after sixty seconds and records a missing session without retry', async () => {
@@ -62,9 +82,10 @@ describe('phase presentation', () => {
     rig.now++; await rig.tick(); expect(rig.presentation.setNote).toHaveBeenCalledTimes(2)
     expect(rig.store().current.attempts[0]?.presentationRetryAt).toBeUndefined()
     const b = await rig.attempt({ itemKey: 'two', sessionId: 'gone', leaseHeld: false, phase: 'review' })
-    vi.mocked(rig.presentation.assign).mockResolvedValueOnce('missing-session')
+    vi.mocked(rig.presentation.setState).mockResolvedValueOnce('missing-session')
     await rig.tick()
     expect(rig.store().current.attempts.find((attempt) => attempt.attemptId === b.attemptId)?.presentedPhase).toBe('review')
+    expect(rig.presentation.setNote).not.toHaveBeenCalledWith('gone', expect.anything())
   })
 
   it('keeps the timer alive for a lone completed attempt whose Done note failed', async () => {
@@ -92,7 +113,7 @@ describe('phase presentation', () => {
     await inbox.append({ kind: 'working', at: rig.now }); await rig.tick()
     expect(rig.store().current.attempts[0]).toMatchObject({ phase: 'working', presentedPhase: 'working', presentationRetryAt: rig.now + 60_000 })
     rig.now += 60_000; await rig.tick()
-    expect(rig.presentation.assign).toHaveBeenLastCalledWith('worker', 'automation')
+    expect(rig.presentation.setState).toHaveBeenLastCalledWith('worker', 'working')
     expect(rig.presentation.setNote).toHaveBeenLastCalledWith('worker', 'Working')
     expect(rig.store().current.attempts[0]?.presentationRetryAt).toBeUndefined()
   })
@@ -113,15 +134,15 @@ describe('phase presentation', () => {
     expect(rig.sessions.acknowledgeWorktreeResult).toHaveBeenCalledOnce()
     expect(rig.store().current.attempts[0]).toMatchObject({ presentedPhase: 'completed', resultsSettled: true })
   })
-  it.each(['stop', 'expired-tick'] as const)('does not write a note after %s during an assignment', async reason => {
+  it.each(['stop', 'expired-tick'] as const)('does not write a note after %s during a state write', async reason => {
     let stopped = false, open = true
     let finish!: (value: 'ok') => void
-    const assign = vi.fn(() => new Promise<'ok'>(resolve => { finish = resolve }))
+    const setState = vi.fn(() => new Promise<'ok'>(resolve => { finish = resolve }))
     const note = vi.fn(async () => 'ok' as const), write = vi.fn()
-    const presentation = new Presentation({ ensureGroups: async () => true, assign, setNote: note }, () => 0, () => stopped)
+    const presentation = new Presentation({ setState, setNote: note }, () => 0, () => stopped)
     const pending = presentation.apply('kind', { phase: 'working', sessionId: 'worker' } as AttemptRecord,
-      { open: () => open, write } as unknown as TickGuard, () => {})
-    await vi.waitFor(() => expect(assign).toHaveBeenCalledTimes(1))
+      { open: () => open, write } as unknown as TickGuard)
+    await vi.waitFor(() => expect(setState).toHaveBeenCalledTimes(1))
     if (reason === 'stop') stopped = true
     else if (reason === 'expired-tick') open = false
     else throw new Error(`Unknown stop reason: ${reason satisfies never}`)

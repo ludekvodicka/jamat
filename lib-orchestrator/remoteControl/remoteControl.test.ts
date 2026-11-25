@@ -7,6 +7,7 @@ import type {
   HostDebugStatus,
   HostPingResult,
   SessionsOpErrorCode,
+  AutomationState,
   SessionColorName,
   SessionDetailsSaved,
   SessionGroup,
@@ -50,6 +51,7 @@ interface World {
   sessions: SessionInfo[]
   creates: () => number
   colored: { sessionId: string; color: SessionColorName | null }[]
+  automated: { sessionId: string; state: AutomationState | null }[]
   noted: { sessionId: string; note: string | null }[]
   groupAssigns: { sessionId: string; group: SessionGroup }[]
   reopened: string[]
@@ -157,6 +159,7 @@ function world(options?: {
   tabOpen?: RemoteControlStepResult<RemoteControlTabCommandDto>
   groupAssign?: RemoteControlStepResult<{ group: SessionGroup }> | Promise<RemoteControlStepResult<{ group: SessionGroup }>>
   setColor?: SessionsOpResult
+  setAutomation?: SessionsOpResult<{ changed: boolean }>
   setNote?: SessionsOpResult<SessionDetailsSaved>
   remove?: SessionsOpResult
   worktreeEnding?: SessionsOpResult
@@ -179,6 +182,7 @@ function world(options?: {
   const sessions = options?.sessions ?? [session('session-1', '001')]
   let creates = 0
   const colored: { sessionId: string; color: SessionColorName | null }[] = []
+  const automated: { sessionId: string; state: AutomationState | null }[] = []
   const noted: { sessionId: string; note: string | null }[] = []
   const groupAssigns: { sessionId: string; group: SessionGroup }[] = []
   const reopened: string[] = []
@@ -379,6 +383,10 @@ function world(options?: {
         colored.push({ sessionId, color })
         return options?.setColor ?? { ok: true, value: undefined }
       },
+      setAutomationState: async (sessionId, state) => {
+        automated.push({ sessionId, state })
+        return options?.setAutomation ?? { ok: true, value: { changed: true } }
+      },
       // The record's own rule, kept here so the answer is what a real save would have stored.
       setSessionDetails: async (sessionId, update) => {
         if (update.note === undefined) throw new Error('The note is the only detail this library writes')
@@ -393,7 +401,7 @@ function world(options?: {
       },
     },
     groups: {
-      definitions: () => [{ id: 'waiting', title: 'Custom waiting' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }],
+      definitions: () => [{ id: 'review', title: 'Review' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }],
       read: () => new Map(groupAssigns.map(({ sessionId, group }) => [sessionId, group === 'none' ? null : group])),
       assign: (sessionId, group) => {
         groupAssigns.push({ sessionId, group })
@@ -562,6 +570,7 @@ function world(options?: {
     sessions,
     creates: () => creates,
     colored,
+    automated,
     noted,
     groupAssigns,
     reopened,
@@ -723,9 +732,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         session: { kind: 'sessionId', sessionId: 'session-1' },
         color: 'cyan',
       }, 'op-color'),
+      request('sessions.automation', {
+        session: { kind: 'sessionId', sessionId: 'session-1' },
+        state: 'waiting',
+      }, 'op-automation'),
       request('sessions.group', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
-        group: 'waiting',
+        group: 'priority',
       }, 'op-group'),
       request('sessions.note', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
       request('sessions.setNote', {
@@ -787,7 +800,8 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     expect(found.finalized).toEqual(['session-1'])
     expect(found.transcriptReads).toEqual(['session-1', 'agent-9'])
     expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'cyan' }])
-    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'waiting' }])
+    expect(found.automated).toEqual([{ sessionId: 'session-1', state: 'waiting' }])
+    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'priority' }])
     expect(found.noted).toEqual([{ sessionId: 'session-1', note: 'n' }, { sessionId: 'session-1', note: 'waiting for the review' }])
     // The second open is the tab of the agent Solve with agent started.
     expect(found.tabCalls.map((call) => call.method)).toEqual([
@@ -828,14 +842,14 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     })
     await expect(found.control.execute(request('sessions.group', {
       session: { kind: 'sessionId', sessionId: 'session-1' },
-      group: 'automation',
+      group: 'priority',
     }, 'file-1'), context())).resolves.toMatchObject({
       ok: true,
-      value: { sessionId: 'session-1', group: 'automation' },
+      value: { sessionId: 'session-1', group: 'priority' },
     })
 
     expect(found.colored).toEqual([{ sessionId: 'session-1', color: 'magenta' }])
-    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'automation' }])
+    expect(found.groupAssigns).toEqual([{ sessionId: 'session-1', group: 'priority' }])
   })
 
   /**
@@ -906,7 +920,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
 
     await expect(refusing.control.execute(request('sessions.group', {
       session: { kind: 'sessionId', sessionId: 'session-1' },
-      group: 'waiting',
+      group: 'priority',
     }, 'file-2'), context())).resolves.toMatchObject({
       ok: false,
       error: { code: 'unavailable' },
@@ -931,6 +945,52 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       ok: false,
       error: { code: 'not-found' },
     })
+  })
+
+  it('sets, clears and refuses a bot state through sessions.automation', async () => {
+    const found = world()
+    await expect(found.control.execute(request('sessions.automation', {
+      session: { kind: 'number', number: '001' },
+      state: 'waiting',
+    }, 'state-1'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', automationState: 'waiting' },
+    })
+    await expect(found.control.execute(request('sessions.automation', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      state: null,
+    }, 'state-2'), context())).resolves.toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-1', automationState: null },
+    })
+    expect(found.automated).toEqual([
+      { sessionId: 'session-1', state: 'waiting' },
+      { sessionId: 'session-1', state: null },
+    ])
+
+    const unknown = await found.control.execute(request('sessions.automation', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      state: 'paused' as never,
+    }, 'state-3'), context())
+    expect(unknown).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    const missing = world()
+    await expect(missing.control.execute(request('sessions.automation', {
+      session: { kind: 'sessionId', sessionId: 'nobody' },
+      state: 'blocked',
+    }, 'state-4'), context())).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(missing.automated).toEqual([])
+
+    const refused = world({ setAutomation: { ok: false, code: 'not-found', detail: 'no such record' } })
+    await expect(refused.control.execute(request('sessions.automation', {
+      session: { kind: 'sessionId', sessionId: 'session-1' },
+      state: 'blocked',
+    }, 'state-5'), context())).resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
+
+    // Mutating and peer-grantable exactly where sessions.color is.
+    expect(RemoteControlConst.mutatingOperations).toContain('sessions.automation')
+    expect(RemoteControlConst.optionalOperations).toContain('sessions.automation')
+    expect(RemoteControlPeerConst.controlOperations).toContain('sessions.automation')
   })
 
   it('removes an ended record and refuses a live one as a conflict without stopping it', async () => {
@@ -1447,7 +1507,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
   })
 
   it('lists notify events with optional session filtering for local callers only', async () => {
-    const one: SessionNotifyDto = { sessionId: 'child-1', target: 'parent', text: 'wake', onGroups: ['waiting'], events: [
+    const one: SessionNotifyDto = { sessionId: 'child-1', target: 'parent', text: 'wake', onGroups: ['waiting'], onStates: [], events: [
       { cause: 'group:waiting', at: 10, state: 'delivered', attempts: 0, settledAt: 11 },
       { cause: 'ended', at: 20, state: 'delivered', attempts: 0, settledAt: 21 },
     ] }
@@ -1693,13 +1753,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
   it('lists the current group after a move and null for sessions in no group', async () => {
     const found = world({ sessions: [session('session-1', '001'), session('session-2', '002')] })
     await expect(found.control.execute(request('sessions.group', {
-      session: { kind: 'sessionId', sessionId: 'session-1' }, group: 'waiting',
+      session: { kind: 'sessionId', sessionId: 'session-1' }, group: 'review',
     }, 'move'), context())).resolves.toMatchObject({ ok: true })
     await expect(found.control.execute(request('sessions.list', {}), context())).resolves.toMatchObject({
       ok: true,
       value: {
-        sessionGroups: [{ id: 'waiting', title: 'Custom waiting' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }],
-        sessions: [{ sessionId: 'session-1', group: 'waiting' }, { sessionId: 'session-2', group: null }],
+        sessionGroups: [{ id: 'review', title: 'Review' }, { id: 'none', title: 'Sessions' }, { id: 'pinned', title: 'Pinned' }],
+        sessions: [{ sessionId: 'session-1', group: 'review' }, { sessionId: 'session-2', group: null }],
       },
     })
     await found.control.execute(request('sessions.group', {
@@ -1748,14 +1808,14 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const created = await found.control.execute(request('sessions.create', {
       spec: { kind: 'shell', directory: { mode: 'default' } },
       openTab: true,
-      group: 'automation',
+      group: 'priority',
     }, 'grouped'), context())
 
     expect(created).toMatchObject({
       ok: true,
-      value: { groupAssign: { ok: true, value: { group: 'automation' } } },
+      value: { groupAssign: { ok: true, value: { group: 'priority' } } },
     })
-    expect(found.groupAssigns).toEqual([{ sessionId: 'created-1', group: 'automation' }])
+    expect(found.groupAssigns).toEqual([{ sessionId: 'created-1', group: 'priority' }])
     expect(found.tabCalls.filter((call) => call.method === 'open')).toHaveLength(1)
   })
 
@@ -1769,13 +1829,13 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     const found = world({ groupAssign: new Promise(resolve => { complete = resolve }) })
     let settled = false
     const created = found.control.execute(request('sessions.create', {
-      spec: { kind: 'shell', directory: { mode: 'default' } }, openTab: true, group: 'automation',
+      spec: { kind: 'shell', directory: { mode: 'default' } }, openTab: true, group: 'priority',
     }, 'delayed-group'), context()).then(answer => { settled = true; return answer })
     await vi.waitFor(() => expect(found.groupAssigns).toHaveLength(1))
     expect(settled).toBe(false)
     expect(found.tabCalls.filter(call => call.method === 'open')).toHaveLength(0)
-    complete({ ok: true, value: { group: 'automation' } })
-    expect(await created).toMatchObject({ ok: true, value: { groupAssign: { ok: true, value: { group: 'automation' } } } })
+    complete({ ok: true, value: { group: 'priority' } })
+    expect(await created).toMatchObject({ ok: true, value: { groupAssign: { ok: true, value: { group: 'priority' } } } })
     expect(found.tabCalls.filter(call => call.method === 'open')).toHaveLength(1)
   })
 
@@ -1786,7 +1846,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
 
     const created = await found.control.execute(request('sessions.create', {
       spec: { kind: 'shell', directory: { mode: 'default' } },
-      group: 'blocked',
+      group: 'priority',
     }, 'refused-group'), context())
 
     expect(created).toMatchObject({
@@ -2113,6 +2173,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         scriptsOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         clearActions: async () => ({ ok: true, value: undefined }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        setAutomationState: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         setSessionDetails: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
       },
       host: unusedHost(),

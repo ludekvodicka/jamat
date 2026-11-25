@@ -38,9 +38,11 @@ import { RemoteControlPairing } from '../../lib-orchestrator/remoteControl/remot
 import type { RemoteControlPeerPairingBundle } from '../../lib-orchestrator/remoteControl/remoteControlPeerApi.types'
 import { SessionTitle } from '../../lib-orchestrator/sessionManager/records/sessionTitle'
 import { SessionColors } from '../../lib-orchestrator/sessionManager/sessionColors'
+import { AutomationStates } from '../../lib-orchestrator/sessionManager/automationStates'
 import { SessionGroups } from '../../lib-orchestrator/sessionManager/sessionGroups'
 import type {
   SessionAgentId,
+  AutomationState,
   SessionColorName,
   SessionCreateSpec,
   SessionGroup,
@@ -206,8 +208,9 @@ export class AppClientCli {
             code: 'unavailable',
             detail: `${plan.request.operation} is not exposed by this AppClientUI`,
           })
-        const feature = AppClientCli.featureOf(plan.request)
-        if (feature !== null && !RemoteControlCapabilities.of(descriptor.value).includes(feature.operation))
+        const features = AppClientCli.featuresOf(plan.request)
+        const feature = features.find((needed) => !RemoteControlCapabilities.of(descriptor.value).includes(needed.operation))
+        if (feature !== undefined)
           return this.finishFailure(plan, {
             code: 'unavailable',
             detail: `${feature.option} needs ${feature.operation}, which this AppClientUI does not expose; update AppJamatV3`,
@@ -217,7 +220,7 @@ export class AppClientCli {
           const endpoint = await this.remoteEndpoint(client, plan.computer)
           if (!endpoint.ok) return this.finishFailure(plan, endpoint.error)
           remoteEndpointId = endpoint.value.remoteEndpointId
-          const required = [...new Set([plan.request.operation, ...(feature ? [feature.operation] : [])])]
+          const required = [...new Set([plan.request.operation, ...features.map((needed) => needed.operation)])]
             .filter((operation) => RemoteControlConst.optionalOperations.some((optional) => optional === operation))
           if (required.length > 0) {
             let offered: readonly string[] | null = endpoint.value.optionalOperations
@@ -772,6 +775,20 @@ export class AppClientCli {
           requestId,
           this.operationId(args),
         ))
+    else if (args.command === 'sessions automation') {
+      const state = args.option('--state')
+      const clear = args.has('--clear')
+      if (state !== null && clear)
+        throw new AppClientCliError('invalid-request', '--state and --clear cannot be used together')
+      if (state === null && !clear)
+        throw new AppClientCliError('invalid-request', 'sessions automation needs --state or --clear')
+      return this.requestPlan(args, this.request(
+        'sessions.automation',
+        { session: this.selfOrSelector(args), state: state === null ? null : AppClientCli.automationStateNamed(state) },
+        requestId,
+        this.operationId(args),
+      ))
+    }
     else if (args.command === 'sessions note') {
       const note = args.option('--note')
       const clear = args.has('--clear')
@@ -1186,10 +1203,15 @@ export class AppClientCli {
     const sessionNotifyTarget = args.option('--notify-session')
     const sessionNotifyText = args.option('--notify-text')
     const sessionNotifyGroups = args.option('--notify-on-group')
+    const sessionNotifyStates = args.option('--notify-on-state')
     if ((sessionNotifyTarget === null) !== (sessionNotifyText === null))
       throw new AppClientCliError('invalid-request', '--notify-session and --notify-text must be provided together')
     if (sessionNotifyGroups !== null && sessionNotifyTarget === null)
       throw new AppClientCliError('invalid-request', '--notify-on-group requires --notify-session and --notify-text')
+    if (sessionNotifyStates !== null && sessionNotifyTarget === null)
+      throw new AppClientCliError('invalid-request', '--notify-on-state requires --notify-session and --notify-text')
+    const onStates = sessionNotifyStates === null ? null
+      : sessionNotifyStates.split(',').map((state) => AppClientCli.automationStateNamed(state.trim(), '--notify-on-state'))
     const parentSession = args.option('--parent-session')
     const parentKind = args.option('--parent-kind')
     if ((parentSession === null) !== (parentKind === null))
@@ -1197,6 +1219,7 @@ export class AppClientCli {
     const title = args.option('--title')
     const number = AppClientCli.customNumberOf(args.option('--number'))
     const color = AppClientCli.colorOf(args.option('--color'))
+    const automationState = args.option('--automation-state')
     const flowId = args.option('--flow-id')
     const acknowledgeSetup = args.option('--acknowledge-setup')
     return {
@@ -1228,6 +1251,7 @@ export class AppClientCli {
           sessionId: sessionNotifyTarget,
           text: sessionNotifyText,
           onGroups: sessionNotifyGroups === null ? [] : sessionNotifyGroups.split(',').map((id) => id.trim()),
+          ...(onStates === null ? {} : { onStates: [...new Set(onStates)] }),
         },
       }),
       ...(parentSession === null || parentKind === null ? {} : {
@@ -1236,6 +1260,7 @@ export class AppClientCli {
       ...(title === null ? {} : { title }),
       ...(number === null ? {} : { number }),
       ...(color === null ? {} : { color }),
+      ...(automationState === null ? {} : { automationState: AppClientCli.automationStateNamed(automationState, '--automation-state') }),
       ...(flowId === null ? {} : { flowId }),
       ...(acknowledgeSetup === null ? {} : { acknowledgeSetup }),
     }
@@ -1314,6 +1339,13 @@ export class AppClientCli {
         'invalid-request',
         `--color must be one of ${SessionColors.namesConst.join(', ')}`,
       )
+    return value
+  }
+
+  /** The library's own list, so the local refusal and the target's name the same four states. */
+  private static automationStateNamed(value: string, option = '--state'): AutomationState {
+    if (!AutomationStates.isState(value))
+      throw new AppClientCliError('invalid-request', `${option} must be one of ${AutomationStates.allConst.join(', ')}`)
     return value
   }
 
@@ -1471,6 +1503,7 @@ export class AppClientCli {
       || request.operation === 'sessions.worktreeReview'
       || request.operation === 'sessions.proposeCommit'
       || request.operation === 'sessions.color'
+      || request.operation === 'sessions.automation'
       || request.operation === 'sessions.group'
       || request.operation === 'sessions.note'
       || request.operation === 'sessions.setNote'
@@ -1529,36 +1562,40 @@ export class AppClientCli {
   }
 
   /**
-   * An option an older AppClientUI would refuse, and the operation whose capability marks a build
-   * that takes it. Such a build validates the body with exact keys and refuses the whole request over
-   * one it does not know, so the option is refused here by name and nothing is sent.
+   * Every option an older AppClientUI would refuse, each with the operation whose capability marks a
+   * build that takes it. Such a build validates the body with exact keys and refuses the whole request
+   * over one it does not know, so each option is checked here by name and nothing is sent. All pairs,
+   * not the first: a `--parent-session` the target takes must not hide an `--automation-state` it lacks.
    */
-  private static featureOf(
+  private static featuresOf(
     request: RemoteControlRequestUnion,
-  ): { option: string; operation: RemoteControlOperation } | null {
-    if (request.operation === 'sessions.create' && request.body.spec.parent !== undefined)
-      return { option: '--parent-session', operation: 'sessions.children' }
-    if (request.operation === 'sessions.create' && request.body.spec.notify !== undefined)
-      return { option: '--notify-*', operation: 'sessions.notifies' }
-    if (request.operation === 'sessions.scripts') return { option: 'sessions scripts', operation: 'sessions.scripts' }
-    if (request.operation === 'sessions.runScript') return { option: 'sessions scripts run', operation: 'sessions.scripts' }
+  ): { option: string; operation: RemoteControlOperation }[] {
+    const features: { option: string; operation: RemoteControlOperation }[] = []
+    if (request.operation === 'sessions.create') {
+      const spec = request.body.spec
+      if (spec.parent !== undefined) features.push({ option: '--parent-session', operation: 'sessions.children' })
+      if (spec.notify !== undefined) features.push({ option: '--notify-*', operation: 'sessions.notifies' })
+      if (spec.automationState !== undefined) features.push({ option: '--automation-state', operation: 'sessions.automation' })
+      // A 3.23 controller offers sessions.notifies but its strict notify schema refuses onStates.
+      if (spec.notify?.onStates !== undefined) features.push({ option: '--notify-on-state', operation: 'sessions.automation' })
+      if (spec.worktree?.owner !== undefined) features.push({ option: '--worktree-owner', operation: 'sessions.worktree' })
+      if (spec.worktree?.removeWhenEnded !== undefined)
+        features.push({ option: '--worktree-remove-when-ended', operation: 'sessions.worktree' })
+      if (spec.worktree?.tag !== undefined) features.push({ option: '--worktree-tag', operation: 'sessions.worktreeResults' })
+      if (spec.worktree?.notify !== undefined)
+        features.push({ option: '--worktree-notify-session', operation: 'sessions.worktreeResults' })
+    }
+    if (request.operation === 'sessions.scripts') features.push({ option: 'sessions scripts', operation: 'sessions.scripts' })
+    if (request.operation === 'sessions.runScript') features.push({ option: 'sessions scripts run', operation: 'sessions.scripts' })
     // Before `--expect`: a build that offers sessions.scripts also offers sessions.worktree.
     if (request.operation === 'sessions.finalize' && request.body.acknowledgeSetup !== undefined)
-      return { option: '--acknowledge-setup', operation: 'sessions.scripts' }
-    if (request.operation === 'sessions.create' && request.body.spec.worktree?.owner !== undefined)
-      return { option: '--worktree-owner', operation: 'sessions.worktree' }
-    if (request.operation === 'sessions.create' && request.body.spec.worktree?.removeWhenEnded !== undefined)
-      return { option: '--worktree-remove-when-ended', operation: 'sessions.worktree' }
+      features.push({ option: '--acknowledge-setup', operation: 'sessions.scripts' })
     if (request.operation === 'sessions.finalize' && request.body.expect !== undefined)
-      return { option: '--expect', operation: 'sessions.worktree' }
-    if (request.operation === 'sessions.create' && request.body.spec.worktree?.tag !== undefined)
-      return { option: '--worktree-tag', operation: 'sessions.worktreeResults' }
-    if (request.operation === 'sessions.create' && request.body.spec.worktree?.notify !== undefined)
-      return { option: '--worktree-notify-session', operation: 'sessions.worktreeResults' }
+      features.push({ option: '--expect', operation: 'sessions.worktree' })
     // The merger came with the conflict list: a build without `sessions.conflicts` refuses the key.
     if (request.operation === 'sessions.finishWorktree' && request.body.agent !== undefined)
-      return { option: '--agent', operation: 'sessions.conflicts' }
-    return null
+      features.push({ option: '--agent', operation: 'sessions.conflicts' })
+    return features
   }
 
   private operationId(args: CliArguments): string {
@@ -1727,6 +1764,7 @@ export class AppClientCli {
     'sessions.transcript',
     'tabs.cancelCommit',
     'sessions.color',
+    'sessions.automation',
     'sessions.group',
     'sessions.note',
     'sessions.setNote',

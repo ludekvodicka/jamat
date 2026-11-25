@@ -84,6 +84,22 @@ test('search matches project metadata rather than relying on tab titles, and lif
   assert.deepEqual(ComputerTree.build(data, 'absent', 'all'), []);
 });
 
+test('a bot state is a read-only chip in the row and never a section', () => {
+  const data = snapshot([
+    session('done', { automationState: 'completed', note: 'Review r4599' }),
+    session('wait', { automationState: 'waiting' }),
+    session('plain'),
+    session('newer', { automationState: 'paused' as never }),
+  ]);
+  const rows = flatten(ComputerTree.build(data, '', 'all')).flatMap(node => node.kind === 'session' ? [node] : []);
+  const chipOf = (id: string) => rows.find(row => row.session.sessionId === id)!.automation;
+  assert.deepEqual(chipOf('done'), { state: 'completed', text: 'done', title: 'Review r4599' });
+  assert.deepEqual(chipOf('wait'), { state: 'waiting', text: 'wait', title: 'wait' });
+  assert.equal(chipOf('plain'), null);
+  assert.equal(chipOf('newer'), null);
+  assert.deepEqual(ComputerTree.build(data, '', 'all').map(node => node.key), ['group:none']);
+});
+
 test('a refresh retains selection and preview mode but invalidates pending responses', () => {
   const state = new ComputerNavigation();
   state.select(session('a'));

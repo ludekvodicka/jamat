@@ -405,6 +405,21 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     expect(parsed?.sessions[4]?.scripts).toBeUndefined()
   })
 
+  it('drops a bot state this build does not know, keeps a known one, and passes a 3.10 peer', () => {
+    const value = snapshot([
+      session({ sessionId: 'a', automationState: 'paused' }),
+      session({ sessionId: 'b', automationState: 'completed' }),
+      session({ sessionId: 'c', automationState: 7 }),
+      session({ sessionId: 'd' }),
+    ])
+    expect(SessionsSnapshotValidation310.parse(structuredClone(value))).not.toBeNull()
+    const parsed = SessionsSnapshotValidation.parse(value)
+
+    expect(parsed?.sessions.map((entry) => entry.sessionId)).toEqual(['a', 'b', 'c', 'd'])
+    expect(parsed?.sessions.map((entry) => Object.hasOwn(entry, 'automationState'))).toEqual([false, true, false, false])
+    expect(parsed?.sessions[1]?.automationState).toBe('completed')
+  })
+
   it('keeps a requested run and its link', () => {
     const run = {
       runId: 'r', phase: 'inner', scriptId: 'requested', name: 'tests', title: 'tests', state: 'failed',

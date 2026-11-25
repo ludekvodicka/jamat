@@ -5,23 +5,15 @@ import type { SnapinPresentationPort, SnapinProjectsPort, SnapinSessionsPort, Sn
 import type { SvnWorktreeManager } from '../../../lib-orchestrator/svn/svnWorktreeManager'
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 import type { TabControlBroker } from '../tabs/tabControlBroker'
-import type { RemoteSessionGroups } from '../sessionGroups/remoteSessionGroups'
-import type { SessionGroupsOperations } from '../sessionGroups/sessionGroupsOperations'
-import { SessionsGroupsState } from '../../../lib-orchestrator/clientApi/sessionsGroupsState'
 
 export class SnapinsPorts {
   static presentation(input: {
-    groups: Pick<RemoteSessionGroups, 'assign'>
-    groupsOperations: Pick<SessionGroupsOperations, 'ensure'>
-    sessions: Pick<SessionManager, 'snapshot' | 'setSessionDetails'>
+    sessions: Pick<SessionManager, 'setAutomationState' | 'setSessionDetails'>
   }): SnapinPresentationPort {
     return {
-      ensureGroups: async () => (await input.groupsOperations.ensure(SessionsGroupsState.defaultsConst.filter((group) =>
-        ['automation', 'waiting', 'blocked', 'completed'].includes(group.id)))).ok,
-      assign: async (id, group) => {
-        if (!input.sessions.snapshot().sessions.some((session) => session.sessionId === id)) return 'missing-session'
-        const answer = await input.groups.assign(id, group)
-        return answer.ok ? 'ok' : answer.error.code === 'invalid-request' ? 'missing-group' : 'failed'
+      setState: async (id, state) => {
+        const answer = await input.sessions.setAutomationState(id, state)
+        return answer.ok ? 'ok' : answer.code === 'not-found' ? 'missing-session' : 'failed'
       },
       setNote: async (id, note) => {
         const answer = await input.sessions.setSessionDetails(id, { note })

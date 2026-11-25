@@ -14,6 +14,7 @@ import { type JsonDocumentReading, JsonDocumentStore } from '../../shared/jsonDo
 import type { ErasureReport } from '../purge/agentHistoryEraser.types'
 import { SvnConflictShapes } from '../../svn/svnConflictShapes'
 import { SessionLimits } from '../sessionLimits'
+import { AutomationStates } from '../automationStates'
 import type { SessionParentKind, SessionWorktreeKind, SvnLabelledRevision } from '../sessionManagerApi.types'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { MainFinishWorkflow } from '../lifecycle/mainFinishWorkflow'
@@ -777,6 +778,9 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         continue
       }
       const record = candidate as SessionRecord
+      // A state a newer build wrote is absent here, never a refused record (`AutomationStates`).
+      if (record.automationState !== undefined && AutomationStates.readOf(record.automationState) === undefined)
+        delete record.automationState
       if (this.unreadableRecords.has(record.sessionId)) {
         seen.add(record.sessionId)
         records.push(record)

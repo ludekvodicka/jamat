@@ -1265,6 +1265,11 @@ class AppShellComposition {
         SessionOperations.onSession(
           WorkspacePanels.commandTargetOf(controller, arg),
           (sessionId) => AppControl.sessionsDone('sessions.color', { session: AppControl.sessionOf(sessionId), color: arg.color }))))
+    commands.register('session.clearAutomationState', (arg) =>
+      WorkspacePanels.started('session.clearAutomationState',
+        SessionOperations.onSession(
+          WorkspacePanels.commandTargetOf(controller, arg),
+          (sessionId) => AppControl.sessionsDone('sessions.automation', { session: AppControl.sessionOf(sessionId), state: null }))))
     // The same launcher again, opened ON a session: the four below differ only in which agent they
     // fill in and whether they carry the conversation to fork.
     commands.register('session.newBeside', (arg) =>

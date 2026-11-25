@@ -4,6 +4,7 @@ import type {
   SessionsSnapshot,
 } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type { FileChangesVcsId } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
+import { AutomationStates } from '../../../lib-orchestrator/sessionManager/automationStates'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import { IpcFailure } from '../ipc/ipcFailure'
@@ -60,6 +61,7 @@ export class SessionOperations {
       admits: info.admits,
       // UI01 is about worktree sessions; any other row's Finish arms a second click on the row itself.
       finish: info.worktree !== undefined && FinalizeAsks.rowActionsOf(info, 'local').includes('finalize'),
+      hasAutomationState: AutomationStates.readOf(info.automationState) !== undefined,
     }
   }
 

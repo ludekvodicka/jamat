@@ -46,7 +46,7 @@ export class RemoteSessionCommands {
     const endpoint = this.ports.snapshot()?.outbound.find((entry) => entry.remoteEndpointId === target.remoteEndpointId)
     const info = endpoint?.sessions?.sessions.find((entry) => entry.sessionId === target.sessionId)
     if (endpoint?.status !== 'connected' || !info) throw new Error('The source session is disconnected or unavailable')
-    if (['session.details', 'session.setColor', 'session.fork', 'session.restart', 'session.commitSvn', 'session.commitGit'].includes(id)
+    if (['session.details', 'session.setColor', 'session.clearAutomationState', 'session.fork', 'session.restart', 'session.commitSvn', 'session.commitGit'].includes(id)
       && !endpoint.workspaceCapabilities?.includes('session-workspace.commands'))
       throw new Error(`${endpoint.displayName} does not support these session commands; update that computer first`)
     const session = { kind: 'sessionId' as const, sessionId: target.sessionId }
@@ -56,6 +56,8 @@ export class RemoteSessionCommands {
         const color = (arg as { color: SessionInfo['color'] }).color ?? null
         await this.command(target, { operation: 'sessions.color', operationId: '', body: { session, color } }); return
       }
+      case 'session.clearAutomationState':
+        await this.command(target, { operation: 'sessions.automation', operationId: '', body: { session, state: null } }); return
       case 'session.newBeside':
       case 'session.newInClaude':
       case 'session.newInCodex':

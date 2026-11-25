@@ -32,6 +32,7 @@ function factsOf(over: Partial<TabSessionFacts> = {}): TabSessionFacts {
     live: over.ended !== true,
     admits: everyOperationConst,
     finish: false,
+    hasAutomationState: false,
     ...over,
   }
 }
@@ -365,6 +366,20 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     fireEvent.click(MenuView.colour('Teal'))
 
     expect(execute.mock.calls).toEqual([['session.setColor', { color: 'teal', sessionId: 's1' }]])
+    expect(MenuView.isOpen()).toBe(false)
+  })
+
+  it('offers Clear bot state only on a row with a bot state, and runs it on the clicked session', () => {
+    const commands = new CommandRegistry()
+    const execute = vi.spyOn(commands, 'execute')
+    const plain = render(<MenuHost commands={commands} />)
+    expect(MenuView.all()).not.toContain('Clear bot state')
+    plain.unmount()
+
+    render(<MenuHost commands={commands} facts={{ hasAutomationState: true }} />)
+    expect(MenuView.sections()[0]).toEqual(['Session Appearance', 'Clear bot state', 'Session properties…'])
+    fireEvent.click(MenuView.itemTitled('Clear bot state'))
+    expect(execute.mock.calls).toEqual([['session.clearAutomationState', { sessionId: 's1' }]])
     expect(MenuView.isOpen()).toBe(false)
   })
 

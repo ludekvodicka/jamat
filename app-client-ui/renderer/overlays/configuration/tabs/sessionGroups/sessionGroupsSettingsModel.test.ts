@@ -26,6 +26,8 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
   }
 
   const seeded = SessionsGroupsState.defaultsConst
+  /** The defaults plus two sections of a person's own, the list the move and remove controls act on. */
+  const custom: SessionGroupsList = [...seeded, { id: 'review', title: 'Review' }, { id: 'shipped', title: 'Shipped' }]
 
   it('asks for the list as it opens and reads it as the yardstick for modified', () => {
     const start = SessionGroupsSettingsModel.initial()
@@ -60,6 +62,14 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
     ])
   })
 
+  // The startup cleanup (`AutomationGroupsCleanup`) deletes a section with a former bot section id.
+  it('numbers a section whose name slugs onto a former bot section id', () => {
+    const added = after(seeded, { input: 'add', title: 'Automation' })
+
+    expect(added.buffer!.at(-1)).toEqual({ id: 'automation-2', title: 'Automation' })
+    expect(SessionGroupsSettingsModel.problemOf(added)).toBeNull()
+  })
+
   /*
    * The tab disables Add on an empty field, so the only way here is a name that LOOKS like one and
    * slugs to nothing. Inventing a fallback id would file sessions under a word nobody typed.
@@ -72,12 +82,12 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
   })
 
   it('moves a section one step and leaves the ends alone', () => {
-    const up = after(seeded, { input: 'move', id: 'completed', delta: -1 })
-    const stuck = after(seeded, { input: 'move', id: 'pinned', delta: -1 })
+    const up = after(custom, { input: 'move', id: 'shipped', delta: -1 })
+    const stuck = after(custom, { input: 'move', id: 'pinned', delta: -1 })
 
     expect(up.buffer!.map((definition) => definition.id))
-      .toEqual(['pinned', 'priority', 'none', 'automation', 'completed', 'waiting', 'blocked'])
-    expect(stuck.buffer).toEqual(seeded)
+      .toEqual(['pinned', 'priority', 'none', 'shipped', 'review'])
+    expect(stuck.buffer).toEqual(custom)
   })
 
   /*
@@ -93,9 +103,9 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
       expect(SessionGroupsSettingsModel.isFixed({ id, title: 'x' })).toBe(true)
       expect(after(seeded, { input: 'remove', id }).buffer!.map((one) => one.id)).toContain(id)
     }
-    expect(SessionGroupsSettingsModel.isFixed({ id: 'completed', title: 'Completed' })).toBe(false)
-    expect(after(seeded, { input: 'remove', id: 'completed' }).buffer!.map((one) => one.id))
-      .not.toContain('completed')
+    expect(SessionGroupsSettingsModel.isFixed({ id: 'review', title: 'Review' })).toBe(false)
+    expect(after(custom, { input: 'remove', id: 'review' }).buffer!.map((one) => one.id))
+      .not.toContain('review')
   })
 
   /*
@@ -103,7 +113,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
    * the file would refuse, so the button says no and the reason stands beside it.
    */
   it('says why a save is refused without calling the card broken', () => {
-    const emptied = after(seeded, { input: 'rename', id: 'waiting', title: '  ' })
+    const emptied = after(seeded, { input: 'rename', id: 'priority', title: '  ' })
 
     expect(emptied.problem).toBeNull()
     expect(SessionGroupsSettingsModel.problemOf(emptied)).toMatch(/every session group needs an id/)
@@ -124,7 +134,7 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
   })
 
   it('restores the seeded sections on reset', () => {
-    const state = after(seeded, { input: 'remove', id: 'blocked' }, { input: 'reset' })
+    const state = after(custom, { input: 'remove', id: 'review' }, { input: 'reset' })
 
     expect(state.buffer).toEqual(seeded)
   })

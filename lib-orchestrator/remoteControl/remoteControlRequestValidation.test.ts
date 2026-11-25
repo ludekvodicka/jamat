@@ -436,6 +436,29 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
     )).toMatchObject({ ok: true, request: { body: { group: 'no-such-group' } } })
   })
 
+  it('takes one of the four bot states or null, and refuses anything else', () => {
+    const session = { kind: 'sessionId', sessionId: 'session-1' }
+    for (const state of ['working', 'waiting', 'blocked', 'completed', null])
+      expect(RemoteControlRequestValidation.parse(
+        RemoteControlRequestValidationTest.of('sessions.automation', { session, state }),
+      )).toMatchObject({ ok: true, request: { body: { session, state } } })
+    expect(RemoteControlRequestValidation.isMutating('sessions.automation')).toBe(true)
+    for (const request of [
+      RemoteControlRequestValidationTest.of('sessions.automation', { session, state: 'paused' }),
+      RemoteControlRequestValidationTest.of('sessions.automation', { session }),
+      RemoteControlRequestValidationTest.of('sessions.automation', { session, state: 'waiting', color: 'cyan' }),
+      RemoteControlRequestValidationTest.of('sessions.automation', { session, state: 'waiting' }, null),
+    ])
+      expect(RemoteControlRequestValidation.parse(request))
+        .toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+    expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { kind: 'shell', directory: { mode: 'default' }, automationState: 'working' },
+    }))).toMatchObject({ ok: true, request: { body: { spec: { automationState: 'working' } } } })
+    expect(RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
+      spec: { kind: 'shell', directory: { mode: 'default' }, automationState: 'paused' },
+    }))).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+  })
+
   it('refuses agent options without an agent and a base ref without a worktree', () => {
     const strayMode = RemoteControlRequestValidation.parse(RemoteControlRequestValidationTest.create({
       spec: { ...RemoteControlRequestValidationTest.shell, agent: { agentId: 'claude', mode: 'sideways' } },

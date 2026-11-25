@@ -10,9 +10,11 @@ class MemoryKeyring implements AntigravityKeyringPort {
   available = true
   unavailableReason: string | null = null
   activeBlob: string | null = null
+  inspects = 0
   readonly slots = new Map<string, { blob: string; meta: AntigravityKeyringMeta }>()
 
   async inspect() {
+    this.inspects += 1
     return {
       present: this.activeBlob !== null,
       currentHash: this.activeBlob === null ? null : `hash:${this.activeBlob}`,
@@ -42,6 +44,23 @@ class MemoryKeyring implements AntigravityKeyringPort {
   async remove(slotId: string) {
     this.slots.delete(slotId)
   }
+}
+
+function antigravityRates(fetchedAt: number, sessionUsed: number): RateAccountState[] {
+  return [{
+    key: { agentId: 'antigravity', accountId: 'main' },
+    label: 'Main',
+    source: 'statusline',
+    estimated: null,
+    state: {
+      kind: 'ok',
+      fetchedAt,
+      windows: [
+        { durationMinutes: 300, usedPercent: sessionUsed, resetsAt: '2026-11-22T23:00:00.000Z' },
+        { durationMinutes: 10080, usedPercent: 8, resetsAt: '2026-11-29T10:00:00.000Z' },
+      ],
+    },
+  }]
 }
 
 describe('lib-orchestrator/agentAccounts/antigravityLogins', () => {
@@ -298,5 +317,88 @@ describe('lib-orchestrator/agentAccounts/antigravityLogins', () => {
     await logins.remove(anon.slotId)
     expect(keyring.activeBlob).toBe('token-no-email')
     expect((await logins.list()).logins).toEqual([])
+  })
+
+  it('stays off on rate ticks with fewer than two saved logins and turns on when a second one is stored', async () => {
+    const { accountFile, keyring, logins, onChanged, setRates } = setup()
+    const t0 = Date.parse('2026-11-22T15:00:00Z')
+    keyring.activeBlob = 'token-alice'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'alice@example.com' }))
+    const alice = await logins.store('Alice')
+    await logins.list()
+    keyring.inspects = 0
+    onChanged.mockClear()
+
+    for (let tick = 1; tick <= 5; tick += 1) {
+      setRates(antigravityRates(t0 + tick * 60_000, tick))
+      logins.ratesChanged()
+    }
+    expect(keyring.inspects).toBe(0)
+    expect(onChanged).not.toHaveBeenCalled()
+    expect((await logins.list()).logins.find(slot => slot.id === alice.slotId)?.quota?.session?.usedPercent).toBe(5)
+
+    keyring.activeBlob = 'token-bob'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'bob@example.com' }))
+    const bob = await logins.store('Bob')
+    keyring.inspects = 0
+    onChanged.mockClear()
+    setRates(antigravityRates(t0 + 10 * 60_000, 33))
+    logins.ratesChanged()
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1))
+    expect(keyring.inspects).toBe(1)
+
+    setRates(antigravityRates(t0 + 11 * 60_000, 34))
+    logins.ratesChanged()
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2))
+    expect(keyring.inspects).toBe(1)
+    expect((await logins.list()).logins.find(slot => slot.id === bob.slotId)?.quota?.session?.usedPercent).toBe(34)
+  })
+
+  it('ignores rate ticks that carry no new Antigravity reading', async () => {
+    const { accountFile, keyring, logins, onChanged, setRates } = setup()
+    const t0 = Date.parse('2026-11-22T15:00:00Z')
+    keyring.activeBlob = 'token-alice'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'alice@example.com' }))
+    await logins.store('Alice')
+    keyring.activeBlob = 'token-bob'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'bob@example.com' }))
+    await logins.store('Bob')
+    setRates(antigravityRates(t0 + 60_000, 10))
+    logins.ratesChanged()
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledTimes(3))
+    keyring.inspects = 0
+
+    // Claude and Codex readings move the monitor too; the Antigravity reading stays the same.
+    for (let tick = 0; tick < 5; tick += 1) logins.ratesChanged()
+    expect(keyring.inspects).toBe(0)
+    expect(onChanged).toHaveBeenCalledTimes(3)
+  })
+
+  it('re-reads the keyring once when the observed email shows a login changed outside Jamat', async () => {
+    const { accountFile, keyring, logins, onChanged, setRates } = setup()
+    const t0 = Date.parse('2026-11-22T15:00:00Z')
+    keyring.activeBlob = 'token-alice'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'alice@example.com' }))
+    const alice = await logins.store('Alice')
+    keyring.activeBlob = 'token-bob'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'bob@example.com' }))
+    const bob = await logins.store('Bob')
+    await logins.list()
+    keyring.inspects = 0
+    onChanged.mockClear()
+
+    keyring.activeBlob = 'token-alice'
+    writeFileSync(accountFile, JSON.stringify({ schemaVersion: 1, email: 'alice@example.com' }))
+    setRates(antigravityRates(t0 + 60_000, 71))
+    logins.ratesChanged()
+    setRates(antigravityRates(t0 + 120_000, 72))
+    await vi.waitFor(() => {
+      logins.ratesChanged()
+      expect(onChanged).toHaveBeenCalledTimes(1)
+    })
+    expect(keyring.inspects).toBe(1)
+    const listed = await logins.list()
+    expect(listed.logins.find(slot => slot.id === alice.slotId)?.quota?.session?.usedPercent).toBe(72)
+    expect(listed.logins.find(slot => slot.id === bob.slotId)?.quota).toBeNull()
   })
 })

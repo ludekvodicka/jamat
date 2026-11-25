@@ -5659,6 +5659,71 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     })
   })
 
+  describe('the bot state on a session', () => {
+    it('writes the state and leaves colour and note alone', async () => {
+      const context = await harness()
+      await context.store.put(record('s1', { color: 'teal', note: 'kept' }))
+
+      expect(await context.lifecycle.setAutomationState('s1', 'waiting'))
+        .toEqual({ ok: true, value: { changed: true } })
+      expect(context.store.get('s1')).toMatchObject({ automationState: 'waiting', color: 'teal', note: 'kept' })
+    })
+
+    it('reports no change for a repeated state and writes nothing', async () => {
+      const context = await harness()
+      await context.store.put(record('s1', { automationState: 'waiting' }))
+      const updates = vi.spyOn(context.store, 'update')
+
+      expect(await context.lifecycle.setAutomationState('s1', 'waiting'))
+        .toEqual({ ok: true, value: { changed: false } })
+      expect(updates).not.toHaveBeenCalled()
+    })
+
+    it('clears the field with null and keeps the note', async () => {
+      const context = await harness()
+      await context.store.put(record('s1', { automationState: 'blocked', note: 'kept' }))
+
+      expect(await context.lifecycle.setAutomationState('s1', null))
+        .toEqual({ ok: true, value: { changed: true } })
+      expect(context.store.get('s1')).not.toHaveProperty('automationState')
+      expect(context.store.get('s1')?.note).toBe('kept')
+    })
+
+    it('refuses an unknown state and answers not-found for a missing session', async () => {
+      const context = await harness()
+      await context.store.put(record('s1', { automationState: 'working' }))
+
+      expect(failureOf(await context.lifecycle.setAutomationState('s1', 'paused' as never)).code).toBe('invalid-spec')
+      expect(context.store.get('s1')?.automationState).toBe('working')
+      expect(failureOf(await context.lifecycle.setAutomationState('nobody', 'waiting')).code).toBe('not-found')
+    })
+
+    it('is born with the state of the create spec, and a fork of it carries none', async () => {
+      const context = await harness()
+      const created = successOf(await context.lifecycle.create({
+        kind: 'agent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        agent: { agentId: 'claude', mode: 'new' },
+        automationState: 'working',
+      }))
+      expect(context.store.get(created.sessionId)?.automationState).toBe('working')
+      const refused = await context.lifecycle.create({
+        kind: 'shell',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        automationState: 'paused' as never,
+      })
+      expect(failureOf(refused).detail).toContain('is not an automation state')
+
+      await context.store.put(record('s1', {
+        kind: 'agent',
+        automationState: 'waiting',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'native-1' },
+      }))
+      const forked = successOf(await context.lifecycle.forkFrom('s1'))
+      expect(context.store.get(forked.sessionId)).not.toHaveProperty('automationState')
+    })
+  })
+
   describe('the details on a session', () => {
     it.each(['colour', 'note', 'name'] as const)('preserves a queued SVN journal when changing the %s', async (field) => {
       const context = await harness()

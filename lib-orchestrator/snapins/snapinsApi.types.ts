@@ -1,5 +1,5 @@
 import type { VersioningMode } from '../git/git.types'
-import type { SessionAgentId, SessionCreateOrigin, SessionCreateSpec, SessionCreated, SessionsOpResult,
+import type { AutomationState, SessionAgentId, SessionCreateOrigin, SessionCreateSpec, SessionCreated, SessionsOpResult,
   SessionsSnapshot, WorktreeResultDto, WorktreeResultsFilter } from '../sessionManager/sessionManagerApi.types'
 import type { SvnResult } from '../svn/svn.types'
 
@@ -81,7 +81,6 @@ export interface SnapinProjectsPort {
   projects(): Promise<{ categoryId: string; categoryPath: string; projectPath: string }[]>
 }
 export interface SnapinPresentationPort {
-  ensureGroups(): Promise<boolean>
-  assign(sessionId: string, group: string): 'ok' | 'missing-session' | 'missing-group' | 'failed' | Promise<'ok' | 'missing-session' | 'missing-group' | 'failed'>
+  setState(sessionId: string, state: AutomationState): Promise<'ok' | 'missing-session' | 'failed'>
   setNote(sessionId: string, note: string): Promise<'ok' | 'missing-session' | 'failed'>
 }

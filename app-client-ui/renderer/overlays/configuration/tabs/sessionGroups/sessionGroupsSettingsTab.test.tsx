@@ -8,13 +8,17 @@ import { ControlBridgeFixture } from '../../../../ipc/fixtures/controlBridgeFixt
 
 describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessionGroupsSettingsTab', () => {
   type BridgeStub = Pick<AppClientUiBridge, 'control'>
+  /** The defaults plus two sections of a person's own. */
+  const storedConst: readonly SessionGroupDefinition[] = [
+    ...SessionsGroupsState.defaultsConst, { id: 'review', title: 'Review' }, { id: 'shipped', title: 'Shipped' },
+  ]
 
   afterEach(() => {
     cleanup()
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
-  async function mount(stored: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst) {
+  async function mount(stored: readonly SessionGroupDefinition[] = storedConst) {
     const saved: unknown[] = []
     ;(window as unknown as { appClient: BridgeStub }).appClient = {
       control: ControlBridgeFixture.routes({
@@ -39,12 +43,10 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
       .map((row) => row.querySelector('input')!.value)
   }
 
-  it('draws the stored sections in order, Completed above Blocked', async () => {
+  it('draws the stored sections in order', async () => {
     await mount()
 
-    expect(rows()).toEqual([
-      'Pinned', 'Priority', 'Sessions', 'Automation', 'Waiting', 'Completed', 'Blocked',
-    ])
+    expect(rows()).toEqual(['Pinned', 'Priority', 'Sessions', 'Review', 'Shipped'])
   })
 
   /*
@@ -57,10 +59,10 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
     const cellsOf = (id: string): number =>
       view.container.querySelector(`input[aria-label="Name of ${id}"]`)!.parentElement!.children.length
 
-    for (const id of ['pinned', 'none', 'waiting']) expect(cellsOf(id)).toBe(5)
+    for (const id of ['pinned', 'none', 'review']) expect(cellsOf(id)).toBe(5)
     for (const id of ['none', 'pinned'])
       expect(view.container.querySelector(`input[aria-label="Name of ${id}"]`)).toBeDisabled()
-    expect(view.container.querySelector('input[aria-label="Name of waiting"]')).toBeEnabled()
+    expect(view.container.querySelector('input[aria-label="Name of review"]')).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Remove Sessions' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Remove Pinned' })).toBeNull()
   })
@@ -100,30 +102,30 @@ describe('app-client-ui/renderer/overlays/configuration/tabs/sessionGroups/sessi
   it('takes two clicks to remove a section', async () => {
     await mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Blocked' }))
-    expect(rows()).toContain('Blocked')
-    const armed = screen.getByRole('button', { name: 'Remove Blocked and unfile its sessions' })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Shipped' }))
+    expect(rows()).toContain('Shipped')
+    const armed = screen.getByRole('button', { name: 'Remove Shipped and unfile its sessions' })
     expect(armed).toHaveTextContent('Confirm')
     fireEvent.click(armed)
-    expect(rows()).not.toContain('Blocked')
+    expect(rows()).not.toContain('Shipped')
   })
 
   it('refuses a save whose name is empty and says which rule it breaks', async () => {
     const { saved, view } = await mount()
 
-    fireEvent.change(screen.getByLabelText('Name of waiting'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('Name of review'), { target: { value: '' } })
     expect(view.getByText(/every session group needs an id/)).toBeInTheDocument()
     expect(view.getByText('Save')).toBeDisabled()
-    fireEvent.change(screen.getByLabelText('Name of waiting'), { target: { value: 'Parked' } })
+    fireEvent.change(screen.getByLabelText('Name of review'), { target: { value: 'Parked' } })
     await act(async () => { fireEvent.click(view.getByText('Save')) })
     expect((saved[0] as readonly SessionGroupDefinition[])
-      .find((one) => one.id === 'waiting')).toEqual({ id: 'waiting', title: 'Parked' })
+      .find((one) => one.id === 'review')).toEqual({ id: 'review', title: 'Parked' })
   })
 
   it('tells the window there is something to lose, and that there is not once it lands', async () => {
     const { onDirtyChange, view } = await mount()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Move Blocked up' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Move Shipped up' }))
     expect(onDirtyChange).toHaveBeenCalledWith(true)
     await act(async () => { fireEvent.click(view.getByText('Save')) })
     expect(onDirtyChange.mock.calls).toEqual([[true], [false]])

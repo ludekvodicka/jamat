@@ -1453,7 +1453,7 @@ class SmokeSessionManager extends SmokeHarness {
     const text = `${title} session changed`
     const worker = SmokeSessionManager.valueOf(await this.manager.createSession({
       kind: 'shell', directory: { mode: 'adHoc', path: this.workDir }, title: `${title}-worker`,
-      notify: { sessionId: target, text, onGroups: ['waiting'] },
+      notify: { sessionId: target, text, onGroups: ['review'] },
     }), 'createSession').sessionId
     const groups = new Map([[worker, 'working']])
     const terminal = { composer: '', typed: [] as string[], asked: 0 }
@@ -1485,11 +1485,11 @@ class SmokeSessionManager extends SmokeHarness {
       terminal.asked === 0 && (await eventsOf(this.manager, worker)).length === 0)
 
     terminal.composer = 'an unfinished target draft'
-    groups.set(worker, 'waiting')
+    groups.set(worker, 'review')
     await notifier.tick()
     const pending = await eventsOf(this.manager, worker)
-    this.check('a move into waiting records one pending event and leaves the target draft alone',
-      pending.length === 1 && pending[0].cause === 'group:waiting' && pending[0].state === 'pending'
+    this.check('a move into review records one pending event and leaves the target draft alone',
+      pending.length === 1 && pending[0].cause === 'group:review' && pending[0].state === 'pending'
       && pending[0].attempts === 1 && terminal.asked === 1 && terminal.typed.length === 0
       && terminal.composer === 'an unfinished target draft')
     terminal.composer = ''

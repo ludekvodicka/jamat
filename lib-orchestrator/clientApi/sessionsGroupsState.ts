@@ -29,6 +29,10 @@ export type SessionGroupsSaveResult =
  * Order is the array's order, top to bottom, and it is the whole reason `none` and `pinned` are IN
  * the list rather than implied around it: where Sessions sits is what decides which sections are
  * read above a person's own work and which below.
+ *
+ * The four bot sections (Automation, Waiting, Completed, Blocked) left the defaults on 2026-11-25:
+ * a bot state is a chip on the session's own row, and the startup cleanup removes them from a
+ * stored list.
  */
 export class SessionsGroupsState {
   static readonly adHocRootConst = SessionTreeHierarchy.adHocRootConst
@@ -37,10 +41,6 @@ export class SessionsGroupsState {
     { id: 'pinned', title: 'Pinned' },
     { id: 'priority', title: 'Priority' },
     { id: 'none', title: 'Sessions' },
-    { id: 'automation', title: 'Automation' },
-    { id: 'waiting', title: 'Waiting' },
-    { id: 'completed', title: 'Completed' },
-    { id: 'blocked', title: 'Blocked' },
   ]
   static readonly maxGroupsConst = SessionGroups.maxGroupsConst
   private static readonly sessionKeyPrefixConst = 'session:'

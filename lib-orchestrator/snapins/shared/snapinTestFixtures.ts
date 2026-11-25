@@ -40,7 +40,7 @@ export class SnapinTestRig {
         return { ok: true as const, value: { sessionId, tabTitle: 'Worker' } }
       }), worktreeResults: vi.fn(async () => ({ ok: true as const, value: { results: [] } })),
       acknowledgeWorktreeResult: vi.fn(async (actionId) => ({ ok: true as const, value: { actionId } })) }
-    this.presentation = { ensureGroups: vi.fn(async () => true), assign: vi.fn(() => 'ok' as const), setNote: vi.fn(async () => 'ok' as const) }
+    this.presentation = { setState: vi.fn(async () => 'ok' as const), setNote: vi.fn(async () => 'ok' as const) }
     this.definitions = kinds.map((kind) => ({ kind, title: kind, colour: 'cyan', menuOrder: 1,
       settings: { fields: async () => [], validate: () => null },
       list: vi.fn(async () => ({ ok: true as const, items: this.items.get(kind)! })),

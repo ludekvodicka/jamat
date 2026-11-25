@@ -456,9 +456,10 @@
   text-overflow: ellipsis;
 }
 
-/* The agent and worktree marks are one or two letters that tell rows apart, so they never give way:
-   a long name once hid both. The title's 8em floor still keeps the name from vanishing beside them. */
-.jamat-sessions__row > :is(.jamat-sessions__agent, .jamat-sessions__worktree) {
+/* The bot chip and the agent and worktree slots never give way: a long name once hid both marks,
+   and the slots are what keeps `A` and `WT` in one column across rows (D4). The title's 8em floor
+   still keeps the name from vanishing beside them. */
+.jamat-sessions__row > :is(.jamat-sessions__automation, .jamat-sessions__agent-slot, .jamat-sessions__worktree-slot) {
   flex: none;
   overflow: visible;
 }
@@ -554,6 +555,39 @@
   font-size: var(--fs-chip);
   font-weight: 700;
   color: var(--color-text-4);
+}
+/* Fixed widths, sized for the widest mark at the chip font size, so an absent mark keeps its column. */
+.jamat-sessions__agent-slot {
+  display: inline-flex;
+  justify-content: center;
+  width: 1.4em;
+  font-size: var(--fs-chip);
+}
+.jamat-sessions__worktree-slot {
+  display: inline-flex;
+  justify-content: center;
+  width: 2.2em;
+  font-size: var(--fs-chip);
+}
+/* Outlined and text only: automation's mark, never confused with the row's own filled pills. */
+.jamat-sessions__automation {
+  padding: 0 var(--space-1);
+  font-size: var(--fs-chip);
+  line-height: 1.3;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+}
+.jamat-sessions__automation--working {
+  color: var(--automation-working);
+}
+.jamat-sessions__automation--waiting {
+  color: var(--automation-waiting);
+}
+.jamat-sessions__automation--blocked {
+  color: var(--automation-blocked);
+}
+.jamat-sessions__automation--completed {
+  color: var(--automation-completed);
 }
 .jamat-sessions__worktree {
   display: flex;

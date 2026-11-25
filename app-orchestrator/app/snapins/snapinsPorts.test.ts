@@ -3,19 +3,21 @@ import type { SessionInfo, SessionsSnapshot } from '../../../lib-orchestrator/se
 import { SnapinsPorts } from './snapinsPorts'
 
 describe('SnapinsPorts', () => {
-  it('ensures default automation groups and adapts assignment and note refusals', async () => {
-    const ensure = vi.fn<Parameters<typeof SnapinsPorts.presentation>[0]['groupsOperations']['ensure']>(async () => ({ ok: true as const }))
-    const assign = vi.fn<Parameters<typeof SnapinsPorts.presentation>[0]['groups']['assign']>(async () => ({ ok: true, value: { group: 'waiting' } }))
-    const setSessionDetails = vi.fn<Parameters<typeof SnapinsPorts.presentation>[0]['sessions']['setSessionDetails']>()
+  it('writes the automation state and the note and adapts their refusals', async () => {
+    type Sessions = Parameters<typeof SnapinsPorts.presentation>[0]['sessions']
+    const setAutomationState = vi.fn<Sessions['setAutomationState']>().mockResolvedValue({ ok: true, value: { changed: true } })
+    const setSessionDetails = vi.fn<Sessions['setSessionDetails']>()
       .mockResolvedValue({ ok: false, code: 'not-found', detail: 'gone' })
-    const port = SnapinsPorts.presentation({ groups: { assign }, groupsOperations: { ensure }, sessions: {
-      snapshot: () => ({ sessions: [{ sessionId: 'worker' }] } as SessionsSnapshot), setSessionDetails } })
-    expect(await port.ensureGroups()).toBe(true)
-    expect(ensure.mock.calls[0]?.[0]).toEqual(expect.arrayContaining([{ id: 'waiting', title: 'Waiting' }, { id: 'automation', title: 'Automation' }]))
-    expect(await port.assign('missing', 'waiting')).toBe('missing-session')
-    expect(await port.assign('worker', 'waiting')).toBe('ok')
-    assign.mockResolvedValueOnce({ ok: false, error: { code: 'invalid-request', detail: 'gone group' } })
-    expect(await port.assign('worker', 'waiting')).toBe('missing-group')
+    const port = SnapinsPorts.presentation({ sessions: { setAutomationState, setSessionDetails } })
+    expect(Object.keys(port).sort()).toEqual(['setNote', 'setState'])
+    expect(await port.setState('worker', 'waiting')).toBe('ok')
+    expect(setAutomationState).toHaveBeenCalledWith('worker', 'waiting')
+    setAutomationState.mockResolvedValueOnce({ ok: true, value: { changed: false } })
+    expect(await port.setState('worker', 'waiting')).toBe('ok')
+    setAutomationState.mockResolvedValueOnce({ ok: false, code: 'not-found', detail: 'gone' })
+    expect(await port.setState('missing', 'blocked')).toBe('missing-session')
+    setAutomationState.mockResolvedValueOnce({ ok: false, code: 'invalid-spec', detail: 'records latched' })
+    expect(await port.setState('worker', 'completed')).toBe('failed')
     expect(await port.setNote('worker', 'Working')).toBe('missing-session')
     expect(setSessionDetails).toHaveBeenCalledWith('worker', { note: 'Working' })
   })

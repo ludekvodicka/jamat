@@ -255,7 +255,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
   it('delivers a result and an end once, noting both sources even with the same item id', async () => {
     const it_ = harness()
     await it_.notifies.watch('child', { sessionId: 'coordinator', text: 'wake', onGroups: [] })
-    await it_.notifies.observe('child', { life: 'gone', group: null }, it_.clock.now)
+    await it_.notifies.observe('child', { life: 'gone', group: null, state: null }, it_.clock.now)
     const id = it_.notifies.pending()[0].id
     await it_.put(id)
     await it_.notifier.tick()
@@ -324,7 +324,7 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
     const it_ = harness()
     await it_.put('a1')
     await it_.notifies.watch('old', { sessionId: 'coordinator', text: 'wake', onGroups: [] })
-    await it_.notifies.observe('old', { life: 'gone', group: null }, it_.clock.now)
+    await it_.notifies.observe('old', { life: 'gone', group: null, state: null }, it_.clock.now)
     it_.clock.now += SessionNotifier.giveUpMillisecondsConst + 1
     await it_.notifies.watch('fresh', { sessionId: 'coordinator', text: 'wake', onGroups: [] })
     await it_.notifier.tick()
@@ -370,18 +370,35 @@ describe('lib-orchestrator/sessionManager/notifies/sessionNotifier', () => {
 
   it('reads the group map each pass, including a session born into a named group', async () => {
     const it_ = harness()
-    await it_.notifies.watch('child', { sessionId: 'coordinator', text: 'wake', onGroups: ['waiting'] })
+    await it_.notifies.watch('child', { sessionId: 'coordinator', text: 'wake', onGroups: ['review'] })
     it_.snapshot.sessions = [{ sessionId: 'child', life: 'starting' } as SessionInfo]
-    it_.snapshot.groups.set('child', 'waiting')
+    it_.snapshot.groups.set('child', 'review')
     await it_.notifier.tick()
     await it_.notifier.tick()
-    it_.snapshot.groups.set('child', 'automation')
+    it_.snapshot.groups.set('child', 'other')
     await it_.notifier.tick()
-    it_.snapshot.groups.set('child', 'waiting')
+    it_.snapshot.groups.set('child', 'review')
     await it_.notifier.tick()
 
     expect(it_.typed).toHaveLength(2)
-    expect(it_.notifies.list({})[0].events.map((event) => event.cause)).toEqual(['group:waiting', 'group:waiting'])
+    expect(it_.notifies.list({})[0].events.map((event) => event.cause)).toEqual(['group:review', 'group:review'])
+  })
+
+  it('reads the bot state each pass and wakes the coordinator once per entry', async () => {
+    const it_ = harness()
+    await it_.notifies.watch('child', { sessionId: 'coordinator', text: 'wake', onGroups: [], onStates: ['waiting'] })
+    it_.snapshot.sessions = [{ sessionId: 'child', life: 'live', automationState: 'working' } as SessionInfo]
+    await it_.notifier.tick()
+    expect(it_.typed).toEqual([])
+    it_.snapshot.sessions = [{ sessionId: 'child', life: 'live', automationState: 'waiting' } as SessionInfo]
+    await it_.notifier.tick()
+    await it_.notifier.tick()
+    expect(it_.typed).toEqual([{ sessionId: 'coordinator', text: 'wake' }])
+    // A state this build does not know reads as none.
+    it_.snapshot.sessions = [{ sessionId: 'child', life: 'live', automationState: 'paused' } as unknown as SessionInfo]
+    await it_.notifier.tick()
+    expect(it_.notifies.watched()[0].seenState).toBeNull()
+    expect(it_.notifies.list({})[0].events.map((event) => event.cause)).toEqual(['state:waiting'])
   })
 
   it('joins overlapping passes so observation and delivery each run once', async () => {

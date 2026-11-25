@@ -49,6 +49,7 @@ describe('UsageModel', () => {
   it('derives the pool ranges and whole-day token periods from now', () => {
     expect(UsageModel.poolRange('forecast', 10 * 86_400_000, null)).toEqual({ from: 9 * 86_400_000, to: 17 * 86_400_000 })
     expect(UsageModel.poolRange('forecast', 10 * 86_400_000, 5 * 86_400_000)).toEqual({ from: 4.5 * 86_400_000, to: 17 * 86_400_000 })
+    expect(UsageModel.poolRange('day', 10 * 86_400_000, 5 * 86_400_000)).toEqual({ from: 9 * 86_400_000, to: 41 * 86_400_000 })
     expect(UsageModel.poolRange('week', 10 * 86_400_000, 5 * 86_400_000)).toEqual({ from: 3 * 86_400_000, to: 41 * 86_400_000 })
     expect(UsageModel.poolRange('month', 40 * 86_400_000, null)).toEqual({ from: 10 * 86_400_000, to: 71 * 86_400_000 })
     expect(UsageModel.tokenPeriod('today', new Date(2026, 10, 4, 19))).toEqual({ from: '2026-11-04', to: '2026-11-04' })
@@ -76,6 +77,8 @@ describe('UsageModel', () => {
     expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 11 * day })).toEqual({ from: 3 * day, to: 12 * day })
     expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 23 * day })).toEqual({ from: 3 * day, to: 24 * day })
     expect(UsageModel.poolView('week', { ...series, poolEmptyAt: 40 * day })).toEqual({ from: 3 * day, to: 41 * day })
+    expect(UsageModel.poolView('day', { ...series, displayRange: { from: 9 * day, to: 41 * day }, poolEmptyAt: 23 * day })).toEqual({ from: 9 * day, to: 10.25 * day })
+    expect(UsageModel.poolView('day', { ...series, until: 10.1 * day, displayRange: { from: 9 * day, to: 41 * day } })).toEqual({ from: 9 * day, to: 10.1 * day })
     expect(UsageModel.poolView('forecast', series)).toEqual({ from: 3 * day, to: 41 * day })
   })
 

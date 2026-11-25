@@ -7,7 +7,8 @@ import { ErrnoCode } from '../../shared/errnoCode'
 import { ErrorText } from '../../shared/errorText'
 import { JsonNumber } from '../../shared/jsonNumber'
 import { JsonShape } from '../../shared/jsonShape'
-import type { SessionCreateSpec, SessionNotifyCause, SessionNotifyDto, SessionNotifyEventDto } from '../sessionManagerApi.types'
+import { AutomationStates } from '../automationStates'
+import type { AutomationState, SessionCreateSpec, SessionNotifyCause, SessionNotifyDto, SessionNotifyEventDto } from '../sessionManagerApi.types'
 import type { NotifyObservation, NotifySource, PendingNotify } from './sessionNotifier'
 
 export type SessionNotifySpec = NonNullable<SessionCreateSpec['notify']>
@@ -23,8 +24,11 @@ export interface SessionNotifyRecord {
   target: string
   text: string
   onGroups: string[]
+  /** Bot states whose entry wakes the target; optional on read, so a 3.23 file loads as none. */
+  onStates: AutomationState[]
   seenLife: NotifyObservation['life']
   seenGroup: string | null
+  seenState: AutomationState | null
   endedAt: number | null
   events: SessionNotifyEvent[]
 }
@@ -68,8 +72,8 @@ export class SessionNotifyStore implements NotifySource {
     await this.serialized(async () => {
       if (this.records.has(sessionId)) return
       await this.write({
-        sessionId, target: spec.sessionId, text: spec.text, onGroups: [...spec.onGroups],
-        seenLife: 'live', seenGroup: null, endedAt: null, events: [],
+        sessionId, target: spec.sessionId, text: spec.text, onGroups: [...spec.onGroups], onStates: [...spec.onStates ?? []],
+        seenLife: 'live', seenGroup: null, seenState: null, endedAt: null, events: [],
       })
     })
   }
@@ -92,7 +96,8 @@ export class SessionNotifyStore implements NotifySource {
     await this.load()
     return this.serialized(async () => {
       const record = this.records.get(sessionId)
-      if (record === undefined || (record.seenLife === seen.life && record.seenGroup === seen.group)) return []
+      if (record === undefined || (record.seenLife === seen.life && record.seenGroup === seen.group
+        && record.seenState === seen.state)) return []
       const causes: SessionNotifyCause[] = []
       let endedAt: number | null
       if (seen.life === 'gone') {
@@ -102,8 +107,11 @@ export class SessionNotifyStore implements NotifySource {
       else throw new Error(`Unknown observed life: ${JSON.stringify(seen.life satisfies never)}`)
       if (seen.group !== record.seenGroup && seen.group !== null && record.onGroups.includes(seen.group))
         causes.push(`group:${seen.group}`)
+      // Entry only: a repeated write, a note-only write or a REPAINT keeps the state and wakes nobody.
+      if (seen.state !== record.seenState && seen.state !== null && record.onStates.includes(seen.state))
+        causes.push(`state:${seen.state}`)
       await this.write({
-        ...record, seenLife: seen.life, seenGroup: seen.group, endedAt,
+        ...record, seenLife: seen.life, seenGroup: seen.group, seenState: seen.state, endedAt,
         events: [...record.events, ...causes.map((cause): SessionNotifyEvent => ({
           id: randomUUID(), cause, at, state: 'pending', attempts: 0, settledAt: null,
         }))],
@@ -139,6 +147,7 @@ export class SessionNotifyStore implements NotifySource {
     return this.watched().filter((record) => filter.sessionId === undefined || record.sessionId === filter.sessionId)
       .map((record) => ({
         sessionId: record.sessionId, target: record.target, text: record.text, onGroups: record.onGroups,
+        onStates: record.onStates,
         events: record.events.map(({ cause, at, state, attempts, settledAt }) => ({ cause, at, state, attempts, settledAt })),
       }))
   }
@@ -185,6 +194,8 @@ export class SessionNotifyStore implements NotifySource {
     if (record === null || record.sessionId !== sessionId
       || typeof record.target !== 'string' || typeof record.text !== 'string'
       || !Array.isArray(record.onGroups) || !record.onGroups.every((group) => typeof group === 'string')
+      || (record.onStates !== undefined && (!Array.isArray(record.onStates) || !record.onStates.every(AutomationStates.isState)))
+      || (record.seenState !== undefined && record.seenState !== null && !AutomationStates.isState(record.seenState))
       || (record.seenGroup !== null && typeof record.seenGroup !== 'string')) return null
     if (record.seenLife === 'live') {
       if (record.endedAt !== null) return null
@@ -193,13 +204,18 @@ export class SessionNotifyStore implements NotifySource {
     } else return null
     if (!Array.isArray(record.events) || !record.events.every(SessionNotifyStore.isEvent)) return null
     if (new Set(record.events.map((event) => event.id)).size !== record.events.length) return null
-    return record as unknown as SessionNotifyRecord
+    return {
+      ...record as unknown as SessionNotifyRecord,
+      onStates: (record.onStates ?? []) as AutomationState[],
+      seenState: (record.seenState ?? null) as AutomationState | null,
+    }
   }
 
   private static isEvent(value: unknown): value is SessionNotifyEvent {
     const event = JsonShape.record(value)
     if (event === null || typeof event.id !== 'string' || !SessionNotifyStore.plainIdConst.test(event.id)
-      || typeof event.cause !== 'string' || (event.cause !== 'ended' && !/^group:.+$/.test(event.cause))
+      || typeof event.cause !== 'string' || (event.cause !== 'ended' && !/^group:.+$/.test(event.cause)
+        && !(event.cause.startsWith('state:') && AutomationStates.isState(event.cause.slice('state:'.length))))
       || !JsonNumber.isFinite(event.at) || JsonNumber.wholeCount(event.attempts) === null) return false
     if (event.state === 'pending') return event.settledAt === null
     else if (event.state === 'delivered' || event.state === 'expired') return JsonNumber.isFinite(event.settledAt)

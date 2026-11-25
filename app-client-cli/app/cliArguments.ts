@@ -77,12 +77,14 @@ export class CliArguments {
         '--notify-session',
         '--notify-text',
         '--notify-on-group',
+        '--notify-on-state',
         '--parent-session',
         '--parent-kind',
         '--base-ref',
         '--title',
         '--number',
         '--color',
+        '--automation-state',
         '--group',
         '--flow-id',
         '--acknowledge-setup',
@@ -200,6 +202,18 @@ export class CliArguments {
         CliArguments.remoteComputerOptionConst,
       ],
       flags: [],
+      mutation: true,
+    },
+    /* A bot's state of the session, drawn as a chip; `--clear` takes it away and keeps the note. */
+    'sessions automation': {
+      options: [
+        '--session-id',
+        '--number',
+        '--working-directory',
+        '--state',
+        CliArguments.remoteComputerOptionConst,
+      ],
+      flags: ['--clear', '--self'],
       mutation: true,
     },
     /*

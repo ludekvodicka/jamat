@@ -99,6 +99,8 @@ export class SnapinsUiScenario {
       const sessions = async () => (await ui!.bridge<any>(`window.appClient.control.call('sessions.list', {})`)).value.sessions as any[]
       const session = async (id: string) => (await sessions()).find((row) => row.sessionId === id)
       const group = async (id: string) => (await ui!.bridge<any[]>(`window.appClient.state.loadSessionGroups()`)).find((row) => row.key.endsWith(id))?.group
+      const chip = async (id: string) => ui!.evaluate<string | null>(
+        `document.querySelector('[data-session="${id}"] > .jamat-sessions__row .jamat-sessions__automation')?.getAttribute('data-automation') ?? null`)
       const event = async (attemptId: string) => {
         const detail = join(root, 'detail.md'); await writeFile(detail, 'Disposable worker ready for review')
         await run(process.execPath, repo, ['--import', 'tsx', join(repo, 'app-client-cli/start.ts'), 'snapins', 'pass', 'event',
@@ -141,7 +143,9 @@ export class SnapinsUiScenario {
       const first = (await state()).attempts[0]!
       await RemoteUiScenarios.until(async () => (await session(first.sessionId!))?.activity === 'idle', 'First fixture worker idle')
       const live = await session(first.sessionId!)
-      assert.equal(await group(first.sessionId!), 'automation'); assert.equal(live.color, 'cyan')
+      assert.equal(live.automationState, 'working'); assert.equal(live.color, 'cyan')
+      await RemoteUiScenarios.until(async () => await chip(first.sessionId!) === 'working', 'Worker row shows the auto chip')
+      assert.equal(await group(first.sessionId!), undefined, 'A snap-in worker stays under its project, in no section')
       assert.equal(live.worktree.branch, `${pathToFileURL(repository).href}/Scratch`)
       assert.equal(dirname(dirname(live.worktree.worktreePath)), owner)
       await assert.rejects(access(join(live.worktree.worktreePath, 'Other')), 'Collection worker excludes sibling application')
@@ -150,7 +154,10 @@ export class SnapinsUiScenario {
       await event(first.attemptId)
       await RemoteUiScenarios.until(async () => (await state()).attempts[0]?.phase === 'review', 'Ready event waits for human review')
       await RemoteUiScenarios.until(async () => (await session(first.sessionId!))?.note === 'Waits for your review: Finish or commit', 'Review note shown')
-      assert.equal(await group(first.sessionId!), 'waiting')
+      await RemoteUiScenarios.until(async () => await chip(first.sessionId!) === 'waiting', 'Review wait shows the wait chip')
+      assert.equal((await session(first.sessionId!)).automationState, 'waiting')
+      assert.equal((await session(first.sessionId!)).color, 'cyan', 'A state write keeps the row color')
+      assert.equal(await group(first.sessionId!), undefined)
       const tree = live.worktree.worktreePath
       await run('svn', tree, ['move', '.aidocs/review-todos/900-pending-p2-scratch.md', '.aidocs/review-todos/900-complete-p2-scratch.md'])
       await writeFile(join(tree, '.aidocs/review-todos/900-complete-p2-scratch.md'), '---\nstatus: complete\npriority: p2\n---\nCompleted fixture\n')
@@ -162,7 +169,7 @@ export class SnapinsUiScenario {
       await RemoteUiScenarios.until(async () => (await state()).attempts[0]?.phase === 'completed', 'One approval immediately after typing completes the task')
       assert.equal((await state()).attempts[0]?.phase, 'completed', 'Published completed filename settles the attempt')
       const done = await session(first.sessionId!)
-      if (done) { assert.equal(await group(first.sessionId!), 'completed'); assert.equal(done.note, 'Done') }
+      if (done) { assert.equal(done.automationState, 'completed'); assert.equal(done.note, 'Done'); assert.equal(await group(first.sessionId!), undefined) }
       assert.equal((await run('svn', owner, ['log', '--xml', '-r', '1:HEAD'])).match(/<logentry/g)?.length, 2)
       console.log('[smoke:ui] limit admits one collection WT; ready event waits; reviewed Finish publication completes the source task')
       await menu('Review todos', 'Tools')

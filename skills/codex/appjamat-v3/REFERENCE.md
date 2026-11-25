@@ -183,10 +183,10 @@ command that starts with the words before it (`sessions --help`).
 | Projects | `projects list [--category-id ID] [--sort alpha\|recent]` |
 | Sessions | `sessions list` |
 | Transcript history | `sessions transcript <session selector> [--working-directory PATH]` |
-| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--number LABEL] [--color NAME] [--group ID] [--open-tab]` |
+| Create shell | `sessions create [--directory PATH \| --category-id ID --project-path PATH] [--title TEXT] [--number LABEL] [--color NAME] [--automation-state STATE] [--group ID] [--open-tab]` |
 | Create agent | `sessions create --agent claude\|codex\|antigravity [--mode new\|continue\|resume\|fork] [--native-session-id ID] [--fork-parent-id ID] [--prompt TEXT] [--model ID] [--effort LEVEL]` plus directory/title options; see Agent, model and effort below. `--native-session-id` belongs to `--mode resume`, or to a Claude `new`/`fork`; a Codex `new`/`fork` carrying it is refused as `invalid-spec`. A `--prompt` that runs a skill starts with its selector (Deliver an inter-session message). |
 | Worktree session | Add `--worktree SLUG [--worktree-tag TAG] [--worktree-notify-session ID --worktree-notify-text TEXT]`; see Worktree sessions below |
-| Notify another session | Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]]` to `sessions create`; read with `sessions notifies [--session-id ID]` |
+| Notify another session | Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]] [--notify-on-state STATE[,STATE...]]` to `sessions create`; read with `sessions notifies [--session-id ID]` |
 | Session parent | Add `--parent-session ID --parent-kind worktree\|ticket\|worker` to `sessions create`; read with `sessions children --session-id ID`; see Session parent below |
 | Reopen/finalize | `sessions reopen\|finalize <session selector> [--working-directory PATH]`; `finalize` also takes `--expect stop` and `--acknowledge-setup HASH` |
 | Read a session's worktree | `sessions worktree <session selector>\|--self [--working-directory PATH]` |
@@ -202,6 +202,7 @@ command that starts with the words before it (`sessions --help`).
 | Run a command as a child of a session | `sessions scripts run <session selector>\|--self --command TEXT [--cwd DIR] [--title TEXT] [--wait [--timeout-ms N]]` |
 | Recolour, refile | `sessions color <session selector> --color NAME`, `sessions group <session selector> --group ID` |
 | Read, write, clear the note | `sessions note <session selector>\|--self` reads; `--note TEXT` writes; `--clear` takes it away |
+| Bot state chip | `sessions automation <session selector>\|--self --state working\|waiting\|blocked\|completed`, or `--clear` |
 | Tabs | `tabs list`, `tabs open <session selector>`, `tabs open-file <session selector>\|--self --path PATH`, `tabs focus\|close --panel-id ID` |
 | Project todo list | `todos list <session selector>\|--self\|--project DIR [--query TEXT] [--category NAME] [--color NAME] [--author USER] [--open\|--done]`; `todos add ... --title TEXT [--category NAME] [--comment TEXT] [--color NAME]`; `todos edit ... --id ID [--title] [--category] [--comment] [--color]`; colours `red orange amber green teal blue violet magenta`, `""` for none; `todos done\|reopen\|remove\|restore ... --id ID` (`restore` puts back a task removed through Jamat since it started); `todos open <session selector>\|--self [--sidebar]` (split item, or the File Tools tab with `--sidebar`). Operations `projectTodos.list\|apply\|open`; file `<project>/.aidocs/todolist.jsonl` |
 | Review a commit | `commit-svn-jamat` or `commit-git-jamat`, with `--self` or `<session selector>`, optionally `--path PATH` or `--paths-file FILE`, and `--message TEXT` or `--message-file FILE` |
@@ -268,17 +269,21 @@ conversation) and `terminal deliver` (pasted input; `proof` is usually `echo`) l
 
 ### Session notify
 
-Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]]` to a local
-`sessions create`, with or without a worktree. The session and text flags are required together;
-the optional comma list names at most eight group ids. TEXT is one non-empty line of at most 800
+Add `--notify-session ID --notify-text TEXT [--notify-on-group ID[,ID...]] [--notify-on-state STATE[,STATE...]]`
+to a local `sessions create`, with or without a worktree. The session and text flags are required
+together; the optional group list names at most eight group ids, and the state list names bot states
+(`working`, `waiting`, `blocked`, `completed`). TEXT is one non-empty line of at most 800
 characters, without control characters. The target must be a local agent session with a composer.
 Both create with a notify and `sessions notifies` are local-only; `--computer` is refused.
 
 AppJamatV3 observes the created session every ten seconds. It records `ended` when the session is
 ended, lost or missing, including an end found after a client restart. It records `group:<id>`
 when the effective group changes to a named group, including its first observation there. A
-person's drag and `sessions group` both count; the caller supplies group ids, not group names or
-automation states. An unchanged group records nothing. Moves between observations cannot be
+person's drag and `sessions group` both count; the caller supplies group ids, not group names. It
+records `state:<state>` when the session's bot state changes into a named state: writing the state
+the session already has wakes nobody. `--notify-on-state` needs `sessions.automation` on the
+controller, or the CLI answers `unavailable` (exit 6). An unchanged group
+or state records nothing. Moves between observations cannot be
 recovered. Reopening records no end, but a later end records a new event.
 
 The text is typed only into an empty composer. A draft, dialog or temporarily unavailable target
@@ -726,6 +731,31 @@ node <wrapper> sessions note --number 014 --clear
 the session is waiting for, what blocks it, or what it needs next - never what it has already done.
 A session that is simply working needs no note.
 
+### The bot state
+
+`sessions automation` writes the state automation reports about its own session. The row shows it as
+an outlined chip left of the agent and worktree marks: `working` is `auto`, `waiting` is `wait`,
+`blocked` is `block`, `completed` is `done`, and hovering the chip shows the note. The state never
+moves the session to another section and never changes its colour; the session stays under its
+project and parent.
+
+```bash
+node <wrapper> sessions automation --self --state waiting
+node <wrapper> sessions automation --number 014 --state blocked
+node <wrapper> sessions automation --session-id <uuid> --clear
+```
+
+The answer is `{ "sessionId", "automationState" }`, with `null` after `--clear`. Writing the state the
+session already has changes nothing and wakes no subscriber. `--clear` removes the chip and keeps the
+note. Any other state, or `--state` together with `--clear`, is refused as `invalid-request` before
+discovery. `--automation-state STATE` on `sessions create` gives a new session its state at birth,
+so a worker never shows without its chip; a fork starts without one.
+
+**Older AppJamatV3.** Both need the `sessions.automation` capability of the selected controller, or
+of the `--computer` source. Without it the CLI answers `unavailable` (exit 6) naming
+`sessions.automation` and sends nothing, also when the create carries other options that build does
+take.
+
 `--title` is the session's NAME, not its whole title. A session created in a catalog project is
 numbered by the computer that keeps that project's count: the number is prefixed as `NNN - `, and
 that is the number `--number` then selects it by. A title that already begins with `NNN` or
@@ -759,19 +789,18 @@ matches both answers `conflict` with the candidates. Add `--working-directory PA
 it in the Groups submenu.
 
 **The sections are a list the person at that computer edits**, in Settings under Session groups, so
-there is no fixed set of names to choose from. A fresh install has `pinned`, `priority`, `none`,
-`automation`, `waiting`, `completed` and `blocked`. An id must be lowercase letters, digits and
-single hyphens; anything else is refused before the request is sent. An id the target has no section
-for is refused as `invalid-request` by the target, and the message lists the sections it does have -
-read it rather than guessing again.
+there is no fixed set of names to choose from. A fresh install has `pinned`, `priority` and `none`.
+An id must be lowercase letters, digits and single hyphens; anything else is refused before the
+request is sent. An id the target has no section for is refused as `invalid-request` by the target,
+and the message lists the sections it does have - read it rather than guessing again.
 
-Use `automation` for work you start on somebody's behalf: on a default install it is the section
-directly under Sessions and it keeps a wave of agent-started sessions out of the list a person reads
-as their own. The group is written on the computer that RUNS the session, so with `--computer` it
-appears in that computer's tree and is proved against ITS sections. The create value carries
-`groupAssign`: `null` when no group was asked for, otherwise an `ok` step, or a failure of that step
-alone inside a create that succeeded. Do not send it with `--computer` to a machine whose build
-predates the option, which refuses the whole create.
+A bot's state is not a section: give work you start on somebody's behalf
+`--automation-state working` (and `--color`), and the row shows the chip in its own project. The
+group is written on the computer that RUNS the session, so with `--computer` it appears in that
+computer's tree and is proved against ITS sections. The create value carries `groupAssign`:
+`null` when no group was asked for, otherwise an `ok` step, or a failure of that step alone inside
+a create that succeeded. Do not send it with `--computer` to a machine whose build predates the
+option, which refuses the whole create.
 
 `--color NAME` paints the session at birth, so it is never drawn uncoloured first. The names are
 `red`, `orange`, `amber`, `green`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `magenta`,
@@ -801,9 +830,10 @@ session that has no worktree first. A run row or a shell session answers
 `sessions color` and `sessions group` say those same two things about a session that already exists.
 Each NAMES the value rather than toggling it, so sending one twice changes nothing, and each requires
 the name: there is no form meaning "leave it alone", and there is no way to take a colour off again.
-Use them when a session changes what it is waiting for - a worker that has finished its automatic
-work and now needs a person belongs in `waiting`, painted to match - because a row still carrying
-what the session was born as says the wrong thing about it. Both are mutations and accept
+Use them when a session moves to another of the person's sections, or changes colour, because a row
+still carrying what the session was born as says the wrong thing about it. A worker that has finished
+its automatic work and now needs a person changes its bot state instead (`sessions automation
+--state waiting`). Both are mutations and accept
 `--operation-id`. Over `--computer` the write lands on the computer that RUNS the session, and a
 machine whose build predates them refuses the request; nothing is half applied.
 

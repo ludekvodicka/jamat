@@ -49,6 +49,7 @@ import type {
   SessionRecordWorktreeCaller,
 } from '../records/sessionRecord.types'
 import { SessionColors } from '../sessionColors'
+import { AutomationStates } from '../automationStates'
 import { WorkerHandoffs } from '../notifies/workerHandoffs'
 import { SessionLimits } from '../sessionLimits'
 import { SessionOutcomes } from '../records/sessionOutcomes'
@@ -58,6 +59,7 @@ import { SessionScriptDefinitions, type SessionScriptGate } from '../scripts/ses
 import type { SessionScriptsManager } from '../scripts/sessionScriptsManager'
 import type {
   SessionAgentId,
+  AutomationState,
   SessionColorName,
   SessionCommitReceipt,
   SessionCreateOrigin,
@@ -1472,6 +1474,34 @@ export class SessionLifecycle {
   }
 
   /**
+   * A bot's state of this session, or none with `null` (D13: clearing keeps the note). Colour, note
+   * and section stay as they are. `changed` says whether the record moved, so a repeated write
+   * costs no revision and no broadcast.
+   */
+  async setAutomationState(
+    sessionId: string,
+    state: AutomationState | null,
+  ): Promise<SessionsOpResult<{ changed: boolean }>> {
+    if (state !== null && !AutomationStates.isState(state))
+      return {
+        ok: false,
+        code: 'invalid-spec',
+        detail: `${JSON.stringify(state)} is not an automation state`,
+      }
+    const record = this.records.get(sessionId)
+    if (!record) return OperationOutcomes.notFound(sessionId)
+    if ((AutomationStates.readOf(record.automationState) ?? null) === state) return { ok: true, value: { changed: false } }
+    if (this.records.latched) return OperationOutcomes.latched()
+    if (!await this.records.update(sessionId, (current) => {
+      const next = { ...current }
+      if (state === null) delete next.automationState
+      else next.automationState = state
+      return next
+    })) return OperationOutcomes.latched()
+    return { ok: true, value: { changed: true } }
+  }
+
+  /**
    * The details dialog's Save: whichever of name, note and colour actually moved, merged into ONE
    * record update, so the save is one revision and one broadcast. A field that is absent is not
    * touched - a name-only save must never revert a colour another surface wrote moments earlier -
@@ -2185,6 +2215,7 @@ export class SessionLifecycle {
     if (spec.flowId) record.flowId = spec.flowId
     if (origin) record.callerOperationId = origin.callerOperationId
     if (spec.color) record.color = spec.color
+    if (spec.automationState) record.automationState = spec.automationState
     if (worktree) record.worktree = SessionLifecycle.withCaller(worktree, spec.worktree)
     // Only an SVN worktree has a removal after the end; a Git one keeps its Finish.
     if (worktree?.kind === 'svn' && spec.worktree?.removeWhenEnded === true)
@@ -2329,6 +2360,8 @@ export class SessionLifecycle {
     // about it - the record would keep the word and every reader would quietly filter it away.
     if (spec.color !== undefined && !SessionColors.isName(spec.color))
       return `${JSON.stringify(spec.color)} is not a session colour`
+    if (spec.automationState !== undefined && !AutomationStates.isState(spec.automationState))
+      return `${JSON.stringify(spec.automationState)} is not an automation state`
     if (spec.kind === 'shell') {
       if (spec.agent) return 'a shell session carries no agent'
       // A flow composes a first instruction, and a shell has nobody to give one to. The prompt

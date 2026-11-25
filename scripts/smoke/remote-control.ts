@@ -392,7 +392,7 @@ class SmokeRemoteControl extends SmokeHarness {
       '--color',
       'magenta',
       '--group',
-      'automation',
+      'priority',
       '--operation-id',
       'smoke-create-1',
     ]
@@ -435,7 +435,7 @@ class SmokeRemoteControl extends SmokeHarness {
       groupAssign.ok === true
       && this.groupAssigns.length === 1
       && this.groupAssigns[0]?.key === SmokeRemoteControl.groupKeyOf(sessionId)
-      && this.groupAssigns[0]?.group === 'automation')
+      && this.groupAssigns[0]?.group === 'priority')
     return sessionId
   }
 
@@ -517,22 +517,22 @@ class SmokeRemoteControl extends SmokeHarness {
     const refiled = CliClient.valueOf(
       await this.cli(
         'sessions', 'group', '--session-id', sessionId,
-        '--group', 'waiting', '--operation-id', 'smoke-group-1',
+        '--group', 'pinned', '--operation-id', 'smoke-group-1',
       ),
       'sessions.group',
     )
     this.check('a live session moves to the section a later request names',
       refiled.sessionId === sessionId
-      && refiled.group === 'waiting'
+      && refiled.group === 'pinned'
       && this.groupAssigns.length === 2
       && this.groupAssigns[1]?.key === SmokeRemoteControl.groupKeyOf(sessionId)
-      && this.groupAssigns[1]?.group === 'waiting')
+      && this.groupAssigns[1]?.group === 'pinned')
 
     const listed = CliClient.valueOf(await this.cli('sessions', 'list'), 'sessions.list')
     this.check('sessions list reads back the assigned group',
       CliClient.array(listed.sessions, 'sessions').some((entry) => {
         const session = CliClient.object(entry, 'session')
-        return session.sessionId === sessionId && session.group === 'waiting'
+        return session.sessionId === sessionId && session.group === 'pinned'
       }))
 
     /*
@@ -586,7 +586,7 @@ class SmokeRemoteControl extends SmokeHarness {
       missing.ok === false
       && missing.error?.code === 'invalid-request'
       && String(missing.error?.detail).includes('invented-yesterday')
-      && String(missing.error?.detail).includes('automation')
+      && String(missing.error?.detail).includes('priority')
       && this.groupAssigns.length === 2)
 
     const malformed = await this.cliFailure(2, 'sessions', 'group', '--session-id', sessionId, '--group', 'Not An Id')
@@ -930,6 +930,7 @@ class SmokeRemoteControl extends SmokeHarness {
       scriptsOf: (parentId, runId) => this.manager.scriptsOf(parentId, runId),
       clearActions: sessionId => this.manager.clearActions(sessionId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),
+      setAutomationState: (sessionId, state) => this.manager.setAutomationState(sessionId, state),
       setSessionDetails: (sessionId, update) => this.manager.setSessionDetails(sessionId, update),
     }
   }

@@ -99,7 +99,16 @@ function render() {
         button.title = session.tabTitle;
         const detail = document.createElement('small');
         detail.textContent = `${session.agent?.agentId || 'Terminal'} · ${ComputerTree.status(session)}`;
-        button.append(label, detail);
+        button.append(label);
+        if (node.automation !== null) {
+          const chip = document.createElement('span');
+          chip.className = 'automation';
+          chip.dataset.automation = node.automation.state;
+          chip.textContent = node.automation.text;
+          chip.title = node.automation.title;
+          button.append(chip);
+        }
+        button.append(detail);
         button.addEventListener('click', () => openSession(session));
         li.append(button);
         if (node.children.length) li.append(list(node.children));

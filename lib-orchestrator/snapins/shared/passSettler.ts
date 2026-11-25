@@ -63,7 +63,7 @@ export class PassSettler {
     }
     let stored = store.current.attempts.find((a) => a.attemptId === attemptId)
     if (!stored) return guard.open(definition.kind)
-    if (guard.open(definition.kind) && !stopped()) await this.options.presentation?.apply(definition.kind, stored, guard, context.log)
+    if (guard.open(definition.kind) && !stopped()) await this.options.presentation?.apply(definition.kind, stored, guard)
     stored = store.current.attempts.find((a) => a.attemptId === attemptId)
     if (!stored) return guard.open(definition.kind)
     if (stored.phase === 'completed' && stored.resultsSettled !== true && guard.open(definition.kind) && !stopped())

@@ -173,6 +173,7 @@ import { SkillLinkInstaller } from './skills/skillLinkInstaller'
 import type { ScriptRunCollapsed } from '../../lib-orchestrator/clientApi/scriptRunHandOff.types'
 import { TabControlBroker } from './tabs/tabControlBroker'
 import { TabFileOpenResolver } from './tabs/tabFileOpenResolver'
+import { AutomationGroupsCleanup } from './sessionGroups/automationGroupsCleanup'
 import { RemoteSessionGroups } from './sessionGroups/remoteSessionGroups'
 import { SessionGroupsOperations } from './sessionGroups/sessionGroupsOperations'
 import { SessionGroupsSection } from './sessionGroups/sessionGroupsSection'
@@ -221,6 +222,7 @@ export class OrchestratorHub {
   private readonly hostConnection: FedHostConnection
   private hostConnectionDebug: HostConnectionSnapshot['debug'] | null
   private readonly sessionGroups: RemoteSessionGroups
+  private readonly automationGroupsCleanup: AutomationGroupsCleanup
   private readonly tabRequestsIpc: ServiceTabRequestsIpc
   private readonly tabControlBroker: TabControlBroker
   private readonly projects: ProjectManager
@@ -715,6 +717,12 @@ export class OrchestratorHub {
       this.shell.sessionGroups,
       () => this.broadcast('state:session-groups-changed'),
     )
+    this.automationGroupsCleanup = new AutomationGroupsCleanup({
+      assignments: this.shell.sessionGroups,
+      sections: sessionGroupsOperations,
+      log: (message) => console.log(message),
+      report: (message) => this.report(message),
+    })
     this.snapins = new SnapinsManager({ definitions: BuiltInSnapins.all({ clientBuild: build,
       directories: [OrchestratorPaths.clientPerfDirectory(configIdentity, channel), HostDescriptorPaths.perfDirectory(configIdentity, channel)],
       hostProcess: () => {
@@ -726,7 +734,7 @@ export class OrchestratorHub {
         projects: this.projects, tabs: this.tabControlBroker,
         versioningMode: () => configStore.readSection(VersioningSettingsSection.spec).mode }),
       settings: () => configStore.readSection(SnapinsSettingsSection.spec),
-      presentation: SnapinsPorts.presentation({ groups: sessionGroups, groupsOperations: sessionGroupsOperations, sessions: this.sessions }),
+      presentation: SnapinsPorts.presentation({ sessions: this.sessions }),
       directory: OrchestratorPaths.snapinsDirectory(configIdentity, channel),
       onChanged: (kind) => this.broadcast('snapins:changed', { kind }), report: (message) => this.report(message),
     })
@@ -824,6 +832,7 @@ export class OrchestratorHub {
       now: Date.now, onLogged: () => this.broadcast('usage:callers-changed'), onReported: () => this.broadcast('usage:changed'),
       onError: message => this.report(message) })
     this.antigravityLogins = new AntigravityLogins({
+      keyring: AntigravityLogins.windowsKeyring(join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-keyring')),
       accountFile: antigravityAccountFile,
       quotaFile: join(OrchestratorPaths.directory(configIdentity, channel), 'antigravity-login-quotas.json'),
       runningSessionCount: () => this.sessions.snapshot().sessions.filter(session =>
@@ -1246,6 +1255,8 @@ export class OrchestratorHub {
     this.sessionNotifier.start()
     this.limitRecovery.start()
     this.snapins.wake()
+    // Reports its own failure; the next start tries again.
+    void this.automationGroupsCleanup.start()
     void this.callerLog.prune(Date.now()).catch(error => this.report(`Caller log prune failed: ${ErrorText.of(error)}`))
   }
 
