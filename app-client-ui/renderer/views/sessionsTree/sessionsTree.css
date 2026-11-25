@@ -464,10 +464,10 @@
   overflow: visible;
 }
 
-/* A running Finish says so on its row; it gives way after the name, never first (Finish 072). */
+/* Running actions are a short chip left of the bot chip, so they never push the bot chip and the
+   A and WT columns out of line; the section summary stays in its tooltip. */
 .jamat-sessions__row > .jamat-sessions__finish--running {
-  flex-shrink: 1;
-  min-width: max-content;
+  flex: none;
   cursor: pointer;
 }
 
@@ -569,8 +569,8 @@
   width: 2.2em;
   font-size: var(--fs-chip);
 }
-/* Outlined and text only: automation's mark, never confused with the row's own filled pills. */
-.jamat-sessions__automation {
+/* Outlined and text only: automation's mark and running actions, never confused with the row's own filled pills. */
+:is(.jamat-sessions__automation, .jamat-sessions__finish--running) {
   padding: 0 var(--space-1);
   font-size: var(--fs-chip);
   line-height: 1.3;

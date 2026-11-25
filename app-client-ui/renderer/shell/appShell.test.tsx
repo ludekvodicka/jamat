@@ -2114,7 +2114,7 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     expect([...row.querySelectorAll('button.jamat-sessions__action')].map((button) => button.textContent)).toEqual([])
     const mark = row.querySelector('.jamat-sessions__finish--running')
     if (!(mark instanceof HTMLElement)) throw new Error('The row drew no running mark')
-    expect(mark).toMatchObject({ textContent: 'actions running', title: 'Committing r814' })
+    expect(mark).toMatchObject({ textContent: 'actions', title: 'Committing r814' })
     expect(mark.getAttribute('role')).toBe('button')
     fireEvent.click(mark)
     await waitFor(() => expect(opened).toHaveLength(1))

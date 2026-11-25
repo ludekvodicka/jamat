@@ -864,7 +864,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
 
     expect(lookup(local.nodes, 'session:s-install')).toBeNull()
     expect(primary.step).toBeNull()
-    expect(primary.actionsMark).toEqual({ text: 'actions running', title: 'Installing', waiting: false })
+    expect(primary.actionsMark).toEqual({ text: 'actions', title: 'Installing', waiting: false })
   })
 
   it('gives a succeeded badge and the history no terminal to open, and the badge its saved log', () => {

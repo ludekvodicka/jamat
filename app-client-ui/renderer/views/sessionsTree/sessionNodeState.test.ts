@@ -62,7 +62,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
     expect(SessionNodeState.actionsMarkOf({ sections: [review, run] }))
       .toEqual({ text: 'Ready for validation', title: review.summary, waiting: true })
     expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }, run] }))
-      .toEqual({ text: 'actions running', title: 'Dev server', waiting: false })
+      .toEqual({ text: 'actions', title: 'Dev server', waiting: false })
     expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }] })).toBeNull()
   })
   type Life = SessionInfo['life']

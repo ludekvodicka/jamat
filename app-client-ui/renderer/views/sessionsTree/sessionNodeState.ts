@@ -323,7 +323,7 @@ export class SessionNodeState {
     const waiting = open.findLast((section) => section.rounds.some((round) => round.steps.some((step) => step.state === 'waits')))
     const section = waiting ?? open.at(-1)
     if (section === undefined) return null
-    return { text: waiting ? section.badge || 'actions waiting' : 'actions running', title: section.summary, waiting: waiting !== undefined }
+    return { text: waiting ? section.badge || 'actions waiting' : 'actions', title: section.summary, waiting: waiting !== undefined }
   }
 
   /**
