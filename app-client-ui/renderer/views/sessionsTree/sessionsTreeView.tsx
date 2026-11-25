@@ -1833,7 +1833,8 @@ function SessionRow(props: {
             endedReason={node.endedReason}
           />
         )}
-        {node.actionsMark !== undefined && <span className={`jamat-sessions__finish${node.actionsMark.waiting ? '' : ' jamat-sessions__finish--running'}`}
+        {node.actionsMark !== undefined && <span className={`jamat-sessions__finish jamat-sessions__actions-chip ${node.actionsMark.waiting
+          ? 'jamat-sessions__actions-chip--waiting' : 'jamat-sessions__finish--running'}`}
           title={node.actionsMark.title} {...WorkflowMarks.propsOf(node.target.kind === 'local' && !node.actionsMark.waiting
             ? () => WorkflowPortsOf.openWorkflow(node.sessionId) : null)}>
           {node.actionsMark.text}</span>}

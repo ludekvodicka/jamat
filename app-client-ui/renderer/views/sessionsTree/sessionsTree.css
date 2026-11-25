@@ -456,19 +456,13 @@
   text-overflow: ellipsis;
 }
 
-/* The bot chip and the agent and worktree slots never give way: a long name once hid both marks,
-   and the slots are what keeps `A` and `WT` in one column across rows (D4). The title's 8em floor
-   still keeps the name from vanishing beside them. */
-.jamat-sessions__row > :is(.jamat-sessions__automation, .jamat-sessions__agent-slot, .jamat-sessions__worktree-slot) {
+/* The actions and bot chips and the agent and worktree slots never give way: a long name once hid
+   both marks, and the slots are what keeps `A` and `WT` in one column across rows (D4). The actions
+   chip is one short word (`actions`, `ready`), so it never pushes the others out of line. The
+   title's 8em floor still keeps the name from vanishing beside them. */
+.jamat-sessions__row > :is(.jamat-sessions__actions-chip, .jamat-sessions__automation, .jamat-sessions__agent-slot, .jamat-sessions__worktree-slot) {
   flex: none;
   overflow: visible;
-}
-
-/* Running actions are a short chip left of the bot chip, so they never push the bot chip and the
-   A and WT columns out of line; the section summary stays in its tooltip. */
-.jamat-sessions__row > .jamat-sessions__finish--running {
-  flex: none;
-  cursor: pointer;
 }
 
 /* Before the hover and disabled rules, so a pointed-at or inert name still reads as theirs. */
@@ -569,8 +563,8 @@
   width: 2.2em;
   font-size: var(--fs-chip);
 }
-/* Outlined and text only: automation's mark and running actions, never confused with the row's own filled pills. */
-:is(.jamat-sessions__automation, .jamat-sessions__finish--running) {
+/* Outlined and text only: the bot state and the actions chip, never confused with the row's own filled pills. */
+:is(.jamat-sessions__automation, .jamat-sessions__actions-chip) {
   padding: 0 var(--space-1);
   font-size: var(--fs-chip);
   line-height: 1.3;
@@ -675,6 +669,9 @@ button.jamat-sessions__script:hover {
 .jamat-sessions__finish[role='button'] {
   cursor: pointer;
 }
+.jamat-sessions__finish.jamat-sessions__actions-chip--waiting {
+  color: var(--color-attention);
+}
 .jamat-sessions__finish[role='button']:hover {
   text-decoration: underline;
 }
@@ -742,6 +739,11 @@ button.jamat-sessions__script:hover {
 .jamat-sessions__row:hover .jamat-sessions__exit,
 .jamat-sessions__row:has(:focus-visible) .jamat-sessions__exit,
 .jamat-sessions__row--confirming .jamat-sessions__exit {
+  display: none;
+}
+/* The fixed chips and slots go too, or a narrow tree clips the last button ("Fini"). A waiting
+   actions chip has Open actions among the buttons; a running one is the only way in, so it stays. */
+.jamat-sessions__row:is(:hover, :has(:focus-visible), .jamat-sessions__row--confirming) > :is(.jamat-sessions__automation, .jamat-sessions__actions-chip--waiting, .jamat-sessions__agent-slot, .jamat-sessions__worktree-slot) {
   display: none;
 }
 .jamat-sessions__action {

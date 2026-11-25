@@ -19,7 +19,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
     const actions: SessionInfo['actions'] = { sections: [{ kind: 'before', workflowId: 'setup:s1', title: 'Setup', badge: '',
       summary: 'Approve commands', open: true, actions: [], rounds: [{ title: 'Setup', steps: [{ key: 'agree', title: 'Agree',
         state: 'waits', detail: '', startedAt: null, endedAt: null, target: { kind: 'none' } }] }] }] }
-    expect(SessionNodeState.actionsMarkOf(actions)).toEqual({ text: 'actions waiting', title: 'Approve commands', waiting: true })
+    expect(SessionNodeState.actionsMarkOf(actions)).toEqual({ text: 'ready', title: 'Approve commands', waiting: true })
     expect(SessionNodeState.opensWorkflow({ actions }, 'local')).toBe(true)
     expect(SessionNodeState.opensWorkflow({ actions }, 'remote')).toBe(false)
   })
@@ -60,7 +60,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionNodeState', () => {
       rounds: [{ title: 'Run', steps: [{ key: 'dev', title: 'Dev server', state: 'running', detail: '', startedAt: 1,
         endedAt: null, target: { kind: 'run', runId: 'dev' } }] }] }
     expect(SessionNodeState.actionsMarkOf({ sections: [review, run] }))
-      .toEqual({ text: 'Ready for validation', title: review.summary, waiting: true })
+      .toEqual({ text: 'ready', title: `Ready for validation: ${review.summary}`, waiting: true })
     expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }, run] }))
       .toEqual({ text: 'actions', title: 'Dev server', waiting: false })
     expect(SessionNodeState.actionsMarkOf({ sections: [{ ...review, open: false }] })).toBeNull()

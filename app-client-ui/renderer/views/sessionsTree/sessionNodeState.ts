@@ -317,13 +317,17 @@ export class SessionNodeState {
     }
   }
 
-  /** `waiting`: a step waits for the person; otherwise the open sections run on by themselves. */
+  /**
+   * `waiting`: a step waits for the person; otherwise the open sections run on by themselves. The row
+   * draws a short chip, `ready` or `actions`; the section's own badge and summary go to its tooltip.
+   */
   static actionsMarkOf(actions: SessionInfo['actions']): { text: string; title: string; waiting: boolean } | null {
     const open = actions?.sections.filter((section) => section.open) ?? []
     const waiting = open.findLast((section) => section.rounds.some((round) => round.steps.some((step) => step.state === 'waits')))
     const section = waiting ?? open.at(-1)
     if (section === undefined) return null
-    return { text: waiting ? section.badge || 'actions waiting' : 'actions', title: section.summary, waiting: waiting !== undefined }
+    if (waiting === undefined) return { text: 'actions', title: section.summary, waiting: false }
+    return { text: 'ready', title: [section.badge, section.summary].filter((part) => part !== '').join(': '), waiting: true }
   }
 
   /**
