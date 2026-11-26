@@ -467,6 +467,30 @@ describe('Session actions panel routing', () => {
     expect(activatePanel).toHaveBeenCalledTimes(2)
   })
 
+  it('opens processes in a local tab, focuses it again without duplicating, excludes it from openTaskKeys, and refuses foreign or remote tabs', async () => {
+    let params: Record<string, unknown> = { sessionId: 'session' }
+    const activatePanel = vi.fn()
+    const controller = {
+      keyOf: () => 'terminal', activatePanel, focusPanelContent: vi.fn(),
+      openPanels: () => [{ panelId: 'panel', key: 'terminal', title: 'Session', params }],
+      applyPanelParameters: (_id: string, merge: (value: Record<string, unknown>) => Record<string, unknown>) => {
+        params = merge(params)
+        return true
+      },
+    } as unknown as TabsController
+    const command = { kind: 'open-processes', requestId: 'one', panelId: 'panel', sessionId: 'session' } as const
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toEqual({ kind: 'processes-opened', panelId: 'panel' })
+    expect(PanelSplitParams.of(params).items).toEqual([PanelSplitParams.processesItemOf('session')])
+    expect([...WorkspacePanels.openTaskKeys(controller)]).toEqual([])
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toEqual({ kind: 'processes-opened', panelId: 'panel' })
+    expect(PanelSplitParams.of(params).items).toEqual([PanelSplitParams.processesItemOf('session')])
+    expect(await WorkspacePanels.tabControlResult(controller, { ...command, sessionId: 'other' }))
+      .toEqual({ kind: 'failed', detail: 'The session terminal target has changed' })
+    params = { target }
+    expect(await WorkspacePanels.tabControlResult(controller, command)).toMatchObject({ kind: 'failed' })
+    expect(activatePanel).toHaveBeenCalledTimes(2)
+  })
+
   it('opens the qualified workflow in the owning window and refuses a foreign target', async () => {
     let params: Record<string, unknown> = { target }
     const activatePanel = vi.fn()

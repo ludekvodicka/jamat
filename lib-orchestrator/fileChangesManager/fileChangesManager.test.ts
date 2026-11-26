@@ -1,12 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { PathCompare } from '../shared/pathCompare'
 import { FileDiffComputer } from './diff/fileDiffComputer'
+import type { FileChangesLogGroup } from './logs/fileChangesLogSource.types'
 import type { FileChangesVcs } from './vcs/fileChangesVcs.types'
 import { FileChangesManager } from './fileChangesManager'
+import { sessionMutationExtractor } from './sessionMutationsView'
 import { FileChangesWorkingTreeSources } from './working/fileChangesWorkingTreeSources'
 
 describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
@@ -154,6 +157,88 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
     expect(await instance.sessionChanges(context, 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: ['src/scripted.ts', 'abs.ts'] } })
   })
 
+  describe('sessionChanges with a claims port', () => {
+    const entryOf = (root: string, name: string) => ({ absolutePath: join(root, name), repositoryPath: name, nodeKind: 'file' as const,
+      status: 'modified' as const, previousAbsolutePath: null, previousRepositoryPath: null, gitState: null })
+    const mutationOf = (root: string, name: string) => ({ mutationId: name, kind: 'update' as const, status: 'modified' as const,
+      path: join(root, name), previousPath: null, location: 'workspace' as const, beforeContent: null, afterContent: null,
+      oldText: null, newText: null, replaceAll: false, unifiedDiff: null, createdAt: 1 })
+    /** The status lists `listed`; the transcript names `logged`. */
+    const instanceOf = (root: string, listed: readonly string[], logged: readonly string[]) => new FileChangesManager({
+      diffExecutor: new FileDiffComputer(),
+      vcsAdapters: [{ ...vcs(root), id: 'svn', async status() {
+        return { ok: true, value: { externalRoots: [], entries: listed.map((name) => entryOf(root, name)) } }
+      } }],
+      transcriptResolver: { async resolve(input) { return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, file: 'x', mtimeMs: 0, size: 0 } },
+        async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'codex', subagentsSince: () => null, async shellRuns() { return [] }, async load() {
+        return [{ groupId: 'g', message: 'm', createdAt: 1, mutations: logged.map((name) => mutationOf(root, name)) }]
+      } }],
+    })
+    const contextOf = (root: string) => ({ sessionId: 'session', cwd: root, agent: { agentId: 'codex' as const, nativeSessionId: 'native' } })
+
+    it('reports a claimed path the status lists and not one it does not list', async () => {
+      const root = cwd()
+      const instance = instanceOf(root, ['claimed.ts', 'foreign.ts', 'logged.ts'], ['logged.ts'])
+      const claims = { claims: async () => ({ touched: [join(root, 'claimed.ts'), join(root, 'committed.ts')], shellRuns: [] }) }
+      expect(await instance.sessionChanges(contextOf(root), 'svn', claims)).toEqual({ ok: true, value: { vcs: 'svn', paths: ['claimed.ts'] } })
+    })
+
+    it('reads the transcript as without a port when the port answers null', async () => {
+      const root = cwd()
+      const instance = instanceOf(root, ['own.ts', 'foreign.ts'], ['own.ts', 'reverted.ts'])
+      const today = await instance.sessionChanges(contextOf(root), 'svn')
+      expect(today).toEqual({ ok: true, value: { vcs: 'svn', paths: ['own.ts'] } })
+      expect(await instance.sessionChanges(contextOf(root), 'svn', { claims: async () => null })).toEqual(today)
+    })
+
+    it('leaves out a path whose claim ended although another session dirtied it since', async () => {
+      const root = cwd()
+      // The transcript still names `shared.ts`; its claim ended when it was committed after that
+      // write, so the port's open claims no longer hold it, while the status shows another session's edit.
+      const instance = instanceOf(root, ['shared.ts', 'own.ts'], ['shared.ts', 'own.ts'])
+      expect(await instance.sessionChanges(contextOf(root), 'svn')).toEqual({ ok: true, value: { vcs: 'svn', paths: ['shared.ts', 'own.ts'] } })
+      const claims = { claims: async () => ({ touched: [join(root, 'own.ts')], shellRuns: [] }) }
+      expect(await instance.sessionChanges(contextOf(root), 'svn', claims)).toEqual({ ok: true, value: { vcs: 'svn', paths: ['own.ts'] } })
+    })
+
+    it('counts an edit more than 32 MiB back in a transcript through the claims, which the transcript read misses', async () => {
+      const root = cwd()
+      const transcript = join(root, 'native.jsonl')
+      const at = (offset: number) => new Date(1_754_400_000_000 + offset).toISOString()
+      const prompt = (text: string, offset: number) => JSON.stringify({ type: 'user', uuid: `u-${text}`, timestamp: at(offset), message: { content: text } })
+      const edit = (id: string, name: string, offset: number) => [
+        JSON.stringify({ type: 'assistant', timestamp: at(offset), message: { content: [
+          { type: 'tool_use', id, name: 'Edit', input: { file_path: join(root, name), old_string: 'a', new_string: 'b' } }] } }),
+        JSON.stringify({ type: 'user', timestamp: at(offset), message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } }),
+      ].join('\n')
+      const filler = JSON.stringify({ type: 'assistant', timestamp: at(2_000), message: { content: [{ type: 'text', text: 'x'.repeat(65_536) }] } })
+      writeFileSync(transcript, `${prompt('early', 0)}\n${edit('e1', 'early.ts', 1_000)}\n`, 'utf8')
+      for (let written = 0; written < 33 * 1_048_576; written += filler.length + 1)
+        writeFileSync(transcript, `${filler}\n`, { encoding: 'utf8', flag: 'a' })
+      writeFileSync(transcript, `${prompt('late', 3_000)}\n${edit('e2', 'late.ts', 4_000)}\n`, { encoding: 'utf8', flag: 'a' })
+      expect(statSync(transcript).size).toBeGreaterThan(33 * 1_048_576)
+      const instance = new FileChangesManager({
+        diffExecutor: new FileDiffComputer(),
+        vcsAdapters: [{ ...vcs(root), id: 'svn', async status() {
+          return { ok: true, value: { externalRoots: [], entries: ['early.ts', 'late.ts'].map((name) => entryOf(root, name)) } }
+        } }],
+        transcriptResolver: { async resolve(input) {
+          const stats = statSync(transcript)
+          return { agentId: input.agentId, nativeSessionId: input.nativeSessionId, file: transcript, mtimeMs: stats.mtimeMs, size: stats.size }
+        }, async subagentFiles() { return [] } },
+      })
+      const context = { sessionId: 'session', cwd: root, agent: { agentId: 'claude' as const, nativeSessionId: 'native' } }
+      expect(await instance.sessionChanges(context, 'svn', { claims: async () => null })).toEqual({ ok: true, value: { vcs: 'svn', paths: ['late.ts'] } })
+      // The claims port reads the whole transcript with the extractor the worker's cursor uses.
+      const extractor = sessionMutationExtractor('claude', 'session')
+      extractor.push(readFileSync(transcript, 'utf8').split('\n').filter((line) => line.length > 0))
+      const batch = extractor.drain()
+      const claims = { claims: async () => ({ touched: batch.mutations.map((mutation) => mutation.path), shellRuns: batch.shellRuns }) }
+      expect(await instance.sessionChanges(context, 'svn', claims)).toEqual({ ok: true, value: { vcs: 'svn', paths: ['early.ts', 'late.ts'] } })
+    })
+  })
+
   it('lists sub-agents from the log source\'s start and files their edits under the spawning message', async () => {
     const root = cwd()
     const fixture = (name: string) => {
@@ -289,6 +374,27 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
       fileId: 'not-issued',
       baselineId: listed.value.defaultBaseline!.baselineId,
     })).toEqual(expect.objectContaining({ ok: false, code: 'unknown-file' }))
+  })
+
+  it('hands each successful SVN status of a poll to the observer once, and no Git status', async () => {
+    const root = cwd()
+    const observed: { root: string; entries: readonly { absolutePath: string; nodeKind: string }[] }[] = []
+    const svn: FileChangesVcs = { ...vcs(root), id: 'svn' }
+    const options = {
+      diffExecutor: new FileDiffComputer(),
+      transcriptResolver: { async resolve() { return null }, async subagentFiles() { return [] } },
+      logReaders: [{ agentId: 'codex' as const, subagentsSince: () => null, async shellRuns() { return [] }, async load() { return [] } }],
+      statusObserved: (observedRoot: string, entries: readonly { absolutePath: string; nodeKind: string }[]) =>
+        observed.push({ root: observedRoot, entries }),
+    }
+    const context = { sessionId: 'session', cwd: root, agent: null }
+
+    const polled = await new FileChangesManager({ ...options, vcsAdapters: [svn] }).list(context, { preferredVcs: 'svn' })
+    expect(polled.ok).toBe(true)
+    expect(observed).toEqual([{ root, entries: [{ absolutePath: join(root, 'file.ts'), nodeKind: 'file' }] }])
+
+    await new FileChangesManager({ ...options, vcsAdapters: [vcs(root)] }).list(context)
+    expect(observed).toHaveLength(1)
   })
 
   it('stores current-only source entries in the same file-access and diff runtime', async () => {
@@ -536,5 +642,39 @@ describe('lib-orchestrator/fileChangesManager/fileChangesManager', () => {
         hunks: [expect.objectContaining({ beforeLines: 2, afterLines: 0 })],
       }),
     }))
+  })
+
+  it('resolves chained renames across history groups in one backwards O(M) pass', () => {
+    const mutationOf = (
+      mutationId: string,
+      kind: 'write' | 'move',
+      status: 'added' | 'renamed',
+      path: string,
+      previousPath: string | null,
+    ): FileChangesLogGroup['mutations'][number] => ({
+      mutationId,
+      kind,
+      status,
+      path,
+      previousPath,
+      location: 'workspace',
+      beforeContent: null,
+      afterContent: null,
+      oldText: null,
+      newText: null,
+      replaceAll: false,
+      unifiedDiff: null,
+      createdAt: 1,
+    })
+    const groups: FileChangesLogGroup[] = [
+      { groupId: 'g0', message: 'create', createdAt: 1, mutations: [mutationOf('m0', 'write', 'added', 'Q:/w/a.ts', null)] },
+      { groupId: 'g1', message: 'rename 1', createdAt: 2, mutations: [mutationOf('m1', 'move', 'renamed', 'Q:/w/b.ts', 'Q:/w/a.ts')] },
+      { groupId: 'g2', message: 'rename 2', createdAt: 3, mutations: [mutationOf('m2', 'move', 'renamed', 'Q:/w/c.ts', 'Q:/w/b.ts')] },
+    ]
+    const maps = FileChangesManager.latestPathsAfterGroups(groups, 0)
+    expect(maps).toHaveLength(3)
+    expect(maps[0]?.get(PathCompare.comparable('Q:/w/a.ts'))).toBe('Q:/w/c.ts')
+    expect(maps[1]?.get(PathCompare.comparable('Q:/w/b.ts'))).toBe('Q:/w/c.ts')
+    expect(maps[2]?.size).toBe(0)
   })
 })

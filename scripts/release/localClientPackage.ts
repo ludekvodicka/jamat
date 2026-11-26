@@ -185,7 +185,7 @@ export class LocalClientPackage {
       join(directory, 'resources', 'host', 'start.cjs'),
       join(directory, 'resources', 'codex', 'start.cjs'),
       join(directory, 'resources', 'gateway', 'start.cjs'),
-      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => join(directory, 'resources', 'orchestrator', name + '.cjs')),
+      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker', 'sessionUncommittedWorker'].map(name => join(directory, 'resources', 'orchestrator', name + '.cjs')),
       join(directory, 'resources', 'cli', 'jamat-v3.cjs'),
       ...['claude', 'codex', 'antigravity'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => join(directory, 'resources', 'skills', agent, skill, 'SKILL.md'))),

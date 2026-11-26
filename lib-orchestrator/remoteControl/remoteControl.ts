@@ -29,6 +29,7 @@ import type {
   SessionHistoryReference,
   SessionInfo,
   SessionScriptRequest,
+  SessionScriptStart,
   SessionScriptsReading,
   SessionSetupAgreement,
   SessionsOpErrorCode,
@@ -149,8 +150,10 @@ export interface RemoteControlSessionsPort {
     : Promise<SessionsOpResult<{ sessionId: string; outcome: import('../sessionManager/sessionManagerApi.types').SessionMainFinishOutcome }>>
   /** Ends a Finish that has published nothing yet; the worktree and its worker go on. */
   backToWork(sessionId: string, requestedBy: SessionFinishPress['requestedBy'], confirmStoppedRunId?: string): Promise<SessionsOpResult<{ sessionId: string; actionId: string | null }>>
-  /** A requested run: a shell command for a running session, as its child. */
-  runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>>
+  /** A requested run or service: a shell command for a running session, as its child. */
+  runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>>
+  /** Stop one running inner run of this session. */
+  stopScriptRun(parentId: string, runId: string): Promise<SessionsOpResult>
   scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>>
   clearActions(sessionId: string): Promise<SessionsOpResult>
   /**
@@ -610,14 +613,24 @@ export class RemoteControl {
       if (!read.ok) return RemoteControl.sessionError(read)
       return RemoteControl.success({ ...read.value, logContentUntrusted: true })
     })
-    bySession('sessions.runScript', 'Run a shell command for a running session as its child, judged by its exit code.', async (session, body) => {
+    bySession('sessions.runScript', 'Run a shell command for a running session as its child, judged by its exit code or as a service.', async (session, body) => {
       const started = await this.deps.sessions.runScript(session.sessionId, {
         command: body.command,
         ...(body.cwd === undefined ? {} : { cwd: body.cwd }),
         ...(body.title === undefined ? {} : { title: body.title }),
+        ...(body.kind === undefined ? {} : { kind: body.kind }),
       })
       if (!started.ok) return RemoteControl.sessionError(started)
-      return RemoteControl.success({ sessionId: session.sessionId, runId: started.value.runId })
+      return RemoteControl.success({
+        sessionId: session.sessionId,
+        runId: started.value.runId,
+        ...(body.kind === 'service' ? { reused: started.value.reused } : {}),
+      })
+    })
+    bySession('sessions.stopScript', 'Stop one running inner run of this session.', async (session, body) => {
+      const stopped = await this.deps.sessions.stopScriptRun(session.sessionId, body.runId)
+      if (!stopped.ok) return RemoteControl.sessionError(stopped)
+      return RemoteControl.success({ sessionId: session.sessionId, runId: body.runId })
     })
     bySession('sessions.color', "Paint the session's row with a colour of the palette.", async (session, body) => {
       const result = await this.deps.sessions.setSessionColor(session.sessionId, body.color)

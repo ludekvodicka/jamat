@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UsagePanel } from './usagePanel'
 
@@ -48,6 +48,12 @@ describe('UsagePanel', () => {
     expect(screen.getByText('×5')).toBeTruthy()
     expect(await screen.findByText('0.7%/h')).toBeTruthy()
     expect(screen.getByText('in 1d 22h')).toBeTruthy()
+    expect(screen.getByText('Runs out').closest('.jamat-usage__tile')).toHaveAttribute(
+      'title', `Runs out before the next reset (${new Date(series.poolEmptyAt).toLocaleString()})`,
+    )
+    expect(screen.getByText('Next reset').closest('.jamat-usage__tile')).toHaveAttribute(
+      'title', new Date(series.nextReset.at).toLocaleString(),
+    )
     expect(screen.getByText(/Work · in 1d 6h/)).toBeTruthy()
     expect(screen.getByText(/Main · in 3d 22h · \+100%/)).toBeTruthy()
     expect(screen.getByText('estimate, 2h old')).toBeTruthy()
@@ -56,6 +62,16 @@ describe('UsagePanel', () => {
     expect(screen.queryByRole('region', { name: 'Codex quota' })).toBeNull()
   })
 
+  it('reads nothing while its tab is hidden and reads once when it is shown', async () => {
+    let shown: ((event: { isVisible: boolean }) => void) | null = null
+    const api = { isVisible: false, onDidVisibilityChange: (listener: (event: { isVisible: boolean }) => void) => { shown = listener; return { dispose: () => { shown = null } } } }
+    render(<UsagePanel api={api as never} />)
+    await act(async () => { await Promise.resolve() })
+    expect(read).not.toHaveBeenCalled()
+    act(() => shown?.({ isVisible: true }))
+    expect(await screen.findByText('85%')).toBeTruthy()
+    expect(read.mock.calls.filter(([operation]) => operation === 'usage.get')).toHaveLength(1)
+  })
   it('leaves out figures it has no reading for', async () => {
     render(<UsagePanel />)
     await screen.findByText('0.7%/h')

@@ -77,6 +77,8 @@ export class Reconciler {
     clientStartedAt = 0,
     /** The SVN actions a drive of this process holds now. */
     held: ReadonlySet<string> = new Set(),
+    /** Parents inside a restart, whose services stay running until reopen settles. */
+    heldParents: ReadonlySet<string> = new Set(),
   ): ReconcileChange[] {
     // Unreachable is NOT lost. Without an answer the records keep saying what they last knew, and
     // nothing is relabelled: a client that cannot see the Host has learnt nothing about a session.
@@ -169,7 +171,7 @@ export class Reconciler {
     }
     // After the live loop, so a run is settled from the record a previous pass marked ended: the
     // exit code is on it by then, and the Host still holds the dead runtime the log is read from.
-    changes.push(...ScriptRunPlanning.changes(records, new Set(live.keys())))
+    changes.push(...ScriptRunPlanning.changes(records, new Set(live.keys()), heldParents))
     const known = new Set(records.map((record) => record.sessionId))
     for (const session of listing.sessions)
       if (session.alive && !known.has(session.runtimeSessionId))

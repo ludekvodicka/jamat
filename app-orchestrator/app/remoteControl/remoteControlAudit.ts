@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, renameSync, statSync } from 'node:fs'
+import { appendFile, mkdir, rename, stat } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 import type {
@@ -15,8 +16,16 @@ export class RemoteControlAudit {
   /** One generation kept beside the live file. Two files, bounded, is what a log like this needs. */
   private static readonly rotateBytesConst = 8_388_608
   private static readonly flushDelayMillisecondsConst = 50
+  /** High-frequency local read-only polling ops excluded from routine audit writes. */
+  private static readonly skippedLocalOpsConst = new Set([
+    'tabs.commitStatus',
+    'tabs.list',
+    'system.hello',
+    'sessions.list',
+  ])
   private readonly pending: string[] = []
   private flushTimer: ReturnType<typeof setTimeout> | null = null
+  private inflight: Promise<void> | null = null
   private bytes: number | null = null
 
   private readonly file: string
@@ -83,6 +92,12 @@ export class RemoteControlAudit {
     caller: RemoteControlAuditCaller,
     targetPrefix?: Record<string, unknown>,
   ): void {
+    if ((transport === 'http' || transport === 'http-local')
+      && caller.callerKind === 'local-cli'
+      && response.ok
+      && response.operation !== null
+      && RemoteControlAudit.skippedLocalOpsConst.has(response.operation))
+      return
     this.append(RemoteControlAuditRows.control(this.now(), transport, request, response, caller, targetPrefix))
   }
 
@@ -95,31 +110,56 @@ export class RemoteControlAudit {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
-    this.appendPending()
+    this.appendPendingSync()
   }
 
   /**
-   * Queued, not written. `terminal.input` audits one row per KEYSTROKE, and each row used to be an
-   * `appendFileSync` on the Electron main thread - the one that also draws the window. The rows
-   * still leave in order and within 50 ms; a stop flushes what is left by hand.
+   * Queued, not written. `terminal.input` audits one row per KEYSTROKE, and routine batches flush
+   * asynchronously off the event loop; `flush()` remains synchronous for shutdown.
    */
   append(record: RemoteControlAuditEntry): void {
     this.pending.push(JSON.stringify(record) + '\n')
     if (this.flushTimer !== null) return
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null
-      this.appendPending()
+      this.startAsyncFlush()
     }, RemoteControlAudit.flushDelayMillisecondsConst)
     this.flushTimer.unref?.()
   }
 
-  private appendPending(): void {
+  private startAsyncFlush(): void {
+    if (this.inflight !== null || this.pending.length === 0) return
+    const run = this.drainAsync().finally(() => {
+      if (this.inflight === run) this.inflight = null
+      if (this.pending.length > 0 && this.flushTimer === null) this.startAsyncFlush()
+    })
+    this.inflight = run
+  }
+
+  private async drainAsync(): Promise<void> {
+    while (this.pending.length > 0) {
+      const batch = this.pending.splice(0).join('')
+      const size = Buffer.byteLength(batch)
+      try {
+        await mkdir(dirname(this.file), { recursive: true })
+        await this.rotateAsync(size)
+        await appendFile(this.file, batch, { encoding: 'utf8', mode: 0o600 })
+        this.bytes = (this.bytes ?? 0) + size
+      } catch (error) {
+        try {
+          this.onError(`Remote control audit write failed: ${ErrorText.of(error)}`)
+        } catch {}
+      }
+    }
+  }
+
+  private appendPendingSync(): void {
     if (this.pending.length === 0) return
     const batch = this.pending.splice(0).join('')
     const size = Buffer.byteLength(batch)
     try {
       AtomicJsonFile.ensureDirectory(dirname(this.file))
-      this.rotate(size)
+      this.rotateSync(size)
       appendFileSync(this.file, batch, { encoding: 'utf8', mode: 0o600 })
       this.bytes = (this.bytes ?? 0) + size
     } catch (error) {
@@ -129,17 +169,30 @@ export class RemoteControlAudit {
     }
   }
 
-  private rotate(incoming: number): void {
-    if (this.bytes === null) this.bytes = RemoteControlAudit.sizeOf(this.file)
+  private rotateSync(incoming: number): void {
+    if (this.bytes === null) this.bytes = RemoteControlAudit.sizeOfSync(this.file)
     if (this.bytes + incoming <= RemoteControlAudit.rotateBytesConst) return
-    this.bytes = RemoteControlAudit.sizeOf(this.file)
+    this.bytes = RemoteControlAudit.sizeOfSync(this.file)
     if (this.bytes + incoming <= RemoteControlAudit.rotateBytesConst) return
     renameSync(this.file, `${this.file}.1`)
     this.bytes = 0
   }
 
-  private static sizeOf(file: string): number {
+  private async rotateAsync(incoming: number): Promise<void> {
+    if (this.bytes === null) this.bytes = await RemoteControlAudit.sizeOfAsync(this.file)
+    if (this.bytes + incoming <= RemoteControlAudit.rotateBytesConst) return
+    this.bytes = await RemoteControlAudit.sizeOfAsync(this.file)
+    if (this.bytes + incoming <= RemoteControlAudit.rotateBytesConst) return
+    await rename(this.file, `${this.file}.1`)
+    this.bytes = 0
+  }
+
+  private static sizeOfSync(file: string): number {
     return existsSync(file) ? statSync(file).size : 0
   }
 
+  private static async sizeOfAsync(file: string): Promise<number> {
+    try { return (await stat(file)).size }
+    catch { return 0 }
+  }
 }

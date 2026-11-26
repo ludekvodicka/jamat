@@ -3,7 +3,7 @@ import { worktreeRepositoryReviewSchema } from '../sessionManager/worktreeReview
 
 const id = z.string().min(1).max(256)
 const revision = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-const selection = z.strictObject({ snapshotId: id, fileIds: z.array(id).max(2_000) })
+const selection = z.strictObject({ snapshotId: id, fileIds: z.array(id).max(5_000) })
 const base = { draftId: id, epoch: id, expectedRevision: revision }
 const edit = z.strictObject({ ...base, repositoryMessage: z.strictObject({ root: z.string().min(1).max(32768), message: z.string().max(100000) }).optional(), messageSource: z.literal('restored-draft').optional(), message: z.string().max(16_384).optional(), selection: selection.optional() })
 const decision = z.discriminatedUnion('kind', [
@@ -13,7 +13,7 @@ const decision = z.discriminatedUnion('kind', [
     reviewVersion: revision.optional(),
       acknowledgedFindings: z.array(z.enum(['empty', 'no-prefix', 'long-first-line', 'chat-opening', 'markdown', 'reused-after-keep'])).max(6).optional(),
       agreement: z.strictObject({ acknowledgeSetup: id.optional(), confirmWorking: z.literal(true).optional(), overrideChecks: z.literal(true).optional() }) }) }),
-  z.strictObject({ ...base, kind: z.literal('approve'), operationId: id, snapshotId: id, fileIds: z.array(id).max(2_000), message: z.string().max(16_384), includeExternals: z.literal(true).optional() }),
+  z.strictObject({ ...base, kind: z.literal('approve'), operationId: id, snapshotId: id, fileIds: z.array(id).max(5_000), message: z.string().max(16_384), includeExternals: z.literal(true).optional() }),
   z.strictObject({ ...base, kind: z.literal('cancel'), operationId: id }),
   z.strictObject({ ...base, kind: z.literal('revert'), operationId: id, ...selection.shape, confirmed: z.literal(true) }),
   z.strictObject({ ...base, kind: z.literal('external-review'), operationId: id, ...selection.shape, message: z.string().max(16_384) }),

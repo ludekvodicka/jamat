@@ -83,7 +83,7 @@ export class ComputerTree {
         switch (session.activity) {
           case 'working': return session.compacting ? 'Zkracuje kontext' : session.activityDetail === 'background' ? 'Pracuje na pozadí' : 'Pracuje';
           case 'waiting': return 'Čeká na odpověď';
-          case 'idle': return session.shellsRunning ? 'Nečinná, běží shell' : 'Nečinná';
+          case 'idle': return session.shellsRunning ? 'Nečinná, běží služba' : 'Nečinná';
           case 'unknown':
           case null: return 'Neznámá aktivita';
           default: throw new Error(`Unknown session activity: ${session.activity}`);

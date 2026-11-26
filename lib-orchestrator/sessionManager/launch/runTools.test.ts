@@ -2,14 +2,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { SvnExecutable } from '../../svn/svnExecutable'
 import { RunTools } from './runTools'
 
 describe('lib-orchestrator/sessionManager/launch/runTools', () => {
   const applicationRoot = resolve(import.meta.dirname, '../../..')
   const roots: string[] = []
-  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+  afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
   function directory(files: readonly string[] = []): string {
     const root = mkdtempSync(join(tmpdir(), 'jamat-v3-run-tools-'))
@@ -29,6 +30,23 @@ describe('lib-orchestrator/sessionManager/launch/runTools', () => {
         environment: { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD', ComSpec: 'C:\\Windows\\system32\\cmd.exe' },
       })
       expect(tools.resolve('svn')).toEqual({ ok: true, command: join(bin, 'svn.exe'), prefixArgs: [], env: { LC_ALL: 'C', LANG: 'C' } })
+    })
+
+    it('uses the cached UTF-8 svn.exe and prepends the original DLL directory to PATH on Windows', () => {
+      const bin = directory(['svn.exe'])
+      vi.spyOn(SvnExecutable, 'prepareWindows').mockReturnValue({
+        command: 'C:\\cache\\svn-utf8.exe', dllDirectory: bin, utf8: true,
+      })
+      const tools = new RunTools({
+        resourcesRoot: null, applicationRoot, platform: 'win32',
+        environment: { Path: `C:\\Windows;${bin}`, PATHEXT: '.EXE' },
+      })
+      expect(tools.resolve('svn')).toEqual({
+        ok: true,
+        command: 'C:\\cache\\svn-utf8.exe',
+        prefixArgs: [],
+        env: { LC_ALL: 'C', LANG: 'C', Path: `${bin};C:\\Windows;${bin}` },
+      })
     })
 
     it('says so when PATH holds no svn.exe, even with a shim of that name', () => {

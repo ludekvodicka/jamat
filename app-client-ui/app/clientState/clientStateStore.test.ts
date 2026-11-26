@@ -855,4 +855,44 @@ describe('app-client-ui/app/clientState/clientStateStore', () => {
     expect(store.loadWindowBounds('main')).toBeNull()
     expect(store.loadLayout('main')).toEqual({ layout: '{"generation":1}', failed: false })
   })
+
+  it('takes recovery snapshots only on structural layout changes, not on active-tab switches or scrollTop updates', () => {
+    const { store, snapshotsDirectory } = fixture()
+    const base = {
+      grid: { root: { type: 'branch', data: [] }, width: 1200, height: 800 },
+      panels: {
+        'terminal:a': { id: 'terminal:a', params: { split: { items: [{ key: 'doc', scrollTop: 0 }], active: 'doc' } } },
+        'terminal:b': { id: 'terminal:b', params: {} },
+      },
+      activeGroup: '1',
+    }
+    store.saveLayout('main', JSON.stringify(base))
+    expect(snapshotNames(snapshotsDirectory)).toHaveLength(0)
+
+    // Active-tab switch and scrollTop update: same panel set -> zero snapshots.
+    store.saveLayout('main', JSON.stringify({ ...base, activeGroup: '2' }))
+    store.saveLayout('main', JSON.stringify({
+      ...base,
+      panels: {
+        ...base.panels,
+        'terminal:a': { id: 'terminal:a', params: { split: { items: [{ key: 'doc', scrollTop: 420 }], active: 'doc' } } },
+      },
+    }))
+    expect(snapshotNames(snapshotsDirectory)).toHaveLength(0)
+
+    // Adding a panel is structural -> 1 snapshot.
+    store.saveLayout('main', JSON.stringify({
+      ...base,
+      panels: { ...base.panels, 'terminal:c': { id: 'terminal:c', params: {} } },
+    }))
+    expect(snapshotNames(snapshotsDirectory)).toHaveLength(1)
+
+    // Removing a panel is structural -> 2 snapshots.
+    store.saveLayout('main', JSON.stringify(base))
+    expect(snapshotNames(snapshotsDirectory)).toHaveLength(2)
+
+    // clearLayout always snapshots -> 3 snapshots.
+    store.clearLayout('main')
+    expect(snapshotNames(snapshotsDirectory)).toHaveLength(3)
+  })
 })

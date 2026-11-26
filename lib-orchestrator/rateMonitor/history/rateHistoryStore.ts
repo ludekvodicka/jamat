@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, unlink } from 'node:fs/promises'
+import { appendFile, mkdir, open, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { JsonShape } from '../../shared/jsonShape'
 import { RateMonitorCacheStore } from '../cache/rateMonitorCacheStore'
@@ -6,9 +6,17 @@ import type { RateSample, RateWindow } from '../rateMonitorApi.types'
 
 export type { RateSample } from '../rateMonitorApi.types'
 
+interface ParsedMonth { mtimeMs: number; size: number; consumed: number; samples: readonly RateSample[] }
+
+/**
+ * Monthly append-only JSONL files. Each file's parsed samples stay in memory, and a file that grew is
+ * read only from its last complete line: every `usage.history` used to read and parse every month in
+ * range again (4 MB on the orchestrator's main thread, in 6 of 10 CPU profiles on 2026-11-25).
+ */
 export class RateHistoryStore {
   private readonly directory: string
   private readonly last = new Map<string, RateSample>()
+  private readonly parsed = new Map<string, ParsedMonth>()
   private queue: Promise<void> = Promise.resolve()
 
   constructor(directory: string) { this.directory = directory }
@@ -53,19 +61,58 @@ export class RateHistoryStore {
 
   private async readFiles(range: { from: number; to: number }): Promise<readonly RateSample[]> {
     const samples: RateSample[] = []
-    for (const file of await this.files()) {
+    const files = await this.files()
+    for (const file of [...this.parsed.keys()]) if (!files.includes(file)) this.parsed.delete(file)
+    for (const file of files) {
       const start = Date.parse(`${file.slice(0, 7)}-01T00:00:00Z`)
       const date = new Date(start)
       const end = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1)
       if (end <= range.from || start > range.to) continue
-      const text = await readFile(join(this.directory, file), 'utf8')
-      for (const line of text.split('\n')) {
-        let sample: RateSample | null
-        try { sample = RateHistoryStore.sampleOf(JSON.parse(line)) } catch { continue }
-        if (sample && sample.at >= range.from && sample.at <= range.to) samples.push(sample)
-      }
+      for (const sample of await this.month(file))
+        if (sample.at >= range.from && sample.at <= range.to) samples.push(sample)
     }
     return samples.sort((a, b) => a.at - b.at)
+  }
+
+  private async month(file: string): Promise<readonly RateSample[]> {
+    const path = join(this.directory, file)
+    let info: { mtimeMs: number; size: number }
+    try { info = await stat(path) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      this.parsed.delete(file)
+      return []
+    }
+    let cached = this.parsed.get(file)
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.samples
+    // Only an append keeps what was parsed; a shorter or older file is read again from its start.
+    if (!cached || info.size < cached.consumed || info.mtimeMs < cached.mtimeMs) cached = { mtimeMs: 0, size: 0, consumed: 0, samples: [] }
+    const bytes = await RateHistoryStore.readFrom(path, cached.consumed, info.size)
+    // A tail without its newline is a write in progress or a crashed append; it is read once complete.
+    const complete = bytes.lastIndexOf(0x0a) + 1
+    const samples = [...cached.samples]
+    for (const line of bytes.subarray(0, complete).toString('utf8').split('\n')) {
+      let sample: RateSample | null
+      try { sample = RateHistoryStore.sampleOf(JSON.parse(line)) } catch { continue }
+      if (sample) samples.push(sample)
+    }
+    this.parsed.set(file, { mtimeMs: info.mtimeMs, size: info.size, consumed: cached.consumed + complete, samples })
+    return samples
+  }
+
+  private static async readFrom(path: string, from: number, to: number): Promise<Buffer> {
+    if (to <= from) return Buffer.alloc(0)
+    const handle = await open(path, 'r')
+    try {
+      const buffer = Buffer.alloc(to - from)
+      let filled = 0
+      while (filled < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, filled, buffer.length - filled, from + filled)
+        if (bytesRead === 0) break
+        filled += bytesRead
+      }
+      return buffer.subarray(0, filled)
+    } finally { await handle.close() }
   }
 
   async prune(now: number): Promise<void> {
@@ -93,8 +140,8 @@ export class RateHistoryStore {
     // A crashed append can leave a partial JSON value; separate the next record from that tail.
     let prefix = ''
     try {
-      const existing = await readFile(file, 'utf8')
-      if (existing.length > 0 && !existing.endsWith('\n')) prefix = '\n'
+      const size = (await stat(file)).size
+      if (size > 0 && (await RateHistoryStore.readFrom(file, size - 1, size))[0] !== 0x0a) prefix = '\n'
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     await appendFile(file, prefix + JSON.stringify(sample) + '\n', 'utf8')
     if (!previous || sample.at >= previous.at) this.last.set(key, sample)

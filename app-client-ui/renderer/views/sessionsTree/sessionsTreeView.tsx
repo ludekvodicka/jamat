@@ -45,6 +45,7 @@ import { type SessionsTabsView, SessionsViewState } from '../../../shared/sessio
 import { SessionsFilterState, type SessionsFilterValue } from '../../../shared/sessionsFilterState'
 import { type TerminalTarget, TerminalTargetCodec } from '../../../shared/terminalTarget'
 import type { CommandRegistry } from '../../commands/commandRegistry'
+import { SessionCommandRun } from '../../commands/sessionCommandRun'
 import { IpcFailure } from '../../ipc/ipcFailure'
 import { AppControl } from '../../ipc/appControl'
 import type { SnapshotStore } from '../../ipc/snapshotStore'
@@ -75,6 +76,7 @@ import { FinalizeAwait, type FinalizeAwaited } from './finalizeAwait'
 import { type QuestionRevealTree, SessionsQuestionReveal } from './sessionsQuestionReveal'
 import { SessionRowTooltip, useSessionRowTooltip } from './sessionRowTooltip'
 import { SessionStepRow } from './sessionStepRow'
+import { ElapsedText } from './elapsedText'
 import { SessionTaskRows } from './sessionTaskRows'
 import { SessionsTreeActionButton } from './sessionsTreeActionButton'
 import { SessionsTreeGroupLabel } from './sessionsTreeGroupLabel'
@@ -111,6 +113,7 @@ import {
 import { useSessionsSnapshot, useSnapshotStore } from './useSessionsSnapshot'
 import { useSessionStateFlash } from './useSessionStateFlash'
 import { CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
+import { UncommittedStore, useUncommittedSessions } from '../../versioning/uncommittedStore'
 import { SessionsFilterMenu } from './sessionsFilterMenu'
 import { SessionsSavedFilters } from './sessionsSavedFilters'
 import { useSavedSessionsFilters, type SavedSessionsFiltersPorts } from './useSavedSessionsFilters'
@@ -176,6 +179,8 @@ export interface SessionsTreeViewProps extends SidebarViewProps {
    */
   marks: SessionsMarksStore
   commitOpen: CommitOpenStore
+  /** The grey `*` of local sessions; the shell starts its reader. */
+  uncommitted: UncommittedStore
   /** The shell owns polling; the tree reports the local sessions it draws. */
   tasks: SessionTasksStore
   remoteTasks?: Pick<RemoteSessionTasksStore, 'current' | 'subscribe' | 'setDrawn'>
@@ -325,6 +330,7 @@ interface SessionsTreeChrome {
   request(node: SessionTreeNode, action: SessionAction, chosen?: boolean): void
   launch(intent: LauncherIntent): void
   openTask(target: TerminalTarget, task: TabControlTaskRef, title: string): void
+  openProcesses(sessionId: string): void
   openActions(node: SessionTreeNode): void
   supportsActions(target: TerminalTarget): boolean
   openTerminal(target: TerminalTarget, tabTitle: string, intent: SessionOpenIntent): void
@@ -370,7 +376,15 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
   )
   const marks = marksView.marks
   const localCommitOpen = useCommitOpen(props.commitOpen)
-  const commitOpen = useMemo(() => CommitOpenStore.withRemote(localCommitOpen, remoteSnapshot), [localCommitOpen, remoteSnapshot])
+  const commitOpenRef = useRef<ReadonlySet<string>>(localCommitOpen)
+  const commitOpen = useMemo(() => {
+    const next = CommitOpenStore.withRemote(localCommitOpen, remoteSnapshot)
+    if (CommitOpenStore.sameIds(commitOpenRef.current, next)) return commitOpenRef.current
+    commitOpenRef.current = next
+    return next
+  }, [localCommitOpen, remoteSnapshot])
+  const localUncommitted = useUncommittedSessions(props.uncommitted)
+  const uncommitted = useMemo(() => UncommittedStore.withRemote(localUncommitted, remoteSnapshot), [localUncommitted, remoteSnapshot])
   const taskListings = useSyncExternalStore(
     useCallback((listener) => props.tasks.subscribe(listener), [props.tasks]),
     useCallback(() => props.tasks.current(), [props.tasks]),
@@ -469,6 +483,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       undefined,
       commitOpen,
       taskListings,
+      uncommitted,
     )
     const remote = (stateGroup?: TreeStateGroup, group: SessionGroup = 'none'): RemoteSessionsSections | null => remoteSnapshot === null
       ? null
@@ -476,7 +491,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
           remoteSnapshot, snapshot,
           { filters, filterText, now, inFront: visibleTargetKeys, tabbed: tabbedTargetKeys, stateGroup,
             assignments, group, nesting, openTaskKeys },
-          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)), remoteTaskListings, commitOpen,
+          marks, cursors.current.remoteOf(cursorOf(stateGroup, group)), remoteTaskListings, commitOpen, uncommitted,
         )
     /*
      * A section nothing is assigned to is not built. Every revision used to build all four of them
@@ -498,7 +513,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
       })) }
     else
       throw new Error(`Unknown sessions view: ${JSON.stringify(view)}`)
-  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, assignments, groupState.shownWhenRemote, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
+  }, [snapshot, remoteSnapshot, filters, filterText, marks, view, visibleTargetKeys, tabbedTargetKeys, commitOpen, uncommitted, assignments, groupState.shownWhenRemote, sections, taskListings, remoteTaskListings, nesting, openTaskKeys, expiryRevision])
 
   useEffect(() => {
     if (trees === null) return
@@ -1045,6 +1060,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     request,
     launch: onLaunch,
     openTask: props.onOpenTask,
+    openProcesses: (sessionId) => SessionCommandRun.at(props.commands, 'session.showProcesses', sessionId),
     openActions: (node) => {
       if (props.onOpenSessionActions) props.onOpenSessionActions(node.target, node.tabTitle)
       else onOpenTerminal(node.target, node.tabTitle, 'permanent')
@@ -1083,7 +1099,7 @@ export function SessionsTreeView(props: SessionsTreeViewProps): React.JSX.Elemen
     },
   }), [
     pending, collapsed, activeTargetKey, inFlight, awaitingAsk,
-    toggle, request, onLaunch, onOpenTerminal, props.onOpenTask, props.onOpenSessionActions, openMenu, openGroupMenu, openRemoteMenu,
+    toggle, request, onLaunch, onOpenTerminal, props.onOpenTask, props.commands, props.onOpenSessionActions, openMenu, openGroupMenu, openRemoteMenu,
     onOpenSettings, remotePorts, remoteSnapshot, onCloseTerminal,
     groupState.ready, groupState.saving, groupState.assign, groupState.showWhenRemote, groupState.shownWhenRemote, sections,
   ])
@@ -1754,8 +1770,24 @@ function SessionRow(props: {
   const flash = useSessionStateFlash(node.glyph)
   const tooltip = useSessionRowTooltip()
   const finishedRuns = node.scriptHistoryRows
-  const nestedTasks = node.tasks?.placement === 'nested' ? node.tasks : null
-  const besideTasks = node.tasks?.placement === 'beside' ? node.tasks : null
+  const nestedProcesses = node.processes?.placement === 'nested' ? node.processes : null
+  const besideProcesses = node.processes?.placement === 'beside' ? node.processes : null
+  const nonProcessChildren = node.children.filter((child) => !(child.kind === 'session' && child.innerRun))
+  const runChildren = new Map(node.children.flatMap((child) =>
+    child.kind === 'session' && child.innerRun ? [[child.sessionId, child] as const] : []))
+  const renderRun = (sessionId: string): React.JSX.Element | null => {
+    const child = runChildren.get(sessionId)
+    return child === undefined ? null : <TreeRow key={child.id} node={child} chrome={chrome} />
+  }
+  const renderHistory = (run: ScriptRunNode): React.JSX.Element => (
+    <ScriptRunRow
+      key={run.runId}
+      parentId={node.sessionId}
+      run={run}
+      interactive={node.interactive}
+      onOpen={() => chrome.openTask(node.target, { kind: 'script', runId: run.runId }, run.title)}
+    />
+  )
   return (
     <div className="jamat-sessions__session" data-session={targetKey}>
       {/* On the row rather than on this container, so a right-click on a nested install lands on
@@ -1824,6 +1856,7 @@ function SessionRow(props: {
             account={node.badges.accountLabel}
           />
         )}
+        {node.service !== null && <ElapsedText startedAt={node.service.startedAt} />}
         <Badges badges={node.badges} />
         <Pills glyph={node.glyph} badges={node.badges} />
         {node.glyph === 'ended' && (
@@ -1891,27 +1924,31 @@ function SessionRow(props: {
           ))}
         </span>
       </div>
-      {(node.step !== null || nestedTasks !== null || node.children.length > 0 || finishedRuns.length > 0) && (
+      {(node.step !== null || nestedProcesses !== null || nonProcessChildren.length > 0 || finishedRuns.length > 0) && (
         <div className="jamat-sessions__children">
           {node.step !== null && <SessionStepRow step={node.step} />}
-          {nestedTasks !== null && (
+          {nestedProcesses !== null && (
             <SessionTaskRows
-              tasks={nestedTasks}
+              processes={nestedProcesses}
+              renderRun={renderRun}
+              renderHistory={renderHistory}
               onOpen={(row, title) => chrome.openTask(node.target, row.task, title)}
+              onOpenProcesses={() => chrome.openProcesses(node.sessionId)}
             />
           )}
-          {node.children.map((child) => <TreeRow key={child.id} node={child} chrome={chrome} />)}
-          {finishedRuns.map((run) => (
-            <ScriptRunRow key={run.runId} parentId={node.sessionId} run={run} interactive={node.interactive} onOpen={() => chrome.openTask(node.target, { kind: 'script', runId: run.runId }, run.title)} />
-          ))}
+          {nonProcessChildren.map((child) => <TreeRow key={child.id} node={child} chrome={chrome} />)}
+          {finishedRuns.map((run) => renderHistory(run))}
         </div>
       )}
       {/* Outside the indented container: with `Nest sub-agents` cleared the rows stand at this
           row's level, after its family, and carry its number instead. */}
-      {besideTasks !== null && (
+      {besideProcesses !== null && (
         <SessionTaskRows
-          tasks={besideTasks}
+          processes={besideProcesses}
+          renderRun={renderRun}
+          renderHistory={renderHistory}
           onOpen={(row, title) => chrome.openTask(node.target, row.task, title)}
+          onOpenProcesses={() => chrome.openProcesses(node.sessionId)}
         />
       )}
     </div>
@@ -2045,15 +2082,26 @@ function Badges(props: { badges: SessionBadges }): React.JSX.Element {
           {badges.accountLabel}
         </span>
       )}
-      {badges.commitOpen && (
-        <span
-          className="jamat-sessions__vcs is-commit-open"
-          title="Commit review pending"
-          aria-label="Commit review pending"
-        >
-          *
-        </span>
-      )}
+      {badges.commitOpen
+        ? (
+          <span
+            className="jamat-sessions__vcs is-commit-open"
+            title="Commit review pending"
+            aria-label="Commit review pending"
+          >
+            *
+          </span>
+        )
+        : badges.uncommitted !== null && (
+          <span
+            className="jamat-sessions__vcs"
+            title={UncommittedStore.titleOf(badges.uncommitted)}
+            aria-label="Uncommitted session changes"
+            data-uncommitted
+          >
+            *
+          </span>
+        )}
     </>
   )
 }
@@ -2462,7 +2510,7 @@ class SessionsTreeActions {
       if (action === 'finalize' || action === 'close' || action === 'updateMain') return true
       else if (action === 'remove')
         return !node.live && !node.actions.includes('finalize')
-          && (node.outcome === 'finished' || node.badges.completed)
+          && (node.innerRun || node.outcome === 'finished' || node.badges.completed)
       else if (action === 'reopen' || action === 'retrySetup' || action === 'erase') return false
       else
         throw new Error(`Unknown session action: ${JSON.stringify(action)}`)

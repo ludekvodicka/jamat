@@ -1,6 +1,6 @@
 import type { RemoteContentCursor, RemoteContentPage } from '../../../lib-orchestrator/remoteControl/remoteContentApi.types'
 import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
-import type { RemoteTaskRequest, RemoteTaskValue } from '../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
+import type { RemoteTaskListing, RemoteTaskRequest, RemoteTaskValue } from '../../../lib-orchestrator/remoteControl/remoteTaskApi.types'
 import { RemoteContentPages } from '../remoteControl/remoteContentPages'
 import { RemoteContentAccess } from '../remoteControl/remoteContentAccess'
 import type { RemoteSessionInteraction } from '../remoteControl/remoteSessionViews'
@@ -20,7 +20,7 @@ export class SessionTaskAccess {
     if (active.reads >= 4) return { ok: false, error: { code: 'unavailable', detail: 'Too many source task reads' } }
     active.reads++
     try {
-      const result = await this.read(view.sessionId, request)
+      const result = await this.read(view, request)
       if (active.closed) return { ok: false, error: { code: 'unavailable', detail: 'Source task view was released' } }
       const owner = SessionTaskAccess.owner(view, request)
       active.owners.add(owner)
@@ -40,9 +40,34 @@ export class SessionTaskAccess {
     this.active.delete(key)
   }
 
-  private async read(sessionId: string, request: RemoteTaskRequest): Promise<RemoteControlStepResult<RemoteTaskValue>> {
+  /** What an older viewer's strict `RemoteTaskResults` accepts: no service runs, no `runs` on shell rows. */
+  static forViewer(value: RemoteTaskListing, processes: boolean): RemoteTaskListing {
+    if (processes) return value
+    const scripts = value.scripts === null ? null : {
+      ...value.scripts,
+      runs: value.scripts.runs.filter((run) => run.scriptId !== 'service'),
+    }
+    const listing = value.listing.kind === 'tasks'
+      ? {
+        ...value.listing,
+        rows: value.listing.rows.map((row) => {
+          if (row.kind !== 'shell' || row.runs === undefined) return row
+          const copy = { ...row }
+          delete copy.runs
+          return copy
+        }),
+      }
+      : value.listing
+    return { listing, scripts }
+  }
+
+  private async read(view: RemoteSessionInteraction, request: RemoteTaskRequest): Promise<RemoteControlStepResult<RemoteTaskValue>> {
+    const sessionId = view.sessionId
     switch (request.kind) {
-      case 'list': return { ok: true, value: { listing: await this.tasks.listingOf(sessionId), scripts: this.tasks.scriptsOf(sessionId) } }
+      case 'list': return { ok: true, value: SessionTaskAccess.forViewer(
+        { listing: await this.tasks.listingOf(sessionId), scripts: this.tasks.scriptsOf(sessionId) },
+        view.processes === true,
+      ) }
       case 'transcript': return { ok: true, value: await this.tasks.transcriptOf(sessionId, request.subagentId, request.known ?? null) }
       case 'shell': return { ok: true, value: await this.tasks.shellOutputOf(sessionId, request.shellId, request.known ?? null) }
       case 'script': return this.tasks.scriptOutputOf(sessionId, request.runId)

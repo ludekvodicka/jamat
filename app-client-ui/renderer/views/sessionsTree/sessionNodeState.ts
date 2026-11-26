@@ -2,6 +2,7 @@ import type {
   SessionActivity,
   SessionInfo,
   SessionOperation,
+  SessionScriptId,
   SessionScriptRunState,
   SessionScriptsBadge,
   SessionSvnActionInfo,
@@ -25,10 +26,11 @@ export type SessionGlyph =
   | 'background'
   | 'waiting'
   | 'idle'
-  /** Idle, with only background shells it started still running (a dev server). */
+  /** Idle, with a Jamat service of this session still running. */
   | 'idle-shells'
   | 'unknown'
   | 'shell'
+  | 'service'
   | 'ended'
   | 'lost'
 
@@ -97,11 +99,12 @@ export class SessionNodeState {
     activityDetail?: SessionInfo['activityDetail'],
     compacting?: SessionInfo['compacting'],
     shellsRunning?: SessionInfo['shellsRunning'],
+    scriptId?: SessionScriptId,
   ): SessionGlyph {
     if (life === 'starting') return 'starting'
     else if (life === 'ended') return 'ended'
     else if (life === 'lost') return 'lost'
-    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail, compacting, shellsRunning)
+    else if (life === 'live') return SessionNodeState.liveGlyphOf(kind, activity, activityDetail, compacting, shellsRunning, scriptId)
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
   }
@@ -212,10 +215,11 @@ export class SessionNodeState {
 
   /**
    * A running Finish stops; an ended Finish opens a dialog, which the ellipsis promises. A running
-   * SVN worktree session opens the dialog too (`liveFinish`): its action stops it first.
+   * SVN worktree session opens the dialog too (`liveFinish`): its action stops it first. A running
+   * inner run (service or requested run) labels its stop as `Stop`.
    */
-  static finalizeLabelOf(life: SessionInfo['life'], liveFinish = false): string {
-    if (life === 'live' || life === 'starting') return liveFinish ? 'Finish…' : 'Finish'
+  static finalizeLabelOf(life: SessionInfo['life'], liveFinish = false, innerRun = false): string {
+    if (life === 'live' || life === 'starting') return innerRun ? 'Stop' : liveFinish ? 'Finish…' : 'Finish'
     else if (life === 'ended' || life === 'lost') return 'Finish…'
     else
       throw new Error(`Unknown session life: ${JSON.stringify(life)}`)
@@ -424,10 +428,10 @@ export class SessionNodeState {
     else if (glyph === 'idle-shells') return marked ? '■' : '○'
     else if (glyph === 'unknown') return '?'
     else if (glyph === 'shell') return '❯'
+    else if (glyph === 'service') return '◈'
     else if (glyph === 'ended') return '×'
     else if (glyph === 'lost') return '!'
-    else
-      throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
+    else throw new Error(`Unknown session glyph: ${JSON.stringify(glyph satisfies never)}`)
   }
 
   /**
@@ -451,11 +455,10 @@ export class SessionNodeState {
     else if (glyph === 'idle') return 'idle'
     else if (glyph === 'idle-shells') return marked ? 'idle' : 'ok'
     else if (glyph === 'ended') return marked ? 'accent' : 'muted'
-    else if (glyph === 'working' || glyph === 'background' || glyph === 'compacting') return 'ok'
+    else if (glyph === 'working' || glyph === 'background' || glyph === 'compacting' || glyph === 'service') return 'ok'
     else if (glyph === 'starting') return 'accent'
     else if (glyph === 'shell' || glyph === 'unknown') return 'muted'
-    else
-      throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
+    else throw new Error(`Unknown session glyph: ${JSON.stringify(glyph satisfies never)}`)
   }
 
   /** A script run drawn as a row of its own history: its outcome as one character. */
@@ -486,23 +489,22 @@ export class SessionNodeState {
   static glyphTitleOf(glyph: SessionGlyph, marked: boolean): string {
     if (!marked) {
       if (glyph === 'background') return 'background work'
-      else if (glyph === 'idle-shells') return 'idle - background shell running'
+      else if (glyph === 'idle-shells') return 'idle - service running'
       else if (glyph === 'compacting') return 'compacting context'
       else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
         || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell'
-        || glyph === 'ended' || glyph === 'lost') return glyph
-      else throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
+        || glyph === 'service' || glyph === 'ended' || glyph === 'lost') return glyph
+      else throw new Error(`Unknown session glyph: ${JSON.stringify(glyph satisfies never)}`)
     }
     if (glyph === 'ended') return 'ended - not seen since it ended'
     else if (glyph === 'lost') return 'lost - not seen since it was lost'
     else if (glyph === 'background') return 'background work - previous result not seen'
-    else if (glyph === 'idle-shells') return 'idle - background shell running - not seen since the turn finished'
+    else if (glyph === 'idle-shells') return 'idle - service running - not seen since the turn finished'
     else if (glyph === 'compacting') return 'compacting context - previous result not seen'
     else if (glyph === 'starting' || glyph === 'working' || glyph === 'waiting'
-      || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell')
+      || glyph === 'idle' || glyph === 'unknown' || glyph === 'shell' || glyph === 'service')
       return `${glyph} - not seen since the turn finished`
-    else
-      throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
+    else throw new Error(`Unknown session glyph: ${JSON.stringify(glyph satisfies never)}`)
   }
 
   /**
@@ -548,11 +550,29 @@ export class SessionNodeState {
     activityDetail: SessionInfo['activityDetail'],
     compacting: SessionInfo['compacting'],
     shellsRunning: SessionInfo['shellsRunning'],
+    scriptId: SessionScriptId | undefined,
   ): SessionGlyph {
-    if (kind === 'shell') return 'shell'
+    if (kind === 'shell') return SessionNodeState.shellGlyphOf(scriptId)
     else if (kind === 'agent') return SessionNodeState.activityGlyphOf(activity, activityDetail, compacting, shellsRunning)
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(kind)}`)
+  }
+
+  private static shellGlyphOf(scriptId: SessionScriptId | undefined): SessionGlyph {
+    if (scriptId === undefined) return 'shell'
+    switch (scriptId) {
+      case 'service': return 'service'
+      case 'setup':
+      case 'declared':
+      case 'merge-resolve':
+      case 'requested':
+      case 'svn':
+      case 'checks':
+      case 'svn-resolve':
+      case 'svn-merge':
+      case 'review': return 'shell'
+      default: throw new Error(`Unknown session script id: ${JSON.stringify(scriptId satisfies never)}`)
+    }
   }
 
   private static activityGlyphOf(

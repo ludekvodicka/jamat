@@ -159,8 +159,8 @@ class TabContextMenuItems {
         || onSession && admits('restart') && facts?.ended === false)
       .filter((descriptor) => descriptor.id !== 'session.compact' || onSession && admits('compact'))
       .filter((descriptor) => descriptor.id !== 'session.showActions' || onSession)
-      // The todo list is a file of this computer's project; a paired computer's tab has none here.
-      .filter((descriptor) => descriptor.id !== 'session.showTodos'
+      // The todo list and processes view are local to this computer; a paired computer's tab has neither here.
+      .filter((descriptor) => (descriptor.id !== 'session.showTodos' && descriptor.id !== 'session.showProcesses')
         || onSession && TerminalTargetCodec.read(params)?.target.kind !== 'remote')
       // The row's Finish runs on this computer's tree, so a paired computer's tab has none here.
       .filter((descriptor) => descriptor.id !== 'session.finish'

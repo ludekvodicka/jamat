@@ -265,6 +265,46 @@ describe('app-client-ui/renderer/widgets/tabs/panelSplit', () => {
     })
   })
 
+  describe('processes items', () => {
+    it('keeps one processes item per tab, focuses it on a second open, and allows closing', () => {
+      const item = PanelSplitParams.processesItemOf('s1')
+      const first = PanelSplitParams.opened(PanelSplitParams.default(), item)
+      if (!first.ok) throw new Error(first.refusal)
+      const withFile = PanelSplitParams.opened(first.state, itemFixture('a.md'))
+      if (!withFile.ok) throw new Error(withFile.refusal)
+      const again = PanelSplitParams.opened(withFile.state, item)
+
+      expect(again).toMatchObject({ ok: true, state: { active: 'processes:s1' } })
+      expect(again.ok && again.state.items.filter((entry) => entry.kind === 'processes')).toHaveLength(1)
+      expect(PanelSplitParams.opened(first.state, PanelSplitParams.processesItemOf('s2'))).toEqual({ ok: false,
+        refusal: 'The split already holds the processes of another session.' })
+      expect(PanelSplitParams.closeRefusalOf(item, () => true)).toBeNull()
+    })
+
+    it('restores a stored processes item and drops a second one, a wrong key, an unknown kind or a remote target', () => {
+      const target = { kind: 'remote', remoteEndpointId: 'peer', sessionId: 's1' }
+      const restored = PanelSplitParams.of({ split: { items: [
+        { kind: 'processes', key: 'processes:s1', title: 'Processes', sessionId: 's1' },
+        { kind: 'processes', key: 'processes:s2', title: 'Processes', sessionId: 's2' },
+        { kind: 'processes', key: 'processes:other', title: 'Processes', sessionId: 's3' },
+        { kind: 'bogus', key: 'bogus:s1', title: 'Bogus', sessionId: 's1' },
+      ], active: 'processes:s1' } })
+      const remote = PanelSplitParams.of({ target, split: { items: [{ kind: 'processes', key: 'processes:s1', title: 'Processes', sessionId: 's1', target }] } })
+
+      expect(restored.items).toEqual([PanelSplitParams.processesItemOf('s1')])
+      expect(remote.items).toEqual([])
+    })
+
+    it('offers only Close for the processes item', () => {
+      render(<PanelSplitStrip items={[PanelSplitParams.processesItemOf('s1')]} active="processes:s1" preview={null}
+        onActivate={vi.fn()} onKeepOpen={vi.fn()} onSetPinned={vi.fn()} onReload={vi.fn()} onCopyPath={vi.fn()}
+        onCopyId={vi.fn()} onClose={vi.fn()} onDetach={vi.fn()} />)
+      fireEvent.contextMenu(screen.getByRole('tab'))
+      const menu = screen.getByRole('menu', { name: 'Split tab actions' })
+      expect(Array.from(menu.querySelectorAll('[role="menuitem"]')).map((item) => item.textContent)).toEqual(['Close'])
+    })
+  })
+
   function sourceFixture(path: string): FileViewerDocumentSource {
     return { kind: 'workspace', sessionId: 's1', path }
   }

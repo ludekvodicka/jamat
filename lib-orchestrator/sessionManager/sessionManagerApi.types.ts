@@ -990,7 +990,7 @@ export type SessionScriptPhase = 'before' | 'after' | 'inner'
  * `checks`, `svn-resolve`, `svn-merge` and `review` are the runs of an SVN action; an older peer
  * drops them and nests them by `setupFor`.
  */
-export type SessionScriptId = 'setup' | 'declared' | 'merge-resolve' | 'requested' | 'svn' | 'checks' | 'svn-resolve' | 'svn-merge' | 'review'
+export type SessionScriptId = 'setup' | 'declared' | 'merge-resolve' | 'requested' | 'service' | 'svn' | 'checks' | 'svn-resolve' | 'svn-merge' | 'review'
 
 /** On a script run: the session it runs for, and which script it is. The tree nests the run under it. */
 export interface SessionScriptLinkInfo {
@@ -1051,8 +1051,11 @@ export interface SessionScriptsInfo {
   waitingOn?: string
 }
 
+/** `requested` is judged by its exit code; `service` runs until it is stopped. */
+export type SessionScriptKind = 'requested' | 'service'
+
 /**
- * A shell run a live session asks for, judged by its exit code and drawn as its child. `cwd` is
+ * A shell run a live session asks for, drawn as its child. `cwd` is
  * relative to the session's own directory, or absolute inside it; absent is that directory.
  * `title` names the run; absent, the command does.
  */
@@ -1060,6 +1063,14 @@ export interface SessionScriptRequest {
   command: string
   cwd?: string
   title?: string
+  /** Absent: `requested`. */
+  kind?: SessionScriptKind
+}
+
+/** `reused`: a service of the same command and directory already ran, and `runId` names it. */
+export interface SessionScriptStart {
+  runId: string
+  reused: boolean
 }
 
 /** A session's runs, newest first, and the saved log of the one run asked for. */
@@ -1074,6 +1085,8 @@ export interface SessionScriptsReading {
 
 export interface SessionScriptOutput {
   state: SessionScriptRunState
+  /** The library's word for `state` where the plain word misleads: `Exited` for a service that ended without a stop. Absent: the reader's own word. */
+  stateWord?: string
   source: 'live' | 'log'
   failureReason?: string
   /** The latest output rows, at most 256 KiB in UTF-8 including line separators. */
@@ -1165,11 +1178,7 @@ export interface SessionInfo {
   activityDetail?: SessionActivityDetail
   /** Separate optional field: older peers strictly validate the existing activityDetail values. */
   compacting?: true
-  /**
-   * Only with `activity` `idle`: the turn is over and only background shells the agent started still
-   * run (a dev server). A sub-agent is `activityDetail` `background` instead. Separate optional
-   * field for the reason `compacting` is one: older peers ignore it.
-   */
+  /** Only with `activity` `idle`: a service of this session is starting or live. Older peers draw it as the empty ring. */
   shellsRunning?: true
   /** Mandatory, and empty where nothing applies: "no operations" is an answer, absence is not. */
   admits: readonly SessionOperation[]

@@ -138,8 +138,10 @@ export class RemoteSessionSchemas {
       if (value.kind === 'sessions') {
         if (snapshot.categories.length !== 0) return false
         for (const session of snapshot.sessions) {
-          const summary = session as Partial<{ pending: boolean; hasResult: boolean; reviewPending: boolean }>
+          const summary = session as Partial<{ pending: boolean; hasResult: boolean; reviewPending: boolean; uncommittedFiles: unknown }>
           if (summary.reviewPending !== undefined && typeof summary.reviewPending !== 'boolean') return false
+          if (summary.uncommittedFiles !== undefined
+            && !(Number.isInteger(summary.uncommittedFiles) && (summary.uncommittedFiles as number) > 0)) return false
           if (typeof summary.pending !== 'boolean' || typeof summary.hasResult !== 'boolean') return false
           if (session.workflow || session.actions || session.scripts || session.svnAction || session.note || session.step) return false
         }

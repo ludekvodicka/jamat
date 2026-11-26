@@ -66,7 +66,7 @@ class PackagedResources {
     const node = process.platform === 'win32' ? 'node.exe' : join('bin', 'node')
     return [
       join('host', 'start.cjs'), join('host', 'node_modules', 'node-pty'), join('host', 'manifest.json'),
-      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => join('orchestrator', name + '.cjs')),
+      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker', 'sessionUncommittedWorker'].map(name => join('orchestrator', name + '.cjs')),
       join('codex', 'start.cjs'), join('gateway', 'start.cjs'), join('cli', 'jamat-v3.cjs'), join('launcher', node),
       join('launcher', 'launcher.cjs'), join('skills', 'claude'), join('skills', 'codex'), join('skills', 'antigravity'),
       join('mdext-renderer', 'USAGE.md'), join('remarkable-sidecar', 'manifest.json'),

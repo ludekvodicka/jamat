@@ -27,6 +27,12 @@ export interface AntigravityConversationSummary {
 export class AntigravitySummariesDb {
   private static readonly fileNameConst = 'conversation_summaries.db'
   private static readonly idPatternConst = /^[A-Za-z0-9_-]{1,64}$/
+  /**
+   * The last read per home, kept while the database and its WAL keep their size and time. Opening the
+   * database is what costs: 3 ms on a quiet disk, up to 2.4 s while `agy` writes, on the orchestrator's
+   * main thread, and every sub-agent listing of every Antigravity session read it again.
+   */
+  private static readonly lastRead = new Map<string, { key: string; rows: readonly AntigravityConversationSummary[] }>()
 
   static fileOf(antigravityHome: string): string {
     return join(antigravityHome, AntigravitySummariesDb.fileNameConst)
@@ -48,7 +54,22 @@ export class AntigravitySummariesDb {
     catch { return null }
   }
 
-  static readAll(antigravityHome: string): AntigravityConversationSummary[] {
+  static readAll(antigravityHome: string): readonly AntigravityConversationSummary[] {
+    const key = AntigravitySummariesDb.statKey(antigravityHome)
+    if (key === null) {
+      AntigravitySummariesDb.lastRead.delete(antigravityHome)
+      return []
+    }
+    const cached = AntigravitySummariesDb.lastRead.get(antigravityHome)
+    if (cached?.key === key) return cached.rows
+    const rows = AntigravitySummariesDb.readFile(antigravityHome)
+    // A read that failed (the database busy or half written) is not kept: the next call tries again.
+    if (rows === null) return cached?.rows ?? []
+    AntigravitySummariesDb.lastRead.set(antigravityHome, { key, rows })
+    return rows
+  }
+
+  private static readFile(antigravityHome: string): AntigravityConversationSummary[] | null {
     const file = AntigravitySummariesDb.fileOf(antigravityHome)
     let db: DatabaseSync | null = null
     try {
@@ -90,7 +111,7 @@ export class AntigravitySummariesDb {
       }
       return out
     }
-    catch { return [] }
+    catch { return null }
     finally { try { db?.close() } catch {} }
   }
 

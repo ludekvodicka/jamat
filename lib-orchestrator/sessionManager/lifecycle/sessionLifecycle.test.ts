@@ -147,6 +147,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
     /** The real gate over the real `.worktree.json` in `projectRoot`, with its own trust file. */
     agreement: CommandAgreement
     trustFile: string
+    localStateDir: string
     numbers: FakeNumbers
     identities: Map<string, CodexSessionIdentity>
     claudeIdentities: Map<string, { launchId: string; nativeSessionId: string; sequence: number }>
@@ -598,6 +599,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       claudeIdentities,
       claudeTitles,
       snapshotsDirectory,
+      localStateDir: projectParent,
       reports,
       workDirectory: root,
       yolo,
@@ -4441,7 +4443,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       await asking(context)
 
       expect(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
-        .toEqual({ ok: true, value: { runId: 'id-1' } })
+        .toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
       expect(context.store.get('id-1')).toMatchObject({
         title: 'tests',
         life: 'live',
@@ -4485,7 +4487,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
         await asking(context)
         context.host.launchFailure = failure
 
-        expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1' } })
+        expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
         expect(context.store.get('id-1')).toMatchObject({ life: 'starting', pendingOperationId: 'id-2' })
         expect(context.store.get('id-1')?.endedReason).toBeUndefined()
 
@@ -4554,7 +4556,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(context.store.get('p1')?.scriptRuns?.[0]).toMatchObject({ runId: 'id-1', outcome: 'failed', exitCode: 1 })
 
       context.clock.now += 1_000
-      expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3' } })
+      expect(await context.lifecycle.runScript('p1', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3', reused: false } })
       expect(await context.lifecycle.reconcile(context.host.listing()))
         .toEqual([{ kind: 'collapse-script-run', runId: 'id-1' }])
       expect(context.store.get('id-1')).toBeNull()
@@ -4709,6 +4711,99 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       expect(refused.detail).toContain('tests (id-1): the script run tests is still running; let it finish or stop it before restarting the Host')
       // Sessions that still run hold the restart back; the request itself was well formed (UA1-J13-7).
       expect(refused.code).toBe('live-refused')
+    })
+
+    it('keeps a live service on a restart stop while stopping a requested run, and stops the service on close', async () => {
+      const context = await harness()
+      await context.store.put(record('p1', {
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        worktree: { kind: 'svn', repositoryRoot: context.workDirectory, worktreePath: context.workDirectory, branch: 'http://svn.local/p', baseCommit: 'r1' },
+      }))
+      context.host.runtimes.set('p1', runtime('p1'))
+      const service = successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev', kind: 'service', title: 'web' }))
+      const req = successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
+
+      expect(await context.lifecycle.stop('p1', 'restart')).toEqual({ ok: true, value: undefined })
+      expect(callsNamed(context.host, 'runtime.stop').map((call) => (call.body.target as RuntimeRef).runtimeSessionId))
+        .toEqual(['p1', req.runId])
+      expect(context.host.runtimes.get(service.runId)?.alive).toBe(true)
+      expect(context.store.get(service.runId)?.stopRequested).toBeUndefined()
+
+      // While held, reconciling an ended parent leaves the service alone; reopening brings parent back.
+      await context.lifecycle.reconcile(context.host.listing(), new Set(['p1']))
+      expect(context.host.runtimes.get(service.runId)?.alive).toBe(true)
+      expect(await context.lifecycle.reopen('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.host.runtimes.get(service.runId)?.alive).toBe(true)
+
+      // Closing the session stops the service and settles/collapses it as `stopped`.
+      expect(await context.lifecycle.stop('p1', 'close')).toEqual({ ok: true, value: undefined })
+      expect(context.host.runtimes.get(service.runId)?.alive).toBe(false)
+      expect(context.store.get(service.runId)?.stopRequested).toBe(true)
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      await context.lifecycle.reconcile(context.host.listing())
+      expect(context.store.get(service.runId)).toBeNull()
+      expect(context.store.get('p1')?.scriptRuns).toContainEqual(expect.objectContaining({
+        runId: service.runId, scriptId: 'service', outcome: 'stopped',
+      }))
+    })
+
+    it('plans a Host restart with a live service and a live agent session without marking the service', async () => {
+      const context = await harness()
+      const subDir = join(context.workDirectory, 'svc-cwd')
+      mkdirSync(subDir, { recursive: true })
+      await context.store.put(record('p1', {
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'claude-conv' },
+        directory: { mode: 'adHoc', path: context.workDirectory },
+      }))
+      context.host.runtimes.set('p1', runtime('p1'))
+      const service = successOf(await context.lifecycle.runScript('p1', {
+        command: 'pnpm dev', cwd: subDir, kind: 'service', title: 'web',
+      }))
+
+      const plan = successOf(await context.lifecycle.prepareHostRestart(context.host.listing()))
+      expect(plan).toEqual({
+        sessions: ['p1'],
+        services: [{ runId: service.runId, parentId: 'p1', command: 'pnpm dev', cwd: subDir, title: 'web' }],
+      })
+      expect(context.store.get(service.runId)?.stopRequested).toBeUndefined()
+    })
+
+    it('refuses a Host restart when a requested run is live alongside a service and marks no service', async () => {
+      const context = await harness()
+      await asking(context)
+      const service = successOf(await context.lifecycle.runScript('p1', { command: 'pnpm dev', kind: 'service', title: 'web' }))
+      successOf(await context.lifecycle.runScript('p1', { command: 'pnpm test', title: 'tests' }))
+
+      const refused = failureOf(await context.lifecycle.prepareHostRestart(context.host.listing()))
+      expect(refused.code).toBe('live-refused')
+      expect(refused.detail).toContain('tests')
+      expect(context.store.get(service.runId)?.stopRequested).toBeUndefined()
+    })
+
+    it('restoreServices starts a new service per live parent and skips an ended parent with no failure', async () => {
+      const context = await harness()
+      const subDir = join(context.workDirectory, 'api-cwd')
+      mkdirSync(subDir, { recursive: true })
+      await context.store.put(record('p1', { directory: { mode: 'adHoc', path: context.workDirectory } }))
+      await context.store.put(record('p2', { life: 'ended', binding: null, directory: { mode: 'adHoc', path: context.workDirectory } }))
+      context.host.runtimes.set('p1', runtime('p1'))
+
+      const failures = await context.lifecycle.restoreServices([
+        { runId: 'old-1', parentId: 'p1', command: 'pnpm dev', cwd: subDir, title: 'web' },
+        { runId: 'old-2', parentId: 'p2', command: 'pnpm worker', cwd: subDir, title: 'worker' },
+      ])
+
+      expect(failures).toEqual([])
+      const created = context.store.list().filter((entry) => entry.scriptOf?.scriptId === 'service')
+      expect(created).toHaveLength(1)
+      expect(created[0]).toMatchObject({
+        life: 'live',
+        title: 'web',
+        commands: [{ command: 'pnpm dev', cwd: subDir }],
+        scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'service', name: 'web' },
+      })
     })
   })
 
@@ -6320,7 +6415,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
 
       const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
       expect(args).not.toContain(claudeFlagConst)
-      expect(args.slice(0, 5)).toEqual(['--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits', '-p'])
+      expect(args.slice(0, 7)).toEqual([
+        '--add-dir', join(context.localStateDir, 'script-logs', 's1'),
+        '--disallowedTools', 'Bash', '--permission-mode', 'acceptEdits', '-p',
+      ])
       expect(args.at(-1)).toBe('resolve it')
       expect(context.store.get('resolve-3')?.agent).toMatchObject({ oneShot: true, permission: 'accept-edits' })
     })
@@ -6330,6 +6428,21 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const context = await harness()
       context.yolo.add('claude')
       context.statusLine.file = join(context.workDirectory, 'settings-relay.json')
+      await context.store.put({
+        sessionId: 's1',
+        kind: 'agent',
+        title: 'parent',
+        directory: { mode: 'adHoc', path: context.workDirectory },
+        life: 'live',
+        binding: null,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'p1' },
+        svnAction: {
+          kind: 'finish', actionId: 'act-1', stage: 'merging', root: context.workDirectory,
+          checks: [], checkCursor: 0, rootCursor: 0, rounds: { incoming: 0, outOfDate: 0, lock: 0 },
+          evidence: [], requestedBy: 'window', startedAt: 1, stageAt: 1,
+        },
+        createdAt: 1,
+      })
 
       await context.lifecycle.createInternal(
         {
@@ -6343,6 +6456,10 @@ describe('lib-orchestrator/sessionManager/lifecycle/sessionLifecycle', () => {
       const args = agentArgsOf(launchOf(callsNamed(context.host, 'runtime.create')[0]))
       expect(args).not.toContain(claudeFlagConst)
       expect(args).not.toContain('-p')
+      expect(args.slice(0, 4)).toEqual([
+        '--add-dir', join(context.localStateDir, 'script-logs', 's1'),
+        '--add-dir', join(context.localStateDir, 'worktree-results', 'act-1', 'saved'),
+      ])
       expect(args).toContain('--settings')
       expect(args).toContain('--allowedTools')
       // This client's own CLI line, never the person's ~/.claude skill (UA1-J14-9).

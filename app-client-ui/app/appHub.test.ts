@@ -358,6 +358,8 @@ vi.mock('../../lib-orchestrator/sessionManager/sessionManager', async (importOri
       captured.visible.push(visible)
     }
 
+    recordsInTree(): unknown[] { return [] }
+
     // No session exists here, so nothing a detected restore is handed can lean on a session root.
     workingContext(): Promise<{ ok: false; code: string; detail: string }> {
       return Promise.resolve({ ok: false, code: 'unknown-session', detail: 'no session under test' })
@@ -607,7 +609,7 @@ describe('app-client-ui/app/appHub', () => {
     const client = native.orchestratorClient as unknown as { deps: ConstructorParameters<typeof OrchestratorApiClient>[0] }
     const owner = new OrchestratorHub({ config: context.config, appVersion: context.appVersion, smoke: true, privateStateRoot: true,
       applicationRoot: '.', resourcesPath: '.', isPackaged: false, fileDiffWorkerPath: 'fileDiffWorker.cjs',
-      tokenUsageWorkerPath: 'tokenUsageWorker.cjs', svnAssemblyWorkerPath: 'svnAssemblyWorker.cjs',
+      tokenUsageWorkerPath: 'tokenUsageWorker.cjs', svnAssemblyWorkerPath: 'svnAssemblyWorker.cjs', sessionUncommittedWorkerPath: 'sessionUncommittedWorker.cjs',
       build: { version: 'test', inputHash: 'test', builtAt: 'test' } }, native.shell, native.serviceTransport, native.gatewayCalls,
       native.perf, new PerfNames(Object.keys(MainHub.ipcChannelsConst)), event => client.deps.event(event))
     captured.orchestrator = owner
@@ -1104,11 +1106,13 @@ workspaceWindows: { acceptsRenderer: () => true }})
   })
 
   it('holds the final IPC parity counts', () => {
-    expect(Object.keys(MainHub.ipcChannelsConst)).toHaveLength(185)
+    expect(Object.keys(MainHub.ipcChannelsConst)).toHaveLength(186)
     expect(Object.keys(GatewayChannelsConst)).toHaveLength(41)
-    expect(Object.keys(MainHub.ipcChannelsConst).filter(channel => !(channel in GatewayChannelsConst))).toHaveLength(144)
-    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(30)
+    expect(Object.keys(MainHub.ipcChannelsConst).filter(channel => !(channel in GatewayChannelsConst))).toHaveLength(145)
+    expect(Object.keys(AppClientUiBridgeEventsConst)).toHaveLength(33)
+    expect(AppClientUiBridgeEventsConst).toHaveProperty('onCommitOpenSessionsChanged', 'versioning:commit-open-sessions-changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageChanged', 'usage:changed')
+    expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageProgress', 'usage:progress')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onUsageCallersChanged', 'usage:callers-changed')
     expect(AppClientUiBridgeEventsConst).toHaveProperty('onSnapinsChanged')
     expect(Object.keys({ ...ServiceTabsIpc.channelsConst, ...ServiceTabRequestsIpc.channelsConst })).toHaveLength(19)

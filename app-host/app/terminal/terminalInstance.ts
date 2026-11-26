@@ -75,13 +75,7 @@ export class TerminalInstance {
     )
     // launch.env is the complete final child environment; nothing of this process leaks into it.
     try {
-      this.process = spawn(launch.command, launch.args, {
-        name: 'xterm-256color',
-        cols: launch.cols,
-        rows: launch.rows,
-        cwd: launch.cwd,
-        env: launch.env,
-      })
+      this.process = spawn(launch.command, launch.args, TerminalInstance.ptyOptionsOf(launch))
     } catch (error) {
       this.projection.dispose()
       throw new TerminalLaunchError(
@@ -91,6 +85,15 @@ export class TerminalInstance {
     }
     this.subscriptions.push(this.process.onData((data) => this.onData(data)))
     this.subscriptions.push(this.process.onExit(({ exitCode }) => this.onExit(exitCode)))
+  }
+
+  /**
+   * The inbox ConPTY, not node-pty's bundled `conpty.dll`: the bundled one reports every exit about
+   * 2 s later and makes Stop 2.7 s slower. The console a natural exit leaves behind is ended by
+   * `ConsoleReaper`.
+   */
+  static ptyOptionsOf(launch: Pick<RuntimeLaunchSpec, 'cols' | 'rows' | 'cwd' | 'env'>): pty.IWindowsPtyForkOptions {
+    return { name: 'xterm-256color', cols: launch.cols, rows: launch.rows, cwd: launch.cwd, env: launch.env }
   }
 
   get pid(): number {
@@ -241,10 +244,11 @@ export class TerminalInstance {
 
   /**
    * `IPty.kill()`, at most once per instance, and also after a process that ended by itself. On
-   * Windows node-pty starts one worker thread per PTY and ends it, with the pseudoconsole, only in
-   * `kill()`; a natural exit keeps both. Each ended run then held a worker isolate until the Host
-   * could start no new one (`ERR_WORKER_OUT_OF_MEMORY`) and every create died at once. A second
-   * kill of a closed pseudoconsole is never sent.
+   * Windows node-pty starts one worker thread per PTY and ends it only in `kill()`; a natural exit
+   * keeps it. Each ended run then held a worker isolate until the Host could start no new one
+   * (`ERR_WORKER_OUT_OF_MEMORY`) and every create died at once. After a natural exit `kill()` no
+   * longer reaches the console process; `ConsoleReaper` ends it. A second kill of a closed
+   * pseudoconsole is never sent.
    */
   private release(): void {
     if (this.released) return

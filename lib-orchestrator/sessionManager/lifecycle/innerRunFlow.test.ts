@@ -88,7 +88,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     const context = await harness()
 
     expect(await context.flow.start('p', { command: 'pnpm test', cwd: 'packages/app', title: 'tests' }))
-      .toEqual({ ok: true, value: { runId: 'id-1' } })
+      .toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(context.launched).toEqual(['id-1'])
     expect(context.store.get('id-1')).toEqual({
       sessionId: 'id-1',
@@ -108,7 +108,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
   it('runs in the session directory without a cwd, and is named by its command without a title', async () => {
     const context = await harness()
 
-    expect(await context.flow.start('p', { command: '  pnpm lint --fix  ' })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: '  pnpm lint --fix  ' })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(context.store.get('id-1')).toMatchObject({
       title: 'pnpm lint --fix',
       commands: [{ command: '  pnpm lint --fix  ', cwd: context.place }],
@@ -120,7 +120,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     const context = await harness()
     const inside = join(context.place, 'packages')
 
-    expect(await context.flow.start('p', { command: 'pnpm test', cwd: inside })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: 'pnpm test', cwd: inside })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(context.store.get('id-1')?.commands).toEqual([{ command: 'pnpm test', cwd: inside }])
   })
 
@@ -132,9 +132,9 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     const parent = context.store.get('p')!
     await context.store.put({ ...parent, worktree: { ...parent.worktree!, worktreePath: context.place } })
 
-    expect(await context.flow.start('p', { command: 'node show.js', cwd: context.place })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: 'node show.js', cwd: context.place })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(context.store.get('id-1')?.commands).toEqual([{ command: 'node show.js', cwd: context.place }])
-    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3' } })
+    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-3', reused: false } })
     expect(context.store.get('id-3')?.commands).toEqual([{ command: 'pnpm test', cwd: join(context.place, 'packages', 'app') }])
     expect(refusalOf(await context.flow.start('p', { command: 'pnpm test', cwd: '../../..' })))
       .toContain(`is outside the session's worktree ${context.place}`)
@@ -155,7 +155,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     context.answer.value = { ok: false, code: 'host-unreachable', detail: 'timed out' }
     context.answer.decided = false
 
-    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(context.store.get('id-1')).toMatchObject({ life: 'starting', pendingOperationId: 'id-2' })
   })
 
@@ -211,7 +211,7 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     expect(refusalOf(await context.flow.start('p', { command: '   ' }))).toBe('The command is empty')
     expect(refusalOf(await context.flow.start('p', { command: 'x'.repeat(4_097) })))
       .toBe('The command has 4097 characters; at most 4096 are allowed')
-    expect(await context.flow.start('p', { command: 'x'.repeat(4_096) })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: 'x'.repeat(4_096) })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     for (const command of ['pnpm test\nrm -rf .', 'pnpm test\r', 'pnpm\0test'])
       expect(refusalOf(await context.flow.start('p', { command }))).toBe('The command must be one line, without NUL, CR or LF')
     expect(refusalOf(await context.flow.start('p', { command: 'pnpm test', title: 'a\nb' })))
@@ -228,9 +228,51 @@ describe('lib-orchestrator/sessionManager/lifecycle/innerRunFlow', () => {
     await context.store.put(requested(context, 'r4', 'ended'))
     await context.store.put({ ...requested(context, 'other', 'live'), scriptOf: { sessionId: 'q', phase: 'inner', scriptId: 'requested', name: 'x' } })
 
-    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1' } })
+    expect(await context.flow.start('p', { command: 'pnpm test' })).toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
     expect(refusalOf(await context.flow.start('p', { command: 'pnpm test' })))
       .toBe('Session p already runs 4 requested runs; wait for one to end or stop it')
     expect(context.launched).toEqual(['id-1'])
+  })
+
+  it('starts a service as inner/service and reuses a running one with matching trimmed command and directory', async () => {
+    const context = await harness()
+    const appDir = join(context.place, 'packages', 'app')
+
+    expect(await context.flow.start('p', { kind: 'service', command: 'pnpm dev', cwd: appDir, title: 'web' }))
+      .toEqual({ ok: true, value: { runId: 'id-1', reused: false } })
+    expect(context.store.get('id-1')?.scriptOf).toEqual({ sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' })
+    expect(context.launched).toEqual(['id-1'])
+
+    // Extra outer spaces and forward-slash / alternate-case path spell the same directory and reuse the running service.
+    const alternateCwd = appDir.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, drive: string) => `${drive.toLowerCase()}:`)
+    expect(await context.flow.start('p', { kind: 'service', command: '  pnpm dev  ', cwd: alternateCwd, title: 'ignored-title' }))
+      .toEqual({ ok: true, value: { runId: 'id-1', reused: true } })
+    expect(context.launched).toEqual(['id-1'])
+    expect(context.store.list().map((record) => record.sessionId)).toEqual(['p', 'id-1'])
+
+    // A different directory starts a new service.
+    expect(await context.flow.start('p', { kind: 'service', command: 'pnpm dev', cwd: join(context.place, 'packages'), title: 'pkg' }))
+      .toEqual({ ok: true, value: { runId: 'id-3', reused: false } })
+    expect(context.launched).toEqual(['id-1', 'id-3'])
+
+    // Once the first service ends, the same command and directory start a new run.
+    await context.store.update('id-1', (current) => ({ ...current, life: 'ended', endedAt: 8_000 }))
+    expect(await context.flow.start('p', { kind: 'service', command: 'pnpm dev', cwd: appDir, title: 'web2' }))
+      .toEqual({ ok: true, value: { runId: 'id-5', reused: false } })
+    expect(context.launched).toEqual(['id-1', 'id-3', 'id-5'])
+  })
+
+  it('starts five services without hitting the requested-run cap, and four requested runs do not block a service', async () => {
+    const context = await harness()
+    for (let index = 1; index <= 4; index += 1)
+      await context.store.put(requested(context, `r${index}`, 'live'))
+
+    for (let index = 1; index <= 5; index += 1) {
+      const started = await context.flow.start('p', { kind: 'service', command: `pnpm dev --port ${3000 + index}` })
+      expect(started).toEqual({ ok: true, value: { runId: expect.any(String), reused: false } })
+    }
+    expect(context.launched).toHaveLength(5)
+    expect(refusalOf(await context.flow.start('p', { command: 'pnpm test' })))
+      .toBe('Session p already runs 4 requested runs; wait for one to end or stop it')
   })
 })

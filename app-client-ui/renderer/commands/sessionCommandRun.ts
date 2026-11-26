@@ -30,6 +30,7 @@ export class SessionCommandRun {
     'session.compact',
     'session.showActions',
     'session.showTodos',
+    'session.showProcesses',
     'session.finish',
     'session.commitSvn',
     'session.commitGit',
@@ -57,6 +58,7 @@ export class SessionCommandRun {
       case 'session.compact':
       case 'session.showActions':
       case 'session.showTodos':
+      case 'session.showProcesses':
       case 'session.finish':
       case 'session.commitSvn':
       case 'session.commitGit':

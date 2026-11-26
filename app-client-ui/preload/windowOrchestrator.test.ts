@@ -44,14 +44,27 @@ describe('WindowOrchestrator', () => {
     await expect(owner.invoke('control:call', 'host.status', {})).resolves.toMatchObject({ ok: false })
   })
 
-  it('rejects a missing endpoint and closes a late transferred port', async () => {
+  it('fails a call whose endpoint does not arrive within 30 seconds, then takes the late port for the next call', async () => {
     const owner = new WindowOrchestrator()
     const pending = owner.invoke('control:call', 'host.status', {})
     await vi.advanceTimersByTimeAsync(30_000)
     await expect(pending).resolves.toEqual({ ok: false, error: 'Orchestrator window port did not arrive within 30 seconds' })
     const port = new Port(); receiver.port!({ ports: [port] })
-    expect(port.closed).toBe(true)
-    expect(port.messages).toEqual([])
+    port.consume = message => { if (message.type === 'call') port.receive({ type: 'reply', id: message.id, ok: true, value: 'late' }) }
+    expect(port.closed).toBe(false)
+    await expect(owner.invoke('control:call', 'sessions.create', {})).resolves.toEqual({ ok: true, value: 'late' })
+  })
+
+  it('refuses calls after its port closed and serves them again on a new port', async () => {
+    const owner = new WindowOrchestrator(), first = new Port()
+    receiver.port!({ ports: [first] })
+    first.close()
+    await expect(owner.invoke('control:call', 'host.status', {})).resolves.toEqual({ ok: false, error: 'Orchestrator window connection is closed' })
+    const second = new Port()
+    second.consume = message => { if (message.type === 'call') second.receive({ type: 'reply', id: message.id, ok: true, value: 'again' }) }
+    receiver.port!({ ports: [second] })
+    await expect(owner.invoke('control:call', 'sessions.create', {})).resolves.toEqual({ ok: true, value: 'again' })
+    expect(first.messages).toEqual([])
   })
 
   it('keeps the port open across a throttled renderer timer gap and retains accepted work while the orchestrator is alive', async () => {

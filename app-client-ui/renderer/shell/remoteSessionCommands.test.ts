@@ -84,4 +84,12 @@ describe('source session commands', () => {
     expect(f.command.mock.calls[1]).toEqual(f.command.mock.calls[0])
     expect(f.local).not.toHaveBeenCalled()
   })
+
+  it('reports a readable local-only error for session.showProcesses on a remote session', async () => {
+    const f = fixture()
+    f.commands.register('session.showProcesses', f.local)
+    f.commands.execute('session.showProcesses', { sessionId: f.info.sessionId, remoteEndpointId: 'source' })
+    await vi.waitFor(() => expect(f.report).toHaveBeenCalledWith(expect.stringContaining('Processes are local to Source PC; open them there')))
+    expect(f.local).not.toHaveBeenCalled()
+  })
 })

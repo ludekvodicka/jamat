@@ -9,7 +9,7 @@ import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/re
 import { ErrorText } from '../../../lib-orchestrator/shared/errorText'
 
 type Peer = Pick<RemoteControlPeerTransport, 'connectionId' | 'remoteIdentity' | 'capabilities'>
-export interface RemoteSessionInteraction extends RemoteSessionView { peerId: string; commitReceipts?: true }
+export interface RemoteSessionInteraction extends RemoteSessionView { peerId: string; commitReceipts?: true; processes?: true }
 export interface RemoteSessionViewsDeps {
   exists(sessionId: string): boolean
   press(view: RemoteSessionInteraction, body: SessionViewOperationMap['actions.press']['request'], operationId: string): Promise<RemoteControlStepResult<null>>
@@ -37,7 +37,8 @@ export class RemoteSessionViews {
       if (existing) return { ok: true, value: RemoteSessionViews.publicView(existing) }
       if (this.views.size >= 512) return RemoteSessionViews.refused('unavailable', 'Too many session views')
       const view = { viewId: randomUUID(), epoch: request.epoch, ...request.body, peerId,
-        ...(peer.capabilities.includes('session-workspace.commit-receipts') ? { commitReceipts: true as const } : {}) }
+        ...(peer.capabilities.includes('session-workspace.commit-receipts') ? { commitReceipts: true as const } : {}),
+        ...(peer.capabilities.includes('session-workspace.processes') ? { processes: true as const } : {}) }
       this.views.set(view.viewId, view)
       return { ok: true, value: RemoteSessionViews.publicView(view) }
     }

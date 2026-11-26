@@ -19,6 +19,7 @@ export function FileToolsSidebar(props: {
   sessionId: string
   documentId: string | null
   selected: TerminalToolsTab
+  visible?: boolean
   changes: FileChangesViewModel
   workingTree: FileChangesWorkingTreeViewModel
   onOpenCommit?(vcs: FileChangesVcsId): void
@@ -91,7 +92,7 @@ export function FileToolsSidebar(props: {
               <FileChangesTreeWidget openFile={props.changesPorts!.openFile} release={props.release!} model={props.workingTree} onOpen={props.onOpenChanged} />
             </>
           : props.selected === 'fileChanges'
-            ? <FileChangesWidget openFile={props.changesPorts!.openFile} release={props.release!} model={props.changes} onOpen={props.onOpenChanged} />
+            ? <FileChangesWidget openFile={props.changesPorts!.openFile} release={props.release!} model={props.changes} visible={props.visible !== false} onOpen={props.onOpenChanged} />
           : props.selected === 'directoryExplorer'
             ? (props.directoryPorts ?
               <DirectoryExplorer ports={props.directoryPorts}

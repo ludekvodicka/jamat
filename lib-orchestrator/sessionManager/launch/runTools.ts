@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { delimiter, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { SvnExecutable } from '../../svn/svnExecutable'
 import type { SessionRecordProcess } from '../records/sessionRecord.types'
 import { WindowsCommand } from './windowsCommand'
 
@@ -56,9 +57,15 @@ export class RunTools {
       return { ok: false, detail: 'svn was not found on PATH; install the Subversion command-line client' }
     }
     const image = WindowsCommand.imageOf('svn', this.environment)
-    return image === null
-      ? { ok: false, detail: 'svn.exe was not found on PATH; install the Subversion command-line client' }
-      : { ok: true, command: image, prefixArgs: [], env: { LC_ALL: 'C', LANG: 'C' } }
+    if (image === null)
+      return { ok: false, detail: 'svn.exe was not found on PATH; install the Subversion command-line client' }
+    const prepared = SvnExecutable.prepareWindows(image)
+    return {
+      ok: true,
+      command: prepared.command,
+      prefixArgs: [],
+      env: { LC_ALL: 'C', LANG: 'C', ...SvnExecutable.dllPathOverride(this.environment, prepared.dllDirectory) },
+    }
   }
 
   /**

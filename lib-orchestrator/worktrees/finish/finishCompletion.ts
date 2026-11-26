@@ -31,7 +31,8 @@ export class FinishCompletion {
     const record = this.deps.records.get(sessionId)!
     const root = record.worktree?.worktreePath
     for (const run of this.deps.records.list()) {
-      if (root === undefined || run.scriptOf?.sessionId !== sessionId || run.scriptOf.scriptId !== 'requested'
+      if (root === undefined || run.scriptOf?.sessionId !== sessionId || run.scriptOf.phase !== 'inner'
+        || (run.life !== 'live' && run.life !== 'starting')
         || !PathCompare.isInside(root, SessionWorkingDirectory.ofRecord(run))) continue
       if (!await this.deps.stopRun(run.sessionId)) {
         await this.state.wait(sessionId, 'removal-blocked', `Publication is retained. Stop the worktree run ${run.title} (${run.sessionId}) before cleanup.`)

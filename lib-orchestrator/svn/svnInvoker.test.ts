@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CommandInvoker } from '../shared/commandInvoker'
+import { SvnExecutable } from './svnExecutable'
 import { SvnInvoker } from './svnInvoker'
 
 describe('lib-orchestrator/svn/svnInvoker', () => {
@@ -12,9 +13,10 @@ describe('lib-orchestrator/svn/svnInvoker', () => {
     expect(run.mock.lastCall![0].perfName).toBe('svn:update')
   })
 
-  it('uses the command invoker with English output and no editor or SSH override', async () => {
+  it('uses the resolved svn executable with English output, DLL path and no editor or SSH override', async () => {
     vi.stubEnv('SVN_EDITOR', 'editor')
     vi.stubEnv('SVN_SSH', 'ssh')
+    vi.spyOn(SvnExecutable, 'resolve').mockReturnValue({ command: 'C:/cache/svn-utf8.exe', dllDirectory: 'C:/TortoiseSVN/bin', utf8: true })
     const run = vi.spyOn(CommandInvoker.prototype, 'run').mockResolvedValue({
       code: 0, stdout: '', stderr: '', failure: null,
     })
@@ -22,8 +24,10 @@ describe('lib-orchestrator/svn/svnInvoker', () => {
     await new SvnInvoker().run('C:/work', ['status'])
 
     const invocation = run.mock.calls[0][0]
-    expect(invocation).toMatchObject({ command: 'svn', cwd: 'C:/work', args: ['status'] })
+    expect(invocation).toMatchObject({ command: 'C:/cache/svn-utf8.exe', cwd: 'C:/work', args: ['status'] })
     expect(invocation.env).toMatchObject({ LC_ALL: 'C', LANG: 'C' })
+    const pathKey = Object.keys(invocation.env).find((key) => key.toLowerCase() === 'path')!
+    expect(invocation.env[pathKey]?.startsWith('C:/TortoiseSVN/bin')).toBe(true)
     expect(invocation.env).not.toHaveProperty('SVN_EDITOR')
     expect(invocation.env).not.toHaveProperty('SVN_SSH')
   })

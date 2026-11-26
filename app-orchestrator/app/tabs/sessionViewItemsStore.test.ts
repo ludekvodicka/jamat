@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { AtomicJsonFile } from '../../../lib-orchestrator/shared/atomicJsonFile'
 import { SessionViewItemsStore } from './sessionViewItemsStore'
 import type { SessionOpen } from '../../../lib-orchestrator/clientApi/sessionViewItems'
 
@@ -61,6 +62,66 @@ describe('source semantic item catalog', () => {
       await restored.record({ ...long, openId: 'long2' })
       await restored.record({ ...long, openId: 'long3' })
       expect(restored.page('session', { after: first.revision }).items).toHaveLength(2)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('persists compact JSON and prunes unknown session items while keeping receipts, epoch and revision intact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'jamat-items-prune-'))
+    try {
+      const path = join(root, 'catalog.json')
+      const store = new SessionViewItemsStore(path, vi.fn())
+      const kept = await store.record(file('kept-open'))
+      const removed = await store.record({ ...file('removed-open'), sessionId: 'removed-session' })
+      const removedReview = await store.record({
+        openId: 'removed-review',
+        sessionId: 'removed-session',
+        key: 'review',
+        title: 'Review',
+        item: { kind: 'review', reviewId: 'r-1', vcs: 'svn', scopeRoot: 'C:/source' },
+      })
+
+      const rawBefore = await readFile(path, 'utf8')
+      expect(rawBefore).not.toContain('\n')
+
+      const beforePage = store.page('session', { after: 0 })
+      const writeSpy = vi.spyOn(AtomicJsonFile, 'writeAsync')
+      expect(await store.pruneItems(new Set(['session', 'removed-session']))).toBe(0)
+      expect(writeSpy).not.toHaveBeenCalled()
+
+      expect(await store.pruneItems(new Set(['session']))).toBe(2)
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+      writeSpy.mockRestore()
+
+      const rawAfter = await readFile(path, 'utf8')
+      expect(rawAfter).not.toContain('\n')
+
+      const afterPage = store.page('session', { after: 0 })
+      expect(afterPage.epoch).toBe(beforePage.epoch)
+      expect(afterPage.revision).toBe(beforePage.revision)
+      expect(afterPage.items).toEqual([kept])
+      expect(store.page('removed-session', { after: 0 }).items).toEqual([])
+
+      const reloaded = new SessionViewItemsStore(path, vi.fn())
+      expect(reloaded.page('session', { after: 0 }).epoch).toBe(beforePage.epoch)
+      expect(reloaded.page('session', { after: 0 }).revision).toBe(beforePage.revision)
+      expect(reloaded.page('session', { after: 0 }).items).toEqual([kept])
+      expect(reloaded.page('removed-session', { after: 0 }).items).toEqual([])
+      // Receipts for pruned sessions remain intact (052 U16 idempotency contract).
+      expect(await reloaded.record({ ...file('removed-open'), sessionId: 'removed-session' })).toEqual(removed)
+      expect(await reloaded.record({
+        openId: 'removed-review',
+        sessionId: 'removed-session',
+        key: 'review',
+        title: 'Review',
+        item: { kind: 'review', reviewId: 'r-1', vcs: 'svn', scopeRoot: 'C:/source' },
+      })).toEqual(removedReview)
+      await expect(reloaded.record({ ...file('removed-open'), sessionId: 'removed-session', title: 'changed' }))
+        .rejects.toThrow('another intent')
+
+      expect(reloaded.hasItemsOutside((id) => id === 'session')).toBe(false)
+      expect(reloaded.hasItemsOutside(() => false)).toBe(true)
+      expect(await reloaded.pruneItems(() => false)).toBe(1)
+      expect(reloaded.page('session', { after: 0 }).items).toEqual([])
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })

@@ -58,11 +58,11 @@ describe('app-host/app/sessions/sessionStore', () => {
     expect(store.list()).toEqual([])
   })
 
-  it('drops the oldest operation once the ledger is full and answers the rest', () => {
+  it('drops the oldest operation once the ledger is full and answers the rest', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'jamat-v3-host-ledger-'))
     directories.push(directory)
-    // the dump is not what this asserts, and writing it 1001 times is the whole cost of the test
-    const write = vi.spyOn(AtomicJsonFile, 'write').mockImplementation(() => undefined)
+    const writeAsync = vi.spyOn(AtomicJsonFile, 'writeAsync').mockResolvedValue(undefined)
+    const writeSync = vi.spyOn(AtomicJsonFile, 'write')
     const store = new SessionStore(join(directory, 'host-state.json'), () => undefined)
 
     for (let index = 0; index <= 1_000; index++)
@@ -76,18 +76,23 @@ describe('app-host/app/sessions/sessionStore', () => {
         },
       })
 
+    await store.drain()
+    expect(writeSync).not.toHaveBeenCalled()
+    expect(writeAsync).toHaveBeenCalledTimes(1)
     expect(store.operation('operation-0', 'create', 'key-0')).toBeUndefined()
     expect(store.operation('operation-1', 'create', 'key-1'))
       .toMatchObject({ requestKey: 'key-1' })
     expect(store.operation('operation-1000', 'create', 'key-1000'))
       .toMatchObject({ requestKey: 'key-1000' })
-    write.mockRestore()
+    writeSync.mockRestore()
+    writeAsync.mockRestore()
   })
 
-  it('writes its dump without spawning anything', () => {
+  it('writes its dump asynchronously without spawning anything and coalesces bursts', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'jamat-v3-host-spawn-'))
     directories.push(directory)
     const file = join(directory, 'host-state.json')
+    const writeSync = vi.spyOn(AtomicJsonFile, 'write')
     const store = new SessionStore(file, () => undefined)
 
     store.upsert({
@@ -102,8 +107,60 @@ describe('app-host/app/sessions/sessionStore', () => {
       outputEpoch: 1,
     })
     store.remove('runtime-1')
+    await store.drain()
 
+    expect(writeSync).not.toHaveBeenCalled()
     expect(JSON.parse(readFileSync(file, 'utf8')).sessions).toEqual({})
     expect(spawned.files).toEqual([])
+    writeSync.mockRestore()
+  })
+
+  it('coalesces mutations arriving during an in-flight write and reports write errors via onWarn', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'jamat-v3-host-coalesce-'))
+    directories.push(directory)
+    const file = join(directory, 'host-state.json')
+    const warnings: string[] = []
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const writtenSnapshots: Record<string, unknown>[] = []
+    let call = 0
+    const writeAsync = vi.spyOn(AtomicJsonFile, 'writeAsync').mockImplementation(async (_target, value) => {
+      call += 1
+      writtenSnapshots.push(value as Record<string, unknown>)
+      if (call === 1) await firstGate
+      if (call === 2) throw new Error('disk full')
+    })
+
+    const store = new SessionStore(file, (message) => warnings.push(message))
+    const session = (id: string, cols: number) => ({
+      runtimeSessionId: id,
+      generation: 1,
+      alive: true,
+      cols,
+      rows: 24,
+      startedAt: 1,
+      lastOutputAt: 1,
+      outputSeq: 0,
+      outputEpoch: 1,
+    })
+
+    store.upsert(session('s-1', 80))
+    await vi.waitFor(() => expect(call).toBe(1))
+    // Arrive while write #1 is in flight: should coalesce into one write (#2).
+    store.upsert(session('s-1', 100))
+    store.upsert(session('s-1', 120))
+    releaseFirst()
+    await store.drain()
+
+    expect(call).toBe(2)
+    expect((writtenSnapshots[1] as { sessions: Record<string, { cols: number }> }).sessions['s-1']?.cols).toBe(120)
+    expect(warnings).toEqual(['Host diagnostics dump could not be written: disk full'])
+
+    // Recovery after an error: next mutation still writes cleanly.
+    store.upsert(session('s-1', 140))
+    await store.drain()
+    expect(call).toBe(3)
+    expect((writtenSnapshots[2] as { sessions: Record<string, { cols: number }> }).sessions['s-1']?.cols).toBe(140)
+    writeAsync.mockRestore()
   })
 })

@@ -10,7 +10,7 @@ const open = z.union([
 ])
 const edit = z.union([z.strictObject({ ok: z.literal(true), value: versioningReviewSchema }),
   z.strictObject({ ok: z.literal(false), code: z.enum(['stale', 'busy', 'invalid-target', 'unknown-draft']), detail: text, current: versioningReviewSchema.optional() })])
-const files = z.union([z.strictObject({ ok: z.literal(true), value: RemoteChangesResults.working, checkedPaths: z.array(text).max(2_000).optional() }), RemoteChangesResults.failure])
+const files = z.union([z.strictObject({ ok: z.literal(true), value: RemoteChangesResults.working, checkedPaths: z.array(text).max(5_000).optional() }), RemoteChangesResults.failure])
 
 export class RemoteReviewResults {
   static parse(request: RemoteReviewRequest, value: unknown, sessionId?: string): unknown {

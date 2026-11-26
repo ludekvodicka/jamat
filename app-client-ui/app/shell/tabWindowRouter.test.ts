@@ -52,4 +52,25 @@ describe('TabWindowRouter', () => {
     expect(rig.focus).not.toHaveBeenCalled()
     expect(rig.publish).not.toHaveBeenCalled()
   })
+
+  it('accepts a processes-opened acknowledgement and refuses a mismatched one', async () => {
+    const rig = fixture()
+    rig.ready()
+    const openProcesses: Extract<TabControlCommand, { kind: 'open-processes' }> = {
+      kind: 'open-processes', requestId: 'req-proc', panelId: 'terminal:s1', sessionId: 's1',
+    }
+    const pending = rig.router.request('main', openProcesses)
+    expect(rig.focus).toHaveBeenCalledExactlyOnceWith('main')
+    rig.router.acknowledge('main', { requestId: 'req-proc', result: { kind: 'processes-opened', panelId: 'terminal:s1' } })
+    expect(await pending).toEqual({ ok: true, value: { kind: 'processes-opened', panelId: 'terminal:s1', windowId: 'main' } })
+
+    const mismatch = rig.router.request('main', { ...openProcesses, requestId: 'req-mismatch' })
+    rig.router.acknowledge('main', { requestId: 'req-mismatch', result: { kind: 'todos-opened', panelId: 'terminal:s1' } })
+    expect(await mismatch).toEqual({ ok: false, error: { code: 'operation-failed', detail: 'The workspace renderer returned an invalid tab result' } })
+
+    const wrongPanel = rig.router.request('main', { ...openProcesses, requestId: 'req-wrong-panel' })
+    rig.router.acknowledge('main', { requestId: 'req-wrong-panel', result: { kind: 'processes-opened', panelId: 'terminal:other' } })
+    expect(await wrongPanel).toEqual({ ok: false, error: { code: 'operation-failed', detail: 'The workspace renderer returned an invalid tab result' } })
+    rig.router.cancelAll()
+  })
 })

@@ -28,6 +28,7 @@ export type CommandId =
   | 'session.compact'
   | 'session.showActions'
   | 'session.showTodos'
+  | 'session.showProcesses'
   | 'session.finish'
   | 'session.commitSvn'
   | 'session.commitGit'
@@ -110,6 +111,7 @@ export interface CommandArgById {
   'session.compact': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.showActions': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.showTodos': { sessionId?: string; remoteEndpointId?: string } | undefined
+  'session.showProcesses': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.finish': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.commitSvn': { sessionId?: string; remoteEndpointId?: string } | undefined
   'session.commitGit': { sessionId?: string; remoteEndpointId?: string } | undefined

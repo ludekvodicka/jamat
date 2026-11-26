@@ -436,6 +436,21 @@ describe('lib-orchestrator/sessionManager/sessionsSnapshotValidation', () => {
     expect(parsed?.sessions[1]?.script).toEqual(script)
   })
 
+  it('keeps a service run and its link', () => {
+    const run = {
+      runId: 'sv', phase: 'inner', scriptId: 'service', name: 'web', title: 'web', state: 'running',
+      summary: 'web · running', startedAt: 1, commands: [], row: true, log: 'none',
+    }
+    const script = { parentId: 'parent', phase: 'inner', scriptId: 'service' }
+    const parsed = SessionsSnapshotValidation.parse(snapshot([
+      session({ sessionId: 'parent', scripts: { runs: [run] } }),
+      session({ sessionId: 'sv', script, setupFor: 'parent' }),
+    ]))
+
+    expect(parsed?.sessions[0]?.scripts).toEqual({ runs: [run] })
+    expect(parsed?.sessions[1]?.script).toEqual(script)
+  })
+
   it('refuses anything that is not a snapshot at all', () => {
     for (const value of [null, undefined, 42, 'snapshot', [], {}])
       expect(SessionsSnapshotValidation.parse(value), JSON.stringify(value ?? null)).toBeNull()

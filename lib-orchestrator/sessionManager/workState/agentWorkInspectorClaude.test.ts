@@ -144,55 +144,26 @@ describe('lib-orchestrator/sessionManager/workState/agentWorkInspectorClaude', (
       expect(AgentWorkInspectorClaude.inspect(recorded(file).frame).hint, file)
         .not.toBe('background')
     }
-    for (const file of background)
+    for (const file of background) {
       expect(normalized(file), `${file} should carry the manage hint`).toMatch(/↓tomanage/)
-    // The same hint, two verdicts: a sub-agent is work, shells alone are a finished turn.
-    expect(AgentWorkInspectorClaude.inspect(recorded('claude-live-background-agent.json').frame))
-      .toMatchObject({ hint: 'background' })
-    expect(AgentWorkInspectorClaude.inspect(recorded('claude-live-background-agent.json').frame).shellsRunning)
-      .toBeUndefined()
-    expect(AgentWorkInspectorClaude.inspect(recorded('claude-live-background-tasks.json').frame))
-      .toMatchObject({ hint: 'idle', shellsRunning: true })
+      const inspection = AgentWorkInspectorClaude.inspect(recorded(file).frame)
+      expect(inspection.hint, file).toBe('background')
+      expect('shellsRunning' in inspection, file).toBe(false)
+    }
   })
 
   // The shell counter's closing boundary, from both sides: the footer says it, a sentence about it
   // does not.
-  it('counts background shells in the footer and not in a sentence about them', () => {
+  it('counts background shells in the footer as background work and not in a sentence about them', () => {
     const footer = AgentWorkInspectorClaude.inspect(recorded('claude-background-shell.json').frame)
-    expect(footer).toMatchObject({ hint: 'idle', shellsRunning: true })
+    expect(footer.hint).toBe('background')
+    expect('shellsRunning' in footer).toBe(false)
     expect(footer.evidence.map((item) => item.signal)).toContain('backgroundTasks')
     const prose = AgentWorkInspectorClaude.inspect(
       recorded('claude-live-shell-prose-collision.json').frame)
     expect(prose.hint).toBe('idle')
-    expect(prose.shellsRunning).toBeUndefined()
+    expect('shellsRunning' in prose).toBe(false)
     expect(prose.evidence).toHaveLength(0)
-  })
-
-  // A turn still running over a shell is the turn: the busy row decides, the shells ride along.
-  it('lets a running turn decide over a shell footer, and a sub-agent strip keep it background', () => {
-    const shells = recorded('claude-live-background-tasks.json').frame
-    const working = recorded('claude-live-working.json').frame
-    const busy = AgentWorkInspectorClaude.inspect({
-      ...working,
-      screenTail: `${working.screenTail}\n  ⏵⏵ auto mode on · 1 shell · ↓ to manage`,
-    })
-    expect(busy).toMatchObject({ hint: 'working', shellsRunning: true })
-    const both = AgentWorkInspectorClaude.inspect({
-      ...shells,
-      screenTail: `${shells.screenTail}\n  ● main  ◯ general-purpose  Count 1 to 4000 3s`,
-    })
-    expect(both.hint).toBe('background')
-    expect(both.shellsRunning).toBeUndefined()
-  })
-
-  // Claude draws `●` before every reply; a reply opening with "main" is no sub-agent strip.
-  it('reads the sub-agent strip only below the footer hint', () => {
-    const shells = recorded('claude-live-background-tasks.json').frame
-    const reply = AgentWorkInspectorClaude.inspect({
-      ...shells,
-      screenTail: `● main branch is clean.\n${shells.screenTail}`,
-    })
-    expect(reply).toMatchObject({ hint: 'idle', shellsRunning: true })
   })
 
   // R2, the invariant the reported bug came from: the prompt is on the screen, and the ring has

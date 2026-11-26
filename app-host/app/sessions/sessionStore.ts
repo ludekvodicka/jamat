@@ -39,22 +39,29 @@ export class SessionStore {
    * every write. A thousand is far past any burst a single Host instance can be asked to serve.
    */
   private static readonly operationLimitConst = 1_000
+  private readonly file: string
+  private readonly onWarn: (message: string) => void
   private readonly sessions = new Map<string, RuntimeSessionInfo>()
   private readonly operations = new Map<string, SessionOperationRecord>()
+  private writeDirty = false
+  private writeInFlight: Promise<void> | null = null
 
   constructor(
-    private readonly file: string,
-    private readonly onWarn: (message: string) => void,
-  ) {}
+    file: string,
+    onWarn: (message: string) => void,
+  ) {
+    this.file = file
+    this.onWarn = onWarn
+  }
 
   upsert(session: RuntimeSessionInfo, persist = true): void {
     this.sessions.set(session.runtimeSessionId, { ...session })
-    if (persist) this.flush()
+    if (persist) this.scheduleFlush()
   }
 
   remove(runtimeSessionId: string, persist = true): boolean {
     const removed = this.sessions.delete(runtimeSessionId)
-    if (removed && persist) this.flush()
+    if (removed && persist) this.scheduleFlush()
     return removed
   }
 
@@ -100,25 +107,45 @@ export class SessionStore {
         break
       this.operations.delete(oldest)
     }
-    this.flush()
+    this.scheduleFlush()
   }
 
-  /** Diagnostics only; nothing reads this file back. `onWarn` reports a dump that could not be written. */
-  private flush(): void {
-    const document: SessionDocument = {
-      schemaVersion: 1,
-      savedAt: Date.now(),
-      sessions: Object.fromEntries(
-        [...this.sessions.entries()].map(([id, session]) => [id, { ...session }]),
-      ),
-      operations: Object.fromEntries(this.operations),
-    }
-    try { AtomicJsonFile.write(this.file, document) }
-    catch (error) {
-      this.onWarn(
-        `Host diagnostics dump could not be written: ${
-          error instanceof Error ? error.message : String(error)}`,
-      )
+  /** Waits until any scheduled diagnostic writes have finished. */
+  async drain(): Promise<void> {
+    while (this.writeInFlight !== null) await this.writeInFlight
+  }
+
+  /** Diagnostics only; nothing reads this file back. Coalesces concurrent mutations off the event loop. */
+  private scheduleFlush(): void {
+    this.writeDirty = true
+    if (this.writeInFlight !== null) return
+    this.writeInFlight = this.drainWrites()
+  }
+
+  private async drainWrites(): Promise<void> {
+    try {
+      // Yield one microtask so synchronous bursts (e.g. upsert + remove) coalesce into one write.
+      await Promise.resolve()
+      while (this.writeDirty) {
+        this.writeDirty = false
+        const document: SessionDocument = {
+          schemaVersion: 1,
+          savedAt: Date.now(),
+          sessions: Object.fromEntries(
+            [...this.sessions.entries()].map(([id, session]) => [id, { ...session }]),
+          ),
+          operations: Object.fromEntries(this.operations),
+        }
+        try { await AtomicJsonFile.writeAsync(this.file, document) }
+        catch (error) {
+          this.onWarn(
+            `Host diagnostics dump could not be written: ${
+              error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      }
+    } finally {
+      this.writeInFlight = null
     }
   }
 }

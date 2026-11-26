@@ -55,16 +55,17 @@ const option = (name) => { const at = flags.indexOf(name); return at < 0 ? null 
 const isId = (value) => typeof value === 'string' && /^[0-9A-Za-z-]{1,64}$/.test(value)
 const session = option('--session')
 const launch = option('--launch')
-const write = (file, value) => {
+const writeText = (file, text) => {
   const temporary = file + '.' + process.pid + '.tmp'
   try {
-    fs.writeFileSync(temporary, JSON.stringify(value))
+    fs.writeFileSync(temporary, text)
     fs.renameSync(temporary, file)
   }
   finally {
     try { fs.unlinkSync(temporary) } catch {}
   }
 }
+const write = (file, value) => writeText(file, JSON.stringify(value))
 const chunks = []
 process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
   const text = Buffer.concat(chunks).toString('utf8')
@@ -92,8 +93,19 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
     if (isId(session) && isId(launch) && windows.length > 0 && windows.every(value => value && typeof value === 'object'
       && Number.isFinite(value.used_percentage) && Number.isFinite(value.resets_at))) {
       const rates = path.join(path.dirname(identities), 'rates')
-      fs.mkdirSync(rates, { recursive: true })
-      write(path.join(rates, session + '.json'), { schemaVersion: 1, at: Date.now(), launchId: launch, rateLimits: limits })
+      const file = path.join(rates, session + '.json')
+      const now = Date.now()
+      let previous = null
+      try { previous = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+      const same = previous !== null && typeof previous === 'object'
+        && previous.launchId === launch
+        && JSON.stringify(previous.rateLimits) === JSON.stringify(limits)
+        && typeof previous.at === 'number' && Number.isFinite(previous.at)
+        && now >= previous.at && now - previous.at < 60000
+      if (!same) {
+        fs.mkdirSync(rates, { recursive: true })
+        write(file, { schemaVersion: 1, at: now, launchId: launch, rateLimits: limits })
+      }
     }
   }
   catch {}
@@ -101,8 +113,14 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
     const model = input.model && input.model.id
     const size = input.context_window && input.context_window.context_window_size
     if (typeof model !== 'string' || !Number.isSafeInteger(size) || size <= 0) return
-    fs.mkdirSync(directory, { recursive: true })
-    write(path.join(directory, id + '.json'), { schemaVersion: 1, model, contextWindowSize: size })
+    const file = path.join(directory, id + '.json')
+    const nextText = JSON.stringify({ schemaVersion: 1, model, contextWindowSize: size })
+    let previousText = null
+    try { previousText = fs.readFileSync(file, 'utf8') } catch {}
+    if (previousText !== nextText) {
+      fs.mkdirSync(directory, { recursive: true })
+      writeText(file, nextText)
+    }
   }
   catch {}
 })
@@ -210,13 +228,17 @@ process.stdin.on('data', (chunk) => chunks.push(chunk)).on('end', () => {
     const script = join(this.directory, 'relay.cjs')
     ClaudeStatusLine.writeIfChanged(script, ClaudeStatusLine.relaySourceConst)
     if (this.platform === 'win32') {
+      // Forward slashes: Git Bash reads a bare backslash as an escape, PowerShell takes either.
+      // Invoke node directly without cmd.exe when every path token needs no quoting.
+      const directParts = [node.command, script, this.snapshots, this.identities].map((value) => value.replaceAll('\\', '/'))
+      if (directParts.every((value) => !ClaudeStatusLine.unsafeCommandCharactersConst.test(value)))
+        return directParts.join(' ')
       const wrapper = join(this.directory, 'relay.cmd')
       if ([node.command, script, this.snapshots, this.identities].some((value) => ClaudeStatusLine.unsafeWrapperCharactersConst.test(value))) {
         this.reportOnce('wrapper', `Claude status line relay not installed: a path holds a character cmd.exe would act on: ${this.snapshots}`)
         return null
       }
       ClaudeStatusLine.writeIfChanged(wrapper, `@"${node.command}" "${script}" "${this.snapshots}" "${this.identities}" %*\r\n`)
-      // Forward slashes: Git Bash reads a bare backslash as an escape, PowerShell takes either.
       const command = wrapper.replaceAll('\\', '/')
       if (ClaudeStatusLine.unsafeCommandCharactersConst.test(command)) {
         this.reportOnce('path', `Claude status line relay not installed: its path needs quoting, which Git Bash and PowerShell read differently: ${command}`)

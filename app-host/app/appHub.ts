@@ -22,6 +22,7 @@ import type { HostEventPayload } from './wire/hostWire.js'
 export class AppHub {
   private readonly events = new EventHub()
   private readonly leases = new ControllerLeaseManager()
+  private readonly store: SessionStore
   private readonly sessions: SessionManager
   private readonly attach: AttachHub
   private readonly serviceSessions: ServiceSessions
@@ -35,11 +36,11 @@ export class AppHub {
       message => context.log(`WARN ${message}`))
     // Constructed empty, never loaded: a new Host instance inherits nothing, because nothing a dead
     // Host wrote can still be true. See the class comment on SessionStore.
-    const store = new SessionStore(
+    this.store = new SessionStore(
       HostStatePaths.registry(configIdentity, channel),
       (message) => context.log(`WARN ${message}`),
     )
-    this.sessions = new SessionManager(store, this.events, context.hostInstanceId)
+    this.sessions = new SessionManager(this.store, this.events, context.hostInstanceId)
     this.attach = new AttachHub(this.sessions, this.leases, this.events)
     this.serviceSessions = new ServiceSessions(this.sessions, this.leases, this.events)
     this.serviceController = new ServiceController(this.leases)
@@ -85,6 +86,7 @@ export class AppHub {
 
   async destroy(): Promise<void> {
     this.sessions.destroy()
+    await this.store.drain()
     await this.perf.stop()
   }
 }

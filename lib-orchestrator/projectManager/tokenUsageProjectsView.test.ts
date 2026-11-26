@@ -31,6 +31,38 @@ describe('TokenUsageProjectsView', () => {
       expect(view.project(external, 'outside', 'codex')).toBe(PathCompare.comparable(external))
     } finally { await rm(root, { recursive: true, force: true }) }
   })
+  it('maps a path inside another session worktree to its owner and answers repeated records from memory', async () => {
+    const parent = join(import.meta.dirname, '../../.aidocs/temp')
+    await mkdir(parent, { recursive: true })
+    const root = await mkdtemp(join(parent, 'token-project-test-'))
+    try {
+      const owner = join(root, 'apps/Jamat'), worktree = join(owner, '.worktrees/two'), nested = join(worktree, 'app-host')
+      await writeFile(join(root, 'config.json'), JSON.stringify({ schemaVersion: 1, categories: [{ id: 'apps', label: 'Apps', path: join(root, 'apps') }] }))
+      const records = [
+        { agentId: 'codex' as const, nativeSessionId: 'other', cwd: join(root, 'elsewhere'), ownerPath: null, accountSegments: [] },
+        { agentId: 'claude' as const, nativeSessionId: 'worker', cwd: worktree, ownerPath: owner, accountSegments: [] },
+      ]
+      const view = new TokenUsageProjectsView(root, records)
+      expect(view.project(nested, 'not-a-record', 'claude')).toBe(PathCompare.comparable(owner))
+      expect(view.project(nested, 'not-a-record', 'claude')).toBe(PathCompare.comparable(owner))
+      expect(view.project('', 'worker', 'claude')).toBe(PathCompare.comparable(owner))
+      expect(view.project('', 'worker', 'codex')).toBe('unknown')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+  it('answers a scan-sized number of records against thousands of sessions within a second', async () => {
+    const parent = join(import.meta.dirname, '../../.aidocs/temp')
+    await mkdir(parent, { recursive: true })
+    const root = await mkdtemp(join(parent, 'token-project-test-'))
+    try {
+      await writeFile(join(root, 'config.json'), JSON.stringify({ schemaVersion: 1, categories: [{ id: 'apps', label: 'Apps', path: join(root, 'apps') }] }))
+      const records = Array.from({ length: 2_000 }, (_, index) => ({ agentId: 'claude' as const, nativeSessionId: `s${index}`,
+        cwd: join(root, 'apps', `P${index % 40}`), ownerPath: index % 3 === 0 ? join(root, 'apps', `P${index % 40}`) : null, accountSegments: [] }))
+      const view = new TokenUsageProjectsView(root, records)
+      const started = performance.now()
+      for (let index = 0; index < 100_000; index++) view.project(index % 2 === 0 ? '' : join(root, 'apps', `P${index % 40}`), `s${index % 2_500}`, 'claude')
+      expect(performance.now() - started).toBeLessThan(1_000)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
   it('reaggregates cached cwd spellings by platform identity while retaining the preferred display path', async () => {
     const parent = join(import.meta.dirname, '../../.aidocs/temp')
     await mkdir(parent, { recursive: true })

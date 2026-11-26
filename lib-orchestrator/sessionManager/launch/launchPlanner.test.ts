@@ -510,6 +510,25 @@ describe('lib-orchestrator/sessionManager/launch/launchPlanner', () => {
       expect(() => AgentPresets.replayArgs({ agentId: 'codex', launchMode: 'new', permission: 'accept-edits' })).toThrow(/Codex has no edits-only/)
     })
 
+    it('passes --add-dir in front of Claude permission flags so print-mode resolvers and mergers can read their briefs', () => {
+      const resolver = record({
+        kind: 'agent',
+        agent: { agentId: 'claude', launchMode: 'fork', nativeSessionId: 'r1', forkParentId: 'p1', initialPrompt: 'resolve', oneShot: true, permission: 'accept-edits' },
+      })
+      const agentArgs = AgentPresets.replayArgs(resolver.agent!)
+      const briefDir = 'C:\\state\\script-logs\\p1'
+      for (const platform of ['win32', 'linux'] as const) {
+        const planned = LaunchPlanner.plan(resolver, { platform, environment: environmentConst, agentArgs, claudeAddDirs: [briefDir] })
+        const expected = ['--add-dir', briefDir, ...agentArgs]
+        expect(planned.args).toEqual(platform === 'win32' ? ['/d', '/q', '/c', 'claude', ...expected] : expected)
+      }
+      expect(() => LaunchPlanner.plan(agentRecord('codex'), { platform: 'linux', environment: environmentConst, claudeAddDirs: [briefDir] }))
+        .toThrow(/has no --add-dir flag/)
+      const antigravity = record({ kind: 'agent', agent: { agentId: 'antigravity', launchMode: 'resume', nativeSessionId: 'n1' } })
+      expect(() => LaunchPlanner.plan(antigravity, { platform: 'linux', environment: environmentConst, claudeAddDirs: [briefDir] }))
+        .toThrow(/has no --add-dir flag/)
+    })
+
     it('refuses an agent it has no policy for', () => {
       const unknown = record({
         kind: 'agent',

@@ -367,7 +367,9 @@ export class ConflictShapesSpike {
     {
       name: 'non-ascii',
       victim: 'složka/přehled.md',
-      expected: { shape: 'name-unsafe', rule: null },
+      expected: SvnWorktreeEvidence.takesArgument('složka/přehled.md')
+        ? { shape: 'text-overlap', rule: null }
+        : { shape: 'name-unsafe', rule: null },
       base: (side) => side.write('složka/přehled.md', 'one\ntwo\nthree\n'),
       incoming: (side) => side.write('složka/přehled.md', 'one\ntwo theirs\nthree\n'),
       mine: (side) => side.write('složka/přehled.md', 'one\ntwo mine\nthree\n'),

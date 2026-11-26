@@ -1044,4 +1044,114 @@ describe('lib-orchestrator/rateMonitor/rateMonitor', () => {
     })
   })
 
+  it('accepts a passive reading whose 5h window advanced or reset despite a lower weekly percent, while rejecting stale redraws', async () => {
+    let clock = startClockConst
+    const antigravitySource: RateLimitSource = {
+      agentId: 'antigravity', accountId: 'main', label: 'Main', passive: true,
+      read: async () => okReading([]), stop: () => undefined,
+    }
+    let readings: readonly { key: { agentId: 'antigravity'; accountId: 'main' }; at: number; source: 'statusline'; windows: readonly RateWindow[] }[] = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock - 1_000, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 17.9, resetsAt: '2026-11-25T21:23:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 48.1, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    const rate = new RateMonitor({
+      configIdentity: 'agy-behind', channel: 'development', cacheFile: cacheFile(),
+      now: () => clock, onChanged: () => {}, onError: () => {},
+      sources: () => [antigravitySource], readings: async () => readings,
+    })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Active session: 5h rose (17.9 -> 18.5), while weekly adjusted downward (48.1 -> 47.4).
+    clock += 5_000
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 18.5, resetsAt: '2026-11-25T21:23:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 47.4, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toMatchObject({ fetchedAt: clock, windows: readings[0].windows })
+
+    // Stale idle session redrawing pre-adjustment values (5h lower, weekly higher) must not ping-pong back.
+    const acceptedAt = clock
+    clock += 5_000
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 17.8, resetsAt: '2026-11-25T21:23:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 48.0, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toMatchObject({ fetchedAt: acceptedAt })
+
+    // Stale session from an earlier 5h reset sharing the same weekly reset is also rejected.
+    clock += 5_000
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 40.0, resetsAt: '2026-11-25T16:23:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 47.4, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toMatchObject({ fetchedAt: acceptedAt })
+
+    // Newer 5h reset cycle is accepted even if weekly dropped further.
+    clock += 5_000
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 0.5, resetsAt: '2026-11-26T02:23:02.000Z' },
+        { durationMinutes: 10_080, usedPercent: 47.0, resetsAt: '2026-12-01T11:54:02.000Z' },
+      ],
+    }]
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toMatchObject({ fetchedAt: clock, windows: readings[0].windows })
+  })
+
+  it('ignores a scoped-only feed reading that would erase held plain windows', async () => {
+    let clock = startClockConst
+    const antigravitySource: RateLimitSource = {
+      agentId: 'antigravity', accountId: 'main', label: 'Main', passive: true,
+      read: async () => okReading([]), stop: () => undefined,
+    }
+    const initial: readonly RateWindow[] = [
+      { durationMinutes: 300, usedPercent: 12.7, resetsAt: '2026-11-25T21:23:02.000Z' },
+      { durationMinutes: 10_080, usedPercent: 46.3, resetsAt: '2026-12-01T11:54:02.000Z' },
+    ]
+    let readings: readonly { key: { agentId: 'antigravity'; accountId: 'main' }; at: number; source: 'statusline'; windows: readonly RateWindow[] }[] = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock - 1_000, source: 'statusline', windows: initial,
+    }]
+    const rate = new RateMonitor({
+      configIdentity: 'agy-incomplete', channel: 'development', cacheFile: cacheFile(),
+      now: () => clock, onChanged: () => {}, onError: () => {},
+      sources: () => [antigravitySource], readings: async () => readings,
+    })
+    monitors.push(rate)
+    await rate.start()
+    await vi.advanceTimersByTimeAsync(0)
+
+    clock += 5_000
+    readings = [{
+      key: { agentId: 'antigravity', accountId: 'main' }, at: clock, source: 'statusline',
+      windows: [
+        { durationMinutes: 300, usedPercent: 0, resetsAt: null, model: '3p' },
+        { durationMinutes: 10_080, usedPercent: 0, resetsAt: null, model: '3p' },
+      ],
+    }]
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(rate.snapshot().providers.antigravity).toEqual({
+      kind: 'ok',
+      fetchedAt: startClockConst - 1_000,
+      windows: initial,
+    })
+  })
+
 })

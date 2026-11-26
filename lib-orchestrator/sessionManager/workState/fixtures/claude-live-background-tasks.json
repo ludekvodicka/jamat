@@ -1,7 +1,7 @@
 {
   "agent": "claude",
   "expected": {
-    "hint": "idle"
+    "hint": "background"
   },
   "provenance": {
     "origin": "captured from this tree's live Host by scripts/dev/capture-workstate.ts",
@@ -9,7 +9,7 @@
     "capture": "a real agent asked to start one long background shell and then stop. The turn is over and the prompt is free, yet the footer reads \"auto mode on - 1 shell - /tasks to see subagents - down to manage\" and the transcript line above it says \"Baked for 20s - 1 shell still running\". This is the frame the user pointed at: finished on the surface, still working underneath; sanitized per V1 recipe (AppJamat docs/architecture/agent-work-detection.md): the home path and the account name are replaced. ANSI left intact",
     "ported": "nothing - recorded in this tree",
     "identical": "not present in the V1 or V2 corpus",
-    "shells": "On 2026-11-23 the person asked for a turn that left only background shells running (a dev server) to read idle: a shell counter with no sub-agent strip under the footer is now idle with shellsRunning, and only a sub-agent or another task keeps the background hint."
+    "shells": "On 2026-11-23 the person asked for a turn that left only background shells running (a dev server) to read idle; on 2026-11-26 Jamat services took over the idle ring, so native Claude background shells read background again."
   },
   "recorded": {
     "build": "claude-code 2.1.237",

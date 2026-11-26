@@ -8,6 +8,7 @@ import type {
 } from '../sessionManagerApi.types'
 import { ScriptDuration } from './scriptDuration'
 import { ScriptRunRecords } from './scriptRunRecords'
+import type { SessionScriptEnd } from './sessionScriptDefinitions'
 
 /** Which step of a chain a badge speaks of: the SVN checkout, the dependency install, or a step the project named. */
 export type ScriptBadgeStep = { kind: 'checkout' } | { kind: 'setup' } | { kind: 'declared'; name: string }
@@ -144,8 +145,21 @@ export class ScriptBadges {
   }
 
   /** The menu line of one run: "Setup i12-x · failed · exit 1 · 24 s". */
-  static summaryOf(run: { title: string; state: SessionScriptRunState; exitCode?: number; durationText?: string }): string {
-    const parts = [run.title, run.state]
+  static summaryOf(run: {
+    title: string
+    state: SessionScriptRunState
+    exitCode?: number
+    durationText?: string
+    endsBy?: SessionScriptEnd
+  }): string {
+    const endsBy = run.endsBy ?? 'exit-code'
+    let stateWord: string
+    switch (endsBy) {
+      case 'exit-code': stateWord = run.state; break
+      case 'stop': stateWord = run.state === 'failed' ? 'exited' : run.state; break
+      default: throw new Error(`Unknown run end: ${JSON.stringify(endsBy satisfies never)}`)
+    }
+    const parts = [run.title, stateWord]
     // A stopped run's code is whatever its platform reports for a kill, which says nothing.
     if (run.state === 'failed' && run.exitCode !== undefined) parts.push(`exit ${run.exitCode}`)
     if (run.durationText !== undefined) parts.push(run.durationText)
@@ -198,6 +212,7 @@ export class ScriptBadges {
     else if (link.scriptId === 'declared') return { kind: 'declared', name: link.name }
     else if (link.scriptId === 'merge-resolve') throw new Error('The merge resolver carries no badge')
     else if (link.scriptId === 'requested') throw new Error('A requested run carries no badge')
+    else if (link.scriptId === 'service') throw new Error('A service run carries no badge')
     else if (link.scriptId === 'checks') return { kind: 'declared', name: link.name }
     else if (link.scriptId === 'svn' && link.phase === 'before') return ScriptBadges.checkoutStepConst
     else if (link.scriptId === 'svn' || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge' || link.scriptId === 'review')

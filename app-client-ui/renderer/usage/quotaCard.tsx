@@ -15,7 +15,7 @@ const burnOptionsConst: readonly { value: BurnHours; label: string }[] = [{ valu
  * the recorded and projected weekly pool. A figure that has no reading is left out rather than
  * printed as `Unknown`.
  */
-export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: readonly UsageAccount[]; now: number }): React.JSX.Element {
+export function QuotaCard({ pool, accounts, now, visible = true }: { pool: UsagePool; accounts: readonly UsageAccount[]; now: number; visible?: boolean }): React.JSX.Element {
   const agentId = pool.agentId
   const [burnHours, setBurnHours] = useState<BurnHours>(3)
   const [preset, setPreset] = useState<PoolRangePreset>('forecast')
@@ -29,12 +29,15 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
   useEffect(() => {
     setSeries(null)
     setError(null)
+  }, [agentId, range, burnHours])
+  useEffect(() => {
     if (!Number.isFinite(range.from) || !Number.isFinite(range.to) || range.to <= range.from) { setError('Choose an end after the start.'); return }
+    if (!visible) return
     return new IpcSnapshotReader({ subject: 'Pool history',
       read: () => AppControl.value('usage.history', { agentId, from: range.from, to: range.to, burnHours }),
       subscribe: changed => window.appClient.onUsageChanged(changed), reportError: message => console.error(message),
     }, setSeries, setError).start()
-  }, [agentId, range, burnHours])
+  }, [agentId, range, burnHours, visible])
   const theme = useMemo(usageChartTheme, [])
   const lines = useMemo(() => poolAccountLines(accounts.map(account => ({ accountId: account.key.accountId, label: account.label })), theme), [accounts, theme])
   const spec = useMemo(() => series ? poolGraphSpec(series, theme, UsageModel.poolView(preset, series), lines) : null, [series, preset, theme, lines])
@@ -65,11 +68,16 @@ export function QuotaCard({ pool, accounts, now }: { pool: UsagePool; accounts: 
         {series.knownAccounts === series.totalAccounts && (series.poolEmptyAt === null
           ? <Tile label="Runs out" value="Not soon" detail={`not before ${UsageModel.when(series.until, now)}`} />
           : <Tile label="Runs out" value={UsageModel.when(series.poolEmptyAt, now)} detail={UsageModel.relative(series.poolEmptyAt, now)}
-            tone={runsOutFirst ? 'danger' : undefined} title={runsOutFirst ? 'Runs out before the next reset' : undefined} />)}
+            tone={runsOutFirst ? 'danger' : undefined}
+            title={runsOutFirst
+              ? `Runs out before the next reset (${new Date(series.poolEmptyAt).toLocaleString()})`
+              : new Date(series.poolEmptyAt).toLocaleString()} />)}
         {several && series.firstEmpty && <Tile label="First account empty" value={UsageModel.when(series.firstEmpty.at, now)}
-          detail={`${label(series.firstEmpty.accountId)} · ${UsageModel.relative(series.firstEmpty.at, now)}`} />}
+          detail={`${label(series.firstEmpty.accountId)} · ${UsageModel.relative(series.firstEmpty.at, now)}`}
+          title={new Date(series.firstEmpty.at).toLocaleString()} />}
         {series.nextReset && <Tile label="Next reset" value={UsageModel.when(series.nextReset.at, now)}
-          detail={`${several ? `${label(series.nextReset.accountId)} · ` : ''}${UsageModel.relative(series.nextReset.at, now)} · +${series.nextReset.gain.toFixed(0)}%`} />}
+          detail={`${several ? `${label(series.nextReset.accountId)} · ` : ''}${UsageModel.relative(series.nextReset.at, now)} · +${series.nextReset.gain.toFixed(0)}%`}
+          title={new Date(series.nextReset.at).toLocaleString()} />}
       </>}
     </div>
 

@@ -927,6 +927,7 @@ class SmokeRemoteControl extends SmokeHarness {
       resolveConflict: (sessionId, request) => this.manager.resolveConflict(sessionId, request),
       solveWithAgent: (sessionId) => this.manager.solveWithAgent(sessionId),
       runScript: (parentId, request) => this.manager.runScript(parentId, request),
+      stopScriptRun: (parentId, runId) => this.manager.stopScriptRun(parentId, runId),
       scriptsOf: (parentId, runId) => this.manager.scriptsOf(parentId, runId),
       clearActions: sessionId => this.manager.clearActions(sessionId),
       setSessionColor: (sessionId, color) => this.manager.setSessionColor(sessionId, color),

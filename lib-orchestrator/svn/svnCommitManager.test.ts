@@ -8,6 +8,7 @@ import { WorktreeLease } from '../worktrees/worktreeLease'
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 import type { CommitProgress } from '../shared/commitProgress.types'
 import { SvnCommitManager } from './svnCommitManager'
+import { SvnExecutable } from './svnExecutable'
 
 describe('lib-orchestrator/svn/svnCommitManager', () => {
   let testScope: string
@@ -20,7 +21,7 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
       await writeFile(path, 'selected content')
     }
   })
-  afterEach(async () => { await rm(testScope, { recursive: true, force: true }) })
+  afterEach(async () => { vi.restoreAllMocks(); await rm(testScope, { recursive: true, force: true }) })
 
   it('waits behind a main-copy update before reading or staging a reviewed commit', async () => {
     const lease = new WorktreeLease('dialog', () => [])
@@ -318,13 +319,24 @@ describe('lib-orchestrator/svn/svnCommitManager', () => {
     expect(calls).toEqual([])
   })
 
-  it('refuses a name svn cannot take from Jamat before any write, and says what to do', async () => {
-    const { manager, scope, calls } = fixture()
-    const answer = await manager.commit(scope, [{ absolutePath: resolve(scope, 'docs/žluť.md'), nodeKind: 'file', status: 'added' }], 'message.txt')
+  it('commits non-ASCII names when UTF-8 svn is active, and refuses them before any write without it', async () => {
+    const czechPath = resolve(testScope, 'docs/žluť.md')
+    await mkdir(dirname(czechPath), { recursive: true })
+    await writeFile(czechPath, 'czech content')
+
+    vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(true)
+    const okFixture = fixture()
+    const committed = await okFixture.manager.commit(okFixture.scope, [{ absolutePath: czechPath, nodeKind: 'file', status: 'added' }], 'message.txt')
+    expect(committed).toMatchObject({ ok: true, value: { revision: '42' } })
+    expect(okFixture.lists).toEqual([`${czechPath}@\n`])
+
+    vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
+    const refusedFixture = fixture()
+    const answer = await refusedFixture.manager.commit(refusedFixture.scope, [{ absolutePath: czechPath, nodeKind: 'file', status: 'added' }], 'message.txt')
     expect(answer).toMatchObject({ ok: false, code: 'refused' })
     expect(answer.ok === false && answer.detail).toContain('docs/žluť.md')
     expect(answer.ok === false && answer.detail).toContain('TortoiseSVN')
-    expect(calls).toEqual([])
+    expect(refusedFixture.calls).toEqual([])
   })
 
   it.each(['E155011', 'E160028', 'E170004'])('recognizes the SVN %s out-of-date code', async (code) => {

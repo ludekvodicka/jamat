@@ -80,7 +80,7 @@ export class SessionsTreeMenuItems {
    * remote row draws its own Session actions and copy items, gated on what the peer offers.
    */
   private static readonly localOnlyConst: ReadonlySet<CommandId> = new Set<CommandId>([
-    'session.openInVsCode', 'session.showTodos', 'session.showActions', 'session.copyReference',
+    'session.openInVsCode', 'session.showTodos', 'session.showProcesses', 'session.showActions', 'session.copyReference',
   ])
 
   static forNode(

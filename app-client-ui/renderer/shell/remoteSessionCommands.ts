@@ -101,6 +101,7 @@ export class RemoteSessionCommands {
         return
       }
       case 'session.showTodos': throw new Error(`The project todo list is a file on ${endpoint.displayName}; open it there`)
+      case 'session.showProcesses': throw new Error(`Processes are local to ${endpoint.displayName}; open them there`)
       case 'session.commitSvn': await this.ports.review(target, 'svn'); return
       case 'session.commitGit': await this.ports.review(target, 'git'); return
       case 'tab.openProjectFolder': {

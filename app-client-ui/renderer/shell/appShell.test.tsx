@@ -17,6 +17,7 @@ import type {
 } from '../../shared/appClientUiIpc'
 import { AppClientUiReport } from '../../shared/appClientUiReport'
 import type { BareCommandId, CommandDescriptor } from '../../shared/commands'
+import type { AttentionSnapshot } from '../../shared/attention'
 import { SessionsGroupsState } from '../../shared/sessionsGroupsState'
 import type { SessionsTabsView } from '../../shared/sessionsViewState'
 import { SidebarsState, type SidebarsStateValue } from '../../shared/sidebarsState'
@@ -36,6 +37,7 @@ import { TerminalInputRegistry } from './terminalInputRegistry'
 import { WindowInfoStore } from './windowInfoStore'
 import { WorkspacePanels } from './workspacePanels'
 import { ControlBridgeFixture } from '../ipc/fixtures/controlBridgeFixture'
+import { AppShellSidebars } from '../widgets/sidebar/appShellSidebars'
 
 const remarkableOverlayMock = vi.hoisted(() => ({
   outputPath: 'Q:\\Jamat\\remarkable\\imports\\page 1.png',
@@ -159,6 +161,8 @@ class AppClientStub {
   private menuCommand: ((commandId: BareCommandId) => void) | null = null
   /** A set, not one slot: the bridge pushes to every listener, and a document each brings one. */
   private readonly sessionsChanged = new Set<() => void>()
+  private readonly attentionChanged = new Set<() => void>()
+  attentionSnapshot: AttentionSnapshot = { revision: 0, items: [] }
   private tabsActivatePanel: ((panelId: string) => void) | null = null
   private tabsClosePanel: ((panelId: string) => void) | null = null
   private tabsSessionRestarted: ((sessionId: string) => void) | null = null
@@ -354,6 +358,9 @@ class AppClientStub {
         runCommit: async () => { throw new Error('unused') },
         closeCommit: async () => ({ ok: true, value: undefined }),
         openCommitSessions: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }),
+      },
+      sessions: {
+        uncommitted: async () => ({ ok: true, value: { revision: 0, sessions: {} } }),
       },
       fileChanges: {
         list: () => {
@@ -577,9 +584,12 @@ class AppClientStub {
       onProjectTodosChanged: () => () => undefined,
       onUiSettingsChanged: () => () => undefined,
       onCommitChanged: () => () => undefined,
+      onSessionsUncommittedChanged: () => () => undefined,
+      onCommitOpenSessionsChanged: () => () => undefined,
       onAgentSettingsChanged: () => () => undefined,
       onRateChanged: () => () => undefined,
       onUsageChanged: () => () => undefined,
+      onUsageProgress: () => () => undefined,
       onUsageCallersChanged: () => () => undefined,
       onSnapinsChanged: () => () => undefined,
       onHostPingResult: () => () => undefined,
@@ -665,10 +675,13 @@ class AppClientStub {
         },
         onAgentCliUpdatesChanged: () => () => undefined,
         attention: {
-          get: async () => ({ ok: true as const, value: { revision: 0, items: [] } }),
+          get: async () => ({ ok: true as const, value: this.attentionSnapshot }),
           next: async () => ({ ok: true as const, value: undefined }),
         },
-        onAttentionChanged: () => () => undefined,
+        onAttentionChanged: (listener: () => void) => {
+          this.attentionChanged.add(listener)
+          return () => { this.attentionChanged.delete(listener) }
+        },
     } satisfies Window['appClient']
     ;(window as unknown as { appClient: Window['appClient'] }).appClient = bridge
   }
@@ -690,6 +703,13 @@ class AppClientStub {
   pushSessionsChanged(): void {
     act(() => {
       for (const listener of [...this.sessionsChanged]) listener()
+    })
+  }
+
+  pushAttentionChanged(snapshot: AttentionSnapshot): void {
+    this.attentionSnapshot = snapshot
+    act(() => {
+      for (const listener of [...this.attentionChanged]) listener()
     })
   }
 
@@ -2918,6 +2938,44 @@ describe('app-client-ui/renderer/shell/appShell', () => {
     await waitFor(() => expect(AppShellTest.previewTabTitles(view.container))
       .toEqual(['AppJamatV3 - Beta worktree']))
     expect(view.container.querySelector('[aria-label="Terminal for session s-working"]')).toBeNull()
+  })
+
+  it('isolates WorkspaceShell from status-bar model, attention and active-terminal updates', async () => {
+    const { view, client } = await mount({ sidebars: null, failed: false })
+    await waitFor(() => expect(view.container.textContent).toContain('Alpha worktree'))
+    const bar = view.container.querySelector('[aria-label="Status"]')
+    if (!(bar instanceof HTMLElement))
+      throw new Error('The shell drew no status bar')
+    await waitFor(() => expect(bar.textContent).toContain('v0.0.0'))
+
+    const sidebarRenderSpy = vi.spyOn(AppShellSidebars, 'render')
+    sidebarRenderSpy.mockClear()
+
+    // Focus switch + sessionModel load updates the status bar without re-rendering WorkspaceShell.
+    AppShellTest.openSession(view.container, 'Alpha worktree')
+    await waitFor(() => expect(bar.textContent).toContain('Sonnet 4.5'))
+    expect(bar.textContent).toContain('AppJamatV3')
+    expect(sidebarRenderSpy).not.toHaveBeenCalled()
+
+    // Attention queue update renders in the status bar without re-rendering WorkspaceShell.
+    client.pushAttentionChanged({
+      revision: 1,
+      items: [{
+        key: 'att-1',
+        kind: 'commit-review',
+        sessionId: 's-working',
+        title: 'Alpha worktree',
+        automatic: true,
+      }],
+    })
+    await waitFor(() => expect(bar.textContent).toContain('! 1'))
+    expect(sidebarRenderSpy).not.toHaveBeenCalled()
+
+    // Switching active terminal updates status bar project/model without re-rendering WorkspaceShell.
+    AppShellTest.openSession(view.container, 'Beta worktree')
+    await waitFor(() => expect(bar.textContent).not.toContain('Sonnet 4.5'))
+    expect(sidebarRenderSpy).not.toHaveBeenCalled()
+    sidebarRenderSpy.mockRestore()
   })
 })
 

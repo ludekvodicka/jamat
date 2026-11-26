@@ -42,6 +42,11 @@ import type { AgentWorkFrame, ComposerViewport } from './agentWorkInspector.type
 export class ScreenTail {
   static readonly screenRowsConst = 8
   static readonly wideScreenRowsConst = 16
+  /**
+   * Tall composer ceiling: Antigravity expands bracketed pastes inline instead of collapsing them
+   * to a one-line placeholder, so a multi-conflict handoff can easily exceed 16 rows.
+   */
+  static readonly composerRowsConst = 200
   static readonly rawCharsConst = 2_000
   private static readonly ansiPatternConst = /\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~])/g
   /** The same alphabet as above, anchored, with the CSI parameters and final byte kept apart. */
@@ -58,6 +63,12 @@ export class ScreenTail {
     // The viewport already holds the windows below; these are the margin for a terminal so short
     // that sixteen rows reach above it.
     screenScrollbackRows: ScreenTail.wideScreenRowsConst,
+  }
+
+  /** What `terminalComposer` asks for: enough scrollback to keep a tall expanded paste box whole. */
+  static readonly composerViewConst: TerminalProjectionView = {
+    rawTailChars: ScreenTail.rawCharsConst,
+    screenScrollbackRows: ScreenTail.composerRowsConst,
   }
 
   /** What the composer content reads: the viewport alone, for one Host call that also gives the hint. */
@@ -119,6 +130,23 @@ export class ScreenTail {
         projection.screen, starts, end, ScreenTail.screenRowsConst),
       wideScreenTail: ScreenTail.rowsWithin(
         projection.screen, starts, end, ScreenTail.wideScreenRowsConst),
+    }
+  }
+
+  /**
+   * The wider tail `AgentComposerReader.read` inspects for a delivery, separate from `frameOf` so
+   * work-state classifiers keep their 8/16-row windows while tall expanded pastes remain visible.
+   */
+  static composerFrameOf(
+    projection: Pick<TerminalProjectionSnapshot, 'screen' | 'cols' | 'screenLines' | 'screenLinesStyled'>,
+  ): Pick<AgentWorkFrame, 'wideScreenTail' | 'screenStyled'> {
+    if (projection.screenLines !== undefined)
+      return {
+        wideScreenTail: projection.screenLines.slice(-ScreenTail.composerRowsConst).join('\n'),
+        screenStyled: projection.screenLinesStyled === true,
+      }
+    return {
+      wideScreenTail: ScreenTail.rows(projection.screen, ScreenTail.composerRowsConst, projection.cols),
     }
   }
 

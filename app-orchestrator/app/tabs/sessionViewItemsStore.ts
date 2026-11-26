@@ -37,6 +37,31 @@ export class SessionViewItemsStore extends JsonDocumentStore<Catalog> {
 
   subscribe(listener: (sessionId: string) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
 
+  hasItemsOutside(known: (sessionId: string) => boolean): boolean {
+    return this.catalog.items.some((entry) => !known(entry.sessionId))
+  }
+
+  /**
+   * Drops items belonging to sessions that are no longer known while keeping `receipts`, `epoch`
+   * and `revision` intact (preserving remote idempotency). Skips disk writes when nothing is dropped.
+   */
+  pruneItems(knownSessionIds: ReadonlySet<string> | ((sessionId: string) => boolean)): Promise<number> {
+    const isKnown = typeof knownSessionIds === 'function'
+      ? knownSessionIds
+      : (sessionId: string) => knownSessionIds.has(sessionId)
+    const run = this.turn.then(async () => {
+      const kept = this.catalog.items.filter((entry) => isKnown(entry.sessionId))
+      const dropped = this.catalog.items.length - kept.length
+      if (dropped === 0) return 0
+      const next = { ...this.catalog, items: kept }
+      if (!await this.writeDocument(next, undefined, true)) return 0
+      this.catalog = next
+      return dropped
+    })
+    this.turn = run.catch(() => {})
+    return run
+  }
+
   record(open: Omit<SessionOpen, 'sequence'>): Promise<SessionOpen> {
     const run = this.turn.then(async () => {
       const candidate = sessionOpenSchema.parse({ ...open, sequence: this.catalog.revision + 1 })
@@ -53,7 +78,7 @@ export class SessionViewItemsStore extends JsonDocumentStore<Catalog> {
       const ordinary = items.filter((entry) => entry.sessionId === item.sessionId && entry.item.kind !== 'review')
       const dropped = new Set(ordinary.slice(0, Math.max(0, ordinary.length - 512)).map((entry) => entry.openId))
       const next = { ...this.catalog, revision: item.sequence, items: items.filter((entry) => !dropped.has(entry.openId)), receipts: { ...this.catalog.receipts, [item.openId]: { sequence: item.sequence, digest } } }
-      if (!await this.writeDocument(next)) throw new Error('Shared open could not be persisted')
+      if (!await this.writeDocument(next, undefined, true)) throw new Error('Shared open could not be persisted')
       this.catalog = next
       for (const listener of this.listeners) {
         try { listener(item.sessionId) } catch (error) { this.report(String(error)) }

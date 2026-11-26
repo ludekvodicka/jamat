@@ -7,7 +7,7 @@ import { WorkerLiveness } from '../../worktrees/worktreeFinish'
 import type { SessionInternalMarks, SessionWorktreePort, WorktreePlacement, WorktreePlacing, WorktreeProvision } from '../../worktrees/worktreeLifecycle.types'
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 
 import type {
   RuntimeLaunchSpec,
@@ -25,10 +25,12 @@ import { ClaudeTrustSeed, type ClaudeTrustSeedResult } from '../launch/claudeTru
 import type { AntigravityStatusLine } from '../launch/antigravityStatusLine'
 import type { ClaudeStatusLine } from '../launch/claudeStatusLine'
 import type { CodexSessionFiles } from '../launch/codexSessionFiles'
+import { OrchestratorPaths } from '../../shared/orchestratorPaths'
 import { PathCompare } from '../../shared/pathCompare'
 import { Slug } from '../../shared/slug'
 import type { CommandAgreement } from '../scripts/commandAgreement'
 import { ScriptChain } from '../scripts/scriptChain'
+import { ScriptLogStore } from '../scripts/scriptLogStore'
 import { ScriptRunPlanning } from '../scripts/scriptRunPlanning'
 import { FinishScriptsFlow, type FinishChecksGate } from './finishScriptsFlow'
 import { InnerRunFlow } from './innerRunFlow'
@@ -69,6 +71,7 @@ import type {
   SessionHistoryOpenSpec,
   SessionHistoryReference,
   SessionScriptRequest,
+  SessionScriptStart,
   SessionTitleParts,
   SessionWorktreeDirectory,
   SessionWorktreePreview,
@@ -188,6 +191,8 @@ export interface SessionLifecycleDeps {
   finishing?: (sessionId: string) => boolean
   /** Injected by tests; the default answers Claude's trust dialog in the file it reads it from. */
   seedClaudeTrust?: (cwd: string, claudeJsonPath?: string) => ClaudeTrustSeedResult
+  /** Called after session records are removed, for best-effort cleanup of ephemeral per-session files. */
+  onRemoved?: (records: readonly SessionRecord[]) => Promise<void>
   /** Both are injected by tests only. Ids are v4 UUIDs because Claude's `--session-id` demands one. */
   newId?: () => string
   now?: () => number
@@ -203,6 +208,22 @@ export type ReopenRoute =
   | { kind: 'replace'; target: RuntimeRef }
   | { kind: 'create' }
   | { kind: 'live' }
+
+/** Why a parent session is being stopped: `close` stops its services too, `restart` keeps them running. */
+export type SessionStopIntent = 'close' | 'restart'
+
+export interface ServiceRestore {
+  runId: string
+  parentId: string
+  command: string
+  cwd: string
+  title: string
+}
+
+export interface HostRestartPlan {
+  sessions: readonly string[]
+  services: readonly ServiceRestore[]
+}
 
 /**
  * What happens when a gate's run is judged, one entry per gate, so a new gate does not compile until
@@ -257,6 +278,7 @@ export class SessionLifecycle {
   private readonly effortFor: (agentId: SessionRecordAgent['agentId']) => string | undefined
   private readonly finishing: (sessionId: string) => boolean
   private readonly seedClaudeTrust: (cwd: string, claudeJsonPath?: string) => ClaudeTrustSeedResult
+  private readonly onRemoved: ((records: readonly SessionRecord[]) => Promise<void>) | undefined
   private readonly accounts: SessionAccountsPort | undefined
   private readonly newId: () => string
   private readonly now: () => number
@@ -304,6 +326,7 @@ export class SessionLifecycle {
     this.finishing = deps.finishing ?? (() => false)
     this.seedClaudeTrust = deps.seedClaudeTrust
       ?? ((cwd, file) => ClaudeTrustSeed.seed(cwd, file ?? ClaudeTrustSeed.defaultPath()))
+    this.onRemoved = deps.onRemoved
     this.newId = deps.newId ?? (() => randomUUID())
     this.now = deps.now ?? (() => Date.now())
     this.startedAt = this.now()
@@ -464,13 +487,36 @@ export class SessionLifecycle {
             },
           ) ?? undefined
           : undefined
-      const effective = { ...options, yolo, model, effort, claudeSettingsFile, jamatCli: this.agentCli(), workerCli: this.workerCli(record) }
+      const claudeAddDirs = this.claudeAddDirsOf(record, parent)
+      const effective = { ...options, yolo, model, effort, claudeAddDirs, claudeSettingsFile, jamatCli: this.agentCli(), workerCli: this.workerCli(record) }
       return LaunchPlanner.plan(record, { ...effective,
         codexBridge: (native, args) => this.codexSessions.launch(record, native, args, effective),
       })
     }
     else
       throw new Error(`Unknown session kind: ${JSON.stringify(record.kind)}`)
+  }
+
+  /**
+   * Directories outside `cwd` that a permission-restricted Claude run (`accept-edits` resolver or
+   * interactive `merger`) reads: its parent's script-logs folder for the conflict/merge brief, and
+   * for a merger the active action's saved-copies folder for diverged files.
+   */
+  private claudeAddDirsOf(record: SessionRecord, parent: SessionRecord | null | undefined): string[] | undefined {
+    const permission = record.agent?.permission
+    if (record.agent?.agentId !== 'claude' || permission === undefined || this.localStateDir === undefined)
+      return undefined
+    const parentId = record.scriptOf?.sessionId
+    if (parentId === undefined || !ScriptLogStore.isPlainId(parentId)) return undefined
+    const dirs = [join(OrchestratorPaths.scriptLogsIn(this.localStateDir), parentId)]
+    if (permission === 'accept-edits') return dirs
+    else if (permission === 'merger') {
+      const actionId = parent?.worktreeLifecycle?.actionId ?? parent?.svnAction?.actionId
+      if (actionId !== undefined && ScriptLogStore.isPlainId(actionId))
+        dirs.push(join(OrchestratorPaths.worktreeResultsIn(this.localStateDir), actionId, 'saved'))
+      return dirs
+    }
+    else throw new Error(`Unknown agent permission: ${JSON.stringify(permission satisfies never)}`)
   }
 
   /**
@@ -547,7 +593,7 @@ export class SessionLifecycle {
   }
 
   /** A shell run the live session `parentId` asks for; see `InnerRunFlow.start`. */
-  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>> {
     return this.innerRuns.start(parentId, request)
   }
 
@@ -984,9 +1030,11 @@ export class SessionLifecycle {
     return this.setupFlow.retrySetup(sessionId, acknowledgeSetup)
   }
 
-  async prepareHostRestart(listing: RuntimeListResult): Promise<SessionsOpResult<string[]>> {
+  /** Reads only: nothing is marked before the Host restart succeeded. */
+  async prepareHostRestart(listing: RuntimeListResult): Promise<SessionsOpResult<HostRestartPlan>> {
     if (this.records.latched) return OperationOutcomes.latched()
     const sessions: string[] = []
+    const services: ServiceRestore[] = []
     const problems: string[] = []
     for (const runtime of listing.sessions) {
       if (!runtime.alive) continue
@@ -996,6 +1044,11 @@ export class SessionLifecycle {
         continue
       }
       const record = await this.withConfirmedId(stored)
+      if (record.scriptOf !== undefined && SessionScriptDefinitions.of(record.scriptOf).stopsWith === 'parent-session') {
+        const restore = SessionLifecycle.restoreOf(record)
+        if (restore !== null) services.push(restore)
+        continue
+      }
       const gone = await SessionLifecycle.worktreeGone(record)
       // A restart would kill the run's process and lose its verdict.
       const problem = record.scriptOf !== undefined
@@ -1012,7 +1065,35 @@ export class SessionLifecycle {
     // Sessions that still run, or cannot come back, hold the restart back; the request itself was valid.
     if (problems.length > 0)
       return { ok: false, code: 'live-refused', detail: `Host restart was cancelled. Resolve these sessions first:\n${problems.join('\n')}` }
-    return { ok: true, value: sessions }
+    return { ok: true, value: { sessions, services } }
+  }
+
+  /** After the parents came back: each service again as a new run; a parent that is not live gets none. */
+  async restoreServices(services: readonly ServiceRestore[]): Promise<string[]> {
+    const failures: string[] = []
+    for (const service of services) {
+      const parent = this.records.get(service.parentId)
+      if (parent?.life !== 'live') continue
+      try {
+        const started = await this.runScript(service.parentId, {
+          command: service.command,
+          cwd: service.cwd,
+          title: service.title,
+          kind: 'service',
+        })
+        if (!started.ok) failures.push(`${service.title} (${service.parentId}): ${started.detail}`)
+      } catch (error) {
+        failures.push(`${service.title} (${service.parentId}): ${ErrorText.of(error)}`)
+      }
+    }
+    return failures
+  }
+
+  private static restoreOf(record: SessionRecord): ServiceRestore | null {
+    const link = record.scriptOf
+    const first = record.commands?.[0]
+    if (link === undefined || first === undefined) return null
+    return { runId: record.sessionId, parentId: link.sessionId, command: first.command, cwd: first.cwd, title: link.name }
   }
 
   async resumeWorker(sessionId: string): Promise<SessionsOpResult> {
@@ -1201,14 +1282,14 @@ export class SessionLifecycle {
   }
 
   /** The exit event and the reconcile that follows it are what mark the record: the Host decides life. */
-  async stop(sessionId: string): Promise<SessionsOpResult> {
+  async stop(sessionId: string, intent: SessionStopIntent = 'close'): Promise<SessionsOpResult> {
     const record = this.records.get(sessionId)
     if (!record) return OperationOutcomes.notFound(sessionId)
     if (record.life === 'ended' || record.life === 'lost')
       return { ok: true, value: undefined }
     else if (record.life === 'live' || record.life === 'starting') {
       const target = OperationOutcomes.targetOf(record)
-      if (!target && record.life === 'starting') return this.stopUnlaunched(sessionId)
+      if (!target && record.life === 'starting') return this.stopUnlaunched(sessionId, intent)
       else if (!target)
         return {
           ok: false,
@@ -1260,7 +1341,7 @@ export class SessionLifecycle {
           + 'read as a crash, and a stopped install or merge resolver may read as a clean run',
         )
       // A run that could not be stopped is said on the error channel; the parent's stop stands.
-      await this.scripts.stopWithParent(sessionId)
+      await this.scripts.stopWithParent(sessionId, intent)
       return { ok: true, value: undefined }
     }
     else
@@ -1273,7 +1354,7 @@ export class SessionLifecycle {
    * it blocked every Discard of a worktree shell created without a tab (Mirabia 119, 2026-10-30).
    * A replay already on its way cannot bind, because `bindLive` checks the pending id this clears.
    */
-  private async stopUnlaunched(sessionId: string): Promise<SessionsOpResult> {
+  private async stopUnlaunched(sessionId: string, intent: SessionStopIntent): Promise<SessionsOpResult> {
     const written = await this.records.update(sessionId, (latest) => {
       if (latest.life !== 'starting' || latest.binding !== null) return null
       const ended: SessionRecord = { ...latest, life: 'ended', accountSegments: SessionAccounts.close(latest, this.now()),
@@ -1285,10 +1366,10 @@ export class SessionLifecycle {
       // Unwritten means the launch bound meanwhile, the record ended on its own, or the store is latched.
       const current = this.records.get(sessionId)
       if (!current || current.life === 'ended' || current.life === 'lost') return { ok: true, value: undefined }
-      else if (current.binding !== null) return this.stop(sessionId)
+      else if (current.binding !== null) return this.stop(sessionId, intent)
       else return OperationOutcomes.latched()
     }
-    await this.scripts.stopWithParent(sessionId)
+    await this.scripts.stopWithParent(sessionId, intent)
     return { ok: true, value: undefined }
   }
 
@@ -1334,8 +1415,10 @@ export class SessionLifecycle {
       // Its runs were only ever working for THIS session, so they go with it in the same write. A
       // run still holding a process is stopped instead, and its record goes once it has ended.
       const { removeWith } = await this.scripts.cascadeOf(record)
+      const removedRecords = [record, ...removeWith.map((id) => this.records.get(id)).filter((item): item is SessionRecord => item !== null)]
       if (!await this.records.remove([sessionId, ...removeWith])) return OperationOutcomes.latched()
       await this.scripts.parentRemoved(sessionId)
+      await this.onRemoved?.(removedRecords)
       if (record.worktree)
         this.report(
           `Session ${sessionId} is gone; ${OperationOutcomes.leftBehindOf(record.worktree)} for you `
@@ -1761,14 +1844,14 @@ export class SessionLifecycle {
    * ones that landed, plus every orphan - an orphan is reported on every pass, because it is a fact
    * about the Host rather than a change to anything here.
    */
-  async reconcile(listing: RuntimeListResult | null): Promise<ReconcileChange[]> {
+  async reconcile(listing: RuntimeListResult | null, heldParents: ReadonlySet<string> = new Set()): Promise<ReconcileChange[]> {
     if (this.records.latched) return []
     for (const record of this.records.list()) {
       const proved = this.withAgentStartProof(record)
       if (proved !== record) await this.records.update(record.sessionId, (latest) => this.withAgentStartProof(latest))
     }
     const applied: ReconcileChange[] = []
-    const planned = Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt, this.svnActions.held())
+    const planned = Reconciler.plan(this.records.list(), listing, this.now(), this.startedAt, this.svnActions.held(), heldParents)
     for (const change of planned) {
       if (change.kind === 'orphan')
         applied.push(change)

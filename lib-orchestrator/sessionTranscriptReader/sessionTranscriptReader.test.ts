@@ -8,6 +8,7 @@ import type {
 } from './sessionTranscriptReader'
 import type { SessionTranscriptReading } from './sessionTranscriptReaderApi.types'
 import type { SessionTranscriptLimits, SessionTranscriptSource } from './sessionTranscriptSource'
+import { TranscriptTailReader } from '../shared/transcriptTailReader'
 
 describe('lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader', () => {
   interface World {
@@ -176,16 +177,17 @@ describe('lib-orchestrator/sessionTranscriptReader/sessionTranscriptReader', () 
         }
       },
     }
+    const cap = TranscriptTailReader.maxCacheEntriesConst
     const reader = new SessionTranscriptReader({ transcripts, sources: [source] })
-    for (let index = 0; index < 17; index += 1)
+    for (let index = 0; index <= cap; index += 1)
       await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: `s${index}` })
-    expect(opened).toBe(17)
+    expect(opened).toBe(cap + 1)
 
-    await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: 's16' })
-    expect(opened).toBe(17)
+    await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: `s${cap}` })
+    expect(opened).toBe(cap + 1)
 
     await reader.read({ agentId: 'claude', cwd: 'Q:/Project', nativeSessionId: 's0' })
-    expect(opened).toBe(18)
+    expect(opened).toBe(cap + 2)
   })
 
   it('throws when an agent arrives that no source was wired for', async () => {

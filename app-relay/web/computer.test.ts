@@ -81,6 +81,7 @@ test('search matches project metadata rather than relying on tab titles, and lif
   assert.deepEqual(sessionsOf(ComputerTree.build(data, 'q:/apps/project', 'live')), ['a']);
   assert.equal(ComputerTree.status(data.sessions[0]), 'Čeká na odpověď');
   assert.equal(ComputerTree.status(data.sessions[1]), 'Ukončená');
+  assert.equal(ComputerTree.status(session('svc', { activity: 'idle', shellsRunning: true })), 'Nečinná, běží služba');
   assert.deepEqual(ComputerTree.build(data, 'absent', 'all'), []);
 });
 

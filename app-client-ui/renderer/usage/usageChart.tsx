@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { View } from 'vega'
 import type { TopLevelSpec } from 'vega-lite'
 import type { UsageChartTheme } from './poolGraphSpec'
@@ -50,7 +50,13 @@ export function UsageChart({ spec, label, readout }: { spec: TopLevelSpec; label
   const current = useRef<View | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [hover, setHover] = useState<Hover | null>(null)
+  // A re-read that brings the same figures makes a new spec object; compiling and drawing it again
+  // costs the renderer tens of milliseconds per chart, so only a different spec rebuilds the view.
+  const specKey = useMemo(() => JSON.stringify(spec), [spec])
+  const latestSpec = useRef(spec)
+  latestSpec.current = spec
   useEffect(() => {
+    const spec = latestSpec.current
     let disposed = false
     let view: View | null = null
     let observer: ResizeObserver | null = null
@@ -77,7 +83,7 @@ export function UsageChart({ spec, label, readout }: { spec: TopLevelSpec; label
       observer.observe(container.current)
     }).catch(error => { if (!disposed) setError(String(error)) })
     return () => { disposed = true; current.current = null; observer?.disconnect(); view?.finalize() }
-  }, [spec])
+  }, [specKey])
 
   const track = (event: React.PointerEvent): void => {
     const view = current.current, svg = container.current?.querySelector('svg'), box = frame.current

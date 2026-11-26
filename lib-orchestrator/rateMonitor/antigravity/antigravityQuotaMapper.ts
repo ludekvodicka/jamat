@@ -22,9 +22,9 @@ interface ParsedBucket {
  *
  * Antigravity tracks model pools (e.g. `gemini-5h`, `gemini-weekly`, `claude-weekly`, `3p-weekly`)
  * as remaining fractions `0..1`, plus optional non-fractional credit pools (`remaining_amount`).
- * When a duration has a single bucket (or a `gemini` bucket alongside third-party pools), that
- * primary bucket becomes the plain `S`/`W` window so the status bar and estimator read it directly;
- * additional pools of the same duration keep their cleaned pool name as `model`.
+ * Unprefixed or exact `gemini` buckets become the plain `S`/`W` windows so the status bar and
+ * estimator read them directly; other pools (such as `3p` or sub-models) always keep their cleaned
+ * pool name as `model`, even when Gemini buckets are transiently omitted from a payload.
  */
 export class AntigravityQuotaMapper {
   private static readonly fiveHourThresholdSecondsConst = 18_600
@@ -81,9 +81,9 @@ export class AntigravityQuotaMapper {
   private static resetsAtOf(resetTime: unknown, resetInSeconds: number | null, at: number | undefined): string | null {
     if (typeof resetTime === 'string' && resetTime.trim().length > 0) {
       const parsed = Date.parse(resetTime)
-      if (Number.isFinite(parsed)) return new Date(parsed).toISOString()
+      if (Number.isFinite(parsed)) return parsed > 0 ? new Date(parsed).toISOString() : null
     }
-    if (resetInSeconds !== null && resetInSeconds >= 0 && typeof at === 'number' && Number.isFinite(at)) {
+    if (resetInSeconds !== null && resetInSeconds > 0 && typeof at === 'number' && Number.isFinite(at)) {
       const computed = new Date(at + resetInSeconds * 1_000)
       if (Number.isFinite(computed.getTime())) return computed.toISOString()
     }
@@ -146,7 +146,6 @@ export class AntigravityQuotaMapper {
   private static primaryBucketOf(group: readonly ParsedBucket[]): ParsedBucket | null {
     const unprefixed = group.find((bucket) => bucket.scope.length === 0)
     if (unprefixed !== undefined) return unprefixed
-    if (group.length === 1) return group[0]!
     const exactGemini = group.find((bucket) => bucket.scope === 'gemini')
     if (exactGemini !== undefined) return exactGemini
     return null

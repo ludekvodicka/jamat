@@ -130,6 +130,7 @@ describe('lib-orchestrator/sessionTasks/antigravity', () => {
       command: 'pnpm test',
       description: 'Run test suite',
       state: 'done',
+      runs: 'command',
     })
     expect(listing.rows.find((row) => row.kind === 'subagent')).toMatchObject({
       kind: 'subagent',

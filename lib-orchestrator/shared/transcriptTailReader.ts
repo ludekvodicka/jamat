@@ -36,8 +36,8 @@ export interface TranscriptTailContent {
  * poll over an ended session free: the file has not moved, so it is never opened again.
  */
 export abstract class TranscriptTailReader<TContext, TReading, TRef extends TranscriptTailRef> {
-  /** Sixteen: the tabs one window can hold open, near enough, and each is one small reading. */
-  private static readonly maxCacheEntriesConst = 16
+  /** Large enough to hold every live session across windows without thrashing limit/model reads. */
+  static readonly maxCacheEntriesConst = 256
 
   private readonly cache = new Map<string, { key: string; reading: TReading }>()
 
@@ -91,6 +91,10 @@ export abstract class TranscriptTailReader<TContext, TReading, TRef extends Tran
       this.cache.set(ref.file, entry)
       while (this.cache.size > TranscriptTailReader.maxCacheEntriesConst)
         this.cache.delete(this.cache.keys().next().value!)
+    } else {
+      // Promote hits to the MRU end so active sessions are not evicted in FIFO order.
+      this.cache.delete(ref.file)
+      this.cache.set(ref.file, entry)
     }
     return entry.reading
   }

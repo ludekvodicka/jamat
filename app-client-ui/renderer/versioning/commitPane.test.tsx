@@ -81,6 +81,34 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     expect(screen.queryByText('Stale initial selection')).toBeNull()
   })
 
+  it('does not subscribe or read while hidden and refreshes once when shown', async () => {
+    const f = CommitPaneTest.fixture()
+    let subscribed = 0
+    const baseSubscribe = f.ports.subscribe
+    f.ports.subscribe = vi.fn((fn) => {
+      subscribed += 1
+      const unsub = baseSubscribe(fn)
+      return () => { subscribed -= 1; unsub() }
+    })
+    const view = render(<CommitPane sessionId="session" item={f.item} ports={f.ports} visible={false} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await act(async () => { await Promise.resolve() })
+    expect(subscribed).toBe(0)
+    expect(f.ports.versioning.readCommit).not.toHaveBeenCalled()
+    expect(f.ports.versioning.commitFiles).not.toHaveBeenCalled()
+    view.rerender(<CommitPane sessionId="session" item={f.item} ports={f.ports} visible onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(f.ports.versioning.commitFiles).toHaveBeenCalledTimes(1))
+    expect(subscribed).toBe(1)
+    expect(await screen.findByText('a.txt')).toBeTruthy()
+    const readsBeforeHide = vi.mocked(f.ports.versioning.readCommit).mock.calls.length
+    view.rerender(<CommitPane sessionId="session" item={f.item} ports={f.ports} visible={false} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    expect(subscribed).toBe(0)
+    f.setDraft({ ...f.getDraft(), revision: f.getDraft().revision + 1 })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)) })
+    expect(f.ports.versioning.readCommit).toHaveBeenCalledTimes(readsBeforeHide)
+    view.rerender(<CommitPane sessionId="session" item={f.item} ports={f.ports} visible onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    await waitFor(() => expect(f.ports.versioning.readCommit).toHaveBeenCalledTimes(readsBeforeHide + 1))
+    expect(subscribed).toBe(1)
+  })
   it('shows omitted selected paths and keeps the result open even when successful commits normally close', async () => {
     const f = CommitPaneTest.fixture()
     const close = vi.fn()
@@ -1373,5 +1401,41 @@ describe('app-client-ui/renderer/versioning/commitPane', () => {
     await waitFor(() => expect(f.ports.openFile).toHaveBeenCalledWith('snapshot', 'new/chosen.txt'))
     fireEvent.click(screen.getByRole('button', { name: 'Commit files' }))
     await waitFor(() => expect(f.ports.versioning.runCommit).toHaveBeenCalledWith(expect.objectContaining({ fileIds: ['new', 'new/chosen.txt'] })))
+  })
+
+  it('virtualizes large file lists of 2,500 entries to a bounded window of DOM rows', () => {
+    const entries = Array.from({ length: 2_500 }, (_, index) => CommitPaneTest.entry(`src/file-${String(index).padStart(4, '0')}.ts`))
+    const snapshot: FileChangesWorkingTreeSnapshot = {
+      snapshotId: 'large-snap',
+      sessionId: 'session',
+      createdAt: 1,
+      source: { requested: 'svn', selected: 'svn', available: ['svn'], fallbackReason: null },
+      defaultBaseline: null,
+      entries,
+      externalRoots: [],
+      warnings: [],
+    }
+    const checked = new Set(entries.map((entry) => entry.fileId))
+    const view = render(<CommitTargetsList snapshot={snapshot} checked={checked} disabled={false} onChange={vi.fn()} onOpen={vi.fn()} onMenuOpen={vi.fn()} onOpenExternal={null} onRevert={vi.fn()} onOpenSeparately={vi.fn()} />)
+    const renderedRows = view.container.querySelectorAll('.commit-target')
+    expect(renderedRows.length).toBeGreaterThan(0)
+    expect(renderedRows.length).toBeLessThan(200)
+    expect(screen.getByText('2500 selected')).toBeInTheDocument()
+  })
+
+  it('isolates commit-message typing from re-rendering the file list', async () => {
+    const f = CommitPaneTest.fixture()
+    f.snapshot.externalRoots = []
+    render(<CommitPane sessionId="session" item={f.item} ports={f.ports} onClose={vi.fn()} onOpenChanged={() => null} onOpenSeparately={vi.fn()} />)
+    const message = await screen.findByRole('textbox', { name: 'Commit message' })
+    await screen.findByText('a.txt')
+    const listBefore = screen.getByRole('grid', { name: 'Commit files' })
+    const sortSpy = vi.spyOn(Array.prototype, 'sort')
+    try {
+      fireEvent.change(message, { target: { value: 'Typing a commit message' } })
+      expect(message).toHaveValue('Typing a commit message')
+      expect(screen.getByRole('grid', { name: 'Commit files' })).toBe(listBefore)
+      expect(sortSpy).not.toHaveBeenCalled()
+    } finally { sortSpy.mockRestore() }
   })
 })

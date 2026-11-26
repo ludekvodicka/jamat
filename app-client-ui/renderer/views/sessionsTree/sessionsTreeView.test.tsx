@@ -6,6 +6,8 @@ import {
   type SessionGroupDefinition,
 } from '../../../shared/sessionsGroupsState'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
+import { UncommittedStore } from '../../versioning/uncommittedStore'
+import type { SessionUncommittedEntry } from '../../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -302,6 +304,45 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     expect(marker).toHaveTextContent('!')
   })
 
+  it('draws a grey star with the file count and paths for a session with uncommitted changes', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const sessionId = snapshot.sessions[0].sessionId
+    await mount(snapshot, null, { revision: 1, outbound: [], inbound: [] }, [], [], [], undefined, {}, undefined,
+      { [sessionId]: { files: 2, sample: ['app/a.ts', 'docs/b.md'] } })
+    const star = await screen.findByLabelText('Uncommitted session changes')
+    expect(star).not.toHaveClass('is-commit-open')
+    expect(star).toHaveTextContent('*')
+    expect(star).toHaveAttribute('title', 'Uncommitted session changes: 2 files\napp/a.ts\ndocs/b.md')
+    expect(screen.queryByLabelText('Commit review pending')).toBeNull()
+  })
+
+  it('draws only the red star when the session with uncommitted changes has a commit review open', async () => {
+    const snapshot = SessionsFixtures.mixed()
+    const sessionId = snapshot.sessions[0].sessionId
+    await mount(snapshot, null, { revision: 1, outbound: [], inbound: [] }, [], [sessionId], [], undefined, {}, undefined,
+      { [sessionId]: { files: 1, sample: ['a.ts'] } })
+    const star = await screen.findByLabelText('Commit review pending')
+    expect(star).toHaveClass('is-commit-open')
+    expect(screen.queryByLabelText('Uncommitted session changes')).toBeNull()
+  })
+
+  it('redraws only the row whose uncommitted entry changed', async () => {
+    const mixed = SessionsFixtures.mixed()
+    const { container, pushUncommitted } = await mount(mixed)
+    showAll(container)
+    const [first, second] = mixed.sessions
+    pushUncommitted({ [first.sessionId]: { files: 1, sample: ['a.ts'] } })
+    await waitFor(() => expect(rowOf(container, first.sessionId).querySelector('[data-uncommitted]')).not.toBeNull())
+
+    const drawn = vi.spyOn(SessionNodeState, 'characterOf')
+    pushUncommitted({ [first.sessionId]: { files: 2, sample: ['a.ts', 'b.ts'] } })
+    await waitFor(() => expect(rowOf(container, first.sessionId).querySelector('[data-uncommitted]'))
+      .toHaveAttribute('title', 'Uncommitted session changes: 2 files\na.ts\nb.ts'))
+    expect(rowOf(container, second.sessionId).querySelector('[data-uncommitted]')).toBeNull()
+    expect(drawn.mock.calls.length).toBeLessThanOrEqual(1)
+    drawn.mockRestore()
+  })
+
   /** Every operation is recorded rather than performed, and every one answers the same way. */
   class Ports implements SessionsTreePorts, SnapshotStorePorts<SessionsSnapshot> {
     readonly calls: string[] = []
@@ -481,6 +522,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     sections: readonly SessionGroupDefinition[] = SessionsGroupsState.defaultsConst,
     taskListings: Readonly<Record<string, SessionTaskListing>> = {},
     taskNavigation?: React.ComponentProps<typeof SessionsTreeView>['onOpenTask'],
+    uncommittedSessions: Readonly<Record<string, SessionUncommittedEntry>> = {},
   ) {
     const ports = new Ports(snapshot)
     ports.storedView = storedView
@@ -570,6 +612,15 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     stops.push(marks.start())
     const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: commitSessionIds } }), subscribe: () => () => undefined, reportError: vi.fn() })
     stops.push(commitOpen.start())
+    let uncommittedSnapshot = { revision: 1, sessions: uncommittedSessions }
+    let uncommittedChanged: (() => void) | null = null
+    const uncommitted = new UncommittedStore({ read: async () => ({ ok: true, value: uncommittedSnapshot }),
+      subscribe: (onChanged) => {
+        uncommittedChanged = onChanged
+        return () => { uncommittedChanged = null }
+      },
+      reportError: vi.fn() })
+    stops.push(uncommitted.start())
     const activeTerminal = new ActiveTerminalStore()
     const taskCalls: string[][] = []
     const tasks = new SessionTasksStore(snapshotStore, {
@@ -604,6 +655,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
         sessionFacts={sessionFacts}
         marks={marks}
           commitOpen={commitOpen}
+        uncommitted={uncommitted}
         tasks={tasks}
         onOpenTask={taskNavigation ?? ((target, task, title) => {
           if (target.kind !== 'local') throw new Error('Test requires explicit remote task navigation')
@@ -666,6 +718,10 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
       pushRemote: (next: RemoteConnectionsSnapshot) => {
         remote = next
         remoteChanged?.()
+      },
+      pushUncommitted: (sessions: Readonly<Record<string, SessionUncommittedEntry>>) => {
+        uncommittedSnapshot = { revision: uncommittedSnapshot.revision + 1, sessions }
+        uncommittedChanged?.()
       },
       unmount: view.unmount,
     }
@@ -3645,5 +3701,128 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeView', () => {
     // `s-done` is completed, so the default `active` filter does not draw it: the poll never asks it.
     expect(container.querySelector('[data-session="s-done"]')).toBeNull()
     expect(taskCalls.flat()).not.toContain('s-done')
+  })
+
+  it('draws running requested runs and services as plain child rows with confirmed Stop and failed requested runs with inline Remove', async () => {
+    const source = SessionsFixtures.mixed()
+    const parent = { ...sessionOf(source, 's-working'), sessionId: 'p-1', title: 'Parent', worktree: undefined, actions: undefined }
+    const baseShell = sessionOf(source, 's-shell')
+    const runningReq: SessionInfo = {
+      ...baseShell, sessionId: 'req-run', title: 'ping30', tabTitle: 'AppJamatV3 - ping30', life: 'live',
+      admits: ['finalize'], script: { parentId: 'p-1', phase: 'inner', scriptId: 'requested' },
+    }
+    const failedReq: SessionInfo = {
+      ...baseShell, sessionId: 'req-fail', title: 'fail2', tabTitle: 'AppJamatV3 - fail2', life: 'ended',
+      outcome: 'failed', exitCode: 2, endedAt: Date.now() - 1_000, admits: ['remove'],
+      script: { parentId: 'p-1', phase: 'inner', scriptId: 'requested' },
+    }
+    const service: SessionInfo = {
+      ...baseShell, sessionId: 'svc-1', title: 'dev', tabTitle: 'AppJamatV3 - dev', life: 'live',
+      admits: ['finalize'], script: { parentId: 'p-1', phase: 'inner', scriptId: 'service' },
+    }
+    const { container, ports } = await mount({ ...source, sessions: [parent, runningReq, failedReq, service] })
+
+    expect(rowOf(container, 'p-1').querySelector('.jamat-sessions__actions-chip')).toBeNull()
+    expect(labelsOf(container, 'req-run')).toEqual(['Stop'])
+    expect(labelsOf(container, 'svc-1')).toEqual(['Stop'])
+    expect(labelsOf(container, 'req-fail')).toEqual(['Remove'])
+
+    // Stop on a running requested run requires a second click, then stops it.
+    fireEvent.click(actionNamed(container, 'req-run', 'Stop'))
+    expect(ports.calls).toEqual([])
+    expect(labelsOf(container, 'req-run')).toEqual(['Stop?'])
+    fireEvent.click(actionNamed(container, 'req-run', 'Stop?'))
+    await waitFor(() => expect(ports.calls).toEqual(['finishMain:req-run']))
+
+    // Stop on a running service also requires a second click.
+    fireEvent.click(actionNamed(container, 'svc-1', 'Stop'))
+    expect(labelsOf(container, 'svc-1')).toEqual(['Stop?'])
+    fireEvent.click(actionNamed(container, 'svc-1', 'Stop?'))
+    await waitFor(() => expect(ports.calls).toEqual(['finishMain:req-run', 'finishMain:svc-1']))
+
+    // Remove on a failed requested run is offered inline and removes it after confirmation.
+    fireEvent.click(actionNamed(container, 'req-fail', 'Remove'))
+    expect(labelsOf(container, 'req-fail')).toEqual(['Remove?'])
+    fireEvent.click(actionNamed(container, 'req-fail', 'Remove?'))
+    await waitFor(() => expect(ports.calls).toEqual(['finishMain:req-run', 'finishMain:svc-1', 'remove:req-fail']))
+  })
+
+  it('draws at most three process rows in order, opens Processes on Enter on the more row, and omits the link on remote sessions', async () => {
+    const source = SessionsFixtures.mixed()
+    const baseShell = sessionOf(source, 's-shell')
+    const makeRun = (runId: string, startedAt: number) => ({
+      runId, phase: 'inner' as const, scriptId: 'service' as const, name: runId, title: runId,
+      commands: [], state: 'running' as const, startedAt, row: true, summary: `${runId} · running`, log: 'saved' as const,
+    })
+    const makeRunSession = (runId: string): SessionInfo => ({
+      ...baseShell, sessionId: runId, title: runId, tabTitle: `AppJamatV3 - ${runId}`, life: 'live',
+      admits: ['finalize'], script: { parentId: 'p-1', phase: 'inner', scriptId: 'service' },
+    })
+    const parent: SessionInfo = {
+      ...sessionOf(source, 's-working'),
+      sessionId: 'p-1',
+      title: 'Parent',
+      worktree: undefined,
+      actions: undefined,
+      scripts: { runs: [makeRun('svc-1', 1_000), makeRun('svc-2', 4_000), makeRun('svc-3', 5_000)] },
+    }
+    const snapshot: SessionsSnapshot = {
+      ...source,
+      sessions: [parent, makeRunSession('svc-1'), makeRunSession('svc-2'), makeRunSession('svc-3')],
+    }
+    const listing: SessionTaskListing = {
+      kind: 'tasks',
+      olderFinished: 0,
+      catchingUp: false,
+      rows: [
+        { kind: 'shell', shellId: 'sh-1', command: 'sleep 120', description: null, state: 'running', startedAt: 2_000, endedAt: null },
+        { kind: 'shell', shellId: 'sh-2', command: 'sleep 240', description: null, state: 'running', startedAt: 3_000, endedAt: null },
+      ],
+    }
+    const remoteParent: SessionInfo = {
+      ...parent,
+      scripts: { runs: [makeRun('r-1', 1_000), makeRun('r-2', 2_000), makeRun('r-3', 3_000), makeRun('r-4', 4_000)] },
+    }
+    const remoteSessions: SessionsSnapshot = {
+      ...source,
+      sessions: [remoteParent, makeRunSession('r-1'), makeRunSession('r-2'), makeRunSession('r-3'), makeRunSession('r-4')],
+    }
+    const { container, commands, finishRequests } = await mount(
+      snapshot,
+      null,
+      remoteSnapshot([outboundEndpoint(remoteSessions, 'endpoint-a')]),
+      [], [], [], SessionsGroupsState.defaultsConst,
+      { 'p-1': listing },
+    )
+    const execute = vi.spyOn(commands, 'execute').mockReturnValue('handled')
+
+    await waitFor(() => expect(container.querySelector('[data-session="p-1"] [data-processes-more="3"]')).toBeTruthy())
+    const localParent = container.querySelector('[data-session="p-1"]')!
+    const drawnChildren = [...localParent.querySelectorAll('.jamat-sessions__tasks > *')]
+    expect(drawnChildren.map((el) => el.getAttribute('data-session') ?? el.getAttribute('data-processes-more')))
+      .toEqual(['svc-3', 'svc-2', '3'])
+    expect(localParent.querySelector('[data-session="svc-1"]')).toBeNull()
+
+    // Shown run is found by SessionsTreeChoices.sessionNodeOf; hidden run is absent.
+    let shownFound = false
+    let hiddenFound = true
+    act(() => {
+      shownFound = finishRequests.request('svc-3')
+      hiddenFound = finishRequests.request('svc-1')
+    })
+    expect(shownFound).toBe(true)
+    expect(hiddenFound).toBe(false)
+
+    const more = localParent.querySelector<HTMLElement>('[data-processes-more="3"]')!
+    expect(more.textContent).toContain('and 3 more…')
+    expect(more.textContent).toContain('open processes')
+    fireEvent.keyDown(more, { key: 'Enter' })
+    expect(execute.mock.calls).toEqual([['session.showProcesses', { sessionId: 'p-1' }]])
+
+    const remote = sectionAfter(container, 'Remote')
+    const remoteMore = remote.querySelector<HTMLElement>('[data-processes-more="2"]')!
+    expect(remoteMore.textContent).toBe('and 2 more…')
+    expect(remoteMore.getAttribute('role')).toBeNull()
+    expect(remoteMore.querySelector('.jamat-sessions__task-more-link')).toBeNull()
   })
 })

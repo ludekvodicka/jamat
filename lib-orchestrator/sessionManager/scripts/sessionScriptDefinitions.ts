@@ -9,6 +9,12 @@ export type SessionScriptGate = 'before' | 'finish' | 'merge' | 'action'
 /** What becomes of a tab on the run once it collapses: the parent's terminal takes its place, or it closes. */
 export type SessionScriptHandoff = 'parent-tab' | 'close'
 
+/** When a run stops for its parent: by its gate, whenever the parent's process stops, or when the parent session closes. */
+export type SessionScriptStop = 'gate' | 'parent-process' | 'parent-session'
+
+/** `exit-code`: exit 0 succeeds. `stop`: only an asked stop is a normal end; any other end is `failed`, worded `exited`. */
+export type SessionScriptEnd = 'exit-code' | 'stop'
+
 /**
  * The ladder's nouns. They are what a person reads, so each script names them rather than having
  * them derived: "its <session> session record is gone", "the <actor> exited with 1".
@@ -39,8 +45,10 @@ export interface SessionScriptDefinition {
    * once and moved on, so a replay minutes later would run it for nobody.
    */
   replayable: boolean
-  /** True: the run is stopped once its parent no longer runs. */
-  stopsWithParent: boolean
+  stopsWith: SessionScriptStop
+  /** A settled run leaves the tree at once, whatever its outcome. */
+  collapsesOnEnd: boolean
+  endsBy: SessionScriptEnd
   handoff: SessionScriptHandoff
   /**
    * True: while the run runs, its last output line is drawn under its row (`RunOutputLines`). False for
@@ -61,7 +69,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => parent.pendingSetup?.setupSessionId ?? null,
     words: { session: 'setup', actor: 'setup' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'parent-tab',
     liveLine: true,
   }
@@ -77,7 +87,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => parent.pendingSetup?.setupSessionId ?? null,
     words: { session: 'script', actor: 'script' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'parent-tab',
     liveLine: true,
   }
@@ -93,7 +105,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => parent.pendingSetup?.setupSessionId ?? null,
     words: { session: 'checkout', actor: 'checkout' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'parent-tab',
     liveLine: true,
   }
@@ -106,7 +120,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => parent.finishChecks?.runId ?? null,
     words: { session: 'check', actor: 'check' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: true,
   }
@@ -119,7 +135,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => parent.worktreeMerge?.resolveSessionId ?? null,
     words: { session: 'resolve', actor: 'resolver' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: false,
   }
@@ -132,7 +150,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'svn', actor: 'svn' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: true,
   }
@@ -145,7 +165,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'check', actor: 'check' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: true,
   }
@@ -158,7 +180,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'setup', actor: 'setup' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: true,
   }
@@ -171,7 +195,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'resolve', actor: 'resolver' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: false,
   }
@@ -188,7 +214,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'merge', actor: 'merger' },
     replayable: true,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: false,
   }
@@ -201,7 +229,9 @@ export class SessionScriptDefinitions {
     pointerOf: (parent) => SessionScriptDefinitions.actionPointerOf(parent),
     words: { session: 'review', actor: 'review' },
     replayable: false,
-    stopsWithParent: false,
+    stopsWith: 'gate',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: false,
   }
@@ -214,9 +244,26 @@ export class SessionScriptDefinitions {
     pointerOf: () => null,
     words: { session: 'run', actor: 'run' },
     replayable: false,
-    stopsWithParent: true,
+    stopsWith: 'parent-process',
+    collapsesOnEnd: false,
+    endsBy: 'exit-code',
     handoff: 'close',
     liveLine: true,
+  }
+
+  /** A long-running process a live session started as a service; runs until stopped or its session closes. */
+  private static readonly serviceConst: SessionScriptDefinition = {
+    phase: 'inner',
+    scriptId: 'service',
+    gate: null,
+    pointerOf: () => null,
+    words: { session: 'service', actor: 'service' },
+    replayable: false,
+    stopsWith: 'parent-session',
+    collapsesOnEnd: true,
+    endsBy: 'stop',
+    handoff: 'close',
+    liveLine: false,
   }
 
   private static readonly allConst: readonly SessionScriptDefinition[] = [
@@ -232,6 +279,7 @@ export class SessionScriptDefinitions {
     SessionScriptDefinitions.svnMergerConst,
     SessionScriptDefinitions.reviewConst,
     SessionScriptDefinitions.requestedConst,
+    SessionScriptDefinitions.serviceConst,
   ]
 
   /**
@@ -276,7 +324,7 @@ export class SessionScriptDefinitions {
     else if (link.scriptId === 'svn' && link.phase === 'before') return definition.words
     else if (link.scriptId === 'svn') noun = `${definition.words.actor} ${link.name}`
     else if (link.scriptId === 'setup' || link.scriptId === 'merge-resolve' || link.scriptId === 'requested'
-      || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge' || link.scriptId === 'review') return definition.words
+      || link.scriptId === 'service' || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge' || link.scriptId === 'review') return definition.words
     else throw new Error(`Unknown script: ${JSON.stringify(link.scriptId satisfies never)}`)
     return { session: noun, actor: noun }
   }

@@ -94,7 +94,8 @@ export class HostTransport {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
         throw new HostOperationError(400, 'body must be a JSON object')
       const body = parsed as Record<string, unknown>
-      if (!isReadOnlyOp(name)) this.log(`op ${name}`)
+      // The lease renewal comes every few seconds and was 98 % of the log; acquire and release still show.
+      if (!isReadOnlyOp(name) && name !== 'controller.renew') this.log(`op ${name}`)
 
       const hungUp = new AbortController()
       response.on('close', () => {

@@ -31,9 +31,9 @@ export class SessionTasksOperations {
 
   private readonly tasks: SessionTasks
   private readonly sessions: SessionManager
-  private readonly tabs: Pick<TabControlBroker, 'openTask' | 'openWorkflow'>
+  private readonly tabs: Pick<TabControlBroker, 'openTask' | 'openWorkflow' | 'openProcesses'>
 
-  constructor(tasks: SessionTasks, sessions: SessionManager, tabs: Pick<TabControlBroker, 'openTask' | 'openWorkflow'>) {
+  constructor(tasks: SessionTasks, sessions: SessionManager, tabs: Pick<TabControlBroker, 'openTask' | 'openWorkflow' | 'openProcesses'>) {
     this.tasks = tasks
     this.sessions = sessions
     this.tabs = tabs
@@ -46,6 +46,12 @@ export class SessionTasksOperations {
       description: 'The live output or saved log of one script run of a local session.',
       input: z.strictObject({ sessionId: RemoteControlZod.text(), runId: RemoteControlZod.text() }),
       run: (body) => this.scriptOutputOf(body.sessionId, body.runId),
+    })
+    op('sessions.scriptLastLines', {
+      kind: 'read',
+      description: 'The last output line of each running service of a local session.',
+      input: z.strictObject({ sessionId: RemoteControlZod.text() }),
+      run: async (body) => RemoteControlOutcome.of(await this.sessions.scriptLastLinesOf(body.sessionId)),
     })
     op('sessionTasks.list', {
       kind: 'read',
@@ -116,6 +122,18 @@ export class SessionTasksOperations {
         if (info === undefined)
           return { ok: false, error: { code: 'not-found', detail: `Session ${body.sessionId} does not exist` } }
         const opened = await this.tabs.openWorkflow(body.sessionId, info.tabTitle, JSON.stringify([context.callerId, context.operationId]))
+        return opened.ok ? { ok: true, value: { panelId: opened.value.panelId } } : opened
+      },
+    })
+    op('sessionTasks.openProcesses', {
+      kind: 'write',
+      description: "Bring a local session's tab forward with Processes active in its split.",
+      input: z.strictObject({ sessionId: RemoteControlZod.text() }),
+      run: async (body) => {
+        const info = this.sessions.snapshot().sessions.find((one) => one.sessionId === body.sessionId)
+        if (info === undefined)
+          return { ok: false, error: { code: 'not-found', detail: `Session ${body.sessionId} does not exist` } }
+        const opened = await this.tabs.openProcesses(body.sessionId, info.tabTitle)
         return opened.ok ? { ok: true, value: { panelId: opened.value.panelId } } : opened
       },
     })

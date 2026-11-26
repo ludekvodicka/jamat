@@ -143,7 +143,8 @@ describe('lib-orchestrator/remoteControl/remoteControlRequestValidation', () => 
       expect(RemoteControlRequestValidation.parse({ ...valid, body })).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
     const selected = { ...valid, body: { ...valid.body, paths: ['Q:/outside/one.txt', 'Q:/outside/two.txt'] } }
     expect(RemoteControlRequestValidation.parse(selected)).toEqual({ ok: true, request: selected })
-    for (const paths of [[], [''], [1], null, 'file.txt', Array(2_001).fill('file.txt')])
+    expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths: Array(5_000).fill('file.txt') } }).ok).toBe(true)
+    for (const paths of [[], [''], [1], null, 'file.txt', Array(5_001).fill('file.txt')])
       expect(RemoteControlRequestValidation.parse({ ...valid, body: { ...valid.body, paths } }).ok).toBe(false)
     const depths = { ...valid, body: { ...valid.body,
       paths: [{ path: 'Q:/Group', depth: 'empty' }, { path: 'Q:/Group/Project', depth: 'infinity' }, 'Q:/Group/file.txt'] } }

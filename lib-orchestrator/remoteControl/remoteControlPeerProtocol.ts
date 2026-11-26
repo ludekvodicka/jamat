@@ -79,7 +79,7 @@ export class RemoteControlPeerConst {
     'session-workspace.changes', 'session-workspace.tasks', 'session-workspace.reviews',
     'session-workspace.actions', 'session-workspace.metadata', 'session-workspace.notes',
     'session-workspace.model', 'session-workspace.finish', 'session-workspace.conflicts', 'session-workspace.history', 'session-workspace.sidebar', 'session-workspace.commands',
-    'session-workspace.commit-receipts',
+    'session-workspace.commit-receipts', 'session-workspace.processes',
   ] as const
   static readonly capabilities = [
     'agents.accounts',

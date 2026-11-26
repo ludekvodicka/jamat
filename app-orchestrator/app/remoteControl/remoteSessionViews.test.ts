@@ -109,4 +109,22 @@ describe('authenticated session views', () => {
     expect(await views.request(peer, { ...view, requestId: 'press', operationId: 'operation', operation: 'actions.press', body })).toEqual({ ok: true, value: null })
   })
 
+  it('records the processes capability on opened views only when negotiated', async () => {
+    const seen: { processes?: true }[] = []
+    const read = vi.fn(async (openedView: { processes?: true }) => {
+      seen.push({ processes: openedView.processes })
+      return { ok: true as const, value: { transferId: 'transfer', version: 'version', offset: 0, totalBytes: 2, base64: 'e30=' } }
+    })
+    const views = new RemoteSessionViews({ exists: () => true, press: vi.fn(), read })
+    const oldPeer = { ...peer, capabilities: [...peer.capabilities, 'session-workspace.tasks' as const] }
+    const newPeer = { ...oldPeer, capabilities: [...oldPeer.capabilities, 'session-workspace.processes' as const] }
+    const oldOpen = await views.request(oldPeer, { requestId: 'open-old', epoch: 'epoch', operation: 'views.open', body: { sessionId: 'session', viewerId: 'v-old' } })
+    const newOpen = await views.request(newPeer, { requestId: 'open-new', epoch: 'epoch', operation: 'views.open', body: { sessionId: 'session', viewerId: 'v-new' } })
+    if (!oldOpen.ok || !oldOpen.value || !('viewId' in oldOpen.value) || !newOpen.ok || !newOpen.value || !('viewId' in newOpen.value))
+      throw new Error('Expected opened views')
+    expect(await views.request(oldPeer, { ...oldOpen.value, requestId: 't-old', operation: 'tasks.request', body: { kind: 'list' } })).toMatchObject({ ok: true })
+    expect(await views.request(newPeer, { ...newOpen.value, requestId: 't-new', operation: 'tasks.request', body: { kind: 'list' } })).toMatchObject({ ok: true })
+    expect(seen).toEqual([{ processes: undefined }, { processes: true }])
+  })
+
 })

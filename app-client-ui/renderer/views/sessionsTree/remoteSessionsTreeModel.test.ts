@@ -11,6 +11,7 @@ import type {
   SessionsSnapshot,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import { TerminalTargetCodec } from '../../../shared/terminalTarget'
+import { UncommittedStore } from '../../versioning/uncommittedStore'
 import { RemoteSessionsTreeModel } from './remoteSessionsTreeModel'
 import { SessionsTreeModel, type TreeNode } from './sessionsTreeModel'
 
@@ -48,6 +49,28 @@ describe('app-client-ui/renderer/views/sessionsTree/remoteSessionsTreeModel', ()
     expect(RemoteSessionsTreeFixtures.sessionNode(result.inbound[0]?.endpoints[0]?.tree.nodes).badges.commitOpen).toBe(true)
     const none = RemoteSessionsTreeModel.build(remote, local, RemoteSessionsTreeFixtures.view(), new Set(), new Map())
     expect(RemoteSessionsTreeFixtures.sessionNode(none.inbound[0]?.endpoints[0]?.tree.nodes).badges.commitOpen).toBe(false)
+  })
+
+  it('marks uncommitted files of a remote session with its count only, and nothing for a peer that sends no field', () => {
+    const marked = { ...RemoteSessionsTreeFixtures.session('far', 'Beta'), uncommittedFiles: 3 }
+    const older = RemoteSessionsTreeFixtures.session('old', 'Gamma')
+    const remote = RemoteSessionsTreeFixtures.remote([
+      RemoteSessionsTreeFixtures.outbound('profile-a', 'computer-a', 'endpoint-a', 'A', RemoteSessionsTreeFixtures.snapshot([marked])),
+      RemoteSessionsTreeFixtures.outbound('profile-b', 'computer-b', 'endpoint-b', 'B', RemoteSessionsTreeFixtures.snapshot([older])),
+    ])
+    const local = { local: { files: 1, sample: ['a.ts'] } }
+    const uncommitted = UncommittedStore.withRemote(local, remote)
+    expect(uncommitted).toEqual({ ...local,
+      [TerminalTargetCodec.key({ kind: 'remote', remoteEndpointId: 'endpoint-a', sessionId: 'far' })]: { files: 3, sample: [] } })
+    expect(UncommittedStore.withRemote(local, RemoteSessionsTreeFixtures.remote([
+      RemoteSessionsTreeFixtures.outbound('profile-b', 'computer-b', 'endpoint-b', 'B', RemoteSessionsTreeFixtures.snapshot([older])),
+    ]))).toBe(local)
+    const result = RemoteSessionsTreeModel.build(remote, RemoteSessionsTreeFixtures.snapshot([]), RemoteSessionsTreeFixtures.view(),
+      new Set(), new Map(), new Map(), new Set(), uncommitted)
+    const far = RemoteSessionsTreeFixtures.sessionNode(result.outbound[0]?.endpoints[0]?.tree.nodes)
+    expect(far.badges.uncommitted).toEqual({ files: 3, sample: [] })
+    expect(UncommittedStore.titleOf(far.badges.uncommitted!)).toBe('Uncommitted session changes: 3 files')
+    expect(RemoteSessionsTreeFixtures.sessionNode(result.outbound[1]?.endpoints[0]?.tree.nodes).badges.uncommitted).toBeNull()
   })
 
   it('groups connected outbound endpoints by stable computer identity and omits offline profiles', () => {

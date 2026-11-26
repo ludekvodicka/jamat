@@ -1003,6 +1003,26 @@ describe('FinishDriver', () => {
     expect(h.events.filter((event) => event === 'commit')).toHaveLength(1)
   })
 
+  it('stops a running service inside the worktree and awaits its exit before removal, leaving outside services alone', async () => {
+    const h = await harness()
+    for (const [sessionId, owner, cwd] of [['web', 'worker', h.root], ['outside', 'worker', h.root + '-outside'], ['foreign', 'other', h.root]])
+      await h.records.put({ sessionId, title: sessionId, kind: 'shell', life: 'live', binding: { hostInstanceId: 'fixture', generation: 1 }, createdAt: 1,
+        directory: { mode: 'adHoc', path: cwd }, scriptOf: { sessionId: owner, phase: 'inner', scriptId: 'service', name: sessionId } })
+    const order: string[] = []
+    h.deps.stopRun = vi.fn(async (id: string) => { order.push(`stop:${id}`); return true })
+    h.deps.awaitExit = vi.fn(async (id: string) => { order.push(`exit:${id}`); return true })
+    const originalRemove = h.deps.removal.remove
+    h.deps.removal.remove = vi.fn(async (...args: Parameters<typeof originalRemove>) => { order.push('remove'); return originalRemove(...args) })
+    await h.driver.start('worker', { choice: 'commit', requestedBy: 'window' })
+    await h.approve()
+    expect(h.deps.stopRun).toHaveBeenCalledWith('web')
+    expect(order.indexOf('stop:web')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('exit:web')).toBeGreaterThan(order.indexOf('stop:web'))
+    expect(order.indexOf('remove')).toBeGreaterThan(order.indexOf('exit:web'))
+    expect(h.deps.stopRun).not.toHaveBeenCalledWith('outside')
+    expect(h.deps.stopRun).not.toHaveBeenCalledWith('foreign')
+  })
+
   // Worker-agent 031: the Solve with agent helper still ran in the worktree, so the published worktree was kept.
   it('stops the helper agent of this worker in the worktree before removal, and only that one', async () => {
     const h = await harness()

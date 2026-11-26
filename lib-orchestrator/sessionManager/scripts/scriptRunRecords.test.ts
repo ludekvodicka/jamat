@@ -1,10 +1,12 @@
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { SvnExecutable } from '../../svn/svnExecutable'
 import { ScriptRunRecords } from './scriptRunRecords'
 
 describe('lib-orchestrator/sessionManager/scripts/scriptRunRecords', () => {
+  afterEach(() => vi.restoreAllMocks())
   const worktreePath = join('C:', 'project', '.worktrees', 'i12-fix')
   const link = { sessionId: 'p', phase: 'before', scriptId: 'declared', name: 'codegen', stepKey: 'k2' } as const
 
@@ -58,11 +60,18 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunRecords', () => {
     expect(run.worktree).toBeUndefined()
   })
 
-  // svn.exe reads its command line in the ANSI code page: `ř` would arrive as `r` and name another file.
-  it('refuses an argument a direct process cannot take', () => {
+  // Without UTF-8 activeCodePage, svn.exe reads its command line in the ANSI code page: `ř` would arrive as `r`.
+  it('refuses an argument a direct process cannot take, and admits Unicode when UTF-8 svn is active', () => {
     const process = { tool: 'svn' as const, args: ['resolve', '--accept', 'working', '--', 'složka/ř.txt'], cwd: worktreePath }
+    vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
     expect(() => ScriptRunRecords.processRun({ runId: 'r', operationId: 'op', link, title: 't', process, now: 7 }))
       .toThrow('Script run r has an argument a direct process cannot take: "složka/ř.txt"')
+    vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(true)
+    expect(ScriptRunRecords.processRun({ runId: 'r', operationId: 'op', link, title: 't', process, now: 7 }).process)
+      .toEqual({ tool: 'svn', args: process.args })
+    expect(() => ScriptRunRecords.processRun({ runId: 'r', operationId: 'op', link, title: 't',
+      process: { tool: 'svn', args: ['add', 'bad\nname.txt'], cwd: worktreePath }, now: 7 }))
+      .toThrow('Script run r has an argument a direct process cannot take')
   })
 
   it('titles the install and a declared step after the worktree folder', () => {

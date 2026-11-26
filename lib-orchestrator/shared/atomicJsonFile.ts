@@ -34,11 +34,11 @@ export class AtomicJsonFile {
    * the machine state root is owner-only, and a file inside the user's checkout has to keep the
    * permissions a checked-in file has - a 0600 `.worktree.json` would be re-tightened on every save.
    */
-  static write(file: string, value: unknown, mode = AtomicJsonFile.ownerOnlyFileConst): void {
+  static write(file: string, value: unknown, mode = AtomicJsonFile.ownerOnlyFileConst, compact = false): void {
     const temporaryFile = `${file}.${process.pid}.${randomUUID()}.tmp`
     let committed = false
     try {
-      writeFileSync(temporaryFile, JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
+      writeFileSync(temporaryFile, compact ? JSON.stringify(value) : JSON.stringify(value, null, 2), { encoding: 'utf-8', mode, flush: true })
       WindowsHeldFile.retriedSync(() => renameSync(temporaryFile, file))
       if (process.platform !== 'win32') {
         const directory = openSync(dirname(file), 'r')

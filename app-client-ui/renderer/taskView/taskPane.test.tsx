@@ -131,6 +131,23 @@ describe('app-client-ui/renderer/taskView/taskPane', () => {
     expect(screen.getByText('its run was stopped').className).not.toContain('task-view__failed')
   })
 
+  it('draws stateWord in the header when provided and falls back to the plain state word without it', () => {
+    const { rerender } = render(<ScriptOutputView openTerminal={ports.openTerminal} title="ping8" runId="r1" output={{
+      state: 'failed', stateWord: 'Exited', source: 'log', lines: ['done'], terminal: null,
+      failureReason: 'service exited with code 0',
+    }} />)
+    expect(screen.getByText('Exited · Saved log')).toBeTruthy()
+    expect(screen.queryByText('Failed · Saved log')).toBeNull()
+    expect(screen.getByText('service exited with code 0')).toBeTruthy()
+
+    rerender(<ScriptOutputView openTerminal={ports.openTerminal} title="tests" runId="r2" output={{
+      state: 'failed', source: 'log', lines: ['fail'], terminal: null,
+      failureReason: 'the run ended with 1',
+    }} />)
+    expect(screen.getByText('Failed · Saved log')).toBeTruthy()
+    expect(screen.getByText('the run ended with 1')).toBeTruthy()
+  })
+
   it('reads nothing while its tab is hidden and once when it is shown', async () => {
     const control = install({ kind: 'none', code: 'unknown-task', reason: 'The session lists no such sub-agent' })
     const { rerender } = render(<TaskPane ports={ports} item={itemConst} visible={false} />)

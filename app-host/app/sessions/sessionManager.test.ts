@@ -18,7 +18,9 @@ import { SessionStore } from './sessionStore.js'
 describe('app-host/app/sessions/sessionManager', () => {
   const directories: string[] = []
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const store of SessionManagerTest.stores.splice(0))
+      await store.drain()
     for (const directory of directories.splice(0))
       rmSync(directory, { recursive: true, force: true })
   })
@@ -51,9 +53,11 @@ describe('app-host/app/sessions/sessionManager', () => {
   it('writes the diagnostics document once for one resize', async () => {
     const harness = SessionManagerTest.harness(directories)
     await harness.manager.create(SessionManagerTest.createRequest('create-1'))
-    const write = vi.spyOn(AtomicJsonFile, 'write')
+    await harness.store.drain()
+    const write = vi.spyOn(AtomicJsonFile, 'writeAsync')
 
     harness.manager.terminalResize(SessionManagerTest.ref(1), 120, 40)
+    await harness.store.drain()
 
     expect(write).toHaveBeenCalledTimes(1)
     expect(harness.manager.get('runtime-1')).toMatchObject({ cols: 120, rows: 40 })
@@ -412,6 +416,8 @@ describe('app-host/app/sessions/sessionManager', () => {
 })
 
 class SessionManagerTest {
+  static readonly stores: SessionStore[] = []
+
   static harness(
     directories: string[],
     terminals = new FakeTerminalInstances(),
@@ -420,13 +426,15 @@ class SessionManagerTest {
   ) {
     const directory = mkdtempSync(join(tmpdir(), 'jamat-v3-host-manager-'))
     directories.push(directory)
+    const store = new SessionStore(join(directory, 'host-state.json'), () => undefined)
+    SessionManagerTest.stores.push(store)
     const manager = new SessionManager(
-      new SessionStore(join(directory, 'host-state.json'), () => undefined),
+      store,
       events,
       'host-1',
       factory,
     )
-    return { manager, terminals }
+    return { manager, store, terminals }
   }
 
   static async rejection(promise: Promise<unknown>): Promise<unknown> {

@@ -7,6 +7,9 @@ import { AppClientCliError } from './appClientCliError'
 export class CommitStatusReader {
   static readonly timeoutMillisecondsConst = 86_400_000
   static readonly unavailableGraceMillisecondsConst = 30_000
+  static readonly fastPollMillisecondsConst = 1_000
+  static readonly slowPollMillisecondsConst = 5_000
+  static readonly fastPollWindowMillisecondsConst = 60_000
 
   private readonly deps: {
     read(signal?: AbortSignal): Promise<RemoteControlResponse>
@@ -55,7 +58,8 @@ export class CommitStatusReader {
   }
 
   async read(id: string, wait: boolean, timeoutMs: number, signal?: AbortSignal): Promise<RemoteControlResponse> {
-    const deadline = this.deps.now() + timeoutMs
+    const startedAt = this.deps.now()
+    const deadline = startedAt + timeoutMs
     let unavailableSince: number | null = null
     for (;;) {
       if (signal?.aborted) throw new AppClientCliError('operation-failed', `Stopped waiting for commit ${id}; its outcome is unknown`)
@@ -78,10 +82,14 @@ export class CommitStatusReader {
           return CommitStatusReader.unknown(answer, id)
       } else return CommitStatusReader.unknown(answer, id)
       // A failed status read cannot settle the human's review. Retry only that read under the original deadline.
-      const remaining = deadline - this.deps.now()
+      const now = this.deps.now()
+      const remaining = deadline - now
       if (remaining <= 0)
         throw new AppClientCliError('timeout', `Timed out waiting for commit ${id}; its outcome is unknown. Query this UUID again. No other dialog was opened`)
-      await this.deps.pause(Math.min(1_000, remaining), signal).catch((error: unknown) => {
+      const interval = now - startedAt < CommitStatusReader.fastPollWindowMillisecondsConst
+        ? CommitStatusReader.fastPollMillisecondsConst
+        : CommitStatusReader.slowPollMillisecondsConst
+      await this.deps.pause(Math.min(interval, remaining), signal).catch((error: unknown) => {
         throw new AppClientCliError('operation-failed', `Stopped waiting for commit ${id}; its outcome is unknown: ${ErrorText.of(error)}`)
       })
     }

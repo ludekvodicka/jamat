@@ -14,14 +14,15 @@ describe('app-client-ui/app/versioning/serviceVersioningCommitIpc', () => {
       const snapshot = { snapshotId: 'snapshot' }
       const retained = { ...snapshot, entries: [] }
       const manager = { read: vi.fn(() => ({ sessionId: 'session', source: 'svn', scopeRoot: 'scope' })),
-        files: vi.fn(() => retained), checkedPaths: vi.fn(() => checked) } as unknown as VersioningCommitManager
+        filesWithCheckedPaths: vi.fn(() => ({ snapshot: retained, checkedPaths: checked })),
+        checkedPaths: vi.fn(() => checked) } as unknown as VersioningCommitManager
       const files = { workingTree: vi.fn(async () => ({ ok: true as const, value: snapshot as never })) }
       bindService(new ServiceVersioningCommitIpc(manager, () => 'window', files, vi.fn())).initialize()
       expect(await handlers.get('versioning:commit-files')!({ sender }, 'draft')).toEqual({ ok: true, value: { ok: true, value: retained, ...extra } })
       expect(manager.read).toHaveBeenCalledWith('window', 'draft')
       expect(files.workingTree).toHaveBeenCalledWith('window', 'session', 'svn', 'scope', true, undefined, undefined)
-      expect(manager.files).toHaveBeenCalledWith('window', 'draft', snapshot)
-      expect(manager.checkedPaths).toHaveBeenCalledWith('window', 'draft', retained)
+      expect(manager.filesWithCheckedPaths).toHaveBeenCalledWith('window', 'draft', snapshot)
+      expect(manager.checkedPaths).not.toHaveBeenCalled()
     })
 
   it.each([

@@ -304,7 +304,7 @@ describe('durable session actions', () => {
       .toEqual(['finish', 'update-main'])
   })
 
-  it('derives legacy setup and requested runs, includes live runs once, and leaves a plain legacy session empty', async () => {
+  it('derives legacy setup runs, omits requested runs from sections, and leaves a plain legacy session empty', async () => {
     const h = await harness()
     writeFileSync(h.file, JSON.stringify({ schemaVersion: 1, records: [record()] }))
     const legacy = (await h.load()).get('session')!
@@ -313,11 +313,10 @@ describe('durable session actions', () => {
       commands: [], outcome: 'succeeded', log: { state: 'saved', bytes: 12, truncated: false } },
     { runId: 'requested', phase: 'inner', scriptId: 'requested', name: 'run', title: 'Tests', startedAt: 3, endedAt: 4,
       commands: [], outcome: 'succeeded', log: { state: 'saved', bytes: 20, truncated: false } }]
-    expect(SessionWorkflows.sectionsOf(legacy, () => null).map((section) => section.kind)).toEqual(['before', 'script'])
+    expect(SessionWorkflows.sectionsOf(legacy, () => null).map((section) => section.kind)).toEqual(['before'])
     const running = SessionWorkflows.sectionsOf(record(), () => null, undefined, [{ runId: 'run', phase: 'inner', scriptId: 'requested', name: 'run',
       title: 'Tests', summary: 'Running tests', startedAt: 50, state: 'running', commands: [], row: true, log: 'none' }])
-    expect(running).toMatchObject([{ kind: 'script', open: true, startedAt: 50,
-      rounds: [{ steps: [{ body: { kind: 'log', runId: 'run' } }] }] }])
+    expect(running).toEqual([])
   })
 
   // UA1-J10-10: the card said only "Action ended" after Stop checks and return to work.

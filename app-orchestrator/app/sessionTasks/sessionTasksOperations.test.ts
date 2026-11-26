@@ -29,6 +29,7 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
     state: 'succeeded', source: 'log', lines: ['done'], terminal: null, endedAt: 123,
   }
   let scriptReads: { sessionId: string; runId: string }[]
+  let lastLineReads: string[]
   let reads: { context: SessionTasksContext; parent: SessionTaskParentState }[]
   let transcriptReads: {
     context: SessionTasksContext
@@ -45,8 +46,9 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
   let bench: RegistryBench
   let opens: { tabTitle: string; item: TabControlTaskItem }[]
   let workflows: { sessionId: string; tabTitle: string }[]
+  let processesOpens: { sessionId: string; tabTitle: string }[]
 
-  function tabsUnderTest(): Pick<TabControlBroker, 'openTask' | 'openWorkflow'> {
+  function tabsUnderTest(): Pick<TabControlBroker, 'openTask' | 'openWorkflow' | 'openProcesses'> {
     return {
       openTask: (tabTitle, item) => {
         opens.push({ tabTitle, item })
@@ -55,6 +57,10 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
       openWorkflow: (sessionId, tabTitle) => {
         workflows.push({ sessionId, tabTitle })
         return Promise.resolve({ ok: true, value: { kind: 'workflow-opened', panelId: `terminal:${sessionId}`, windowId: 'second' } })
+      },
+      openProcesses: (sessionId, tabTitle) => {
+        processesOpens.push({ sessionId, tabTitle })
+        return Promise.resolve({ ok: true, value: { kind: 'processes-opened', panelId: `terminal:${sessionId}`, windowId: 'second' } })
       },
     }
   }
@@ -94,6 +100,12 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
           ? { ok: true, value: scriptOutputConst }
           : { ok: false, code: 'not-found', detail: `Session ${sessionId} has no script run ${runId}` }
       },
+      scriptLastLinesOf: async (sessionId: string) => {
+        lastLineReads.push(sessionId)
+        return sessionId === 'agent-1'
+          ? { ok: true, value: [{ runId: 'svc-1', line: 'Reply from 127.0.0.1' }] }
+          : { ok: false, code: 'not-found', detail: `Session ${sessionId} does not exist` }
+      },
       transcriptContext: (sessionId: string) => {
         const found = sessionsConst[sessionId as keyof typeof sessionsConst]
         if (!found)
@@ -126,8 +138,10 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
     transcriptReads = []
     shellReads = []
     scriptReads = []
+    lastLineReads = []
     opens = []
     workflows = []
+    processesOpens = []
     new SessionTasksOperations(tasksUnderTest(), sessionsUnderTest(), tabsUnderTest()).register(bench.registry)
   })
 
@@ -148,13 +162,25 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
 
   it('registers its read operations and the open write, none of which a peer can be granted', () => {
     expect(bench.registry.names().sort())
-      .toEqual(['sessionTasks.list', 'sessionTasks.open', 'sessionTasks.openWorkflow', 'sessionTasks.shellOutput', 'sessionTasks.transcript',
-        'sessions.scriptOutput'])
-    for (const name of ['sessionTasks.list', 'sessionTasks.transcript', 'sessionTasks.shellOutput', 'sessionTasks.open', 'sessionTasks.openWorkflow',
-      'sessions.scriptOutput']) {
-      expect(bench.registry.isWrite(name)).toBe(name === 'sessionTasks.open' || name === 'sessionTasks.openWorkflow')
+      .toEqual(['sessionTasks.list', 'sessionTasks.open', 'sessionTasks.openProcesses', 'sessionTasks.openWorkflow', 'sessionTasks.shellOutput', 'sessionTasks.transcript',
+        'sessions.scriptLastLines', 'sessions.scriptOutput'])
+    for (const name of ['sessionTasks.list', 'sessionTasks.transcript', 'sessionTasks.shellOutput', 'sessionTasks.open', 'sessionTasks.openProcesses', 'sessionTasks.openWorkflow',
+      'sessions.scriptLastLines', 'sessions.scriptOutput']) {
+      expect(bench.registry.isWrite(name)).toBe(name === 'sessionTasks.open' || name === 'sessionTasks.openProcesses' || name === 'sessionTasks.openWorkflow')
       expect(RemoteControlPeerConst.controlOperations as readonly string[]).not.toContain(name)
     }
+  })
+
+  it('reads last output lines for running services of a local session, validates input and preserves not-found', async () => {
+    expect(await bench.call('sessions.scriptLastLines', { sessionId: 'agent-1' }))
+      .toEqual({ ok: true, value: [{ runId: 'svc-1', line: 'Reply from 127.0.0.1' }] })
+    expect(await bench.call('sessions.scriptLastLines', { sessionId: 'nobody' }))
+      .toEqual({ ok: false, error: {
+        code: 'not-found', detail: 'Session nobody does not exist', data: { sourceCode: 'not-found' },
+      } })
+    for (const body of [{ sessionId: '' }, {}, { sessionId: 'agent-1', extra: true }])
+      expect((await bench.call('sessions.scriptLastLines', body)).ok).toBe(false)
+    expect(lastLineReads).toEqual(['agent-1', 'nobody'])
   })
 
   it('reads script output for a local shell parent and preserves a missing-run refusal', async () => {
@@ -214,6 +240,14 @@ describe('app-client-ui/app/sessionTasks/sessionTasksOperations', () => {
     expect(workflows).toEqual([{ sessionId: 'agent-1', tabTitle: 'Tab agent-1' }])
     expect(await bench.call('sessionTasks.openWorkflow', { sessionId: 'nobody' })).toMatchObject({ ok: false, error: { code: 'not-found' } })
     expect(workflows).toHaveLength(1)
+  })
+
+  it("opens a session's processes list in its own tab under the session's tab title, and refuses an unknown session", async () => {
+    expect(await bench.call('sessionTasks.openProcesses', { sessionId: 'agent-1' }))
+      .toEqual({ ok: true, value: { panelId: 'terminal:agent-1' } })
+    expect(processesOpens).toEqual([{ sessionId: 'agent-1', tabTitle: 'Tab agent-1' }])
+    expect(await bench.call('sessionTasks.openProcesses', { sessionId: 'nobody' })).toMatchObject({ ok: false, error: { code: 'not-found' } })
+    expect(processesOpens).toHaveLength(1)
   })
 
   it('refuses to open a task of an unknown session, or one named by a path', async () => {

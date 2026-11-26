@@ -59,46 +59,46 @@ describe('Session actions sections', () => {
     expect(SessionWorkflows.endedHistoryOf([ended, kept])).toEqual(new Set())
   })
 
-  it('shows a requested run that was stopped as stopped, not failed', () => {
+  it('adds no script section for requested runs regardless of outcome or row presence', () => {
     const record: SessionRecord = { sessionId: 's1', title: 'Work', kind: 'agent', directory: { mode: 'adHoc', path: 'Q:/Work' },
-      life: 'ended', binding: null, createdAt: 0,
+      life: 'live', binding: null, createdAt: 0,
       scriptRuns: (['stopped', 'failed'] as const).map((outcome) => ({ runId: outcome, phase: 'inner' as const, scriptId: 'requested' as const,
         name: 'validation', title: 'Worktree validation', commands: [], startedAt: 1, endedAt: 2, outcome,
         log: { state: 'saved' as const, bytes: 1, truncated: false } })) }
-    const steps = SessionWorkflows.sectionsOf(record, () => null).filter((section) => section.kind === 'script')
-      .map((section) => [section.badge, section.rounds[0].steps[0].state])
-    expect(steps).toEqual([['stopped', 'skipped'], ['failed', 'failed']])
+    expect(SessionWorkflows.sectionsOf(record, () => null)).toEqual([])
+    const run = (runId: string, state: 'running' | 'failed' | 'lost' | 'succeeded', row: boolean): SessionScriptRunInfo => ({ runId, phase: 'inner',
+      scriptId: 'requested', name: 'j10-requested', title: 'j10-requested', state, summary: state, startedAt: 5, endedAt: state === 'running' ? undefined : 6,
+      commands: [], row, log: state === 'running' ? 'none' : 'saved' })
+    expect(SessionWorkflows.sectionsOf(record, () => null, undefined, [
+      run('r0', 'running', true), run('r1', 'failed', true), run('r2', 'lost', true), run('r3', 'succeeded', false),
+    ])).toEqual([])
   })
 
-  it('offers Stop on a requested run while it runs and on the validation of the prepared worktree', () => {
+  it('adds no section for a running requested run while listing running inner runs with Stop on Finish validation', () => {
     const execution = { root: 'Q:/app/.worktrees/001', checks: [], checkCursor: 0, rootCursor: 0, evidence: [], requestedBy: 'window' as const, startedAt: 3 }
     const record: SessionRecord = { sessionId: 's1', title: 'Work', kind: 'agent', directory: { mode: 'adHoc', path: 'Q:/app' },
       life: 'live', binding: null, createdAt: 0,
       worktreeLifecycle: { version: 1, actionId: 'f1', phase: 'waiting', step: 'reviewing', outOfDate: 0, journal: [], execution,
         facts: { worker: { liveness: 'alive', resumeFailures: 0 } },
         wait: { kind: 'waiting-for-review', reason: 'Ready for validation in Session actions', at: 4 } } }
-    const run = (runId: string, state: 'running' | 'stopped'): SessionScriptRunInfo => ({ runId, phase: 'inner', scriptId: 'requested', name: 'Worktree validation',
-      title: 'Worktree validation', state, summary: 'Worktree validation', startedAt: 5, commands: [], row: state === 'running', log: 'none' })
-    const sections = SessionWorkflows.sectionsOf(record, () => null, undefined, [run('v1', 'running'), run('v0', 'stopped')])
-    const stop = { id: 'stop-run', label: 'Stop', primary: false, runId: 'v1' }
-    expect(sections.find((section) => section.workflowId === 'script:v1')?.actions).toEqual([stop])
-    expect(sections.find((section) => section.workflowId === 'script:v0')?.actions).toEqual([])
-    expect(sections.find((section) => section.validation !== undefined)?.validation?.runs)
-      .toEqual([{ runId: 'v1', title: 'Worktree validation', startedAt: 5, stop }])
+    const run = (runId: string, scriptId: 'requested' | 'service', state: 'running' | 'stopped'): SessionScriptRunInfo => ({ runId, phase: 'inner', scriptId, name: runId,
+      title: runId, state, summary: runId, startedAt: 5, commands: [], row: state === 'running', log: 'none' })
+    const sections = SessionWorkflows.sectionsOf(record, () => null, undefined, [
+      run('v1', 'requested', 'running'), run('v0', 'requested', 'stopped'), run('sv1', 'service', 'running'),
+    ])
+    expect(sections.filter((section) => section.kind === 'script')).toEqual([])
+    expect(sections.find((section) => section.validation !== undefined)?.validation?.runs).toEqual([
+      { runId: 'v1', title: 'v1', startedAt: 5, stop: { id: 'stop-run', label: 'Stop', primary: false, runId: 'v1' } },
+      { runId: 'sv1', title: 'sv1', startedAt: 5, stop: { id: 'stop-run', label: 'Stop', primary: false, runId: 'sv1' } },
+    ])
   })
 
-  // A failed run of an old Host instance stayed as a section with no press while its parent had actions (UA1-J10-8).
-  it('offers Remove on an ended requested run whose row remains, the same removal the CLI makes', () => {
+  it('adds no script section for a running service, keeping the parent free of actions', () => {
     const record: SessionRecord = { sessionId: 's1', title: 'Work', kind: 'agent', directory: { mode: 'adHoc', path: 'Q:/app' },
       life: 'live', binding: null, createdAt: 0 }
-    const run = (runId: string, state: 'failed' | 'lost' | 'succeeded', row: boolean): SessionScriptRunInfo => ({ runId, phase: 'inner',
-      scriptId: 'requested', name: 'j10-requested-fail', title: 'j10-requested-fail', state, summary: 'exit 1', startedAt: 5, endedAt: 6,
-      commands: [], row, log: 'saved' })
-    const sections = SessionWorkflows.sectionsOf(record, () => null, undefined, [run('r1', 'failed', true), run('r2', 'lost', true), run('r3', 'succeeded', false)])
-    const remove = (runId: string) => [{ id: 'remove-run', label: 'Remove', primary: false, runId }]
-    expect(sections.find((section) => section.workflowId === 'script:r1')?.actions).toEqual(remove('r1'))
-    expect(sections.find((section) => section.workflowId === 'script:r2')?.actions).toEqual(remove('r2'))
-    expect(sections.find((section) => section.workflowId === 'script:r3')?.actions).toEqual([])
+    const service: SessionScriptRunInfo = { runId: 'sv1', phase: 'inner', scriptId: 'service', name: 'web',
+      title: 'web', state: 'running', summary: 'web · running', startedAt: 5, commands: [], row: true, log: 'none' }
+    expect(SessionWorkflows.sectionsOf(record, () => null, undefined, [service])).toEqual([])
   })
 
   it('offers Discard and a new preparation on the outcome of a kept worktree, and nothing once it is gone (UA1-J07-7)', () => {

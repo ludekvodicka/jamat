@@ -66,8 +66,6 @@ export class SessionWorkflows {
     const current = SessionWorkflows.withValidationRuns(SessionWorkflows.sectionOf(record, runs, live), requested)
     if (current !== null && current.workflowId !== setup?.workflowId
       && !sections.some((section) => section.workflowId === current.workflowId)) sections.push(current)
-    for (const run of requested)
-      if (run.phase === 'inner') sections.push(SessionWorkflows.requestedOf(run))
     const main = MainFinishWorkflow.of(record)
     if (main !== null) sections.push(main)
     const choice = SessionWorkflows.choiceOf(record)
@@ -184,31 +182,5 @@ export class SessionWorkflows {
 
   private static stopOf(runId: string): SessionWorkflowAction {
     return { id: 'stop-run', label: 'Stop', primary: false, runId }
-  }
-
-  /**
-   * An ended run whose row remains is removed here as the CLI removes it. The tree draws that row only
-   * under a parent without actions, so a parent in a Finish left it with no Remove (UA1-J10-8).
-   */
-  private static actionsOf(run: SessionScriptRunInfo): SessionWorkflowAction[] {
-    if (run.state === 'running') return [SessionWorkflows.stopOf(run.runId)]
-    return run.row ? [{ id: 'remove-run', label: 'Remove', primary: false, runId: run.runId }] : []
-  }
-
-  private static requestedOf(run: SessionScriptRunInfo): SessionWorkflowInfo {
-    const state = run.state
-    let step: SessionWorkflowStepState
-    switch (state) {
-      case 'running': step = 'running'; break
-      case 'succeeded': step = 'done'; break
-      case 'failed': case 'lost': step = 'failed'; break
-      // Somebody asked for this ending, a person or a Finish cleanup: nothing went wrong.
-      case 'stopped': step = 'skipped'; break
-      default: throw new Error(`Unknown script state: ${JSON.stringify(state satisfies never)}`)
-    }
-    return { kind: 'script', workflowId: `script:${run.runId}`, title: run.title, badge: state, summary: run.summary,
-      startedAt: run.startedAt, endedAt: run.endedAt, open: state === 'running', actions: SessionWorkflows.actionsOf(run),
-      rounds: [{ title: 'Script run', steps: [{ key: run.runId, title: run.title, detail: run.logDetail ?? '', state: step,
-        startedAt: run.startedAt, endedAt: run.endedAt ?? null, target: { kind: 'run', runId: run.runId }, body: { kind: 'log', runId: run.runId } }] }] }
   }
 }

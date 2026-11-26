@@ -82,4 +82,30 @@ describe('SessionTaskAccess', () => {
     finish({ kind: 'tasks', rows: [], catchingUp: false, olderFinished: 0 })
     expect(await pending).toMatchObject({ ok: false, error: { code: 'unavailable' } })
   })
+
+  it('omits service script runs from task listings for viewers without processes capability', async () => {
+    const scripts = {
+      runs: [
+        { runId: 'svc-1', phase: 'inner' as const, scriptId: 'service' as const, name: 'dev', title: 'dev', state: 'running' as const, summary: 'dev', startedAt: 20, commands: [], row: true, log: 'none' as const },
+        { runId: 'req-1', phase: 'inner' as const, scriptId: 'requested' as const, name: 'test', title: 'test', state: 'running' as const, summary: 'test', startedAt: 10, commands: [], row: true, log: 'none' as const },
+      ],
+    }
+    const access = new SessionTaskAccess({
+      ...readers(),
+      listingOf: async () => ({ kind: 'tasks', rows: [
+        { kind: 'shell', shellId: 'b1', command: 'codex exec x', description: null, state: 'running', startedAt: 10, endedAt: null, runs: 'agent' },
+      ], catchingUp: false, olderFinished: 0 }),
+      scriptsOf: () => scripts,
+    })
+
+    const withoutProcesses = await read(access, { kind: 'list' })
+    expect(withoutProcesses.result.value.scripts.runs.map((run: { runId: string }) => run.runId)).toEqual(['req-1'])
+    expect('runs' in withoutProcesses.result.value.listing.rows[0]).toBe(false)
+
+    const withProcessesFirst = await access.request({ ...view, processes: true }, { kind: 'list' })
+    if (!withProcessesFirst.ok) throw new Error(withProcessesFirst.error.detail)
+    const withProcesses = JSON.parse(Buffer.from(withProcessesFirst.value.base64, 'base64').toString('utf8'))
+    expect(withProcesses.result.value.scripts.runs.map((run: { runId: string }) => run.runId)).toEqual(['svc-1', 'req-1'])
+    expect(withProcesses.result.value.listing.rows[0].runs).toBe('agent')
+  })
 })

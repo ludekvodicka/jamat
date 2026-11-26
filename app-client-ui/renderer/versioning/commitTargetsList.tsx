@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { FileChangeEntry, FileChangesWorkingTreeSnapshot } from '../../../lib-orchestrator/fileChangesManager/fileChangesManagerApi.types'
 import { VersioningRevert } from '../../shared/versioningCommit'
@@ -25,7 +25,84 @@ export interface CommitRepositoryMessageItem {
 const normalizePath = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 const firstLineOf = (value: string): string => value.split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? ''
 
-export function CommitTargetsList(props: {
+class CommitTargetsListConst {
+  static readonly virtualizeThreshold = 100
+  static readonly estimatedRowHeightPx = 22
+  static readonly overscanRows = 20
+  static readonly fallbackViewportPx = 600
+}
+
+function VirtualizedTargetRows(props: {
+  entries: readonly FileChangeEntry[]
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>
+  renderRow(entry: FileChangeEntry, index: number): React.JSX.Element
+}): React.JSX.Element {
+  const listRef = useRef<HTMLDivElement>(null)
+  const rowHeightRef = useRef(CommitTargetsListConst.estimatedRowHeightPx)
+  const shouldVirtualize = props.entries.length > CommitTargetsListConst.virtualizeThreshold
+  const [range, setRange] = useState<{ start: number; end: number }>(() => ({
+    start: 0,
+    end: Math.min(
+      props.entries.length,
+      Math.ceil(CommitTargetsListConst.fallbackViewportPx / CommitTargetsListConst.estimatedRowHeightPx) + CommitTargetsListConst.overscanRows * 2,
+    ),
+  }))
+
+  const recompute = useCallback((): void => {
+    if (!shouldVirtualize) return
+    const container = props.scrollContainerRef.current
+    const list = listRef.current
+    const firstRow = list?.querySelector<HTMLElement>('.commit-target')
+    const measured = firstRow?.getBoundingClientRect().height ?? 0
+    if (measured > 0) rowHeightRef.current = measured
+    const rowHeight = rowHeightRef.current
+    const viewportHeight = container !== null && container.clientHeight > 0
+      ? container.clientHeight
+      : CommitTargetsListConst.fallbackViewportPx
+    let relativeTop = 0
+    if (container !== null) {
+      if (list !== null) {
+        const offset = list.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        relativeTop = Math.max(0, container.scrollTop - offset)
+      } else relativeTop = container.scrollTop
+    }
+    const start = Math.max(0, Math.floor(relativeTop / rowHeight) - CommitTargetsListConst.overscanRows)
+    const end = Math.min(props.entries.length, Math.ceil((relativeTop + viewportHeight) / rowHeight) + CommitTargetsListConst.overscanRows)
+    setRange((previous) => previous.start === start && previous.end === end ? previous : { start, end })
+  }, [props.entries.length, props.scrollContainerRef, shouldVirtualize])
+
+  useEffect(() => {
+    if (!shouldVirtualize) return
+    recompute()
+    const container = props.scrollContainerRef.current
+    if (container === null) return
+    const onScroll = (): void => recompute()
+    container.addEventListener('scroll', onScroll, { passive: true })
+    let observer: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => recompute())
+      observer.observe(container)
+    }
+    return () => {
+      container.removeEventListener('scroll', onScroll)
+      observer?.disconnect()
+    }
+  }, [props.scrollContainerRef, recompute, shouldVirtualize])
+
+  if (!shouldVirtualize) return <>{props.entries.map((entry, index) => props.renderRow(entry, index))}</>
+  const start = Math.min(range.start, props.entries.length)
+  const end = Math.min(Math.max(range.end, start), props.entries.length)
+  const rowHeight = rowHeightRef.current
+  const topHeight = start * rowHeight
+  const bottomHeight = (props.entries.length - end) * rowHeight
+  return <div ref={listRef}>
+    {topHeight > 0 && <div className="commit-target-spacer" style={{ height: topHeight }} aria-hidden="true" />}
+    {props.entries.slice(start, end).map((entry, offset) => props.renderRow(entry, start + offset))}
+    {bottomHeight > 0 && <div className="commit-target-spacer" style={{ height: bottomHeight }} aria-hidden="true" />}
+  </div>
+}
+
+export const CommitTargetsList = memo(function CommitTargetsList(props: {
   snapshot: FileChangesWorkingTreeSnapshot
   checked: ReadonlySet<string>
   disabled: boolean
@@ -45,15 +122,17 @@ export function CommitTargetsList(props: {
   const [menu, setMenu] = useState<{ path: string; position: ContextMenuPosition } | null>(null)
   const [propertiesPath, setPropertiesPath] = useState<string | null>(null)
   const [collapsedFiles, setCollapsedFiles] = useState<Record<string, boolean>>({})
-  const externalOf = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
-  for (const root of [...props.snapshot.externalRoots].sort((left, right) => left.path.length - right.path.length))
-    for (const id of root.fileIds) externalOf.set(id, root)
-  const entries = [...props.snapshot.entries].sort(CommitTargets.byPath)
-  const conventions = FileChangesStatusMark.ofSource(props.snapshot.source.selected)
-  const mainEntries = entries.filter((entry) => !externalOf.has(entry.fileId))
-  const menuEntry = entries.find((entry) => entry.path === menu?.path)
-  const propertiesEntry = entries.find((entry) => entry.path === propertiesPath && entry.properties !== undefined)
-  const activePath = entries.some((entry) => entry.path === selectedPath) ? selectedPath : mainEntries[0]?.path ?? entries[0]?.path
+  const externalOf = useMemo(() => CommitTargets.externalRootMap(props.snapshot.externalRoots), [props.snapshot.externalRoots])
+  const entries = useMemo(() => [...props.snapshot.entries].sort(CommitTargets.byPath), [props.snapshot.entries])
+  const conventions = useMemo(() => FileChangesStatusMark.ofSource(props.snapshot.source.selected), [props.snapshot.source.selected])
+  const mainEntries = useMemo(() => entries.filter((entry) => !externalOf.has(entry.fileId)), [entries, externalOf])
+  const entryByPath = useMemo(() => new Map(entries.map((entry) => [entry.path, entry])), [entries])
+  const targetsIndex = useMemo(() => CommitTargets.index(entries), [entries])
+  const requiredParents = useMemo(() => targetsIndex.requiredParents(props.checked), [targetsIndex, props.checked])
+  const menuEntry = menu === null ? undefined : entryByPath.get(menu.path)
+  const propertiesCandidate = propertiesPath === null ? undefined : entryByPath.get(propertiesPath)
+  const propertiesEntry = propertiesCandidate?.properties !== undefined ? propertiesCandidate : undefined
+  const activePath = selectedPath !== null && entryByPath.has(selectedPath) ? selectedPath : mainEntries[0]?.path ?? entries[0]?.path
   const change = (entry: FileChangeEntry, checked: boolean): void => {
     const next = new Set(props.checked)
     if (checked) next.add(entry.fileId)
@@ -65,18 +144,18 @@ export function CommitTargetsList(props: {
   }
   // The scope directory's own row, a property change of the folder under review, has no relative path.
   const nameOf = (entry: FileChangeEntry): string => entry.displayPath === '' ? '.' : `${entry.displayPath}${entry.nodeKind === 'directory' ? '/' : ''}`
-  const row = (entry: FileChangeEntry): React.JSX.Element => {
+  const row = (entry: FileChangeEntry, index: number): React.JSX.Element => {
     const name = nameOf(entry)
-    const requiredParent = CommitTargets.requiredParent(entry, entries, props.checked)
-    const carrier = CommitTargets.carrier(entry, entries)
-    const removedBy = CommitTargets.removedBy(entry, entries)
+    const requiredParent = requiredParents.has(entry.fileId)
+    const carrier = targetsIndex.carrier(entry)
+    const removedBy = targetsIndex.removedBy(entry)
     const hint = entry.carriedItems !== undefined ? `Copied whole: its ${entry.carriedItems} items commit with this directory and are not listed`
       : requiredParent ? 'Required parent directory'
       : carrier !== null ? `Commits with ${carrier.displayPath}/, which was copied whole`
       : removedBy !== null ? `Stays on disk unversioned: this commit deletes ${removedBy.displayPath}/`
       : entry.status === 'untracked' && entry.nodeKind === 'directory' ? 'Adds this directory only; select its files individually'
       : entry.status === 'modified' && entry.nodeKind === 'directory' ? 'Commits directory properties only; select its files individually' : null
-    return <div key={entry.path} role="row" aria-selected={entry.path === selectedPath}
+    return <div key={entry.path} role="row" aria-rowindex={index + 1} aria-selected={entry.path === selectedPath}
       className="commit-target" tabIndex={entry.path === activePath ? 0 : -1}
       title={entry.path} onFocus={() => setSelectedPath(entry.path)}
       onClick={(event) => { setSelectedPath(entry.path); if (!(event.target instanceof HTMLInputElement)) event.currentTarget.focus() }}
@@ -100,9 +179,9 @@ export function CommitTargetsList(props: {
           event.preventDefault()
           event.stopPropagation()
           const rows = [...(element.current?.querySelectorAll<HTMLElement>('.commit-target') ?? [])]
-          const index = rows.indexOf(event.currentTarget)
+          const currentIndex = rows.indexOf(event.currentTarget)
           const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1
-            : Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))
+            : Math.max(0, Math.min(rows.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1)))
           rows[next]?.focus()
         }
         else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
@@ -127,73 +206,84 @@ export function CommitTargetsList(props: {
       </span>
     </div>
   }
-  const eligible = CommitTargets.eligible(props.snapshot)
-  const eligibleIds = new Set(eligible.map((entry) => entry.fileId))
-  const allChecked = eligible.length > 0 && eligible.every((entry) => props.checked.has(entry.fileId))
-  const someChecked = eligible.some((entry) => props.checked.has(entry.fileId))
+  const eligible = useMemo(() => CommitTargets.eligible(props.snapshot), [props.snapshot])
+  const eligibleIds = useMemo(() => new Set(eligible.map((entry) => entry.fileId)), [eligible])
+  const allChecked = useMemo(() => eligible.length > 0 && eligible.every((entry) => props.checked.has(entry.fileId)), [eligible, props.checked])
+  const someChecked = useMemo(() => eligible.some((entry) => props.checked.has(entry.fileId)), [eligible, props.checked])
+  const selectedTotal = useMemo(() => entries.reduce((count, entry) => count + (props.checked.has(entry.fileId) || requiredParents.has(entry.fileId) ? 1 : 0), 0), [entries, props.checked, requiredParents])
   const selectAll = (): void => props.onChange(new Set(eligible.map((entry) => entry.fileId)))
   const selectNone = (): void => props.onChange(new Set())
-
-  const remainingMessages = [...(props.repositoryMessages ?? [])]
-  const takeMessage = (rootPath: string | undefined, displayPath: string): CommitRepositoryMessageItem | undefined => {
-    const normalizedRoot = rootPath === undefined ? null : normalizePath(rootPath)
-    const normalizedDisplay = normalizePath(displayPath)
-    const index = remainingMessages.findIndex((item) =>
-      (normalizedRoot !== null && normalizePath(item.root) === normalizedRoot)
-      || normalizePath(item.displayPath) === normalizedDisplay)
-    return index === -1 ? undefined : remainingMessages.splice(index, 1)[0]
-  }
 
   interface RenderGroup {
     key: string
     displayPath: string
     rootPath?: string
     isExternal: boolean
-    externalFileIds?: readonly string[]
+    externalFileIdSet?: ReadonlySet<string>
     entries: FileChangeEntry[]
     repoMessage?: CommitRepositoryMessageItem
   }
 
-  const groups: RenderGroup[] = []
-  const mainMessage = takeMessage(props.scopeRoot, '')
-  if (mainEntries.length > 0 || mainMessage !== undefined || props.snapshot.externalRoots.length === 0) {
-    groups.push({
-      key: 'main',
-      displayPath: '',
-      rootPath: props.scopeRoot,
-      isExternal: false,
-      entries: mainEntries,
-      repoMessage: mainMessage,
-    })
-  }
-  for (const root of [...props.snapshot.externalRoots].sort(CommitTargets.byPath)) {
-    const changes = entries.filter((entry) => externalOf.get(entry.fileId) === root)
-    const repoMessage = takeMessage(root.path, root.displayPath)
-    if (changes.length === 0 && repoMessage === undefined) continue
-    groups.push({
-      key: `ext:${root.path}`,
-      displayPath: root.displayPath,
-      rootPath: root.path,
-      isExternal: true,
-      externalFileIds: root.fileIds,
-      entries: changes,
-      repoMessage,
-    })
-  }
-  for (const extra of [...remainingMessages].sort(CommitTargets.byPath)) {
-    groups.push({
-      key: `repo:${extra.root}`,
-      displayPath: extra.displayPath,
-      rootPath: extra.root,
-      isExternal: extra.displayPath !== '',
-      entries: [],
-      repoMessage: extra,
-    })
-  }
-  groups.sort(CommitTargets.byPath)
+  const groups = useMemo((): RenderGroup[] => {
+    const remainingMessages = [...(props.repositoryMessages ?? [])]
+    const takeMessage = (rootPath: string | undefined, displayPath: string): CommitRepositoryMessageItem | undefined => {
+      const normalizedRoot = rootPath === undefined ? null : normalizePath(rootPath)
+      const normalizedDisplay = normalizePath(displayPath)
+      const index = remainingMessages.findIndex((item) =>
+        (normalizedRoot !== null && normalizePath(item.root) === normalizedRoot)
+        || normalizePath(item.displayPath) === normalizedDisplay)
+      return index === -1 ? undefined : remainingMessages.splice(index, 1)[0]
+    }
+    const byExternalRoot = new Map<FileChangesWorkingTreeSnapshot['externalRoots'][number], FileChangeEntry[]>()
+    for (const entry of entries) {
+      const root = externalOf.get(entry.fileId)
+      if (root === undefined) continue
+      const list = byExternalRoot.get(root)
+      if (list === undefined) byExternalRoot.set(root, [entry])
+      else list.push(entry)
+    }
+    const built: RenderGroup[] = []
+    const mainMessage = takeMessage(props.scopeRoot, '')
+    if (mainEntries.length > 0 || mainMessage !== undefined || props.snapshot.externalRoots.length === 0) {
+      built.push({
+        key: 'main',
+        displayPath: '',
+        rootPath: props.scopeRoot,
+        isExternal: false,
+        entries: mainEntries,
+        repoMessage: mainMessage,
+      })
+    }
+    for (const root of [...props.snapshot.externalRoots].sort(CommitTargets.byPath)) {
+      const changes = byExternalRoot.get(root) ?? []
+      const repoMessage = takeMessage(root.path, root.displayPath)
+      if (changes.length === 0 && repoMessage === undefined) continue
+      built.push({
+        key: `ext:${root.path}`,
+        displayPath: root.displayPath,
+        rootPath: root.path,
+        isExternal: true,
+        externalFileIdSet: new Set(root.fileIds),
+        entries: changes,
+        repoMessage,
+      })
+    }
+    for (const extra of [...remainingMessages].sort(CommitTargets.byPath)) {
+      built.push({
+        key: `repo:${extra.root}`,
+        displayPath: extra.displayPath,
+        rootPath: extra.root,
+        isExternal: extra.displayPath !== '',
+        entries: [],
+        repoMessage: extra,
+      })
+    }
+    built.sort(CommitTargets.byPath)
+    return built
+  }, [entries, externalOf, mainEntries, props.repositoryMessages, props.scopeRoot, props.snapshot.externalRoots])
 
   const groupedView = groups.length > 1 || groups.some((group) => group.isExternal || group.repoMessage !== undefined)
-  const hasExternals = entries.some((entry) => externalOf.has(entry.fileId)) || (props.repositoryMessages?.length ?? 0) > 1
+  const hasExternals = externalOf.size > 0 || (props.repositoryMessages?.length ?? 0) > 1
   const groupCount = props.repositoryMessages?.length ?? groups.length
   const groupNote = `${props.separateMessages ? 'Each repository has its own message.' : 'One message for all selected groups.'} Each group is committed separately.`
 
@@ -215,18 +305,18 @@ export function CommitTargetsList(props: {
         onChange={() => allChecked ? selectNone() : selectAll()} />}
       <button type="button" disabled={props.disabled} onClick={selectAll}>Select all</button>
       <button type="button" disabled={props.disabled} onClick={selectNone}>Select none</button>
-      <span className="commit-selection-count">{CommitTargets.selected(entries, props.checked).length} selected</span>
+      <span className="commit-selection-count">{selectedTotal} selected</span>
       {props.scopeRoot !== undefined && <span className="commit-scope" title={props.scopeTooltip ?? props.scopeRoot}>{props.scopeRoot}</span>}
       {hasExternals && <span className="commit-groups-note" title={groupNote}>
         {props.separateMessages ? `${groupCount} ${groupCount === 1 ? 'repository' : 'repositories'} · separate commits` : 'One message · separate commits'}
       </span>}
     </div>
-    {groupedView ? <div className="commit-groups" ref={element} role="grid" aria-label="Commit files">
+    {groupedView ? <div className="commit-groups" ref={element} role="grid" aria-label="Commit files" aria-rowcount={entries.length}>
       {groups.map((group) => {
         const groupEligible = group.entries.filter((entry) => eligibleIds.has(entry.fileId))
         const groupAllChecked = groupEligible.length > 0 && groupEligible.every((entry) => props.checked.has(entry.fileId))
         const groupSomeChecked = groupEligible.some((entry) => props.checked.has(entry.fileId))
-        const groupSelected = CommitTargets.selected(group.entries, props.checked).length
+        const groupSelected = group.entries.reduce((count, entry) => count + (props.checked.has(entry.fileId) || requiredParents.has(entry.fileId) ? 1 : 0), 0)
         const filesCollapsed = collapsedFiles[group.key] === true
         const repo = group.repoMessage
         const mount = group.displayPath || '.'
@@ -244,10 +334,10 @@ export function CommitTargetsList(props: {
               <span className="commit-group-mount" title={repo.root}>{mountLabel}</span>
             </> : <strong className="commit-group-name">{mountLabel}</strong>}
             {group.entries.length > 0 && <span className="commit-group-count">{groupSelected} / {group.entries.length} selected</span>}
-            {group.isExternal && !props.separateMessages && group.rootPath !== undefined && group.externalFileIds !== undefined && <button type="button"
+            {group.isExternal && !props.separateMessages && group.rootPath !== undefined && group.externalFileIdSet !== undefined && <button type="button"
               disabled={props.disabled} title="Move this group to a separate tab for a different commit message"
               onClick={() => {
-                props.onChange(new Set([...props.checked].filter((id) => !group.externalFileIds!.includes(id))))
+                props.onChange(new Set([...props.checked].filter((id) => !group.externalFileIdSet!.has(id))))
                 props.onOpenSeparately(group.rootPath!)
               }}>Commit separately</button>}
             {group.entries.length > 0 && <button type="button" className="commit-group-files-toggle" aria-expanded={!filesCollapsed}
@@ -276,17 +366,17 @@ export function CommitTargetsList(props: {
             {repo.findings.map((finding) => <p key={finding.id} className="commit-warning commit-group-finding" role="status">{finding.text}</p>)}
           </>}
           {!filesCollapsed && group.entries.length > 0 && <div className="commit-group-files">
-            {group.entries.map((entry) => row(entry))}
+            <VirtualizedTargetRows entries={group.entries} scrollContainerRef={element} renderRow={row} />
           </div>}
         </div>
       })}
-    </div> : <div className="commit-files" ref={element} role="grid" aria-label="Commit files">
+    </div> : <div className="commit-files" ref={element} role="grid" aria-label="Commit files" aria-rowcount={mainEntries.length}>
       <div role="row" className="commit-files-heading"><span role="columnheader" aria-label="Include">
         <input type="checkbox" aria-label="Include all" checked={allChecked}
           ref={(input) => { if (input) input.indeterminate = someChecked && !allChecked }}
           disabled={props.disabled || eligible.length === 0}
           onChange={() => allChecked ? selectNone() : selectAll()} /></span><span role="columnheader" aria-label="Status" /><span role="columnheader">Path</span></div>
-      <div role="rowgroup">{mainEntries.map((entry) => row(entry))}</div>
+      <div role="rowgroup"><VirtualizedTargetRows entries={mainEntries} scrollContainerRef={element} renderRow={row} /></div>
     </div>}
     {propertiesEntry?.properties !== undefined && <FilePropertyChanges properties={propertiesEntry.properties}
       label={`Property changes of ${nameOf(propertiesEntry)}`} onClose={() => setPropertiesPath(null)} />}
@@ -301,4 +391,4 @@ export function CommitTargetsList(props: {
       ]}
       onClose={() => setMenu(null)} />}
   </div>
-}
+})

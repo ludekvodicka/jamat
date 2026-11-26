@@ -76,6 +76,9 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
     const onOpen = vi.fn()
     const reload = vi.fn(async () => fresh)
     const view = render(<FileChangesWidget openFile={window.appClient?.fileChanges?.openFile ?? vi.fn()} release={window.appClient?.fileViewer?.release ?? vi.fn()} model={{ ...modelOf(stale), groups: stale.history.groups, reload }} onOpen={onOpen} />)
+    const details = view.container.querySelector<HTMLDetailsElement>('details')!
+    details.open = true
+    fireEvent(details, new Event('toggle'))
     fireEvent.click(view.container.querySelector<HTMLButtonElement>('details button')!)
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({
       snapshot: fresh, fileId: 'fresh-history-file', baselineHint: { kind: 'git-commit', revision: 'abc' },
@@ -266,5 +269,61 @@ describe('app-client-ui/renderer/fileViewer/fileChangesWidget', () => {
     expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('5s ago')
     fireEvent.change(view.getByLabelText('Sort changed files'), { target: { value: 'name' } })
     expect(paths()).toEqual(['a.ts', 'b.ts', 'c.ts'])
+  })
+
+  it('skips rendering collapsed history group contents until opened, pauses age clock while hidden, and backs off past 1 minute', () => {
+    vi.useFakeTimers()
+    try {
+      const baseTime = 1_750_000_000_000
+      vi.setSystemTime(baseTime)
+      const recentEntry: FileChangeEntry = { ...entryOf('live.ts'), modifiedAt: baseTime - 58_000 }
+      const historyGroup: FileChangeGroup = {
+        groupId: 'hist-1',
+        label: 'Earlier commit',
+        message: 'Hidden message',
+        author: null,
+        createdAt: baseTime - 500_000,
+        baseline: { baselineId: 'b1', kind: 'git-commit', revision: 'abc', label: 'abc', createdAt: baseTime - 500_000 },
+        entries: [{ ...entryOf('nested-history.ts'), fileId: 'h-1', modifiedAt: baseTime - 500_000 }],
+      }
+      const snapshot: FileChangesSnapshot = {
+        ...snapshotOf(),
+        entries: [recentEntry],
+        history: { groups: [historyGroup], nextCursor: null },
+      }
+      const model = { ...modelOf(snapshot), groups: [historyGroup] }
+      const view = render(
+        <FileChangesWidget openFile={vi.fn()} release={vi.fn()} model={model} visible onOpen={vi.fn()} />,
+      )
+
+      // Collapsed details skips rendering its entries and message.
+      expect(view.container.textContent).not.toContain('nested-history.ts')
+      expect(view.container.textContent).not.toContain('Hidden message')
+      const details = view.container.querySelector<HTMLDetailsElement>('details')!
+      details.open = true
+      fireEvent(details, new Event('toggle'))
+      expect(view.container.textContent).toContain('nested-history.ts')
+      expect(view.container.textContent).toContain('Hidden message')
+
+      // Under 1 min: ticks at 1 s cadence.
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('58s ago')
+      act(() => { vi.advanceTimersByTime(1_000) })
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('59s ago')
+      act(() => { vi.advanceTimersByTime(1_000) })
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('1min ago')
+
+      // Past 1 min: backed off to 60 s cadence (59 s later still 1min ago, at 60 s updates to 2min ago).
+      act(() => { vi.advanceTimersByTime(59_000) })
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('1min ago')
+      act(() => { vi.advanceTimersByTime(1_000) })
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('2min ago')
+
+      // Hidden: pauses all age timers.
+      view.rerender(<FileChangesWidget openFile={vi.fn()} release={vi.fn()} model={model} visible={false} onOpen={vi.fn()} />)
+      act(() => { vi.advanceTimersByTime(180_000) })
+      expect(view.container.querySelector('.file-tools-when')?.textContent).toBe('2min ago')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

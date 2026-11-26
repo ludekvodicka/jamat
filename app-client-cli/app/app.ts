@@ -113,6 +113,8 @@ type AppClientCliPlan =
       clientTimeoutMs?: number
       /** `sessions scripts run --wait`: how long to wait for the run's verdict. */
       scriptWaitMs?: number
+      /** `sessions scripts run --kind service`: watch the service through its settle window. */
+      serviceSettle?: true
     }
   | { kind: 'local'; request: RemoteControlLocalRequestUnion }
   | { kind: 'events'; afterRevision?: number }
@@ -272,6 +274,8 @@ export class AppClientCli {
           : await client.executeRemote(remoteEndpointId, canonical.value)
         if (plan.scriptWaitMs !== undefined && response.ok)
           return await this.waitScriptRun(client, response, plan.scriptWaitMs)
+        if (plan.serviceSettle && response.ok)
+          return await this.settleServiceRun(client, response)
         if (plan.request.operation === 'tabs.cancelCommit' && response.ok
           && !AppClientCli.closedCancel(response.value, plan.request.body.commitSessionId)) {
           if (!RemoteControlCapabilities.of(descriptor.value).includes('tabs.commitStatus'))
@@ -821,7 +825,12 @@ export class AppClientCli {
           requestId,
         ))
     } else if (args.command === 'sessions scripts run') {
+      const kind = args.option('--kind')
+      if (kind !== null && kind !== 'requested' && kind !== 'service')
+        throw new AppClientCliError('invalid-request', `Unknown --kind ${JSON.stringify(kind)}; use requested or service`)
       const wait = args.has('--wait')
+      if (kind === 'service' && (wait || args.option('--timeout-ms') !== null))
+        throw new AppClientCliError('invalid-request', '--wait and --timeout-ms do not apply to --kind service; a service runs until it is stopped')
       if (args.option('--timeout-ms') !== null && !wait)
         throw new AppClientCliError('invalid-request', '--timeout-ms requires --wait for sessions scripts run')
       const timeoutMs = args.integer('--timeout-ms', 1, ScriptRunReader.timeoutMaximumMillisecondsConst)
@@ -836,13 +845,22 @@ export class AppClientCli {
             command: args.required('--command'),
             ...(cwd === null ? {} : { cwd }),
             ...(title === null ? {} : { title }),
+            ...(kind === 'service' ? { kind } : {}),
           },
           requestId,
           this.operationId(args),
         )),
         ...(wait ? { scriptWaitMs: timeoutMs } : {}),
+        ...(kind === 'service' ? { serviceSettle: true as const } : {}),
       }
-    } else if (args.command === 'commit cancel')
+    } else if (args.command === 'sessions scripts stop')
+      return this.requestPlan(args, this.request(
+        'sessions.stopScript',
+        { session: this.selfOrSelector(args), runId: args.required('--run-id') },
+        requestId,
+        this.operationId(args),
+      ))
+    else if (args.command === 'commit cancel')
       return this.requestPlan(args, this.request('tabs.cancelCommit',
         { commitSessionId: this.commitId(args) }, requestId, this.operationId(args)))
     else if (args.command === 'commit propose') {
@@ -953,8 +971,8 @@ export class AppClientCli {
     let paths: RemoteControlCommitPath[] | undefined
     if (pathsFile !== null) {
       const input = this.deps.readJson(pathsFile)
-      if (scope !== null || !Array.isArray(input) || input.length === 0 || input.length > 2_000)
-        throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 2000 paths and cannot be combined with --path')
+      if (scope !== null || !Array.isArray(input) || input.length === 0 || input.length > 5_000)
+        throw new AppClientCliError('invalid-request', '--paths-file must contain a JSON array of 1 to 5000 paths and cannot be combined with --path')
       paths = input.map((entry: unknown): RemoteControlCommitPath => {
         const target = JsonShape.record(entry)
         const path = typeof entry === 'string' ? entry : target?.path
@@ -1479,6 +1497,34 @@ export class AppClientCli {
     return AppClientCli.exitCode(verdict.ok ? null : verdict.error.code)
   }
 
+  private async settleServiceRun(
+    client: AppClientCliClientPort,
+    started: Extract<RemoteControlResponse, { ok: true }>,
+  ): Promise<number> {
+    const value = JsonShape.record(started.value)
+    const sessionId = value?.sessionId
+    const runId = value?.runId
+    const reused = value?.reused === true
+    if (typeof sessionId !== 'string' || typeof runId !== 'string')
+      throw new AppClientCliError('operation-failed', 'The service started without a run id; read sessions scripts for its state')
+    const verdict = await new ScriptRunReader({
+      read: () => client.execute(this.request('sessions.scripts', {
+        session: { kind: 'sessionId', sessionId },
+        runId,
+      }, this.deps.requestId())),
+      now: this.deps.now,
+      pause: this.deps.pause,
+    }).settleService({ sessionId, runId, reused }, this.deps.signal)
+    const ids = {
+      protocol: started.protocol,
+      requestId: started.requestId,
+      operation: started.operation,
+      operationId: started.operationId,
+    }
+    this.write(verdict.ok ? { ...ids, ok: true, value: verdict.value } : { ...ids, ok: false, error: verdict.error })
+    return AppClientCli.exitCode(verdict.ok ? null : verdict.error.code)
+  }
+
   private async canonicalRequest(
     client: AppClientCliClientPort,
     remoteEndpointId: string | null,
@@ -1510,6 +1556,7 @@ export class AppClientCli {
       || request.operation === 'sessions.transcript'
       || request.operation === 'sessions.scripts'
       || request.operation === 'sessions.runScript'
+      || request.operation === 'sessions.stopScript'
       || request.operation === 'tabs.open'
       || request.operation === 'tabs.openFile'
       || request.operation === 'tabs.openCommit'
@@ -1586,7 +1633,11 @@ export class AppClientCli {
         features.push({ option: '--worktree-notify-session', operation: 'sessions.worktreeResults' })
     }
     if (request.operation === 'sessions.scripts') features.push({ option: 'sessions scripts', operation: 'sessions.scripts' })
-    if (request.operation === 'sessions.runScript') features.push({ option: 'sessions scripts run', operation: 'sessions.scripts' })
+    if (request.operation === 'sessions.runScript') {
+      features.push({ option: 'sessions scripts run', operation: 'sessions.scripts' })
+      if (request.body.kind !== undefined) features.push({ option: '--kind', operation: 'sessions.stopScript' })
+    }
+    if (request.operation === 'sessions.stopScript') features.push({ option: 'sessions scripts stop', operation: 'sessions.stopScript' })
     // Before `--expect`: a build that offers sessions.scripts also offers sessions.worktree.
     if (request.operation === 'sessions.finalize' && request.body.acknowledgeSetup !== undefined)
       features.push({ option: '--acknowledge-setup', operation: 'sessions.scripts' })

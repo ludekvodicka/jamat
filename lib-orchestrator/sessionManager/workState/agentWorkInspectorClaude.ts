@@ -138,12 +138,6 @@ export class AgentWorkInspectorClaude {
     /ctrl\+ttohidetasks/,
     AgentWorkInspectorClaude.shellCountConst,
   ] as const
-  /**
-   * The strip a running sub-agent draws under the footer, `● main ◯ general-purpose …`
-   * (`claude-live-background-agent.json`). Read only after the footer hint, because Claude also draws
-   * `●` in front of every reply, and a reply that opens with "main" normalizes to the same `●main`.
-   */
-  private static readonly subagentStripConst = /(?:↓tomanage|ctrl\+ttohidetasks).*●main/
   private static readonly busyCollapsedConst = [
     { signal: 'escToInterrupt', pattern: /esctointerrupt/ },
     { signal: 'tokenCounter', pattern: /[↑↓][\d.,]+k?tokens/ },
@@ -185,21 +179,13 @@ export class AgentWorkInspectorClaude {
     for (const pattern of AgentWorkInspectorClaude.backgroundTasksConst)
       AgentWorkInspectorClaude.addEvidence(
         background, 'screen', 'backgroundTasks', shallow, pattern)
-    // On 2026-11-23 the person asked for a dev server left running by a finished turn to read idle:
-    // the footer of `claude-live-background-tasks.json` is the same `↓ to manage` a sub-agent draws,
-    // and only the shell counter without a sub-agent strip tells them apart. The turn's own evidence
-    // then decides, aged by output as on any session without a footer.
-    const shellsOnly = background.length > 0
-      && AgentWorkInspectorClaude.shellCountConst.test(shallow)
-      && !AgentWorkInspectorClaude.subagentStripConst.test(shallow)
-    if (background.length && !shellsOnly) return { hint: 'background', evidence: background }
-    const shells = shellsOnly ? { shellsRunning: true as const } : {}
+    if (background.length) return { hint: 'background', evidence: background }
 
     const tool: AgentWorkEvidence[] = []
     for (const [source, text] of AgentWorkInspectorClaude.screenWindows(frame))
       AgentWorkInspectorClaude.addEvidence(
         tool, source, 'toolUse', text, AgentWorkInspectorClaude.toolUseConst)
-    if (tool.length) return { hint: 'tool-use', evidence: tool, ...shells }
+    if (tool.length) return { hint: 'tool-use', evidence: tool }
 
     const busy: AgentWorkEvidence[] = []
     AgentWorkInspectorClaude.addBusy(busy, 'screen', frame.screenTail)
@@ -207,8 +193,8 @@ export class AgentWorkInspectorClaude {
     for (const item of AgentWorkInspectorClaude.busyWideConst)
       AgentWorkInspectorClaude.addEvidence(busy, 'wide-screen', item.signal, wide, item.pattern)
 
-    if (busy.length) return { hint: 'working', evidence: busy, ...shells }
-    return { hint: 'idle', evidence: shellsOnly ? background : [], ...shells }
+    if (busy.length) return { hint: 'working', evidence: busy }
+    return { hint: 'idle', evidence: [] }
   }
 
   /**

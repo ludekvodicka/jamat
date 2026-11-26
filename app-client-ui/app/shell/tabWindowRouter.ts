@@ -1,5 +1,5 @@
 import type { RemoteControlStepResult, RemoteControlTabCommandDto, RemoteControlTabOpenFileDto, RemoteControlTabOpenCommitDto } from '../../../lib-orchestrator/remoteControl/remoteControlApi.types'
-import type { TabControlCommand, TabControlAck, TabControlTaskOpenedDto, TabControlWorkflowOpenedDto, TabControlTodosOpenedDto, TabControlSnapinOpenedDto, TabControlBrokerDto, TabControlBrokerResult, TabRequestPort, TabPanelSnapshot, TabPanelOwner } from '../../../lib-orchestrator/shared/tabRequestPort.types'
+import type { TabControlCommand, TabControlAck, TabControlTaskOpenedDto, TabControlWorkflowOpenedDto, TabControlTodosOpenedDto, TabControlProcessesOpenedDto, TabControlSnapinOpenedDto, TabControlBrokerDto, TabControlBrokerResult, TabRequestPort, TabPanelSnapshot, TabPanelOwner } from '../../../lib-orchestrator/shared/tabRequestPort.types'
 import type { WorkspaceWindows } from './workspaceWindows'
 import type { WorkspacePanelIndex } from '../tabs/workspacePanelIndex'
 
@@ -89,11 +89,15 @@ export class TabWindowRouter implements TabRequestPort {
   ): Promise<RemoteControlStepResult<TabControlTodosOpenedDto>>
   request(
     windowId: string,
+    command: Extract<TabControlCommand, { kind: 'open-processes' }>,
+  ): Promise<RemoteControlStepResult<TabControlProcessesOpenedDto>>
+  request(
+    windowId: string,
     command: Extract<TabControlCommand, { kind: 'open-snapin' }>,
   ): Promise<RemoteControlStepResult<TabControlSnapinOpenedDto>>
   request(
     windowId: string,
-    command: Exclude<TabControlCommand, { kind: 'open-file' | 'open-commit' | 'open-task' | 'open-workflow' | 'open-todos' | 'open-snapin' }>,
+    command: Exclude<TabControlCommand, { kind: 'open-file' | 'open-commit' | 'open-task' | 'open-workflow' | 'open-todos' | 'open-processes' | 'open-snapin' }>,
   ): Promise<RemoteControlStepResult<RemoteControlTabCommandDto>>
   request(
     windowId: string,
@@ -107,7 +111,7 @@ export class TabWindowRouter implements TabRequestPort {
         let detail: string
         if (command.kind === 'open-session') detail = 'The main workspace window is unavailable'
         else if (command.kind === 'open-snapin') detail = 'The workspace window is unavailable'
-        else if (command.kind === 'open-commit' || command.kind === 'open-task' || command.kind === 'open-workflow' || command.kind === 'open-todos' || command.kind === 'focus-panel')
+        else if (command.kind === 'open-commit' || command.kind === 'open-task' || command.kind === 'open-workflow' || command.kind === 'open-todos' || command.kind === 'open-processes' || command.kind === 'focus-panel')
           detail = 'The tab owner window is unavailable'
         else if (command.kind === 'open-file' || command.kind === 'close-panel') throw new Error('A background tab command attempted to focus a window')
         else throw new Error(`Unknown tab control command: ${JSON.stringify(command satisfies never)}`)
@@ -190,6 +194,11 @@ export class TabWindowRouter implements TabRequestPort {
         throw new Error(`Unexpected open-todos result: ${JSON.stringify(result)}`)
       return TabWindowRouter.success({ kind: 'todos-opened', panelId: result.panelId, windowId: pending.windowId })
     }
+    if (pending.command.kind === 'open-processes') {
+      if (result.kind !== 'processes-opened' || result.panelId !== pending.command.panelId)
+        throw new Error(`Unexpected open-processes result: ${JSON.stringify(result)}`)
+      return TabWindowRouter.success({ kind: 'processes-opened', panelId: result.panelId, windowId: pending.windowId })
+    }
     if (pending.command.kind === 'open-session') {
       if (result.kind === 'opened')
         return TabWindowRouter.success({
@@ -259,7 +268,7 @@ export class TabWindowRouter implements TabRequestPort {
 
   private static shouldFocus(command: TabControlCommand): boolean {
     if (command.kind === 'open-session' || command.kind === 'open-commit') return command.activate !== false
-    else if (command.kind === 'focus-panel' || command.kind === 'open-snapin' || command.kind === 'open-task' || command.kind === 'open-workflow' || command.kind === 'open-todos') return true
+    else if (command.kind === 'focus-panel' || command.kind === 'open-snapin' || command.kind === 'open-task' || command.kind === 'open-workflow' || command.kind === 'open-todos' || command.kind === 'open-processes') return true
     else if (command.kind === 'open-file' || command.kind === 'close-panel') return false
     else throw new Error(`Unknown tab control command: ${JSON.stringify(command satisfies never)}`)
   }

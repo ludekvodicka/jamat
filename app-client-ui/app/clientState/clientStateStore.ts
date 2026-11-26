@@ -105,12 +105,16 @@ export class ClientStateStore {
     // the damaged document refuses returns false and leaves its only recoverable copy untouched.
     ClientStateStore.validateLayout(layout)
     const document = this.documentOnDisk()
-    if (windowId === 'main')
-      return this.write({ ...document, layout }, { snapshotLayout: true })
+    if (windowId === 'main') {
+      const snapshotLayout = ClientStateStore.isStructuralLayoutChange(document.layout, layout)
+      return this.write({ ...document, layout }, { snapshotLayout })
+    }
+    const previousLayout = document.extraWindows?.[windowId]?.layout
+    const snapshotLayout = ClientStateStore.isStructuralLayoutChange(previousLayout, layout)
     return this.updateExtraWindow(
       windowId,
       (window) => ({ ...window, layout }),
-      { snapshotLayout: true },
+      { snapshotLayout },
     )
   }
 
@@ -640,6 +644,48 @@ export class ClientStateStore {
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
       throw new Error(`Refusing to store a layout that is not an object: ${layout.slice(0, 40)}`)
+  }
+
+  /**
+   * True when panels or floating/popout window groups were added or removed, or when the layout
+   * shape has no dockview `panels` map to compare structurally. Active-tab switches and `scrollTop`
+   * updates keep the same panel set and spend no recovery snapshot.
+   */
+  private static isStructuralLayoutChange(previous: string | undefined, next: string): boolean {
+    if (previous === undefined) return true
+    if (previous === next) return false
+    let prevObj: Record<string, unknown>
+    let nextObj: Record<string, unknown>
+    try {
+      const a = JSON.parse(previous)
+      const b = JSON.parse(next)
+      if (!a || typeof a !== 'object' || Array.isArray(a) || !b || typeof b !== 'object' || Array.isArray(b))
+        return true
+      prevObj = a as Record<string, unknown>
+      nextObj = b as Record<string, unknown>
+    } catch { return true }
+    const prevPanels = prevObj.panels
+    const nextPanels = nextObj.panels
+    if (!prevPanels || typeof prevPanels !== 'object' || Array.isArray(prevPanels)
+      || !nextPanels || typeof nextPanels !== 'object' || Array.isArray(nextPanels))
+      return true
+    const prevIds = Object.keys(prevPanels).sort()
+    const nextIds = Object.keys(nextPanels).sort()
+    if (prevIds.length !== nextIds.length) return true
+    for (let index = 0; index < prevIds.length; index += 1)
+      if (prevIds[index] !== nextIds[index]) return true
+    const windowShape = (value: unknown): string => {
+      if (!Array.isArray(value)) return ''
+      return JSON.stringify(value.map((group) => {
+        if (!group || typeof group !== 'object') return null
+        const data = (group as { data?: { id?: unknown; views?: unknown } }).data
+        const views = Array.isArray(data?.views) ? [...data.views].sort() : []
+        return { id: data?.id ?? null, views }
+      }))
+    }
+    if (windowShape(prevObj.floatingGroups) !== windowShape(nextObj.floatingGroups)) return true
+    if (windowShape(prevObj.popoutGroups) !== windowShape(nextObj.popoutGroups)) return true
+    return false
   }
 
   private static validateAppearance(appearance: WindowAppearance): void {

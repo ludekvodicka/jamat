@@ -280,6 +280,11 @@ export class AppCommands {
       id: 'session.showTodos', title: 'Todo list', target: 'renderer', windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'show', group: 0 }, terminalSafe: true,
     },
+    // The processes list of a local session, opening in its own tab's split.
+    {
+      id: 'session.showProcesses', title: 'Processes', target: 'renderer', windowScope: 'any',
+      surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'show', group: 0 }, terminalSafe: true,
+    },
     {
       id: 'session.commitGit', title: 'Git…', target: 'renderer', windowScope: 'any',
       surfaces: ['contextMenu', 'sessionsTree'], contextMenuGroup: 3, contextSubmenu: { id: 'commit', group: 0 }, terminalSafe: true,

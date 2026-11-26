@@ -96,8 +96,8 @@ export class SvnCommitManager {
     if (targets.some((target) => target.status === 'conflicted' || target.status === 'obstructed'))
       return { ok: false, code: 'refused', detail: targets.filter((target) => target.status === 'conflicted' || target.status === 'obstructed')
         .map((target) => `Refused: ${relative(scope, target.absolutePath).replace(/\\/g, '/')} is conflicted or obstructed`).join('\n') }
-    // svn.exe reads its arguments and a --targets file in the system ANSI code page, so a name outside
-    // ASCII reaches it changed or not at all (svn 1.14.5, code page 1252: `ť` became `t`, E200009).
+    // Without a UTF-8 activeCodePage svn binary, svn.exe reads its arguments and `--targets` in the
+    // system ANSI code page, so a name outside ASCII reaches it changed or not at all (`ť` -> `t`).
     const unpassable = targets.map((target) => relative(scope, target.absolutePath).replace(/\\/g, '/')).filter((path) => !SvnWorktreeEvidence.takesArgument(path))
     if (unpassable.length > 0)
       return { ok: false, code: 'refused', detail: `svn cannot take these names from Jamat, they contain characters outside ASCII: ${unpassable.join(', ')}. `

@@ -1,7 +1,9 @@
 import { SessionTreeHierarchy, type SessionTreeNesting, type SessionTreeParent } from '../../../../lib-orchestrator/sessionManager/sessionTreeHierarchy'
 import { AutomationStates } from '../../../../lib-orchestrator/sessionManager/automationStates'
+import { SessionProcesses, type SessionProcess } from '../../../../lib-orchestrator/sessionTasks/sessionProcesses'
 import { SessionWorkspaceKeys } from '../../../shared/sessionWorkspace'
 import type { ProjectBinding } from '../../../../lib-orchestrator/projectManager/projectManagerApi.types'
+import type { SessionUncommittedEntry } from '../../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import type {
   AutomationState,
   SessionAgentId,
@@ -19,6 +21,7 @@ import type {
   SvnFinishResult,
 } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
 import type {
+  SessionShellCommandKind,
   SessionShellState,
   SessionSubagentState,
   SessionTaskListing,
@@ -66,6 +69,8 @@ export type ProjectLaunch = Extract<ProjectBinding, { kind: 'project' }>
 /** Independent facts. None is ever folded into another, which is the whole point of listing them. */
 export interface SessionBadges {
   commitOpen: boolean
+  /** Files this session changed and has not committed (the grey `*`), or null; a remote row's entry has no paths. */
+  uncommitted: SessionUncommittedEntry | null
   agentId: SessionAgentId | null
   accountLabel?: string
   accountExhausted?: boolean
@@ -120,15 +125,31 @@ export interface TaskRowNode {
   detail: string | null
   state: SessionSubagentState | SessionShellState
   depth: 1 | 2
+  /** Shell rows only: whether the full command starts a coding agent. */
+  runs?: SessionShellCommandKind
 }
 
-/** Retained task rows, with a depth-2 row following its listed parent. */
-export interface SessionTasksNode {
+/** One row of a session's process group, in the library's order. */
+export type ProcessRowNode =
+  | { kind: 'run'; sessionId: string }
+  | { kind: 'history'; run: ScriptRunNode }
+  | { kind: 'task'; row: TaskRowNode }
+
+/** The trailing overflow row when more than three processes are retained. */
+export interface SessionProcessesMore {
+  count: number
+  /** Local sessions open the Processes tab; paired computers show the count only. */
+  opens: boolean
+}
+
+/** At most three retained process rows (two plus `more` when over the limit), ordered running first, then newest. */
+export interface SessionProcessesNode {
   /** `beside`: the `Nest sub-agents` setting is off, so the rows are drawn at the session row's level. */
   placement: 'nested' | 'beside'
   /** The session's number on `beside` rows, which no longer hang under it; null when nested or unnumbered. */
   numberPrefix: string | null
-  rows: readonly TaskRowNode[]
+  rows: readonly ProcessRowNode[]
+  more: SessionProcessesMore | null
 }
 
 export type TreeNode = { group: SessionGroup } & (
@@ -202,6 +223,8 @@ export type TreeNode = { group: SessionGroup } & (
       merge: SessionMergeBadge | null
       /** What the merge word says when it is pointed at, or null where there is no word. */
       mergeTitle: string | null
+      /** True for an inner script run (requested run or service), which labels Stop and offers inline Remove once ended. */
+      innerRun: boolean
       /** Operations available across the row and its context menu. */
       actions: readonly SessionAction[]
       /** What Finish is called here, or null on a row that offers none. */
@@ -220,8 +243,10 @@ export type TreeNode = { group: SessionGroup } & (
       outcome: SessionOutcome | null
       exitCode: number | null
       endedReason: string | null
-      /** Its sub-agents, or null on a remote row and while nothing has run inside it. */
-      tasks: SessionTasksNode | null
+      /** Its ordered process rows (inner runs, background shells and sub-agents), or null when none are retained. */
+      processes: SessionProcessesNode | null
+      /** When this row is a running service, its start time from the parent's `scripts.runs`; null otherwise. */
+      service: { startedAt: number } | null
       /** What this client does for the session now, as the library said it; null while nothing runs. */
       step: SessionStepInfo | null
       /**
@@ -273,8 +298,8 @@ export interface TreeResult {
   nextTaskExpiryAt: number | null
   /**
    * What each node looked like when this result was built, by node id, so the next build compares
-   * one string per node instead of serializing both sides again. A session's task rows are printed
-   * apart from it, under `SessionsTreeModel.tasksPrintKeyOf(id)`.
+   * one string per node instead of serializing both sides again. A session's process rows are printed
+   * apart from it, under `SessionsTreeModel.processesPrintKeyOf(id)`.
    */
   fingerprints: ReadonlyMap<string, string>
 }
@@ -358,11 +383,12 @@ export class SessionsTreeModel {
     options: SessionsTreeBuildOptions = SessionsTreeModel.localOptions(),
     commitOpen: ReadonlySet<string> = new Set(),
     tasks: ReadonlyMap<string, SessionTaskListing> = new Map(),
+    uncommitted: Readonly<Record<string, SessionUncommittedEntry>> = {},
   ): TreeResult {
     if (snapshot.sessions.length === 0)
       return { nodes: [], emptyState: 'noSessions', nextTaskExpiryAt: null, fingerprints: new Map() }
     const entries = snapshot.sessions.map((info) =>
-      SessionsTreeModel.entryOf(info, marks, options, commitOpen, view.assignments, view.tabbed))
+      SessionsTreeModel.entryOf(info, marks, options, commitOpen, view.assignments, view.tabbed, uncommitted))
     const byId = new Map(entries.map((entry) => [entry.info.sessionId, entry]))
     const nesting = view.nesting ?? SessionsTreeModel.nestedConst
     const links = SessionTreeHierarchy.linksOf(entries, nesting)
@@ -443,11 +469,13 @@ export class SessionsTreeModel {
     commitOpen: ReadonlySet<string>,
     assignments: TreeViewState['assignments'],
     tabbed: TreeViewState['tabbed'],
+    uncommitted: Readonly<Record<string, SessionUncommittedEntry>>,
   ): SessionEntry {
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
     const targetKey = TerminalTargetCodec.key(target)
     const badges: SessionBadges = {
       commitOpen: commitOpen.has(options.target.kind === 'local' ? info.sessionId : targetKey),
+      uncommitted: uncommitted[options.target.kind === 'local' ? info.sessionId : targetKey] ?? null,
       agentId: info.agent?.agentId ?? null,
       ...(info.agent?.accountExhausted ? { accountExhausted: true } : {}),
       ...(info.agent?.accountId && info.agent.accountId !== 'main'
@@ -511,7 +539,7 @@ export class SessionsTreeModel {
 
   private static stateGroupOf(entry: SessionEntry): TreeStateGroup {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning, info.script?.scriptId)
     switch (glyph) {
       case 'waiting': return 'attention'
       case 'starting':
@@ -522,15 +550,16 @@ export class SessionsTreeModel {
       case 'ended':
       case 'lost': return entry.badges.completed ? 'read' : 'attention'
       case 'idle':
-      case 'idle-shells': return entry.badges.attention ? 'unread' : 'read'
+      case 'idle-shells':
+      case 'service': return entry.badges.attention ? 'unread' : 'read'
       case 'unknown': return 'attention'
-      default: throw new Error(`Unknown session glyph: ${JSON.stringify(glyph)}`)
+      default: throw new Error(`Unknown session glyph: ${JSON.stringify(glyph satisfies never)}`)
     }
   }
 
   private static inState(entry: SessionEntry, state: SessionFilterStatus, view: TreeViewState): boolean {
     const info = entry.info
-    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
+    const glyph = SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning, info.script?.scriptId)
     switch (state) {
       case 'active': return !entry.badges.completed
       // Viewing a marked row takes its mark; retain it so a double-click cannot open the next row.
@@ -538,7 +567,7 @@ export class SessionsTreeModel {
       case 'running': return glyph === 'working' || glyph === 'background'
         || glyph === 'compacting' || glyph === 'shell'
       case 'question': return glyph === 'waiting'
-      case 'idle': return glyph === 'idle' || glyph === 'idle-shells'
+      case 'idle': return glyph === 'idle' || glyph === 'idle-shells' || glyph === 'service'
       case 'starting': return glyph === 'starting'
       case 'background': return glyph === 'background'
       case 'ended': return glyph === 'ended'
@@ -582,8 +611,9 @@ export class SessionsTreeModel {
     return rank(right) < rank(left) ? right : left
   }
 
-  /** A run its parent's Session actions item draws: it is neither a child row nor a root. */
+  /** A run its parent's Session actions item draws: it is neither a child row nor a root. Inner runs stay plain rows. */
   private static heldByActions(entry: SessionEntry, links: ReadonlyMap<string, ParentLink>, options: SessionsTreeBuildOptions): boolean {
+    if (entry.info.script?.phase === 'inner') return false
     const link = links.get(entry.info.sessionId)
     return link?.via === 'script'
       && SessionNodeState.heldByActionsOf(link.parent.info.actions, options.operationScope).runs.has(entry.info.sessionId)
@@ -634,10 +664,12 @@ export class SessionsTreeModel {
     const held = SessionNodeState.heldByActionsOf(info.actions, options.operationScope)
     const target = SessionsTreeModel.targetOf(info.sessionId, options)
     const actions = SessionsTreeModel.scopedActions(FinalizeAsks.rowActionsOf(info, options.operationScope), options)
+    const innerRun = info.script?.phase === 'inner'
     const scriptRuns = (info.scripts?.runs ?? []).map((run) => ({
       ...run,
       open: run.row ? SessionsTreeModel.runOpenOf(run.runId, context) : null,
     }))
+    const { processes, drawnRuns } = SessionsTreeModel.processesOf(info, scriptRuns, children, context)
     return {
       kind: 'session',
       group: entry.group,
@@ -651,7 +683,7 @@ export class SessionsTreeModel {
       note: info.note ?? null,
       worktreeLine: SessionsTreeModel.worktreeLineOf(info),
       color: info.color ?? null,
-      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning),
+      glyph: SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning, info.script?.scriptId),
       badges: entry.badges,
       scriptsBadge: badge === null ? null : {
         ...badge,
@@ -663,16 +695,21 @@ export class SessionsTreeModel {
           : null,
       },
       waitingOn: waitingOn === undefined ? null : SessionsTreeModel.runOpenOf(waitingOn, context),
-      scriptHistoryRows: SessionsTreeModel.scriptHistoryOf(info.sessionId, scriptRuns.filter((run) => !held.runs.has(run.runId)), context),
+      scriptHistoryRows: SessionsTreeModel.scriptHistoryOf(info.sessionId, scriptRuns.filter((run) => {
+        if (run.phase === 'inner') return false
+        else if (run.phase === 'before' || run.phase === 'after') return !held.runs.has(run.runId)
+        else throw new Error(`Unknown script phase: ${JSON.stringify(run.phase satisfies never)}`)
+      }), context),
       workflow: info.actions?.sections.length !== undefined ? info.actions.sections.length > 0 : info.workflow !== undefined,
       ...actionsMark === null ? {} : { actionsMark },
       opensWorkflow: SessionNodeState.opensWorkflow(info, options.operationScope),
       filedWithParent: context.links.has(info.sessionId),
       launch: SessionNodeState.launchBadgeOf(info.launchWait),
       launchTitle: SessionNodeState.launchTitleOf(info.launchWait),
+      innerRun,
       actions,
       finalizeLabel: actions.includes('finalize')
-        ? SessionNodeState.finalizeLabelOf(info.life, info.worktree?.liveFinish === true)
+        ? SessionNodeState.finalizeLabelOf(info.life, info.worktree?.liveFinish === true, innerRun)
         : null,
       live: SessionNodeState.isLive(info.life),
       merge: SessionNodeState.mergeBadgeOf(info.merge),
@@ -681,26 +718,134 @@ export class SessionsTreeModel {
       outcome: info.outcome ?? null,
       exitCode: info.exitCode ?? null,
       endedReason: info.endedReason ?? null,
-      tasks: SessionsTreeModel.tasksOf(info, context),
+      processes,
+      service: SessionsTreeModel.serviceOf(info, context),
       step: held.step ? null : info.step ?? null,
-      children,
+      // Run nodes stay in `children` so decorate, withIdentity, drawnSessionIdsOf and sessionNodeOf walk them; a run past the limit leaves.
+      children: children.filter((child) => {
+        const runInfo = SessionsTreeModel.innerRunOf(child, context)
+        return runInfo === null || drawnRuns.has(runInfo.sessionId)
+      }),
     }
   }
 
-  private static tasksOf(info: SessionInfo, context: NodeContext): SessionTasksNode | null {
-    const sessionId = info.sessionId
-    const listing = context.tasks.get(sessionId)
-    if (listing === undefined || listing.kind === 'none') return null
-    else if (listing.kind !== 'tasks')
-      throw new Error(`Unknown session task listing: ${JSON.stringify(listing satisfies never)}`)
-    const rows = SessionsTreeModel.underTheirParents(listing.rows.filter((row) =>
-      SessionsTreeModel.keepsTask(SessionsTreeModel.taskKey(sessionId, row, context), row.state === 'running', row.endedAt, context)))
-    if (rows.length === 0) return null
+  private static serviceOf(info: SessionInfo, context: NodeContext): { startedAt: number } | null {
+    if (info.script?.scriptId !== 'service' || !SessionNodeState.isLive(info.life)) return null
+    const parent = context.byId.get(info.script.parentId)?.info
+    const run = parent?.scripts?.runs.find((candidate) => candidate.runId === info.sessionId)
+    return run === undefined ? null : { startedAt: run.startedAt }
+  }
+
+  private static innerRunOf(child: TreeNode, context: NodeContext): SessionInfo | null {
+    if (child.kind !== 'session' || !child.innerRun) return null
+    return context.byId.get(child.sessionId)?.info ?? null
+  }
+
+  private static listedRowsOf(info: SessionInfo, context: NodeContext): readonly SessionTaskRow[] {
+    const listing = context.tasks.get(info.sessionId)
+    if (listing === undefined || listing.kind === 'none') return []
+    else if (listing.kind === 'tasks') return listing.rows
+    else throw new Error(`Unknown session task listing: ${JSON.stringify(listing satisfies never)}`)
+  }
+
+  private static listedScriptRunsOf(
+    info: SessionInfo,
+    children: readonly TreeNode[],
+    context: NodeContext,
+  ): readonly SessionScriptRunInfo[] {
+    const runs = [...(info.scripts?.runs ?? [])]
+    const seen = new Set(runs.map((run) => run.runId))
+    for (const child of children) {
+      const runInfo = SessionsTreeModel.innerRunOf(child, context)
+      if (runInfo === null || seen.has(runInfo.sessionId)) continue
+      const scriptId = runInfo.script?.scriptId
+      if (scriptId !== 'service' && scriptId !== 'requested') continue
+      runs.push({
+        runId: runInfo.sessionId,
+        phase: 'inner',
+        scriptId,
+        name: runInfo.title,
+        title: runInfo.title,
+        commands: [],
+        state: SessionNodeState.isLive(runInfo.life) ? 'running'
+          : runInfo.outcome === 'failed' ? 'failed'
+            : runInfo.outcome === 'interrupted' ? 'lost' : 'succeeded',
+        startedAt: 0,
+        endedAt: runInfo.endedAt,
+        row: true,
+        summary: runInfo.title,
+        log: 'none',
+      })
+    }
+    return runs
+  }
+
+  private static processesOf(
+    info: SessionInfo,
+    scriptRuns: readonly ScriptRunNode[],
+    children: readonly TreeNode[],
+    context: NodeContext,
+  ): { processes: SessionProcessesNode | null; drawnRuns: ReadonlySet<string> } {
+    const listedRows = SessionsTreeModel.listedRowsOf(info, context)
+    const listed = SessionProcesses.listOf(SessionsTreeModel.listedScriptRunsOf(info, children, context), listedRows)
+    // A run whose record exists stays until it goes (a failed requested run until Remove); history and task rows keep retention.
+    const kept = listed.filter((process) => process.row || SessionsTreeModel.keepsTask(
+      SessionsTreeModel.taskKey(info.sessionId, process.task, context),
+      process.running,
+      process.endedAt,
+      context,
+    ))
+    const { shown, more } = SessionProcesses.shownOf(kept)
+    const drawnRuns = new Set(shown.flatMap((process) =>
+      process.row && process.task.kind === 'script' ? [process.task.runId] : []))
+    if (shown.length === 0) return { processes: null, drawnRuns }
+    const scriptById = new Map(scriptRuns.map((run) => [run.runId, run]))
+    const shellById = new Map<string, Extract<SessionTaskRow, { kind: 'shell' }>>()
+    const subagentById = new Map<string, Extract<SessionTaskRow, { kind: 'subagent' }>>()
+    for (const row of listedRows)
+      if (row.kind === 'shell') shellById.set(row.shellId, row)
+      else if (row.kind === 'subagent') subagentById.set(row.subagentId, row)
+      else throw new Error(`Unknown session task row: ${JSON.stringify(row satisfies never)}`)
+    const ordered = SessionsTreeModel.underTheirParents(shown, subagentById)
     const nested = context.nesting.subagents
     return {
-      placement: nested ? 'nested' : 'beside',
-      numberPrefix: nested ? null : info.titleParts.number,
-      rows: rows.map((row) => SessionsTreeModel.taskRowOf(sessionId, row)),
+      drawnRuns,
+      processes: {
+        placement: nested ? 'nested' : 'beside',
+        numberPrefix: nested ? null : info.titleParts.number,
+        rows: ordered.map((process) => SessionsTreeModel.processRowOf(process, info.sessionId, scriptById, shellById, subagentById)),
+        more: more === 0 ? null : { count: more, opens: context.options.operationScope === 'local' },
+      },
+    }
+  }
+
+  private static processRowOf(
+    process: SessionProcess,
+    sessionId: string,
+    scripts: ReadonlyMap<string, ScriptRunNode>,
+    shells: ReadonlyMap<string, Extract<SessionTaskRow, { kind: 'shell' }>>,
+    subagents: ReadonlyMap<string, Extract<SessionTaskRow, { kind: 'subagent' }>>,
+  ): ProcessRowNode {
+    const task = process.task
+    switch (task.kind) {
+      case 'script': {
+        if (process.row) return { kind: 'run', sessionId: task.runId }
+        const run = scripts.get(task.runId)
+        if (run === undefined) throw new Error(`Missing script run ${task.runId} for session ${sessionId}`)
+        return { kind: 'history', run }
+      }
+      case 'shell': {
+        const row = shells.get(task.shellId)
+        if (row === undefined) throw new Error(`Missing shell ${task.shellId} for session ${sessionId}`)
+        return { kind: 'task', row: SessionsTreeModel.taskRowOf(sessionId, row) }
+      }
+      case 'subagent': {
+        const row = subagents.get(task.subagentId)
+        if (row === undefined) throw new Error(`Missing subagent ${task.subagentId} for session ${sessionId}`)
+        return { kind: 'task', row: SessionsTreeModel.taskRowOf(sessionId, row) }
+      }
+      default:
+        throw new Error(`Unknown process task: ${JSON.stringify(task satisfies never)}`)
     }
   }
 
@@ -728,21 +873,31 @@ export class SessionsTreeModel {
   }
 
   /**
-   * The listing's order, except that a depth-2 sub-agent moves under its depth-1 row when that one is
-   * listed beside it. A shell is never placed under anything.
+   * The shown processes' order, except that a depth-2 sub-agent moves under its depth-1 row when
+   * both are shown. A shell or script run is never placed under anything.
    */
-  private static underTheirParents(rows: readonly SessionTaskRow[]): readonly SessionTaskRow[] {
-    const listed = new Set(rows.flatMap((row) => row.kind === 'subagent' ? [row.subagentId] : []))
-    const placedUnder = (row: SessionTaskRow): boolean => row.kind === 'subagent' && row.depth === 2
-      && row.parentSubagentId !== null && row.parentSubagentId !== row.subagentId
-      && listed.has(row.parentSubagentId)
-    const out: SessionTaskRow[] = []
-    for (const row of rows) {
-      if (placedUnder(row)) continue
-      out.push(row)
-      if (row.kind === 'subagent')
-        out.push(...rows.filter((child) => placedUnder(child) && child.kind === 'subagent'
-          && child.parentSubagentId === row.subagentId))
+  private static underTheirParents(
+    shown: readonly SessionProcess[],
+    subagents: ReadonlyMap<string, Extract<SessionTaskRow, { kind: 'subagent' }>>,
+  ): readonly SessionProcess[] {
+    const listed = new Set(shown.flatMap((process) =>
+      process.task.kind === 'subagent' ? [process.task.subagentId] : []))
+    const parentOf = (process: SessionProcess): string | null => {
+      if (process.task.kind !== 'subagent') return null
+      const row = subagents.get(process.task.subagentId)
+      if (row === undefined || row.depth !== 2 || row.parentSubagentId === null
+        || row.parentSubagentId === row.subagentId || !listed.has(row.parentSubagentId))
+        return null
+      return row.parentSubagentId
+    }
+    const out: SessionProcess[] = []
+    for (const process of shown) {
+      if (parentOf(process) !== null) continue
+      out.push(process)
+      if (process.task.kind === 'subagent') {
+        const parentId = process.task.subagentId
+        out.push(...shown.filter((child) => parentOf(child) === parentId))
+      }
     }
     return out
   }
@@ -770,6 +925,7 @@ export class SessionsTreeModel {
           detail: null,
           state: row.state,
           depth: 1,
+          runs: row.runs ?? 'command',
         }
       default:
         throw new Error(`Unknown session task row: ${JSON.stringify(row satisfies never)}`)
@@ -893,13 +1049,13 @@ export class SessionsTreeModel {
         return same ? old : { ...node, children }
       // Printed on their own, so a moved step leaves the session's own print alone, and an unmoved
       // listing keeps the object its rows were drawn from.
-      const tasksKey = SessionsTreeModel.tasksPrintKeyOf(node.id)
-      const tasksPrint = JSON.stringify(node.tasks)
-      prints.set(tasksKey, tasksPrint)
-      const tasks = old?.kind === 'session' && before.get(tasksKey) === tasksPrint ? old.tasks : node.tasks
-      if (same && old.kind === 'session' && old.tasks === tasks)
+      const processesKey = SessionsTreeModel.processesPrintKeyOf(node.id)
+      const processesPrint = JSON.stringify(node.processes)
+      prints.set(processesKey, processesPrint)
+      const processes = old?.kind === 'session' && before.get(processesKey) === processesPrint ? old.processes : node.processes
+      if (same && old.kind === 'session' && old.processes === processes)
         return old
-      return { ...node, tasks, children }
+      return { ...node, processes, children }
     })
 
     return { ...next, nodes: reuse(next.nodes), fingerprints: prints }
@@ -926,14 +1082,14 @@ export class SessionsTreeModel {
     return drawn
   }
 
-  /** Where `fingerprints` keeps the print of a session node's task rows. */
-  static tasksPrintKeyOf(nodeId: string): string {
-    return `${nodeId}#tasks`
+  /** Where `fingerprints` keeps the print of a session node's process rows. */
+  static processesPrintKeyOf(nodeId: string): string {
+    return `${nodeId}#processes`
   }
 
   private static ownPrintOf(node: TreeNode): string {
     if (node.kind === 'session') {
-      const { children: _subtree, tasks: _tasks, ...own } = node
+      const { children: _subtree, processes: _processes, ...own } = node
       return JSON.stringify(own)
     }
     const { children: _subtree, ...own } = node

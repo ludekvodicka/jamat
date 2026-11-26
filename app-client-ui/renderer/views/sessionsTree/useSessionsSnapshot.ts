@@ -23,10 +23,15 @@ export function useSessionsSnapshot(
   return useSnapshotStore(store)
 }
 
+/**
+ * `subscribed: false` keeps the last read without listening: a component that shows nothing of the
+ * store at the moment does not re-render on each of its changes, and reads afresh once it listens.
+ */
 export function useSnapshotStore<T extends { revision: number }>(
   store: SnapshotStore<T>,
+  subscribed = true,
 ): SnapshotStoreHandle<T> {
-  const subscribe = useCallback((onChanged: () => void) => store.subscribe(onChanged), [store])
+  const subscribe = useCallback((onChanged: () => void) => subscribed ? store.subscribe(onChanged) : () => {}, [store, subscribed])
   const current = useCallback(() => store.current(), [store])
   const state = useSyncExternalStore(subscribe, current, current)
   const refresh = useCallback(() => store.refresh(), [store])

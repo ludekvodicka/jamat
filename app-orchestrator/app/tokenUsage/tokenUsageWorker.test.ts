@@ -15,13 +15,14 @@ vi.mock('node:worker_threads', () => ({ Worker: class {
   on(event: string, handler: (...args: any[]) => void) { this.handlers[event] = handler }
   postMessage(value: unknown) { this.sent.push(value) }
 } }))
-const request: TokenUsageWorkerRequest = { kind: 'scan', cacheFile: 'fixture', configDir: 'fixture', claudeHome: 'fixture', codexHome: 'fixture', antigravityHome: 'fixture', records: [], accounts: [], rescan: false }
+const requestFixture: TokenUsageWorkerRequest = { kind: 'scan', cacheFile: 'fixture', configDir: 'fixture', claudeHome: 'fixture', codexHome: 'fixture', antigravityHome: 'fixture', records: [], accounts: [], rescan: false }
+const request = requestFixture
 describe('TokenUsageWorker', () => {
   it('records one live worker sample per minute with unavailable loop fields and none after stop', async () => {
     vi.useFakeTimers()
     threads.length = 0
     const sampled = vi.fn()
-    const worker = new TokenUsageWorker('fixture.js', async () => request, () => {}, sampled)
+    const worker = new TokenUsageWorker('fixture.js', async () => request, { changed: () => {}, progressed: () => {} }, sampled)
     try {
       const pending = worker.refresh()
       await vi.advanceTimersByTimeAsync(0)
@@ -39,12 +40,15 @@ describe('TokenUsageWorker', () => {
   })
   it('coalesces refresh, publishes progress, retains results and terminates its thread', async () => {
     threads.length = 0
-    const changed = vi.fn(), worker = new TokenUsageWorker('fixture.js', async rescan => ({ ...request, rescan }), changed)
+    const changed = vi.fn(), progressed = vi.fn()
+    const worker = new TokenUsageWorker('fixture.js', async rescan => ({ ...request, rescan }), { changed, progressed })
     const one = worker.refresh(), two = worker.refresh()
     expect(two).toBe(one)
     await vi.waitFor(() => expect(threads).toHaveLength(1))
     threads[0].handlers.message({ kind: 'progress', progress: { running: true, completed: 1, total: 2, error: null, scannedAt: null } })
     expect(worker.snapshot().progress.completed).toBe(1)
+    expect(progressed).toHaveBeenLastCalledWith({ running: true, completed: 1, total: 2, error: null, scannedAt: null })
+    expect(changed).not.toHaveBeenCalled()
     threads[0].handlers.message({ kind: 'result', buckets: [], sessionBuckets: [], accountLabels: {}, labels: { a: 'A' }, sessionLabels: {} })
     await one
     await worker.stop()
@@ -52,9 +56,20 @@ describe('TokenUsageWorker', () => {
     expect(threads[0].terminate).toHaveBeenCalledOnce()
     expect(changed).toHaveBeenCalled()
   })
+  it('starts no thread and no scan until a refresh is asked for', async () => {
+    vi.useFakeTimers()
+    threads.length = 0
+    const request = vi.fn(async () => ({ ...requestFixture }))
+    const worker = new TokenUsageWorker('fixture.js', request, { changed: () => {}, progressed: () => {} })
+    try {
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(threads).toHaveLength(0)
+      expect(request).not.toHaveBeenCalled()
+    } finally { await worker.stop(); vi.useRealTimers() }
+  })
   it('settles an in-flight read at stop and ignores late worker messages', async () => {
     threads.length = 0
-    const worker = new TokenUsageWorker('fixture.js', async () => request, () => {})
+    const worker = new TokenUsageWorker('fixture.js', async () => request, { changed: () => {}, progressed: () => {} })
     const pending = worker.refresh()
     await vi.waitFor(() => expect(threads).toHaveLength(1))
     await worker.stop()
@@ -67,7 +82,7 @@ describe('TokenUsageWorker', () => {
   it('reuses one ready thread between scans and starts a fresh one after the watchdog', async () => {
     vi.useFakeTimers()
     threads.length = 0
-    const worker = new TokenUsageWorker('fixture.js', async rescan => ({ ...request, rescan }), () => {})
+    const worker = new TokenUsageWorker('fixture.js', async rescan => ({ ...request, rescan }), { changed: () => {}, progressed: () => {} })
     try {
       const first = worker.refresh()
       await vi.advanceTimersByTimeAsync(0)
@@ -102,7 +117,7 @@ describe('TokenUsageWorker', () => {
     let late: (value: TokenUsageWorkerRequest) => void = () => {}
     const delayed = new Promise<TokenUsageWorkerRequest>(resolve => { late = resolve })
     let calls = 0
-    const worker = new TokenUsageWorker('fixture.js', () => ++calls === 1 ? delayed : Promise.resolve(request), () => {})
+    const worker = new TokenUsageWorker('fixture.js', () => ++calls === 1 ? delayed : Promise.resolve(request), { changed: () => {}, progressed: () => {} })
     try {
       const old = worker.refresh()
       await vi.advanceTimersByTimeAsync(900_000)

@@ -33,6 +33,23 @@ export class TerminalDescendants {
     return [...owned.values()].filter((row) => row.pid !== pid)
   }
 
+  /** The ConPTY consoles (`conhost.exe --headless`) whose parent is `parentPid`, with their start times. */
+  static async consolesOf(parentPid: number): Promise<TerminalDescendant[]> {
+    if (process.platform !== 'win32') return []
+    if (!Number.isSafeInteger(parentPid) || parentPid <= 0) throw new Error('Invalid console owner PID')
+    const output = await this.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `@(Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid} AND Name='conhost.exe'" | `
+      + `Where-Object { $_.CommandLine -like '*--headless*' } | `
+      + `ForEach-Object { [pscustomobject]@{ pid=[int]$_.ProcessId; startedAt=([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } }) | ConvertTo-Json -Compress`])
+    const text = output.trim()
+    if (text === '') return []
+    const parsed: unknown = JSON.parse(text)
+    const rows = (Array.isArray(parsed) ? parsed : [parsed]) as TerminalDescendant[]
+    if (rows.some((row) => !Number.isSafeInteger(row?.pid) || !Number.isFinite(row?.startedAt)))
+      throw new Error('Cannot identify the console processes')
+    return rows
+  }
+
   static async stop(children: readonly TerminalDescendant[]): Promise<void> {
     if (process.platform !== 'win32' || children.length === 0) return
     if (children.some((child) => !Number.isSafeInteger(child.pid) || child.pid <= 0 || !Number.isSafeInteger(child.startedAt)))

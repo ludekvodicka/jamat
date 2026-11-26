@@ -41,6 +41,7 @@ type Done = Record<string, never>
  */
 export interface AppOperationMap {
   'usage.tokens': { request: import('../tokenUsage/tokenUsageApi.types').TokenUsageQuery; response: import('../tokenUsage/tokenUsageApi.types').TokenUsageResult }
+  'usage.refresh': { request: Record<string, never>; response: Done }
   'usage.rescan': { request: Record<string, never>; response: Done }
   'usage.history': { request: { agentId: 'claude' | 'codex' | 'antigravity'; from: number; to: number; burnHours: 1 | 3 | 6 }; response: import('../rateMonitor/usageApi.types').PoolSeries }
   'usage.get': { request: Record<string, never>; response: import('../rateMonitor/usageApi.types').UsageSnapshot }
@@ -106,6 +107,8 @@ export interface AppOperationMap {
   /** Local only: the owning computer runs the recovery; never in `RemoteControlPeerConst.controlOperations`. */
   'sessions.limitRecovery': { request: { sessionId: string; action: import('../limitRecovery/limitRecoveryApi.types').LimitRecoveryAction }; response: Done }
   'sessions.scriptOutput': { request: { sessionId: string; runId: string }; response: SessionScriptOutput }
+  /** Local only: never in `RemoteControlPeerConst.controlOperations`. */
+  'sessions.scriptLastLines': { request: { sessionId: string }; response: readonly { runId: string; line: string | null }[] }
   'sessionTasks.list': { request: { sessionIds: string[] }; response: Record<string, SessionTaskListing> }
   'sessionTasks.transcript': {
     request: { sessionId: string; subagentId: string; known?: string }
@@ -120,6 +123,10 @@ export interface AppOperationMap {
     response: { panelId: string }
   }
   'sessionTasks.openWorkflow': {
+    request: { sessionId: string }
+    response: { panelId: string }
+  }
+  'sessionTasks.openProcesses': {
     request: { sessionId: string }
     response: { panelId: string }
   }

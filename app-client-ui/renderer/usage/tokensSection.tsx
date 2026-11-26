@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { TokenAgentId, TokenOrigin, TokenUsageQuery, TokenUsageResult, TokenUsageRow } from '../../../lib-orchestrator/tokenUsage/tokenUsageApi.types'
+import type { TokenAgentId, TokenOrigin, TokenScanProgress, TokenUsageQuery, TokenUsageResult, TokenUsageRow } from '../../../lib-orchestrator/tokenUsage/tokenUsageApi.types'
 import type { IpcResult } from '../../shared/appClientUiIpc'
 import { AppControl } from '../ipc/appControl'
 import { IpcSnapshotReader } from '../ipc/ipcSnapshotReader'
@@ -28,7 +28,7 @@ const originOptionsConst: readonly { value: OriginChoice; label: string }[] = [
   { value: 'thirdParty', label: '3rd party' },
 ]
 
-export function TokensSection(): React.JSX.Element {
+export function TokensSection({ visible = true }: { visible?: boolean }): React.JSX.Element {
   const [preset, setPreset] = useState<TokenPeriodPreset>('week')
   const [custom, setCustom] = useState(() => UsageModel.tokenPeriod('week', new Date()))
   const period = useMemo(() => preset === 'custom' ? custom : UsageModel.tokenPeriod(preset, new Date()), [preset, custom])
@@ -36,17 +36,22 @@ export function TokensSection(): React.JSX.Element {
   const [origin, setOrigin] = useState<OriginChoice>('all')
   const [views, setViews] = useState<TokenViews | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [rescanning, setRescanning] = useState(false)
+  const [requesting, setRequesting] = useState(false)
+  const [scan, setScan] = useState<TokenScanProgress | null>(null)
   const [showAllSessions, setShowAllSessions] = useState(false)
   const reader = useRef<IpcSnapshotReader<TokenViews> | null>(null)
   const live = useRef(false)
   useEffect(() => { live.current = true; return () => { live.current = false } }, [])
+  useEffect(() => window.appClient.onUsageProgress(setScan), [])
   useEffect(() => {
     setViews(null)
     setError(null)
     setShowAllSessions(false)
+  }, [period, agent, origin])
+  useEffect(() => {
     const { from, to } = period
     if (!from || !to || from > to) { setError('Choose a valid period.'); return }
+    if (!visible) return
     const read = async (): Promise<IpcResult<TokenViews>> => {
       const groups = ['day', 'project', 'hour', 'account', 'session'] as const
       const replies = await Promise.all(groups.map(groupBy => AppControl.value('usage.tokens', {
@@ -66,7 +71,7 @@ export function TokensSection(): React.JSX.Element {
     reader.current = engine
     const stop = engine.start()
     return () => { reader.current = null; stop() }
-  }, [period, agent, origin])
+  }, [period, agent, origin, visible])
   const theme = useMemo(usageChartTheme, [])
   const charts = useMemo(() => views ? {
     day: TokensSectionModel.chart(views.day.rows, theme),
@@ -74,18 +79,19 @@ export function TokensSection(): React.JSX.Element {
   } : null, [views, theme])
   const legendAgents = useMemo(() => views && agent === 'all' ? TokensSectionModel.activeAgents(views.day.rows) : [], [views, agent])
   const totals = useMemo(() => views ? TokensSectionModel.sum(views.day.rows) : null, [views])
-  const progress = views?.day.progress
-  const rescan = async (): Promise<void> => {
-    setRescanning(true)
+  const progress = scan ?? views?.day.progress
+  const request = async (operation: 'usage.refresh' | 'usage.rescan'): Promise<void> => {
+    setRequesting(true)
     try {
-      const result = await AppControl.value('usage.rescan', {})
+      const result = await AppControl.value(operation, {})
       if (!live.current) return
       if (!result.ok) setError(result.error)
-      reader.current?.refresh()
     } catch (error) { if (live.current) setError(String(error)) }
-    finally { if (live.current) setRescanning(false) }
+    finally { if (live.current) setRequesting(false) }
   }
-  const scanning = !views || progress?.running === true
+  const scanning = progress?.running === true
+  // Nothing scans on its own: until a person asks, this client run has no totals to show.
+  const unloaded = progress !== undefined && !progress.running && progress.scannedAt === null && progress.error === null
   const sessionRows = views?.session.rows ?? []
   return <section aria-label="Tokens" className="jamat-usage__card jamat-usage__tokens">
     <div className="jamat-usage__toolbar">
@@ -99,11 +105,15 @@ export function TokensSection(): React.JSX.Element {
       <Segmented label="Source" options={originOptionsConst} value={origin} onChange={setOrigin} />
       <span className="jamat-usage__spacer" />
       {scanning && <span role="status" className="jamat-usage__muted">Scanning transcripts… {progress ? `${progress.completed} / ${progress.total} files` : ''}</span>}
-      <button type="button" disabled={rescanning || progress?.running} onClick={() => { void rescan() }}>Rescan</button>
+      <button type="button" disabled={requesting || scanning} onClick={() => { void request('usage.refresh') }}
+        title="Read the transcripts that changed since the last scan">Reload</button>
+      <button type="button" disabled={requesting || scanning} onClick={() => { void request('usage.rescan') }}
+        title="Rebuild the statistics from every transcript">Rescan</button>
     </div>
     {error && <p role="alert" className="jamat-usage__alert">{error}</p>}
     {progress?.error && <p role="alert" className="jamat-usage__alert">{progress.error}</p>}
-    {views && views.day.rows.length === 0 && !progress?.running && <p className="jamat-usage__empty">No usage in this period</p>}
+    {unloaded && <p className="jamat-usage__empty">Token statistics are not loaded. Press Reload to read the transcripts.</p>}
+    {views && !unloaded && views.day.rows.length === 0 && !scanning && <p className="jamat-usage__empty">No usage in this period</p>}
     {views && charts && totals && views.day.rows.length > 0 && <>
       <div className="jamat-usage__tiles">
         <Tile label="Total" value={UsageModel.tokens(TokensSectionModel.total(totals))} />

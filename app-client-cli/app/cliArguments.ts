@@ -178,8 +178,13 @@ export class CliArguments {
       mutation: false,
     },
     'sessions scripts run': {
-      options: ['--session-id', '--number', '--working-directory', '--command', '--cwd', '--title', '--timeout-ms'],
+      options: ['--session-id', '--number', '--working-directory', '--command', '--cwd', '--title', '--timeout-ms', '--kind'],
       flags: ['--self', '--wait'],
+      mutation: true,
+    },
+    'sessions scripts stop': {
+      options: ['--session-id', '--number', '--working-directory', '--run-id'],
+      flags: ['--self'],
       mutation: true,
     },
     'sessions color': {

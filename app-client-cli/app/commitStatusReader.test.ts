@@ -176,4 +176,25 @@ describe('app-client-cli/app/commitStatusReader', () => {
     })
     await expect(reader.read(CommitStatusFixture.id, true, 10)).rejects.toThrow(CommitStatusFixture.id)
   })
+
+  it('polls every 1 s during the first minute and backs off to 5 s after one minute', async () => {
+    const f = new CommitStatusFixture()
+    const pauses: number[] = []
+    let reads = 0
+    const reader = new CommitStatusReader({
+      read: async () => {
+        reads += 1
+        return f.time >= 75_000 ? f.answer('committed') : f.answer('editing')
+      },
+      now: () => f.time,
+      pause: async (ms) => {
+        pauses.push(ms)
+        f.time += ms
+      },
+    })
+    expect(await reader.read(CommitStatusFixture.id, true, 120_000)).toMatchObject({ ok: true, value: { state: 'committed' } })
+    expect(pauses.slice(0, 60)).toEqual(Array(60).fill(1_000))
+    expect(pauses.slice(60)).toEqual([5_000, 5_000, 5_000])
+    expect(reads).toBe(64)
+  })
 })

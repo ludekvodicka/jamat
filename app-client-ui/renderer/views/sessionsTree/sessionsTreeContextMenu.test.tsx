@@ -10,7 +10,7 @@ import { CommandRegistry } from '../../commands/commandRegistry'
 import { ContextMenuReading } from '../../widgets/fixtures/contextMenuReading'
 import type { TabSessionFacts } from '../../widgets/tabs/tabContextMenu'
 import type { SessionAction } from './sessionNodeState'
-import { SessionsTreeContextMenu } from './sessionsTreeContextMenu'
+import { SessionsTreeContextMenu, SessionsTreeMenuItems } from './sessionsTreeContextMenu'
 
 function titleOf(id: CommandId): string {
   const descriptor = AppCommands.all().find((candidate) => candidate.id === id)
@@ -153,6 +153,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Show ›',
       '  Session actions',
       '  Todo list',
+      '  Processes',
       'Commit ›',
       '  Git…',
       '  SVN…',
@@ -195,6 +196,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
       'Show ›',
       '  Session actions',
       '  Todo list',
+      '  Processes',
       'Commit ›',
       '  Git…',
       '  SVN…',
@@ -245,17 +247,45 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeContextMenu', ()
     expect(MenuView.isOpen()).toBe(false)
   })
 
-  it('shows Session actions under Show and offers them for ended sessions with an empty history', () => {
+  it('shows Session actions, Todo list and Processes under Show and offers them for ended sessions with an empty history', () => {
     const commands = new CommandRegistry()
     const opened = vi.fn()
+    const processes = vi.fn()
     commands.register('session.showActions', opened)
+    commands.register('session.showProcesses', processes)
     const view = render(<MenuHost commands={commands} />)
-    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list', 'Processes'])
     fireEvent.click(MenuView.itemTitled('Session actions'))
     expect(opened).toHaveBeenCalledWith({ sessionId: 's1' })
     view.unmount()
+
+    const local = render(<MenuHost commands={commands} />)
+    fireEvent.click(MenuView.itemTitled('Processes'))
+    expect(processes).toHaveBeenCalledWith({ sessionId: 's1' })
+    local.unmount()
+
     render(<MenuHost commands={commands} facts={{ ended: true, admits: [], directoryPath: null }} />)
     expect(MenuView.all()).toContain('Session actions')
+    expect(MenuView.all()).toContain('Processes')
+  })
+
+  it('omits Processes from a paired remote session row menu', () => {
+    const items = SessionsTreeMenuItems.forNode(
+      new CommandRegistry(),
+      's1',
+      factsOf(),
+      [],
+      vi.fn(),
+      'peer-1',
+    )
+    const labels = items.flatMap((item) => 'kind' in item
+      ? []
+      : item.children !== undefined
+        ? [item.label, ...item.children.flatMap((child) => 'kind' in child ? [] : [child.label])]
+        : [item.label])
+    expect(labels).toContain('Restart session')
+    expect(labels).not.toContain('Processes')
+    expect(labels).not.toContain('Todo list')
   })
 
   it('puts Finish session and Finish and prune session in a section under Restart session of a running row', () => {

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { AtomicJsonFile } from '../../../lib-orchestrator/shared/atomicJsonFile'
 import { VersioningReviewStore, type VersioningReviewRecord } from './versioningReviewStore'
 
 const roots: string[] = []
@@ -35,4 +36,31 @@ it('preserves a damaged document and refuses writes instead of replacing it', as
   expect(store.save([review])).toBe(false)
   expect(await readFile(f.file, 'utf8')).toBe('{damaged')
   expect(f.report).toHaveBeenCalled()
+})
+
+it('writes compact JSON and still refuses a changed record that is invalid after an unchanged save', async () => {
+  const f = await fixture()
+  const store = new VersioningReviewStore(f.file, f.report)
+  const other = { ...review, dto: { ...review.dto, draftId: 'other' } }
+  expect(store.save([review, other])).toBe(true)
+  expect(store.save([review, other])).toBe(true)
+  expect(await readFile(f.file, 'utf8')).not.toContain('\n  ')
+  const broken = { ...other, decisions: [{ operationId: 'op', actorId: 'actor', payload: 'not json', acceptedAt: 1 }] }
+  expect(() => store.save([review, broken])).toThrow('The saved decision is unreadable')
+  expect(new VersioningReviewStore(f.file, f.report).read().map(record => record.dto.draftId)).toEqual(['review', 'other'])
+})
+
+it('skips disk writes when serialized review texts and order are unchanged and writes when order changes', async () => {
+  const f = await fixture()
+  const store = new VersioningReviewStore(f.file, f.report)
+  const other = { ...review, dto: { ...review.dto, draftId: 'other' } }
+  const writeSpy = vi.spyOn(AtomicJsonFile, 'write')
+  try {
+    expect(store.save([review, other])).toBe(true)
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+    expect(store.save([review, other])).toBe(true)
+    expect(writeSpy).toHaveBeenCalledTimes(1)
+    expect(store.save([other, review])).toBe(true)
+    expect(writeSpy).toHaveBeenCalledTimes(2)
+  } finally { writeSpy.mockRestore() }
 })

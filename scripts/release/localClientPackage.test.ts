@@ -24,7 +24,7 @@ class FixturePackage extends LocalClientPackage {
     await this.onBuild(snapshot, release)
     for (const path of ['Jamat.exe', 'resources/app.asar', 'resources/host/start.cjs', 'resources/codex/start.cjs', 'resources/gateway/start.cjs',
       'resources/remarkable-sidecar/manifest.json', 'resources/cli/jamat-v3.cjs',
-      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker'].map(name => 'resources/orchestrator/' + name + '.cjs'),
+      ...['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker', 'sessionUncommittedWorker'].map(name => 'resources/orchestrator/' + name + '.cjs'),
       ...['claude', 'codex', 'antigravity'].flatMap(agent => ['appjamat-v3', 'mdext-renderer', 'session-automation-groups']
         .map(skill => `resources/skills/${agent}/${skill}/SKILL.md`)),
       ...['node.exe', 'launcher.cjs', 'install-launcher.ps1', 'package.json', 'README.md',
@@ -259,13 +259,13 @@ test('every orchestration utility and worker artifact is required for package re
   try {
     const builder = new FixturePackage(root)
     let current = await builder.ensure()
-    for (const name of ['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker']) {
+    for (const name of ['start', 'fileDiffWorker', 'tokenUsageWorker', 'svnAssemblyWorker', 'sessionUncommittedWorker']) {
       rmSync(join(dirname(current.executablePath), 'resources/orchestrator', name + '.cjs'))
       const next = await builder.ensure()
       assert.notEqual(next.executablePath, current.executablePath)
       assert.equal(existsSync(join(dirname(next.executablePath), 'resources/orchestrator', name + '.cjs')), true)
       current = next
     }
-    assert.equal(builder.builds, 5)
+    assert.equal(builder.builds, 6)
   } finally { dispose(root) }
 })

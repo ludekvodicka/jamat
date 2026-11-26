@@ -114,4 +114,16 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunOutcome', () => {
     expect(ScriptRunOutcome.judge('s', [run({ life: 'ended', exitCode: 1 })], new Map(), resolver))
       .toEqual({ kind: 'failed', outcome: 'failed', reason: 'the resolver ended with 1', exitCode: 1 })
   })
+
+  it('judges a stop-ended service exiting with 0 by itself as failed with exitCode 0, and an asked stop as stopped', () => {
+    const serviceWords = { session: 'service', actor: 'service' }
+    expect(ScriptRunOutcome.judge('s', [run({ life: 'live' })], new Map([['s', runtime({ alive: false, exitCode: 0 })]]), serviceWords, 'stop'))
+      .toEqual({ kind: 'failed', outcome: 'failed', reason: 'the service exited with 0', exitCode: 0 })
+    expect(ScriptRunOutcome.judge('s', [run({ life: 'ended', exitCode: 0 })], new Map(), serviceWords, 'stop'))
+      .toEqual({ kind: 'failed', outcome: 'failed', reason: 'the service ended with 0', exitCode: 0 })
+    expect(ScriptRunOutcome.judge('s', [run({ life: 'ended', exitCode: 0, stopRequested: true })], new Map(), serviceWords, 'stop'))
+      .toEqual({ kind: 'failed', outcome: 'stopped', reason: 'its service was stopped' })
+    expect(ScriptRunOutcome.judge('s', [run({ life: 'ended', exitCode: 0 })], new Map(), { session: 'run', actor: 'run' }, 'exit-code'))
+      .toEqual({ kind: 'succeeded', outcome: 'succeeded', exitCode: 0 })
+  })
 })

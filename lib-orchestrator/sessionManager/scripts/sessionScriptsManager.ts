@@ -3,6 +3,7 @@ import type { HostClient } from '../../hostClient/hostClient'
 import { ErrorText } from '../../shared/errorText'
 import { LaunchBackoff } from '../lifecycle/launchBackoff'
 import { OperationOutcomes } from '../lifecycle/operationOutcomes'
+import type { SessionStopIntent } from '../lifecycle/sessionLifecycle'
 import type {
   SessionRecord,
   SessionRecordLaunchWait,
@@ -16,10 +17,12 @@ import type {
   SessionScriptPhase,
   SessionScriptId,
   SessionScriptRunInfo,
+  SessionScriptRunState,
   SessionScriptsInfo,
   SessionScriptsReading,
   SessionsOpResult,
 } from '../sessionManagerApi.types'
+import { RunOutputLines } from './runOutputLines'
 import { ScriptBadges } from './scriptBadges'
 import { ScriptDuration } from './scriptDuration'
 import type { ScriptLogStore } from './scriptLogStore'
@@ -214,7 +217,7 @@ export class SessionScriptsManager {
     const parent = this.records.get(link.sessionId)
     if (!parent || this.records.endedHistory().has(parent.sessionId) || SessionScriptsManager.entryOf(parent, runId)) return false
     // The record is all there is to judge by: an ended run carries the exit code the Host reported.
-    const judged = ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(link))
+    const judged = ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(link), SessionScriptDefinitions.of(link).endsBy)
     if (judged.kind === 'running') return false
     const rows = await this.rowsOf(run)
     if (rows === null) return false
@@ -347,6 +350,11 @@ export class SessionScriptsManager {
     return true
   }
 
+  /** Marks each run stop-requested so a Host restart settles its old record as `stopped`. */
+  async markStopsRequested(runIds: readonly string[]): Promise<void> {
+    for (const runId of runIds) await this.markStopRequested(runId)
+  }
+
   private async markStopRequested(runId: string): Promise<void> {
     await this.records.update(runId, (current) => current.stopRequested ? null : { ...current, stopRequested: true })
   }
@@ -356,10 +364,20 @@ export class SessionScriptsManager {
    * the parent back to live before any planning pass sees it ended, so the planning rule alone would
    * leave them running. A gated run is not one of them: its gate's own rules judge it.
    */
-  async stopWithParent(parentId: string): Promise<void> {
-    for (const run of this.records.runsOf(parentId))
-      if (SessionScriptDefinitions.of(run.scriptOf!).stopsWithParent
-        && ScriptRunPlanning.liveOrBound(run) && !run.stopRequested) await this.stopRun(run.sessionId)
+  async stopWithParent(parentId: string, intent: SessionStopIntent = 'close'): Promise<void> {
+    for (const run of this.records.runsOf(parentId)) {
+      if (!ScriptRunPlanning.liveOrBound(run) || run.stopRequested) continue
+      const stopsWith = SessionScriptDefinitions.of(run.scriptOf!).stopsWith
+      switch (stopsWith) {
+        case 'gate': break
+        case 'parent-process': await this.stopRun(run.sessionId); break
+        case 'parent-session':
+          if (intent === 'close') await this.stopRun(run.sessionId)
+          else if (intent !== 'restart') throw new Error(`Unknown stop intent: ${JSON.stringify(intent satisfies never)}`)
+          break
+        default: throw new Error(`Unknown run stop: ${JSON.stringify(stopsWith satisfies never)}`)
+      }
+    }
   }
 
   /**
@@ -496,9 +514,12 @@ export class SessionScriptsManager {
       default: throw new Error(`Unknown script run state: ${JSON.stringify(info.state satisfies never)}`)
     }
     const target = OperationOutcomes.targetOf(run)
-    const judged = info.state === 'running' ? null : ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(run.scriptOf))
+    const endsBy = SessionScriptDefinitions.of(run.scriptOf).endsBy
+    const judged = info.state === 'running' ? null : ScriptRunOutcome.judge(runId, [run], new Map(), SessionScriptDefinitions.wordsOf(run.scriptOf), endsBy)
+    const stateWord = SessionScriptsManager.stateWordOf(info.state, endsBy)
     const output: SessionScriptOutput = {
       state: info.state,
+      ...(stateWord === undefined ? {} : { stateWord }),
       source: 'live',
       lines: [],
       terminal: target,
@@ -532,8 +553,10 @@ export class SessionScriptsManager {
 
   private async logOutputOf(parentId: string, entry: SessionRecordScriptRun): Promise<SessionsOpResult<SessionScriptOutput>> {
     const reading = await this.logTextOf(parentId, SessionScriptsManager.settledInfoOf(entry, false))
+    const stateWord = SessionScriptsManager.stateWordOf(entry.outcome, SessionScriptDefinitions.of(entry).endsBy)
     return { ok: true, value: {
       state: entry.outcome,
+      ...(stateWord === undefined ? {} : { stateWord }),
       source: 'log',
       ...(entry.reason === undefined ? {} : { failureReason: entry.reason }),
       lines: reading.log?.text ? reading.log.text.split('\n') : [],
@@ -541,6 +564,12 @@ export class SessionScriptsManager {
       terminal: null,
       endedAt: entry.endedAt,
     } }
+  }
+
+  private static stateWordOf(state: SessionScriptRunState, endsBy: 'exit-code' | 'stop'): string | undefined {
+    if (endsBy === 'stop') return state === 'failed' ? 'Exited' : undefined
+    else if (endsBy === 'exit-code') return undefined
+    else throw new Error(`Unknown run end rule: ${JSON.stringify(endsBy satisfies never)}`)
   }
 
   private static outputLinesOf(rows: readonly string[]): readonly string[] {
@@ -580,6 +609,36 @@ export class SessionScriptsManager {
     this.report(`${this.unlogged} script run${this.unlogged === 1 ? ' was' : 's were'} settled without a saved log; `
       + 'each history entry says why')
     this.unlogged = 0
+  }
+
+  /** True while a service of `parentId` is starting or live. */
+  serviceRunning(parentId: string): boolean {
+    return this.records.runsOf(parentId).some((run) => SessionScriptDefinitions.of(run.scriptOf!).stopsWith === 'parent-session'
+      && (run.life === 'live' || run.life === 'starting'))
+  }
+
+  /**
+   * The last output line of each running service of `parentId`, read on demand for the visible
+   * Processes tab. One failed inspect answers `line: null` without failing the others.
+   */
+  async lastLinesOf(parentId: string): Promise<SessionsOpResult<readonly { runId: string; line: string | null }[]>> {
+    const parent = this.records.get(parentId)
+    if (!parent) return OperationOutcomes.notFound(parentId)
+    const services = this.records.runsOf(parentId).filter((run) =>
+      SessionScriptDefinitions.of(run.scriptOf!).stopsWith === 'parent-session'
+      && (run.life === 'live' || run.life === 'starting'))
+    const lines = await Promise.all(services.map(async (run) => {
+      const target = OperationOutcomes.targetOf(run)
+      if (target === null) return { runId: run.sessionId, line: null }
+      try {
+        const inspected = await this.host.runtimeInspect(target, RunOutputLines.viewConst)
+        if (!inspected.ok || inspected.value.projection === null) return { runId: run.sessionId, line: null }
+        return { runId: run.sessionId, line: RunOutputLines.lastLineOf(inspected.value.projection) }
+      } catch {
+        return { runId: run.sessionId, line: null }
+      }
+    }))
+    return { ok: true, value: lines }
   }
 
   /**
@@ -627,7 +686,7 @@ export class SessionScriptsManager {
       ...rows.filter((run) => !settledIds.has(run.sessionId)).map((run) => SessionScriptsManager.rowInfoOf(run)),
     ]
     if (!requestedCommands)
-      for (const run of runs) if (run.phase === 'inner' && run.scriptId === 'requested') run.commands = []
+      for (const run of runs) if (run.phase === 'inner') run.commands = []
     return runs.sort((left, right) => right.startedAt - left.startedAt)
   }
 
@@ -640,7 +699,7 @@ export class SessionScriptsManager {
       name: entry.name,
       title: entry.title,
       state: entry.outcome,
-      summary: ScriptBadges.summaryOf({ title: entry.title, state: entry.outcome, exitCode: entry.exitCode, durationText }),
+      summary: ScriptBadges.summaryOf({ title: entry.title, state: entry.outcome, exitCode: entry.exitCode, durationText, endsBy: SessionScriptDefinitions.of(entry).endsBy }),
       startedAt: entry.startedAt,
       endedAt: entry.endedAt,
       durationText,
@@ -663,7 +722,7 @@ export class SessionScriptsManager {
     if (link === undefined) throw new Error(`Session ${run.sessionId} is not a script run`)
     const judged = run.life === 'live'
       ? { kind: 'running' as const }
-      : ScriptRunOutcome.judge(run.sessionId, [run], new Map(), SessionScriptDefinitions.wordsOf(link))
+      : ScriptRunOutcome.judge(run.sessionId, [run], new Map(), SessionScriptDefinitions.wordsOf(link), SessionScriptDefinitions.of(link).endsBy)
     const state = judged.kind === 'running' ? 'running' : judged.outcome
     const info: SessionScriptRunInfo = {
       runId: run.sessionId,
@@ -685,7 +744,7 @@ export class SessionScriptsManager {
       }
       if (judged.exitCode !== undefined) info.exitCode = judged.exitCode
     }
-    info.summary = ScriptBadges.summaryOf(info)
+    info.summary = ScriptBadges.summaryOf({ ...info, endsBy: SessionScriptDefinitions.of(link).endsBy })
     return info
   }
 

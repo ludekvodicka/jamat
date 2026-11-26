@@ -5,21 +5,25 @@ import type { TokenUsageWorkerRequest, TokenUsageWorkerResponse } from './tokenU
 
 /**
  * One long-lived token scan thread, the way `FileDiffWorker` keeps its own: the scanner and its cache
- * stay in the thread between the minute scans, so a scan reads only what moved. A request waits for
- * the thread's `ready`. The watchdog, a thread error or an exit ends the thread, and the next refresh
- * starts a fresh one.
+ * stay in the thread between scans, so a scan reads only what moved. Nothing scans on its own: the
+ * first `refresh` starts the thread, and a person asks for every scan (Usage > Consumption, Reload or
+ * Rescan). A request waits for the thread's `ready`. The watchdog, a thread error or an exit ends the
+ * thread, and the next refresh starts a fresh one.
+ *
+ * `progressed` carries the scan state alone, so a progress tick never makes a reader of the totals
+ * read again; `changed` fires when a scan ended and the totals may differ.
  */
 export class TokenUsageWorker {
   private static readonly watchdogMillisecondsConst = 900_000
   private readonly path: string
   private readonly request: (rescan: boolean) => Promise<TokenUsageWorkerRequest>
   private readonly changed: () => void
+  private readonly progressed: (progress: TokenScanProgress) => void
   private readonly onPerf: ((sample: WorkerPerfSample) => void) | undefined
   private perfSampler: WorkerPerfSampler | null
   private worker: Worker | null = null
   private ready = false
   private queued: TokenUsageWorkerRequest | null = null
-  private timer: ReturnType<typeof setInterval> | null = null
   private watchdog: ReturnType<typeof setTimeout> | null = null
   private active: Promise<void> | null = null
   private stopping = false
@@ -33,11 +37,13 @@ export class TokenUsageWorker {
   private sessionLabels: Readonly<Record<string, string>> = {}
   private progress: TokenScanProgress = { running: false, completed: 0, total: 0, error: null, scannedAt: null }
 
-  constructor(path: string, request: (rescan: boolean) => Promise<TokenUsageWorkerRequest>, changed: () => void,
+  constructor(path: string, request: (rescan: boolean) => Promise<TokenUsageWorkerRequest>,
+    events: { changed(): void; progressed(progress: TokenScanProgress): void },
     onPerf?: (sample: WorkerPerfSample) => void) {
     this.path = path
     this.request = request
-    this.changed = changed
+    this.changed = () => events.changed()
+    this.progressed = progress => events.progressed(progress)
     this.onPerf = onPerf
     this.perfSampler = null
   }
@@ -53,13 +59,6 @@ export class TokenUsageWorker {
     }
   }
 
-  start(): void {
-    if (this.stopping || this.timer) return
-    this.timer = setInterval(() => { void this.refresh() }, 60_000)
-    this.timer.unref()
-    void this.refresh()
-  }
-
   refresh(rescan = false): Promise<void> {
     if (this.stopping) return Promise.resolve()
     if (this.active) {
@@ -67,7 +66,7 @@ export class TokenUsageWorker {
       return this.active
     }
     this.progress = { ...this.progress, running: true, completed: 0, total: 0, error: null }
-    this.changed()
+    this.progressed(this.progress)
     const job = new Promise<void>(resolve => { this.settle = resolve })
     this.active = job
     this.watchdog = setTimeout(() => { if (this.active === job) this.fail('Token scan exceeded fifteen minutes') },
@@ -82,8 +81,6 @@ export class TokenUsageWorker {
 
   beginStop(): void {
     this.stopping = true
-    if (this.timer) clearInterval(this.timer)
-    this.timer = null
     this.detach()
     this.finish(null)
   }
@@ -121,7 +118,7 @@ export class TokenUsageWorker {
     else if (message.kind === 'progress') {
       if (this.active === null) return
       this.progress = message.progress
-      this.changed()
+      this.progressed(this.progress)
     }
     else if (message.kind === 'result') {
       if (this.active === null) return
@@ -161,6 +158,7 @@ export class TokenUsageWorker {
     this.settle = null
     this.active = null
     if (this.stopping) return
+    this.progressed(this.progress)
     this.changed()
     if (this.rescanPending) {
       this.rescanPending = false

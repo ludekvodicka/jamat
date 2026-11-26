@@ -13,6 +13,8 @@ export interface RemoteSessionRevision {
 
 export interface RemoteSessionSummary extends SessionInfo {
   reviewPending?: boolean
+  /** Files the session changed and has not committed (the grey `*`), only when there are any; an older peer sends none. */
+  uncommittedFiles?: number
   pending: boolean
   hasResult: boolean
 }

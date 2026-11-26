@@ -42,6 +42,9 @@ export class TokenUsageOperations {
         return { ok: true, value: { rows, progress: snapshot.progress } }
       },
     })
+    op('usage.refresh', { kind: 'write', description: 'Read the transcripts that changed since the last token scan; a person asks for it, nothing scans on its own.',
+      input: z.strictObject({}), run: async () => { void this.worker.refresh(); return { ok: true, value: {} } },
+    })
     op('usage.rescan', { kind: 'write', description: 'Rebuild local token statistics from the main transcript directories.',
       input: z.strictObject({}), run: async () => { void this.worker.refresh(true); return { ok: true, value: {} } },
     })

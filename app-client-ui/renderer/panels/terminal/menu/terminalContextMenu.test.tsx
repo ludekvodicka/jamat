@@ -199,7 +199,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalContextMenu', () => {
         context={contextOf(over)}
         sessionId="session-1"
         ports={{ ...window.appClient.terminalMenu, release: window.appClient.fileViewer.release,
-          copyPath: window.appClient.clipboard.writeText, openUrl: window.appClient.fileViewer.openExternal, native: window.appClient.terminalMenu }}
+          copyText: window.appClient.clipboard.writeText, openUrl: window.appClient.fileViewer.openExternal, native: window.appClient.terminalMenu }}
         openInSplit={(document, location) => {
           opened.push({ document, location })
           return splitRefusal
@@ -496,22 +496,36 @@ describe('app-client-ui/renderer/panels/terminal/terminalContextMenu', () => {
     ])
   })
 
-  it('offers a URL it found, and shortens one too long to read', async () => {
+  it('offers to open and copy a URL it found, and shortens one too long to read', async () => {
+    const longUrl = `https://example.com/${'a'.repeat(80)}`
     renderMenu()
 
     await land([
       { kind: 'url', detectionId: 'detection-url', url: 'https://example.com/report' },
-      { kind: 'url', detectionId: 'detection-long', url: `https://example.com/${'a'.repeat(80)}` },
+      { kind: 'url', detectionId: 'detection-long', url: longUrl },
     ])
 
-    expect(openingLabels()[0]).toBe('Open https://example.com/report')
-    expect(openingLabels()[1]).toMatch(/^Open https:\/\/example\.com\/a+…$/)
+    const shortLong = `https://example.com/${'a'.repeat(35)}…`
+    expect(MenuView.layout()).toEqual([
+      'Open https://example.com/report',
+      `Open ${shortLong}`,
+      'Open project in VS Code',
+      'separator',
+      'Copy https://example.com/report',
+      `Copy ${shortLong}`,
+      'separator',
+      'Paste as text',
+      'Paste',
+    ])
     expect(openingLabels()[1]).toHaveLength('Open '.length + 56)
 
     fireEvent.click(MenuView.itemLabelled('Open https://example.com/report'))
     await flush()
+    fireEvent.click(MenuView.itemLabelled(`Copy ${shortLong}`))
+    await flush()
     expect(bridge.calls).toEqual([
       { method: 'openExternal', args: ['https://example.com/report'] },
+      { method: 'writeText', args: [longUrl] },
     ])
   })
 
@@ -611,6 +625,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalContextMenu', () => {
       openVsCode: nothing,
       openProjectVsCode: nothing,
       copyPath: nothing,
+      copyUrl: nothing,
       openUrl: nothing,
     })).toThrow(/Unknown terminal detection/)
   })
@@ -675,13 +690,13 @@ it('opens remote files, directories and URLs through injected ports without usin
     openFile: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: documentConst } })),
     openDirectory: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, value: { sessionId: 'session-1', path: 'D:/notes', directoryKey: 'remote-dir' } } })),
     release: vi.fn(async () => ({ ok: true as const, value: undefined })),
-    copyPath: vi.fn(async () => ({ ok: true as const, value: undefined })),
+    copyText: vi.fn(async () => ({ ok: true as const, value: undefined })),
     openUrl: vi.fn(async () => ({ ok: true as const, value: true })),
   }
   const open = vi.fn(() => null)
   const directory = vi.fn()
   const detected = [fileDetection({ opensExternally: true }), directoryDetection(0, false), { kind: 'url' as const, detectionId: 'url', url: 'https://example.com/source' }]
-  const labels = ['Open report.md:12', 'Open D:\\notes in tab', 'Open https://example.com/source']
+  const labels = ['Open report.md:12', 'Open D:\\notes in tab', 'Open https://example.com/source', 'Copy https://example.com/source']
   for (const label of labels) {
     const view = render(<TerminalContextMenu sessionId="session-1" ports={source} context={{ kind: 'local', clickId: label, position: { x: 0, y: 0 }, hasSelection: false,
       paste: () => {}, pasteAsText: () => {}, copySelection: () => {}, detect: async () => ({ ok: true, value: { requestId: 'remote-proof', detections: detected } }) }}
@@ -695,6 +710,7 @@ it('opens remote files, directories and URLs through injected ports without usin
   expect(source.release).toHaveBeenCalledWith(documentConst.documentId)
   expect(source.openDirectory).toHaveBeenCalledWith('remote-proof', 'detection-directory')
   expect(source.openUrl).toHaveBeenCalledWith('https://example.com/source')
+  expect(source.copyText).toHaveBeenCalledWith('https://example.com/source')
   expect(open).toHaveBeenCalledWith(documentConst, { line: 12 })
   expect(directory).toHaveBeenCalledWith('session-1', 'D:/notes', 'remote-dir')
   expect(local.calls).toEqual([])

@@ -10,6 +10,7 @@ export class OrchestratorAppContext {
       fileDiffWorkerPath: join(bundleDirectory, 'fileDiffWorker.cjs'),
       tokenUsageWorkerPath: join(bundleDirectory, 'tokenUsageWorker.cjs'),
       svnAssemblyWorkerPath: join(bundleDirectory, 'svnAssemblyWorker.cjs'),
+      sessionUncommittedWorkerPath: join(bundleDirectory, 'sessionUncommittedWorker.cjs'),
     }
   }
 }

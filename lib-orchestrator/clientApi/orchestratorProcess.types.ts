@@ -23,7 +23,8 @@ export interface OrchestratorBootstrap {
   shell: ShellSnapshot
 }
 export type OrchestratorRuntime = Omit<OrchestratorBootstrap, 'shell'> & {
-  fileDiffWorkerPath: string; svnAssemblyWorkerPath: string; tokenUsageWorkerPath: string; build: PerfBuild
+  fileDiffWorkerPath: string; svnAssemblyWorkerPath: string; tokenUsageWorkerPath: string; sessionUncommittedWorkerPath: string
+  build: PerfBuild
 }
 export interface OrchestratorProjection {
   processTree: ReturnType<OrchestratorApi['processTree']>

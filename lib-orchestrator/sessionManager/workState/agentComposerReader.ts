@@ -138,7 +138,10 @@ export class AgentComposerReader {
     onlyPlaceholders: false,
   }
 
-  static read(agentId: SessionAgentId, frame: AgentWorkFrame): AgentComposerReading {
+  static read(
+    agentId: SessionAgentId,
+    frame: Pick<AgentWorkFrame, 'wideScreenTail' | 'screenStyled'>,
+  ): AgentComposerReading {
     const rows = frame.screenStyled === false ? [] : AgentComposerReader.rowsOf(frame.wideScreenTail)
     if (agentId === 'claude') return AgentComposerReader.claude(rows)
     else if (agentId === 'codex') return AgentComposerReader.codex(rows)
@@ -245,14 +248,18 @@ export class AgentComposerReader {
    * (`claude-live-trust-dialog.json`), and an echoed `> text` has none below it
    * (`claude-live-after-enter.json`), so neither reads as the box. A blank row inside the draft is
    * part of it (`claude-live-composer-blank-line.json`), so the draft runs to the bottom rule.
+   * Anchoring the bottom rule within the bottom region lets tall drafts extend upward while
+   * keeping historical ruled quotes above a dialog from matching.
    */
   private static claudeBox(rows: readonly ComposerRow[]): ComposerBox | null {
     const isRule = (index: number): boolean =>
       AgentComposerReader.claudeRuleConst.test(rows[index]?.plain.trim() ?? '')
+    const lastContent = AgentComposerReader.lastContentRow(rows)
     for (let at = rows.length - 1; at > 0; at -= 1) {
       if (!AgentComposerReader.claudeMarkerConst.test(rows[at].plain) || !isRule(at - 1)) continue
       const end = AgentComposerReader.draftEnd(rows, at)
-      if (isRule(end)) return { top: at - 1, at, end, closed: true }
+      if (isRule(end) && lastContent - end < ScreenTail.wideScreenRowsConst)
+        return { top: at - 1, at, end, closed: true }
     }
     return null
   }
@@ -274,10 +281,11 @@ export class AgentComposerReader {
     const box = AgentComposerReader.claudeBox(rows)
     if (box === null) return AgentComposerReader.absentConst
     const composer = AgentComposerReader.composerIn('claude', rows, box)
+    const queueAbove = rows.slice(Math.max(0, box.at - ScreenTail.wideScreenRowsConst), box.at)
     return {
       composer,
       queuedRow: AgentComposerReader.claudeQueuedConst.test(
-        ScreenTail.normalizeTty(rows.slice(0, box.at).map((row) => row.plain).join('\n'))),
+        ScreenTail.normalizeTty(queueAbove.map((row) => row.plain).join('\n'))),
       echoHead: AgentComposerReader.claudeEcho(rows, box.top),
       pastePlaceholders: AgentComposerReader.placeholders(
         composer, AgentComposerReader.claudePastedConst),
@@ -310,6 +318,7 @@ export class AgentComposerReader {
    * else below the draft.
    */
   private static codexBox(rows: readonly ComposerRow[]): ComposerBox | null {
+    const lastContent = AgentComposerReader.lastContentRow(rows)
     for (let at = rows.length - 1; at >= 0; at -= 1) {
       if (!AgentComposerReader.codexMarkerConst.test(rows[at].plain)) continue
       if (AgentComposerReader.codexMenuRowConst.test(rows[at].plain.slice(1).trimStart())) return null
@@ -317,11 +326,18 @@ export class AgentComposerReader {
       // puts it on the top edge (`codex-live-composer-tall.json`).
       const top = at > 0 && rows[at - 1].plain === '' ? at - 1 : at
       const end = AgentComposerReader.codexClosedEnd(rows, at)
-      return end === null
-        ? { top, at, end: AgentComposerReader.continuationEnd(rows, at), closed: false }
-        : { top, at, end, closed: true }
+      if (end !== null) return { top, at, end, closed: true }
+      if (lastContent - at < ScreenTail.wideScreenRowsConst)
+        return { top, at, end: AgentComposerReader.continuationEnd(rows, at), closed: false }
+      return null
     }
     return null
+  }
+
+  private static lastContentRow(rows: readonly ComposerRow[]): number {
+    for (let index = rows.length - 1; index >= 0; index -= 1)
+      if (rows[index].plain !== '') return index
+    return -1
   }
 
   /** The blank row over a footer that ends the screen, when only draft rows lie above it. */
@@ -350,9 +366,10 @@ export class AgentComposerReader {
     const box = AgentComposerReader.codexBox(rows)
     if (box === null) return AgentComposerReader.absentConst
     const composer = AgentComposerReader.composerIn('codex', rows, box)
+    const queueAbove = rows.slice(Math.max(0, box.at - ScreenTail.wideScreenRowsConst), box.at)
     return {
       composer,
-      queuedRow: rows.slice(0, box.at).some((row) =>
+      queuedRow: queueAbove.some((row) =>
         AgentComposerReader.codexQueuedConst.test(ScreenTail.normalizeTty(row.plain))),
       echoHead: null,
       pastePlaceholders: AgentComposerReader.placeholders(

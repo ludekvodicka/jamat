@@ -77,7 +77,17 @@ export interface PanelSplitTodosItem {
   sessionId: string
 }
 
-export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem | PanelSplitTaskItem | PanelSplitWorkflowItem | PanelSplitTodosItem
+/** The processes list of the tab's session: local only, one per tab, never pinned. */
+export interface PanelSplitProcessesItem {
+  /** Never set: processes is local only, so a remote tab holds no processes item. */
+  target?: undefined
+  kind: 'processes'
+  key: `processes:${string}`
+  title: string
+  sessionId: string
+}
+
+export type PanelSplitItem = PanelSplitFileItem | PanelSplitCommitItem | PanelSplitTaskItem | PanelSplitWorkflowItem | PanelSplitTodosItem | PanelSplitProcessesItem
 
 export interface PanelSplitState {
   ratio: number
@@ -156,7 +166,8 @@ export class PanelSplitParams {
     else if (item.kind === 'task') return item.title
     else if (item.kind === 'workflow') return item.title
     else if (item.kind === 'todos') return 'Todo list of the project'
-    else throw new Error(`Unknown split item: ${JSON.stringify(item)}`)
+    else if (item.kind === 'processes') return 'Processes of the session'
+    else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
   /**
@@ -166,7 +177,7 @@ export class PanelSplitParams {
   static closeRefusalOf(item: PanelSplitItem, openOf: (sessionId: string) => boolean): string | null {
     if (item.kind === 'workflow')
       return openOf(item.sessionId) ? 'The workflow stays open while its action runs or waits for you.' : null
-    else if (item.kind === 'file' || item.kind === 'commit' || item.kind === 'task' || item.kind === 'todos') return null
+    else if (item.kind === 'file' || item.kind === 'commit' || item.kind === 'task' || item.kind === 'todos' || item.kind === 'processes') return null
     else throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
   }
 
@@ -176,6 +187,10 @@ export class PanelSplitParams {
 
   static todosItemOf(sessionId: string): PanelSplitTodosItem {
     return { kind: 'todos', key: `todos:${sessionId}`, title: 'Todo', sessionId }
+  }
+
+  static processesItemOf(sessionId: string): PanelSplitProcessesItem {
+    return { kind: 'processes', key: `processes:${sessionId}`, title: 'Processes', sessionId }
   }
 
   /**
@@ -388,6 +403,11 @@ export class PanelSplitParams {
         return { ok: false, refusal: 'The split already holds the todo list of another session.' }
       return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
     }
+    else if (item.kind === 'processes') {
+      if (state.items.some((candidate) => candidate.kind === 'processes'))
+        return { ok: false, refusal: 'The split already holds the processes of another session.' }
+      return { ok: true, state: { ...state, items: [...state.items, item], active: item.key } }
+    }
     else if (item.kind === 'workflow') {
       if (state.items.some((candidate) => candidate.kind === 'workflow'))
         return { ok: false, refusal: 'The split already holds the workflow of another session.' }
@@ -532,6 +552,7 @@ export class PanelSplitParams {
         continue
       if (item.kind === 'workflow' && items.some((held) => held.kind === 'workflow')) continue
       if (item.kind === 'todos' && items.some((held) => held.kind === 'todos')) continue
+      if (item.kind === 'processes' && items.some((held) => held.kind === 'processes')) continue
       items.push(item)
     }
     return items
@@ -556,8 +577,8 @@ export class PanelSplitParams {
     if (candidate.target !== undefined && target === undefined) return null
     const item = PanelSplitParams.contentItem(value, target)
     if (item === null) return null
-    // contentItem refuses a todo item with a target, so only the other kinds take one here.
-    return item.kind === 'todos' || target === undefined ? item : { ...item, target }
+    // contentItem refuses a todo or processes item with a target, so only the other kinds take one here.
+    return item.kind === 'todos' || item.kind === 'processes' || target === undefined ? item : { ...item, target }
   }
 
   private static contentItem(value: unknown, target?: TerminalTarget): PanelSplitItem | null {
@@ -584,6 +605,11 @@ export class PanelSplitParams {
     else if (kind === 'todos') {
       if (target !== undefined || typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
       const item = PanelSplitParams.todosItemOf(candidate.sessionId)
+      return candidate.key === item.key ? item : null
+    }
+    else if (kind === 'processes') {
+      if (target !== undefined || typeof candidate.sessionId !== 'string' || !candidate.sessionId) return null
+      const item = PanelSplitParams.processesItemOf(candidate.sessionId)
       return candidate.key === item.key ? item : null
     }
     else if (kind !== 'file') return null
@@ -1029,7 +1055,7 @@ class PanelSplitMenu {
     close(): void
   }): readonly ContextMenuEntry[] {
     const close: ContextMenuEntry = { key: 'split.close', label: 'Close', onSelect: actions.close }
-    if (item.kind === 'commit' || item.kind === 'workflow' || item.kind === 'todos') return [close]
+    if (item.kind === 'commit' || item.kind === 'workflow' || item.kind === 'todos' || item.kind === 'processes') return [close]
     else if (item.kind === 'task') return [
       { key: 'split.copyId', label: 'Copy id', onSelect: actions.copyId },
       { kind: 'separator', key: 'split.separator.task' },

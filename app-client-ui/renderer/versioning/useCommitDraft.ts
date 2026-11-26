@@ -39,7 +39,13 @@ class CommitDraftLeases {
   }
 }
 
-export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, ports: CommitPanePorts, reviewOnly?: boolean): {
+export function useCommitDraft(
+  sessionId: string,
+  item: PanelSplitCommitItem,
+  ports: CommitPanePorts,
+  reviewOnly?: boolean,
+  visible = true,
+): {
   draft: VersioningCommitDraftDto | null
   error: string | null
   setMessage(message: string): void
@@ -63,6 +69,11 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
   const [storageError, setStorageError] = useState<string | null>(null)
   const [conflict, setConflictState] = useState<{ current: VersioningCommitDraftDto | null; held: VersioningCommitDraftDto | null }>({ current: null, held: null })
   const setConflict = useCallback((current: VersioningCommitDraftDto | null, held: VersioningCommitDraftDto | null = null): void => setConflictState({ current, held }), [])
+  const [opened, setOpened] = useState<{
+    draftId: string
+    open: () => Promise<VersioningCommitOpenResult>
+    setLeaseDraftId: (id: string) => void
+  } | null>(null)
   const source = useRef<VersioningCommitDraftDto | null>(null)
   const generation = useRef(0)
   const edits = useRef(Promise.resolve())
@@ -71,6 +82,7 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
   const localSource = useRef<VersioningCommitDraftDto['messageSource']>('person-local')
   const reader = useRef<IpcSnapshotReader<VersioningCommitDraftDto | null> | null>(null)
   const acceptSnapshot = useRef<((value: VersioningCommitDraftDto | null) => void) | null>(null)
+  const projected = useRef(false)
   const identity = JSON.stringify([ports.identity ?? 'local', sessionId, item.reviewId ?? item.key])
   const persistBuffer = useCallback((message: string | null) => {
     try { CommitDraftBuffer.write(identity, message); setStorageError(null) }
@@ -82,8 +94,7 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
   useEffect(() => {
     generation.current++
     let disposed = false
-    let projected = false
-    let stop: (() => void) | undefined
+    projected.current = false
     if (heldIdentity.current !== identity) {
       source.current = null
       localMessage.current = null
@@ -99,6 +110,7 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
     catch (error) { setStorageError(`Local unsent text could not be read: ${String(error)}`) }
     setDraft(null)
     setError(null)
+    setOpened(null)
     const open = async (): Promise<VersioningCommitOpenResult> => {
       const result = await ports.versioning.openDraft(sessionId, vcs, scopeRoot || null, item.paths, item.reviewId, reviewOnly ? true : undefined)
       return result.ok ? result.value : { ok: false, code: 'unknown-session', detail: result.error }
@@ -108,54 +120,64 @@ export function useCommitDraft(sessionId: string, item: PanelSplitCommitItem, po
     void lease.opening.then((answer) => {
       if (disposed) return
       if (!answer.ok) { setError(answer.detail); return }
-      let draftId = answer.value.draftId
-      lease.setDraftId(draftId)
-      const accept = (value: VersioningCommitDraftDto | null): void => {
-        if (disposed) return
-        if (value === null || source.current?.draftId === value.draftId && source.current.epoch === value.epoch && source.current.revision > value.revision) return
-        if (!projected && item.openId) {
-          projected = true
-          try {
-            if (ReviewActivationReceipts.consume(identity, item.openId))
-              void ports.projectReview?.(value, item.key, item.openId).catch((error: unknown) => ports.reportError(String(error)))
-          } catch (error) { ports.reportError(`Review activation could not be saved: ${String(error)}`) }
-        }
-        if (!blocked.current && localMessage.current !== null && value.message !== localMessage.current && (!source.current || source.current.epoch !== value.epoch)) {
-          blocked.current = true
-          setConflict(value, source.current)
-          setEditError('The source reconnected. Compare your unsent text with the restored review.')
-        }
-        source.current = value
-        if (value.message === localMessage.current) { localMessage.current = null; persistBuffer(null) }
-        setDraft((held) => held !== null && held.draftId === value.draftId && held.epoch === value.epoch && held.revision > value.revision
-          ? held : { ...value, message: localMessage.current ?? value.message, messageSource: localMessage.current === null ? value.messageSource : localSource.current })
-      }
-      acceptSnapshot.current = accept
-      const next = new IpcSnapshotReader<VersioningCommitDraftDto | null>({
-        subject: 'Commit dialog',
-        read: async () => {
-          const answer = await ports.versioning.readCommit(draftId)
-          if (!answer.ok || answer.value !== null) return answer
-          const reopened = await open()
-          if (!reopened.ok) return { ok: false, error: reopened.detail }
-          draftId = reopened.value.draftId
-          lease.setDraftId(draftId)
-          return ports.versioning.readCommit(draftId)
-        },
-        subscribe: ports.subscribe,
-        reportError: ports.reportError,
-      }, accept, setError)
-      reader.current = next
-      stop = next.start()
+      lease.setDraftId(answer.value.draftId)
+      setOpened({ draftId: answer.value.draftId, open, setLeaseDraftId: lease.setDraftId })
     }).catch((error: unknown) => { if (!disposed) setError(String(error)) })
     return () => {
       disposed = true
-      stop?.()
-      reader.current = null
-      acceptSnapshot.current = null
+      setOpened(null)
       lease.release()
     }
-  }, [sessionId, identity, item.reviewId, item.openId, vcs, scopeRoot, pathsKey, ports, reviewOnly])
+  }, [sessionId, identity, item.reviewId, item.openId, vcs, scopeRoot, pathsKey, ports, reviewOnly, persistBuffer, setConflict])
+
+  useEffect(() => {
+    if (!visible || opened === null) return
+    let disposed = false
+    let draftId = opened.draftId
+    const accept = (value: VersioningCommitDraftDto | null): void => {
+      if (disposed) return
+      if (value === null || source.current?.draftId === value.draftId && source.current.epoch === value.epoch && source.current.revision > value.revision) return
+      if (!projected.current && item.openId) {
+        projected.current = true
+        try {
+          if (ReviewActivationReceipts.consume(identity, item.openId))
+            void ports.projectReview?.(value, item.key, item.openId).catch((error: unknown) => ports.reportError(String(error)))
+        } catch (error) { ports.reportError(`Review activation could not be saved: ${String(error)}`) }
+      }
+      if (!blocked.current && localMessage.current !== null && value.message !== localMessage.current && (!source.current || source.current.epoch !== value.epoch)) {
+        blocked.current = true
+        setConflict(value, source.current)
+        setEditError('The source reconnected. Compare your unsent text with the restored review.')
+      }
+      source.current = value
+      if (value.message === localMessage.current) { localMessage.current = null; persistBuffer(null) }
+      setDraft((held) => held !== null && held.draftId === value.draftId && held.epoch === value.epoch && held.revision > value.revision
+        ? held : { ...value, message: localMessage.current ?? value.message, messageSource: localMessage.current === null ? value.messageSource : localSource.current })
+    }
+    acceptSnapshot.current = accept
+    const next = new IpcSnapshotReader<VersioningCommitDraftDto | null>({
+      subject: 'Commit dialog',
+      read: async () => {
+        const answer = await ports.versioning.readCommit(draftId)
+        if (!answer.ok || answer.value !== null) return answer
+        const reopened = await opened.open()
+        if (!reopened.ok) return { ok: false, error: reopened.detail }
+        draftId = reopened.value.draftId
+        opened.setLeaseDraftId(draftId)
+        return ports.versioning.readCommit(draftId)
+      },
+      subscribe: ports.subscribe,
+      reportError: ports.reportError,
+    }, accept, setError)
+    reader.current = next
+    const stop = next.start()
+    return () => {
+      disposed = true
+      stop()
+      reader.current = null
+      acceptSnapshot.current = null
+    }
+  }, [visible, opened, identity, item.key, item.openId, ports, persistBuffer, setConflict])
 
   const sync = useCallback((): Promise<void> => {
     const savedGeneration = generation.current

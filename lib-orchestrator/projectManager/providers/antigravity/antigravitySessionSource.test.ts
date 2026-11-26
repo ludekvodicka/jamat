@@ -70,6 +70,21 @@ describe('lib-orchestrator/projectManager/providers/antigravity', () => {
     db.close()
   }
 
+  it('reads the summaries database again only after it changed', () => {
+    const home = join(tempDir(), 'agy-home')
+    mkdirSync(home, { recursive: true })
+    seedDb(home, [{ id: 'conv-a', modified: '2026-11-25T10:00:00Z', workspaces: [home] }])
+    const first = AntigravitySummariesDb.readAll(home)
+    expect(first.map(row => row.conversationId)).toEqual(['conv-a'])
+    expect(AntigravitySummariesDb.readAll(home)).toBe(first)
+    expect(AntigravitySummariesDb.childrenOf(home, 'conv-a')).toEqual([])
+    const db = new DatabaseSync(join(home, 'conversation_summaries.db'))
+    db.prepare(`INSERT INTO conversation_summaries (conversation_id, last_modified_time, last_user_input_time, workspace_uris, parent_conversation_id, nesting_depth)
+      VALUES ('conv-b', '2026-11-25T10:01:00Z', '2026-11-25T10:01:00Z', '[]', 'conv-a', 1)`).run()
+    db.close()
+    expect(AntigravitySummariesDb.childrenOf(home, 'conv-a').map(row => row.conversationId)).toEqual(['conv-b'])
+  })
+
   it('lists top-level Antigravity sessions for a project, skips subagents, and reports latestActivity', async () => {
     const root = tempDir()
     const home = join(root, 'agy-home')

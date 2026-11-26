@@ -245,9 +245,9 @@ const tabsOpenCommit = z.strictObject({
       checked: z.boolean().optional(),
     }),
   ], { error: 'must be a literal path or { path, depth, checked? }; checked: false needs depth infinity' }), {
-    error: 'paths must contain between 1 and 2000 literal paths',
-  }).min(1, { error: 'paths must contain between 1 and 2000 literal paths' })
-    .max(2_000, { error: 'paths must contain between 1 and 2000 literal paths' }).optional(),
+    error: 'paths must contain between 1 and 5000 literal paths',
+  }).min(1, { error: 'paths must contain between 1 and 5000 literal paths' })
+    .max(5_000, { error: 'paths must contain between 1 and 5000 literal paths' }).optional(),
   message: RemoteControlZod.string(messageLengthConst).optional(),
 })
 
@@ -400,6 +400,11 @@ export const RemoteControlBodySchemas: { [K in RemoteControlOperation]: z.ZodTyp
     command: RemoteControlZod.text(SessionLimits.scriptCommandCharacters),
     cwd: RemoteControlZod.text(RemoteControlZod.pathLengthConst).optional(),
     title: RemoteControlZod.string(scriptTitleLengthConst).optional(),
+    kind: z.enum(['requested', 'service']).optional(),
+  }),
+  'sessions.stopScript': z.strictObject({
+    session: RemoteControlZod.sessionSelector,
+    runId: RemoteControlZod.text(),
   }),
   'sessions.color': z.strictObject({
     session: RemoteControlZod.sessionSelector,

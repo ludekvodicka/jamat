@@ -5,8 +5,12 @@ import { ScriptRunPlanning } from './scriptRunPlanning'
 
 describe('lib-orchestrator/sessionManager/scripts/scriptRunPlanning', () => {
   /** The changes over `records` with a Host that lists `runtimes`. */
-  function plan(records: readonly SessionRecord[], runtimes: readonly string[] = []): ReturnType<typeof ScriptRunPlanning.changes> {
-    return ScriptRunPlanning.changes(records, new Set(runtimes))
+  function plan(
+    records: readonly SessionRecord[],
+    runtimes: readonly string[] = [],
+    held: readonly string[] = [],
+  ): ReturnType<typeof ScriptRunPlanning.changes> {
+    return ScriptRunPlanning.changes(records, new Set(runtimes), new Set(held))
   }
 
   function record(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
@@ -232,6 +236,37 @@ describe('lib-orchestrator/sessionManager/scripts/scriptRunPlanning', () => {
       failed,
     ])).toEqual(collapse)
     expect(plan([{ ...parent, life: 'ended' }, failed])).toEqual(collapse)
+  })
+
+  function service(sessionId: string, overrides?: Partial<SessionRecord>): SessionRecord {
+    return install(sessionId, {
+      commands: [{ command: 'pnpm dev', cwd: 'C:\\w' }],
+      scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' },
+      ...overrides,
+    })
+  }
+
+  function serviceEntry(runId: string, outcome: SessionRecordScriptRun['outcome'], startedAt = 1): SessionRecordScriptRun {
+    return { ...entry(runId, outcome), phase: 'inner', scriptId: 'service', name: 'web', startedAt }
+  }
+
+  it('stops a live service when its parent is ended or lost unless held, and leaves it alone while starting', () => {
+    const live = service('sv', { life: 'live', exitCode: undefined, endedAt: undefined })
+    const req = requested('rq', { life: 'live', exitCode: undefined, endedAt: undefined })
+    expect(plan([record('p', { life: 'live' }), live])).toEqual([])
+    expect(plan([record('p', { life: 'starting' }), live])).toEqual([])
+    expect(plan([record('p', { life: 'ended' }), live])).toEqual([{ kind: 'stop-script-run', runId: 'sv' }])
+    expect(plan([record('p', { life: 'lost' }), live])).toEqual([{ kind: 'stop-script-run', runId: 'sv' }])
+    expect(plan([record('p', { life: 'ended' }), live], [], ['p'])).toEqual([])
+    // A restart hold protects services only; a requested run still stops with its parent process.
+    expect(plan([record('p', { life: 'ended' }), live, req], [], ['p'])).toEqual([{ kind: 'stop-script-run', runId: 'rq' }])
+  })
+
+  it('collapses a settled service whatever its outcome', () => {
+    for (const outcome of ['failed', 'stopped', 'lost', 'succeeded'] as const) {
+      const parent = record('p', { scriptRuns: [serviceEntry('sv', outcome)] })
+      expect(plan([parent, service('sv', { exitCode: 0 })]), outcome).toEqual([{ kind: 'collapse-script-run', runId: 'sv' }])
+    }
   })
 
   it('leaves every session that is not a run alone', () => {

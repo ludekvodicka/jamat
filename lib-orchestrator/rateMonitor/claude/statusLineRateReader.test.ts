@@ -1,10 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { StatusLineRateReader } from './statusLineRateReader'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 const limits = { five_hour: { used_percentage: 37, resets_at: 1793115673 }, seven_day: { used_percentage: 21, resets_at: 1793702473 } }
 
 it('maps the installed CLI percentage and Unix-second fields and rejects malformed limits', () => {
@@ -67,4 +71,60 @@ it('reads Antigravity statusLine quota receipts and preserves extras and raw pay
     extras: [{ label: 'Plan', detail: 'Pro' }],
     raw: quota,
   }])
+})
+
+it('caches unchanged rate files by mtimeMs:size and prunes stale or non-existent sessions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jamat-rates-reader-'))
+  try {
+    const now = 1_800_000_000_000
+    const payload = (used: number) => JSON.stringify({
+      schemaVersion: 1,
+      at: now - 1_000,
+      launchId: 'launch-1',
+      rateLimits: { five_hour: { used_percentage: used, resets_at: Math.floor((now + 3_600_000) / 1_000) } },
+    })
+    const liveFile = join(dir, 'live-session.json')
+    const goneFile = join(dir, 'gone-session.json')
+    const oldFile = join(dir, 'old-session.json')
+    await writeFile(liveFile, payload(42), 'utf8')
+    await writeFile(goneFile, payload(10), 'utf8')
+    await writeFile(oldFile, payload(20), 'utf8')
+    const freshDate = new Date(now - 5_000)
+    const oldDate = new Date(now - StatusLineRateReader.maxAgeMillisecondsConst - 60_000)
+    await utimes(liveFile, freshDate, freshDate)
+    await utimes(goneFile, freshDate, freshDate)
+    await utimes(oldFile, oldDate, oldDate)
+
+    const parseSpy = vi.spyOn(JSON, 'parse')
+    try {
+      const reader = new StatusLineRateReader(
+        dir,
+        (sessionId) => sessionId === 'live-session' ? { agentId: 'claude', accountId: 'main' } : null,
+        {
+          sessionExists: (sessionId) => sessionId !== 'gone-session',
+          now: () => now,
+        },
+      )
+      const first = await reader.read()
+      expect(first).toHaveLength(1)
+      expect(first[0]?.windows[0]?.usedPercent).toBe(42)
+      expect(existsSync(goneFile)).toBe(false)
+      expect(existsSync(oldFile)).toBe(false)
+      expect(existsSync(liveFile)).toBe(true)
+
+      const parsesAfterFirst = parseSpy.mock.calls.length
+      const second = await reader.read()
+      expect(second).toHaveLength(1)
+      expect(second[0]?.windows[0]?.usedPercent).toBe(42)
+      expect(parseSpy.mock.calls.length).toBe(parsesAfterFirst)
+
+      await writeFile(liveFile, payload(77), 'utf8')
+      const bumped = new Date(now + 5_000)
+      await utimes(liveFile, bumped, bumped)
+      const third = await reader.read()
+      expect(third).toHaveLength(1)
+      expect(third[0]?.windows[0]?.usedPercent).toBe(77)
+      expect(parseSpy.mock.calls.length).toBe(parsesAfterFirst + 1)
+    } finally { parseSpy.mockRestore() }
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

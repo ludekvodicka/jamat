@@ -41,6 +41,8 @@ export function FileViewerPane(props: {
   backPath: string | null
   /** Raised by the split tab's Reload; each new value reads the file from disk again. */
   reloadRequest: number
+  /** False while the terminal tab holding this pane is hidden; absent means shown. */
+  visible?: boolean
   onBack(): void
   onClose(): void
   /** `reading` is where the reader was in this file, given when a link leaves it for another. */
@@ -48,6 +50,7 @@ export function FileViewerPane(props: {
   /** Persists the reader's scroll offset in this file while it remains active, for window reloads. */
   onRememberReading?(reading: PanelSplitReading): void
   onRefused(reason: string): void
+  onDiffModeChange?(active: boolean): void
   insertPrompt?: PromptInsertTarget
 }): React.JSX.Element {
   const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null)
@@ -58,6 +61,11 @@ export function FileViewerPane(props: {
     props.workingTree,
     props.ports,
   )
+  const onDiffModeChange = props.onDiffModeChange
+  useEffect(() => {
+    onDiffModeChange?.(model.mode === 'diff')
+    return () => { onDiffModeChange?.(false) }
+  }, [model.mode, onDiffModeChange])
   // A file that is gone has nothing left to show; a refusal of any other kind stays readable.
   const onClose = props.onClose
   useEffect(() => { if (model.sourceMissing) onClose() }, [model.sourceMissing, onClose])
@@ -116,7 +124,7 @@ export function FileViewerPane(props: {
     })
     modelReload()
   }, [body, currentDocumentId, itemLocation, modelReload])
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, props.ports.viewer)
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, props.ports.viewer, props.visible !== false)
   // The value the pane mounted with is not a request: a freshly mounted pane has just read the file.
   const servedReload = useRef(props.reloadRequest)
   useEffect(() => {

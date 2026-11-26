@@ -9,7 +9,7 @@ export class PerfNames {
   constructor(channels: readonly string[] = [], operations: readonly string[] = []) {
     this.names = new Set([
       'other', 'unattributed', 'sessions.recompose', 'records.commit', 'finish.commit', 'finish.sync',
-      'snapins.tick', 'fileChanges.poll', 'rate.pass', 'gateway.frame',
+      'snapins.tick', 'fileChanges.poll', 'rate.pass', 'gateway.frame', 'sessions.queue', 'sessions.reconcile',
       ...channels.map(name => `ipc:${name}`), ...operations.map(name => `op:${name}`),
       ...['status', 'info', 'diff', 'log', 'update', 'add', 'delete', 'move', 'copy', 'commit', 'checkout',
         'propset', 'propget', 'proplist', 'revert', 'resolve', 'cleanup', 'list', 'cat', 'merge', 'switch']
@@ -24,7 +24,7 @@ export class PerfNames {
   private static schemaFor(accepts: (value: string) => boolean): z.ZodType {
     const number = z.number().finite().nonnegative()
     const process = z.enum(['main', 'gateway', 'orchestrator', 'renderer', 'host', 'machine',
-      'worker:tokenUsage', 'worker:fileDiff', 'worker:svnAssembly'])
+      'worker:tokenUsage', 'worker:fileDiff', 'worker:svnAssembly', 'worker:sessionUncommitted'])
     const name = z.string().refine(accepts)
     const session = z.string().max(SessionNumberView.numberCharactersConst).refine(SessionNumberView.isSelectorNumber)
     const sessionKind = z.enum(['agent', 'script', 'shell'])

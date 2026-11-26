@@ -13,6 +13,7 @@ import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
 import {
   SessionsTreeModel,
   type SessionsTreeBuildOptions,
+  type TaskRowNode,
   type TaskRowRef,
   type TreeNode,
   type TreeResult,
@@ -1277,23 +1278,36 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       return node
     }
 
-    it('keeps recent finished rows and puts a depth-2 row under its depth-1 row', () => {
-      const result = buildWith(new Map([['s-working', listing([
+    function taskRowsOf(node: Extract<TreeNode, { kind: 'session' }>): TaskRowNode[] {
+      return (node.processes?.rows ?? []).flatMap((row) => row.kind === 'task' ? [row.row] : [])
+    }
+
+    it('keeps recent finished rows, puts a depth-2 row under its depth-1 row and caps at three rows with a more count', () => {
+      const three = buildWith(new Map([['s-working', listing([
         subagent('a1'),
-        subagent('a2', { state: 'done', step: null, endedAt: nowConst - 2_000 }),
         subagent('b1', { depth: 2, parentSubagentId: 'a3' }),
         subagent('a3'),
-        subagent('a4', { state: 'failed', step: null, endedAt: nowConst - 2_000 }),
-      ], 3)]]))
-
-      const tasks = sessionOf(result, 'session:s-working').tasks
-      expect(tasks?.placement).toBe('nested')
-      expect(tasks?.rows.map((row) => [idOf(row.task), row.depth])).toEqual([['a1', 1], ['a2', 1], ['a3', 1], ['b1', 2], ['a4', 1]])
-      expect(tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1', 'a2', 'a3', 'b1', 'a4'])
-      expect(tasks?.rows.length).toBe(5)
-      expect(tasks?.rows[0]).toMatchObject({
+      ])]]))
+      const threeProcs = sessionOf(three, 'session:s-working').processes
+      expect(threeProcs?.placement).toBe('nested')
+      expect(threeProcs?.more).toBeNull()
+      expect(taskRowsOf(sessionOf(three, 'session:s-working')).map((row) => [idOf(row.task), row.depth]))
+        .toEqual([['a1', 1], ['a3', 1], ['b1', 2]])
+      expect(taskRowsOf(sessionOf(three, 'session:s-working'))[0]).toMatchObject({
         sessionId: 's-working', label: 'Explore', description: 'Agent a1', detail: 'Bash pnpm test', state: 'running',
       })
+
+      const five = buildWith(new Map([['s-working', listing([
+        subagent('a1', { startedAt: 1_000 }),
+        subagent('a2', { state: 'done', step: null, startedAt: 2_000, endedAt: nowConst - 2_000 }),
+        subagent('b1', { depth: 2, parentSubagentId: 'a3', startedAt: 3_000 }),
+        subagent('a3', { startedAt: 4_000 }),
+        subagent('a4', { state: 'failed', step: null, startedAt: 5_000, endedAt: nowConst - 2_000 }),
+      ], 3)]]))
+      const fiveProcs = sessionOf(five, 'session:s-working').processes
+      expect(fiveProcs?.placement).toBe('nested')
+      expect(taskRowsOf(sessionOf(five, 'session:s-working')).map((row) => idOf(row.task))).toEqual(['a3', 'b1'])
+      expect(fiveProcs?.more).toEqual({ count: 3, opens: true })
     })
 
     it('places the rows beside the session with its number once Nest sub-agents is off', () => {
@@ -1304,12 +1318,12 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       const tasks = new Map([['s-working', listing([subagent('a1'), shell('b1', { state: 'done', endedAt: 2_000 })])]])
       const nested = buildWith(tasks, null, undefined, all, snapshot)
       const beside = buildWith(tasks, nested, undefined, { ...all, nesting: { ...SessionsTreeModel.nestedConst, subagents: false } }, snapshot)
-      const tasksKey = SessionsTreeModel.tasksPrintKeyOf('session:s-working')
+      const processesKey = SessionsTreeModel.processesPrintKeyOf('session:s-working')
 
-      expect(sessionOf(nested, 'session:s-working').tasks).toMatchObject({ placement: 'nested', numberPrefix: null })
-      expect(sessionOf(beside, 'session:s-working').tasks).toMatchObject({ placement: 'beside', numberPrefix: '018' })
-      expect(sessionOf(beside, 'session:s-working').tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1'])
-      expect(beside.fingerprints.get(tasksKey)).not.toBe(nested.fingerprints.get(tasksKey))
+      expect(sessionOf(nested, 'session:s-working').processes).toMatchObject({ placement: 'nested', numberPrefix: null })
+      expect(sessionOf(beside, 'session:s-working').processes).toMatchObject({ placement: 'beside', numberPrefix: '018' })
+      expect(taskRowsOf(sessionOf(beside, 'session:s-working')).map((row) => idOf(row.task))).toEqual(['a1'])
+      expect(beside.fingerprints.get(processesKey)).not.toBe(nested.fingerprints.get(processesKey))
       expect(sessionOf(beside, 'session:s-waiting')).toBe(sessionOf(nested, 'session:s-waiting'))
     })
 
@@ -1320,9 +1334,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         shell('b2', { state: 'killed', endedAt: nowConst - 2_000, description: null }),
       ])]]))
 
-      const tasks = sessionOf(result, 'session:s-working').tasks
-      expect(tasks?.rows.map((row) => idOf(row.task))).toEqual(['a1', 'b1', 'b2'])
-      expect(tasks?.rows[1]).toEqual({
+      const rows = taskRowsOf(sessionOf(result, 'session:s-working'))
+      expect(rows.map((row) => idOf(row.task))).toEqual(['a1', 'b1', 'b2'])
+      expect(rows[1]).toEqual({
         id: 'task:s-working:shell:b1',
         sessionId: 's-working',
         task: { kind: 'shell', shellId: 'b1' },
@@ -1331,8 +1345,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         detail: null,
         state: 'running',
         depth: 1,
+        runs: 'command',
       })
-      expect(tasks?.rows[2]).toMatchObject({ task: { kind: 'shell', shellId: 'b2' }, state: 'killed', description: '' })
+      expect(rows[2]).toMatchObject({ task: { kind: 'shell', shellId: 'b2' }, state: 'killed', description: '', runs: 'command' })
     })
 
     it('builds no task rows for a session with no listing, a none listing or an empty one', () => {
@@ -1341,9 +1356,9 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         ['s-lost', listing([])],
       ]))
 
-      expect(sessionOf(result, 'session:s-working').tasks).toBeNull()
-      expect(sessionOf(result, 'session:s-waiting').tasks).toBeNull()
-      expect(sessionOf(result, 'session:s-lost').tasks).toBeNull()
+      expect(sessionOf(result, 'session:s-working').processes).toBeNull()
+      expect(sessionOf(result, 'session:s-waiting').processes).toBeNull()
+      expect(sessionOf(result, 'session:s-lost').processes).toBeNull()
     })
 
     it('expires ended tasks at 5 seconds, keeps running and open tasks, and ignores unknown end times', () => {
@@ -1358,15 +1373,18 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       ], 80)]])
       const openTaskKeys = new Set(['task:s-working:subagent:open', 'task:s-working:shell:open-unknown'])
       const result = buildWith(tasks, null, undefined, { ...all, openTaskKeys })
-      expect(sessionOf(result, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
-        .toEqual(['running', 'recent', 'open', 'open-unknown'])
+      // Four retained tasks show two plus `and 2 more…`, while expiry still tracks the recent row.
+      expect(taskRowsOf(sessionOf(result, 'session:s-working')).map((row) => idOf(row.task)))
+        .toEqual(['running', 'recent'])
+      expect(sessionOf(result, 'session:s-working').processes?.more).toEqual({ count: 2, opens: true })
       expect(result.nextTaskExpiryAt).toBe(nowConst + 3_000)
       const expired = buildWith(tasks, result, undefined, { ...all, openTaskKeys, now: nowConst + 3_000 })
-      expect(sessionOf(expired, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
+      expect(taskRowsOf(sessionOf(expired, 'session:s-working')).map((row) => idOf(row.task)))
         .toEqual(['running', 'open', 'open-unknown'])
+      expect(sessionOf(expired, 'session:s-working').processes?.more).toBeNull()
       expect(expired.nextTaskExpiryAt).toBeNull()
       const closed = buildWith(tasks, expired, undefined, { ...all, now: nowConst + 3_000 })
-      expect(sessionOf(closed, 'session:s-working').tasks?.rows.map((row) => idOf(row.task))).toEqual(['running'])
+      expect(taskRowsOf(sessionOf(closed, 'session:s-working')).map((row) => idOf(row.task))).toEqual(['running'])
     })
 
     it('places a running depth-2 child below its retained finished parent', () => {
@@ -1375,7 +1393,7 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
         subagent('other'),
         subagent('parent', { state: 'done', endedAt: nowConst - 2_000 }),
       ])]]))
-      expect(sessionOf(result, 'session:s-working').tasks?.rows.map((row) => idOf(row.task)))
+      expect(taskRowsOf(sessionOf(result, 'session:s-working')).map((row) => idOf(row.task)))
         .toEqual(['other', 'parent', 'child'])
     })
 
@@ -1410,17 +1428,17 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       expect(others.length).toBeGreaterThan(3)
       for (const id of others)
         expect(find(second.nodes, id)).toBe(find(first.nodes, id))
-      expect(sessionOf(second, 'session:s-waiting').tasks).toBe(sessionOf(first, 'session:s-waiting').tasks)
+      expect(sessionOf(second, 'session:s-waiting').processes).toBe(sessionOf(first, 'session:s-waiting').processes)
     })
 
-    it('changes the tasks print and keeps the session print when only a step moved', () => {
+    it('changes the processes print and keeps the session print when only a step moved', () => {
       const first = buildWith(new Map([['s-working', listing([subagent('a1', { step: 'Read a.ts' })])]]))
       const second = buildWith(new Map([['s-working', listing([subagent('a1', { step: 'Read b.ts' })])]]), first)
-      const tasksKey = SessionsTreeModel.tasksPrintKeyOf('session:s-working')
+      const processesKey = SessionsTreeModel.processesPrintKeyOf('session:s-working')
 
       expect(second.fingerprints.get('session:s-working')).toBe(first.fingerprints.get('session:s-working'))
-      expect(second.fingerprints.get(tasksKey)).not.toBe(first.fingerprints.get(tasksKey))
-      expect(sessionOf(second, 'session:s-working').tasks?.rows[0].detail).toBe('Read b.ts')
+      expect(second.fingerprints.get(processesKey)).not.toBe(first.fingerprints.get(processesKey))
+      expect(taskRowsOf(sessionOf(second, 'session:s-working'))[0].detail).toBe('Read b.ts')
     })
 
     it('names the drawn sessions: filtered ones are not built, folded groups hold theirs back', () => {
@@ -1442,26 +1460,370 @@ describe('app-client-ui/renderer/views/sessionsTree/sessionsTreeModel', () => {
       expect(sessionOf(second, 'session:s-working')).toBe(sessionOf(first, 'session:s-working'))
     })
 
-    it('builds task rows from the selected source listing on a remote snapshot', () => {
-      const result = buildWith(new Map([['s-working', listing([subagent('a1')])]]), null, {
+    it('builds process rows from the selected source listing on a remote snapshot without a local more link', () => {
+      const result = buildWith(new Map([['s-working', listing([
+        subagent('a1', { startedAt: 1_000 }),
+        subagent('a2', { startedAt: 2_000 }),
+        subagent('a3', { startedAt: 3_000 }),
+        subagent('a4', { startedAt: 4_000 }),
+      ])]]), null, {
         namespace: 'remote:pc',
         target: { kind: 'remote', remoteEndpointId: 'pc' },
         operationScope: 'remote',
         interactive: true,
         allowLocalPaths: false,
       })
-      const tasks: unknown[] = []
+      const processes: unknown[] = []
       const walk = (nodes: readonly TreeNode[]): void => {
         for (const node of nodes) {
-          if (node.kind === 'session') tasks.push(node.tasks)
+          if (node.kind === 'session') processes.push(node.processes)
           walk(node.children)
         }
       }
       walk(result.nodes)
 
-      expect(tasks.length).toBeGreaterThan(0)
-      expect(tasks.filter((one) => one !== null)).toHaveLength(1)
-      expect(tasks.find((one) => one !== null)).toMatchObject({ rows: [{ task: { kind: 'subagent', subagentId: 'a1' } }] })
+      expect(processes.length).toBeGreaterThan(0)
+      expect(processes.filter((one) => one !== null)).toHaveLength(1)
+      expect(processes.find((one) => one !== null)).toMatchObject({
+        rows: [
+          { kind: 'task', row: { task: { kind: 'subagent', subagentId: 'a4' } } },
+          { kind: 'task', row: { task: { kind: 'subagent', subagentId: 'a3' } } },
+        ],
+        more: { count: 2, opens: false },
+      })
+    })
+
+    describe('unified process rows', () => {
+      const source = SessionsFixtures.mixed()
+      const baseParent = source.sessions.find((session) => session.sessionId === 's-working')!
+      const baseShell = source.sessions.find((session) => session.sessionId === 's-shell')!
+
+      function innerRunInfo(
+        runId: string,
+        scriptId: 'service' | 'requested',
+        fields: Partial<SessionInfo> = {},
+      ): SessionInfo {
+        return {
+          ...baseShell,
+          sessionId: runId,
+          title: runId,
+          tabTitle: `AppJamatV3 - ${runId}`,
+          life: 'live',
+          kind: 'shell',
+          activity: null,
+          script: { parentId: 'p-1', phase: 'inner', scriptId },
+          ...fields,
+        }
+      }
+
+      function scriptRun(
+        runId: string,
+        scriptId: 'service' | 'requested',
+        fields: Partial<NonNullable<SessionInfo['scripts']>['runs'][number]> = {},
+      ): NonNullable<SessionInfo['scripts']>['runs'][number] {
+        return {
+          runId,
+          phase: 'inner',
+          scriptId,
+          name: runId,
+          title: runId,
+          commands: [],
+          state: 'running',
+          startedAt: 1_000,
+          row: true,
+          summary: `${runId} · running`,
+          log: 'saved',
+          ...fields,
+        }
+      }
+
+      it('shows two running shells and a service as three rows without a more row', () => {
+        const snapshot: SessionsSnapshot = {
+          ...source,
+          sessions: [
+            { ...baseParent, sessionId: 'p-1', scripts: { runs: [scriptRun('svc-1', 'service', { startedAt: 2_000 })] } },
+            innerRunInfo('svc-1', 'service'),
+          ],
+        }
+        const tasks = new Map([['p-1', listing([
+          shell('sh-1', { startedAt: 3_000 }),
+          shell('sh-2', { startedAt: 1_000 }),
+        ])]])
+        const result = buildWith(tasks, null, undefined, all, snapshot)
+        const parent = sessionOf(result, 'session:p-1')
+        expect(parent.processes?.more).toBeNull()
+        expect(parent.processes?.rows.map((row) =>
+          row.kind === 'run' ? `run:${row.sessionId}`
+            : row.kind === 'history' ? `history:${row.run.runId}`
+              : `task:${idOf(row.row.task)}`)).toEqual(['task:sh-1', 'run:svc-1', 'task:sh-2'])
+      })
+
+      it('shows the two newest of five running processes with and 3 more, and drops hidden runs from children and drawnSessionIdsOf', () => {
+        const snapshot: SessionsSnapshot = {
+          ...source,
+          sessions: [
+            {
+              ...baseParent,
+              sessionId: 'p-1',
+              scripts: {
+                runs: [
+                  scriptRun('svc-1', 'service', { startedAt: 1_000 }),
+                  scriptRun('svc-2', 'service', { startedAt: 4_000 }),
+                  scriptRun('svc-3', 'service', { startedAt: 5_000 }),
+                ],
+              },
+            },
+            innerRunInfo('svc-1', 'service'),
+            innerRunInfo('svc-2', 'service'),
+            innerRunInfo('svc-3', 'service'),
+          ],
+        }
+        const tasks = new Map([['p-1', listing([
+          shell('sh-1', { startedAt: 2_000 }),
+          shell('sh-2', { startedAt: 3_000 }),
+        ])]])
+        const result = buildWith(tasks, null, undefined, all, snapshot)
+        const parent = sessionOf(result, 'session:p-1')
+
+        expect(parent.processes?.rows).toEqual([
+          { kind: 'run', sessionId: 'svc-3' },
+          { kind: 'run', sessionId: 'svc-2' },
+        ])
+        expect(parent.processes?.more).toEqual({ count: 3, opens: true })
+        expect(parent.children.map((child) => child.kind === 'session' ? child.sessionId : child.id))
+          .toEqual(['svc-2', 'svc-3'])
+        const drawn = SessionsTreeModel.drawnSessionIdsOf([result], new Set())
+        expect(drawn.has('svc-3')).toBe(true)
+        expect(drawn.has('svc-2')).toBe(true)
+        expect(drawn.has('svc-1')).toBe(false)
+      })
+
+      it('sorts an ended requested run newer than a running shell after it', () => {
+        const snapshot: SessionsSnapshot = {
+          ...source,
+          sessions: [
+            {
+              ...baseParent,
+              sessionId: 'p-1',
+              scripts: {
+                runs: [scriptRun('req-ended', 'requested', {
+                  state: 'succeeded', startedAt: 9_000, endedAt: nowConst - 1_000, row: false, summary: 'req · succeeded',
+                })],
+              },
+            },
+          ],
+        }
+        const tasks = new Map([['p-1', listing([shell('sh-run', { startedAt: 1_000, state: 'running' })])]])
+        const result = buildWith(tasks, null, undefined, all, snapshot)
+        const parent = sessionOf(result, 'session:p-1')
+        expect(parent.processes?.rows.map((row) =>
+          row.kind === 'history' ? `history:${row.run.runId}`
+            : row.kind === 'task' ? `task:${idOf(row.row.task)}` : row.sessionId))
+          .toEqual(['task:sh-run', 'history:req-ended'])
+      })
+
+      it('shows an ended service as a history process row for 5 s with no scriptHistoryRows entry, and keeps it while open', () => {
+        const snapshot: SessionsSnapshot = {
+          ...source,
+          sessions: [{
+            ...baseParent,
+            sessionId: 'p-1',
+            scripts: {
+              runs: [scriptRun('svc-ended', 'service', {
+                state: 'stopped', startedAt: 1_000, endedAt: nowConst - 2_000, row: false, summary: 'web · stopped',
+              })],
+            },
+          }],
+        }
+        const recent = buildWith(new Map(), null, undefined, all, snapshot)
+        const parentRecent = sessionOf(recent, 'session:p-1')
+        expect(parentRecent.scriptHistoryRows).toEqual([])
+        expect(parentRecent.processes?.rows).toMatchObject([{ kind: 'history', run: { runId: 'svc-ended' } }])
+        expect(recent.nextTaskExpiryAt).toBe(nowConst + 3_000)
+
+        const expired = buildWith(new Map(), recent, undefined, { ...all, now: nowConst + 3_000 }, snapshot)
+        expect(sessionOf(expired, 'session:p-1').processes).toBeNull()
+        expect(sessionOf(expired, 'session:p-1').scriptHistoryRows).toEqual([])
+
+        const keptOpen = buildWith(
+          new Map(),
+          expired,
+          undefined,
+          { ...all, now: nowConst + 3_000, openTaskKeys: new Set(['task:p-1:script:svc-ended']) },
+          snapshot,
+        )
+        expect(sessionOf(keptOpen, 'session:p-1').processes?.rows)
+          .toMatchObject([{ kind: 'history', run: { runId: 'svc-ended' } }])
+      })
+
+      it('keeps a failed requested run whose record exists past 5 s until Remove', () => {
+        const snapshot: SessionsSnapshot = {
+          ...source,
+          sessions: [
+            {
+              ...baseParent,
+              sessionId: 'p-1',
+              scripts: {
+                runs: [scriptRun('req-fail', 'requested', {
+                  state: 'failed', startedAt: 1_000, endedAt: nowConst - 60_000, row: true, summary: 'req · failed',
+                })],
+              },
+            },
+            innerRunInfo('req-fail', 'requested', {
+              life: 'ended', outcome: 'failed', exitCode: 1, endedAt: nowConst - 60_000, admits: ['remove'],
+            }),
+          ],
+        }
+        const result = buildWith(new Map(), null, undefined, all, snapshot)
+        const parent = sessionOf(result, 'session:p-1')
+        expect(parent.processes?.rows).toEqual([{ kind: 'run', sessionId: 'req-fail' }])
+        expect(parent.children.map((child) => child.kind === 'session' ? child.sessionId : child.id)).toEqual(['req-fail'])
+
+        const afterRemove: SessionsSnapshot = {
+          ...source,
+          sessions: [{
+            ...baseParent,
+            sessionId: 'p-1',
+            scripts: {
+              runs: [scriptRun('req-fail', 'requested', {
+                state: 'failed', startedAt: 1_000, endedAt: nowConst - 60_000, row: false, summary: 'req · failed',
+              })],
+            },
+          }],
+        }
+        const removed = buildWith(new Map(), result, undefined, all, afterRemove)
+        expect(sessionOf(removed, 'session:p-1').processes).toBeNull()
+      })
+    })
+  })
+
+  describe('service rows', () => {
+    const source = SessionsFixtures.mixed()
+    const baseParent = source.sessions.find((session) => session.sessionId === 's-working')!
+    const baseShell = source.sessions.find((session) => session.sessionId === 's-shell')!
+
+    function serviceSnapshot(includeParentRun = true): SessionsSnapshot {
+      const startedAt = nowConst - 45_000
+      const parent: SessionInfo = {
+        ...baseParent,
+        sessionId: 'p-1',
+        activity: 'idle',
+        scripts: includeParentRun
+          ? {
+              runs: [{
+                runId: 'svc-1',
+                phase: 'inner',
+                scriptId: 'service',
+                name: 'web',
+                title: 'web',
+                commands: [],
+                state: 'running',
+                startedAt,
+                row: true,
+                summary: 'web · running',
+                log: 'none',
+              }],
+            }
+          : { runs: [] },
+      }
+      const service: SessionInfo = {
+        ...baseShell,
+        sessionId: 'svc-1',
+        title: 'web',
+        tabTitle: 'AppJamatV3 - web',
+        life: 'live',
+        kind: 'shell',
+        activity: null,
+        script: { parentId: 'p-1', phase: 'inner', scriptId: 'service' },
+      }
+      const requested: SessionInfo = {
+        ...baseShell,
+        sessionId: 'req-1',
+        title: 'test',
+        tabTitle: 'AppJamatV3 - test',
+        life: 'live',
+        kind: 'shell',
+        activity: null,
+        script: { parentId: 'p-1', phase: 'inner', scriptId: 'requested' },
+      }
+      return { ...source, sessions: [parent, service, requested] }
+    }
+
+    it('gives a live service run the service glyph and startedAt, and keeps requested as shell', () => {
+      const result = build(serviceSnapshot(true))
+      const service = find(result.nodes, 'session:svc-1')
+      const requested = find(result.nodes, 'session:req-1')
+      if (service.kind !== 'session' || requested.kind !== 'session') throw new Error('no session nodes')
+
+      expect(service.glyph).toBe('service')
+      expect(service.service).toEqual({ startedAt: nowConst - 45_000 })
+      expect(requested.glyph).toBe('shell')
+      expect(requested.service).toBeNull()
+    })
+
+    it('leaves service time null and throws nothing when the parent run entry is missing', () => {
+      const result = build(serviceSnapshot(false))
+      const service = find(result.nodes, 'session:svc-1')
+      if (service.kind !== 'session') throw new Error('no service node')
+
+      expect(service.glyph).toBe('service')
+      expect(service.service).toBeNull()
+    })
+
+    it('files and filters a live service run with idle, never with running', () => {
+      const standalone: SessionsSnapshot = {
+        ...source,
+        sessions: [{
+          ...baseShell,
+          sessionId: 'svc-solo',
+          life: 'live',
+          kind: 'shell',
+          activity: null,
+          script: { parentId: 'missing-parent', phase: 'inner', scriptId: 'service' },
+        }],
+      }
+      expect(everyId(build(standalone, { ...all, stateGroup: 'read' }).nodes)).toContain('session:svc-solo')
+      expect(build(standalone, { ...all, stateGroup: 'running' }).emptyState).toBe('noMatch')
+      expect(everyId(build(standalone, { ...all, filters: { ...all.filters, states: ['idle'] } }).nodes))
+        .toContain('session:svc-solo')
+      expect(build(standalone, { ...all, filters: { ...all.filters, states: ['running'] } }).emptyState)
+        .toBe('noMatch')
+    })
+
+    it('keeps identical node references across builds that differ only in time', () => {
+      const snapshot = serviceSnapshot(true)
+      const first = build(snapshot, { ...all, now: nowConst })
+      const second = build(snapshot, { ...all, now: nowConst + 120_000 }, noMarks, first)
+
+      expect(find(second.nodes, 'session:svc-1')).toBe(find(first.nodes, 'session:svc-1'))
+      expect(find(second.nodes, 'session:p-1')).toBe(find(first.nodes, 'session:p-1'))
+    })
+
+    it('marks inner runs with innerRun and Stop label, and keeps them visible even beside parent actions', () => {
+      const snapshot = serviceSnapshot(true)
+      const parent = snapshot.sessions.find((session) => session.sessionId === 'p-1')!
+      const withLegacyAction: SessionsSnapshot = {
+        ...snapshot,
+        sessions: snapshot.sessions.map((session) => session.sessionId !== 'p-1' ? session : {
+          ...parent,
+          actions: { sections: [{ kind: 'script', workflowId: 'script:req-1', title: 'test', badge: 'running', summary: 'test',
+            open: true, actions: [], rounds: [{ title: 'Script run', steps: [{ key: 'req-1', title: 'test', detail: '', state: 'running',
+              startedAt: 1, endedAt: null, target: { kind: 'run', runId: 'req-1' }, body: { kind: 'log', runId: 'req-1' } }] }] }] },
+        }),
+      }
+      const result = build(withLegacyAction)
+      const parentNode = find(result.nodes, 'session:p-1')
+      const service = find(result.nodes, 'session:svc-1')
+      const requested = find(result.nodes, 'session:req-1')
+      if (parentNode.kind !== 'session' || service.kind !== 'session' || requested.kind !== 'session')
+        throw new Error('no session nodes')
+
+      expect(parentNode.innerRun).toBe(false)
+      expect(parentNode.finalizeLabel).toBe('Finish')
+      expect(service.innerRun).toBe(true)
+      expect(service.finalizeLabel).toBe('Stop')
+      expect(requested.innerRun).toBe(true)
+      expect(requested.finalizeLabel).toBe('Stop')
     })
   })
 })

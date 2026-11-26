@@ -41,7 +41,8 @@ export class WorkspacePanels {
             case 'file':
             case 'commit':
             case 'workflow':
-            case 'todos': return []
+            case 'todos':
+            case 'processes': return []
             default: throw new Error(`Unknown split item: ${JSON.stringify(item satisfies never)}`)
           }
         })
@@ -430,6 +431,25 @@ export class WorkspacePanels {
       controller.activatePanel(command.panelId)
       requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
       return { kind: 'todos-opened', panelId: command.panelId }
+    } else if (command.kind === 'open-processes') {
+      if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
+        return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }
+      let refusal: string | null = null
+      const applied = controller.applyPanelParameters(command.panelId, (params) => {
+        const reading = TerminalTargetCodec.read(params)
+        if (reading === null || reading.target.kind !== 'local' || reading.target.sessionId !== command.sessionId) {
+          refusal = 'The session terminal target has changed'
+          return params
+        }
+        const result = PanelSplitParams.opened(PanelSplitParams.of(params), PanelSplitParams.processesItemOf(command.sessionId))
+        if (!result.ok) { refusal = result.refusal; return params }
+        return PanelSplitParams.merged(params, result.state)
+      })
+      if (!applied) return { kind: 'failed', detail: `Unknown panel: ${command.panelId}` }
+      if (refusal !== null) return { kind: 'failed', detail: refusal }
+      controller.activatePanel(command.panelId)
+      requestAnimationFrame(() => controller.focusPanelContent(command.panelId))
+      return { kind: 'processes-opened', panelId: command.panelId }
     } else if (command.kind === 'open-commit') {
       if (controller.keyOf(command.panelId) !== PanelKeysConst.terminal)
         return { kind: 'failed', detail: `Not a terminal panel: ${command.panelId}` }

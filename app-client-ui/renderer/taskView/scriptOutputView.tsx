@@ -39,7 +39,7 @@ export function ScriptOutputView(props: {
             onClick={props.onClose}>Close log</button>}
         </div>
         <div className="task-view__facts" data-state={output.state}>
-          {ScriptOutputText.stateOf(output.state)} · {output.source === 'log' && output.logReason !== undefined ? 'Log unavailable' : ScriptOutputText.sourceOf(output.source)}
+          {output.stateWord ?? ScriptOutputText.stateOf(output.state)} · {output.source === 'log' && output.logReason !== undefined ? 'Log unavailable' : ScriptOutputText.sourceOf(output.source)}
         </div>
         {props.openTerminal && output.terminal !== null && <button className="task-view__more" type="button" disabled={opening}
           onClick={() => { void openTerminal() }}>Open terminal</button>}

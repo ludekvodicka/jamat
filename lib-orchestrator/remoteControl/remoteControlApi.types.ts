@@ -919,6 +919,12 @@ export interface RemoteControlOperationMap {
    */
   'sessions.runScript': {
     request: { session: RemoteControlSessionSelector } & SessionScriptRequest
+    /** `reused` for a service only; an older controller answers without it. */
+    response: { sessionId: string; runId: string; reused?: boolean }
+  }
+  /** Stop one running inner run of this session. Local only; also marks a controller that takes `kind`. */
+  'sessions.stopScript': {
+    request: { session: RemoteControlSessionSelector; runId: string }
     response: { sessionId: string; runId: string }
   }
   /** Fork the session's conversation into a new session; `name` replaces the name the fork would take. */

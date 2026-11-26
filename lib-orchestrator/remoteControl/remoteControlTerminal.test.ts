@@ -14,6 +14,7 @@ import type { HostDescriptor, HostWsClientMsg } from '../../app-host/app/wire/ho
 import type { TerminalAttachSocketDeps } from '../hostClient/terminalAttachSocket'
 import { TerminalGateway } from '../sessionManager/terminals/terminalGateway'
 import { AgentComposerReader } from '../sessionManager/workState/agentComposerReader'
+import { ScreenTail } from '../sessionManager/workState/screenTail'
 import { WorkFixtures } from '../sessionManager/workState/fixtures/workFixtures'
 import type { SessionTranscriptReading } from '../sessionTranscriptReader/sessionTranscriptReaderApi.types'
 import type {
@@ -1134,6 +1135,65 @@ describe('lib-orchestrator/remoteControl/remoteControlTerminal deliver', () => {
       ok: false,
       error: { code: 'not-found', data: { stage: 'attach', reason: 'not-live', typed: false, entered: 0, hint: null, composer: null } },
     })
+  })
+
+  it('submits a tall Antigravity conflict paste whose box exceeds 16 rows', async () => {
+    const harness = new DeliverHarness()
+    const rule = '─'.repeat(120)
+    const lines = [
+      '2 conflicts wait for the worker in Q:\\Project\\.worktrees\\116.',
+      'Preserve both sides, edit the working files, then settle each path using the Jamat CLI.',
+      ...Array.from({ length: 31 }, (_, index) => `resolve line ${index + 1} '--path' 'file-${index + 1}.ts'`),
+      "Once every file holds both sides: '--all' '--option' 'merged'",
+    ]
+    const text = lines.join('\n')
+    const screenFor = (rows: string[], hint: 'idle' | 'unknown' | 'working'): TerminalComposerResult => ({
+      ok: true,
+      reading: {
+        agentId: 'antigravity',
+        alive: true,
+        hint,
+        ...AgentComposerReader.read('antigravity', ScreenTail.composerFrameOf({
+          screen: '', cols: 120, screenLines: rows, screenLinesStyled: true,
+        })),
+      },
+    })
+    harness.sessions.composer = (inputs) => {
+      if (inputs.length === 0)
+        return screenFor([
+          rule,
+          '> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)',
+          rule,
+          '? for shortcuts                                                            auto · Gemini 4 Neon · high',
+        ], 'idle')
+      if (inputs.length === 1)
+        return screenFor([
+          '  Earlier summary',
+          rule,
+          `> ${lines[0]}`,
+          ...lines.slice(1).map((line) => `  ${line}`),
+          rule,
+          'auto · Gemini 4 Neon · high',
+        ], 'unknown')
+      return screenFor([
+        `> ${lines[0]}`,
+        ...lines.slice(1).map((line) => `  ${line}`),
+        '',
+        '⣾  Generating...',
+        rule,
+        '> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)',
+        rule,
+        'esc to cancel                                                              auto · Gemini 4 Neon · high',
+      ], 'working')
+    }
+
+    const result = await harness.deliver(text, { input: 'paste', queue: true })
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: { delivered: true, input: 'paste', composeProof: 'text', proof: 'echo', submitKey: 'enter' },
+    })
+    expect(harness.written()).toEqual([pasted(text), '\r'])
   })
 })
 

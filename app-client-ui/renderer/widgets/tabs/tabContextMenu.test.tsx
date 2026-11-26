@@ -151,14 +151,16 @@ class MenuView {
 describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('shows Session actions and the todo list under Show, the todo list for local sessions only', () => {
+  it('shows Session actions, Todo list and Processes under Show, the local panes for local sessions only', () => {
     const commands = new CommandRegistry()
     const opened = vi.fn()
     const todos = vi.fn()
+    const processes = vi.fn()
     commands.register('session.showActions', opened)
     commands.register('session.showTodos', todos)
+    commands.register('session.showProcesses', processes)
     const view = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
-    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list', 'Processes'])
     fireEvent.click(MenuView.itemTitled('Session actions'))
     expect(opened).toHaveBeenCalledWith({ sessionId: 'clicked' })
     view.unmount()
@@ -166,8 +168,12 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
     fireEvent.click(MenuView.itemTitled('Todo list'))
     expect(todos).toHaveBeenCalledWith({ sessionId: 'clicked' })
     local.unmount()
+    const localProcesses = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'clicked' }} facts={factsOf()} />)
+    fireEvent.click(MenuView.itemTitled('Processes'))
+    expect(processes).toHaveBeenCalledWith({ sessionId: 'clicked' })
+    localProcesses.unmount()
     const ended = render(<MenuHost commands={commands} panelKey="terminal" params={{ sessionId: 'ended' }} facts={factsOf({ ended: true, admits: [], directoryPath: null })} />)
-    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list'])
+    expect(MenuView.childrenOf('Show')).toEqual(['Session actions', 'Todo list', 'Processes'])
     ended.unmount()
     render(<MenuHost commands={commands} panelKey="terminal" params={{ target: { kind: 'remote', sessionId: 'remote', remoteEndpointId: 'peer' } }} facts={factsOf()} />)
     expect(MenuView.childrenOf('Show')).toEqual(['Session actions'])
@@ -257,6 +263,7 @@ describe('app-client-ui/renderer/widgets/tabs/tabContextMenu', () => {
       'Show ›',
       '  Session actions',
       '  Todo list',
+      '  Processes',
       'Commit ›',
       '  Git…',
       '  SVN…',

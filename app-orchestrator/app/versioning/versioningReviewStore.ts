@@ -12,7 +12,7 @@ const recordSchema = z.object({
     try { return RemoteReviewSchemas.decision.safeParse(JSON.parse(value)).success } catch { return false }
   }, 'The saved decision is unreadable'), acceptedAt: z.number(), result: decisionResult.optional() }).strict()).optional(),
   dto: versioningReviewSchema.omit({ epoch: true }), cwd: literal, lockRoot: literal,
-  targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean(), checked: z.literal(false).optional() }).strict()).max(2_000).optional(),
+  targets: z.array(z.object({ path: literal, directory: z.boolean(), recursive: z.boolean(), checked: z.literal(false).optional() }).strict()).max(5_000).optional(),
   committedPaths: z.array(literal).optional(), externalReview: z.enum(['running', 'closed']).optional(),
   rejectedSnapshotId: literal.optional(), closedAt: z.number().optional(), failure: z.string().max(8_388_608).optional(),
   wake: z.union([z.object({ state: z.literal('watching') }).strict(), z.object({
@@ -45,21 +45,55 @@ export interface VersioningReviewRecord {
 
 interface ReviewDocument { version: 1; reviews: VersioningReviewRecord[] }
 
+/**
+ * Every draft edit saves all reviews (98 on 2026-11-25, 3.4 MB) synchronously on the orchestrator's
+ * main thread. A record whose JSON did not change since the last save is not validated again (its
+ * decisions each parse a nested schema), and the file is written without indentation: only this
+ * process reads it.
+ */
 export class VersioningReviewStore extends JsonDocumentStore<ReviewDocument> {
   private document: ReviewDocument
+  private validated: Map<string, { text: string; record: VersioningReviewRecord }>
+  private lastOrder: string[] | null
 
   constructor(file: string, report: (message: string) => void) {
     super(file, report)
     this.document = this.readDocumentSync()
+    this.validated = new Map()
+    this.lastOrder = null
   }
 
-  read(): readonly VersioningReviewRecord[] { return structuredClone(this.document.reviews) }
+  read(): readonly VersioningReviewRecord[] {
+    return this.document.reviews.map((review) => {
+      const cloned = structuredClone(review)
+      if (cloned.committedPaths === undefined && cloned.dto.phase.kind === 'done'
+        && cloned.dto.vcs === 'svn' && cloned.dto.published !== undefined)
+        cloned.committedPaths = [...new Set(cloned.dto.published.flatMap((item) => item.paths ?? []))]
+      return cloned
+    })
+  }
 
   save(reviews: readonly VersioningReviewRecord[]): boolean {
-    const document = { version: 1 as const, reviews: reviews.map((review) => recordSchema.parse({ ...review,
-      dto: Object.fromEntries(Object.entries(review.dto).filter(([key]) => key !== 'epoch')) })) }
-    if (!this.writeDocumentSync(document)) return false
+    const validated = new Map<string, { text: string; record: VersioningReviewRecord }>()
+    const order: string[] = []
+    let unchanged = this.lastOrder !== null && reviews.length === this.lastOrder.length
+    const records = reviews.map((review, index) => {
+      const input = { ...review, dto: Object.fromEntries(Object.entries(review.dto).filter(([key]) => key !== 'epoch')) }
+      const text = JSON.stringify(input)
+      const known = this.validated.get(review.dto.draftId)
+      const same = known?.text === text
+      if (!same || this.lastOrder?.[index] !== review.dto.draftId) unchanged = false
+      const record = same ? known.record : recordSchema.parse(input) as VersioningReviewRecord
+      validated.set(review.dto.draftId, { text, record })
+      order.push(review.dto.draftId)
+      return record
+    })
+    if (unchanged) return true
+    const document = { version: 1 as const, reviews: records }
+    if (!this.writeDocumentSync(document, true)) return false
     this.document = document
+    this.validated = validated
+    this.lastOrder = order
     return true
   }
 

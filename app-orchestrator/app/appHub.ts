@@ -129,6 +129,10 @@ import { FileViewerAccess } from './fileViewer/fileViewerAccess'
 import { ServiceFileViewerIpc } from './fileViewer/serviceFileViewerIpc'
 import { TokenUsageWorker } from './tokenUsage/tokenUsageWorker'
 import { SvnAssemblyWorker } from './worktrees/svnAssemblyWorker'
+import { SessionUncommittedWorker } from './sessionUncommitted/sessionUncommittedWorker'
+import { SessionUncommittedOperations } from './sessionUncommitted/sessionUncommittedOperations'
+import { ServiceSessionUncommittedIpc } from './sessionUncommitted/serviceSessionUncommittedIpc'
+import { SessionUncommittedCandidates } from '../../lib-orchestrator/sessionManager/sessionUncommittedView'
 import { TokenUsageOperations } from './tokenUsage/tokenUsageOperations'
 import { RateMonitorOperations } from './rateMonitor/rateMonitorOperations'
 import { SessionNotifyDelivery } from './sessions/sessionNotifyDelivery'
@@ -240,10 +244,14 @@ export class OrchestratorHub {
   private readonly remoteListenerSettings: () => RemoteControlListenerSettings
   private readonly skillLinks: SkillLinkInstaller
   private readonly terminalDetector: TerminalDetector
+  private readonly sessionViewItems: SessionViewItemsStore
   private readonly commits: VersioningCommitManager
   private readonly versioningCommitIpc: ServiceVersioningCommitIpc
   private readonly fileDiffWorker: FileDiffWorker
   private readonly svnAssemblyWorker: SvnAssemblyWorker
+  private readonly uncommitted: SessionUncommittedWorker
+  private readonly uncommittedOps: SessionUncommittedOperations
+  private readonly sessionUncommittedIpc: ServiceSessionUncommittedIpc
   private readonly fileChanges: FileChangesManager
   private readonly fileViewer: FileViewer
   private readonly fileChangesAccess: FileChangesAccess
@@ -353,10 +361,20 @@ export class OrchestratorHub {
     runtime.isPackaged ? join(runtime.resourcesPath, 'launcher', 'node.exe') : join(applicationRoot, 'out', 'launcher', 'node.exe'))
     this.fileDiffWorker = new FileDiffWorker(context.fileDiffWorkerPath, undefined, workerPerf('fileDiff'))
     this.svnAssemblyWorker = new SvnAssemblyWorker(context.svnAssemblyWorkerPath, undefined, workerPerf('svnAssembly'))
+    this.uncommitted = new SessionUncommittedWorker(context.sessionUncommittedWorkerPath,
+      { cacheFile: join(OrchestratorPaths.directory(configIdentity, channel), 'session-claims.json') }, undefined, workerPerf('sessionUncommitted'))
+    this.uncommittedOps = new SessionUncommittedOperations({
+      worker: this.uncommitted,
+      activities: () => this.sessions.snapshot().sessions,
+      candidates: () => SessionUncommittedCandidates.of(this.sessions.recordsInTree(), this.sessions.snapshot().sessions),
+      changed: () => { this.broadcast('sessions:uncommitted-changed'); this.remoteInbound?.publishEvent('sessions.changed') },
+      log: (line) => AppClientUiReport.warning(line),
+    })
     this.fileChanges = new FileChangesManager({
       perf: this.perf,
       diffExecutor: this.fileDiffWorker,
       transcriptResolver: this.projects.transcripts,
+      statusObserved: (root, entries) => this.uncommittedOps.observeStatus(root, entries),
     })
     this.fileViewer = new FileViewer()
     this.fileMedia = new FileViewerMediaView(this.fileViewer)
@@ -420,7 +438,7 @@ export class OrchestratorHub {
         return account.agentId === 'claude' || account.agentId === 'codex' || account.agentId === 'antigravity'
           ? { agentId: account.agentId, accountId: account.accountId }
           : null
-      })
+      }, { sessionExists: (sessionId) => this.sessions.hasKnownSession(sessionId) })
     const rolloutRates = RateMonitorSources.rollouts(accounts.homeOf('codex', 'main'), () => accounts.list())
     this.rateMonitor = new RateMonitor({
       perf: this.perf,
@@ -473,11 +491,13 @@ export class OrchestratorHub {
       configIdentity,
       channel,
       autoStartHost: !context.smoke,
-      onChanged: () => { accounts.sessionsChanged(); this.antigravityLogins?.sessionsChanged(); this.sessionEvents.changed(); this.reconcileTabs() },
+      onChanged: () => { accounts.sessionsChanged(); this.antigravityLogins?.sessionsChanged(); this.sessionEvents.changed(); this.uncommittedOps.sessionsChanged(); this.reconcileTabs(); this.pruneSessionViewItems() },
       onError: (message) => this.report(message),
       // A session whose worktree ended, or whose Commit & close left nothing, goes as Remove takes it, and Remove's caller closes the tab.
-      onRemovedItself: (sessionId) =>
-        this.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId })),
+      onRemovedItself: (sessionId) => {
+        this.closeTerminalPanels(TerminalTargetCodec.key({ kind: 'local', sessionId }))
+        this.pruneSessionViewItems()
+      },
       onMainCopyUpdated: (update) => this.notices.update(MainCopyUpdateNotice.of(update)),
       onScriptCollapsed: (event) => { this.staleTabs.collapsedRun(event.runId); this.sessionEvents.scriptCollapsed(event) },
       removeTree: (path, onProgress) => OriginalTreeRemoval.remove(path, onProgress),
@@ -519,6 +539,7 @@ export class OrchestratorHub {
       {
         openTask: (tabTitle, item, intentId) => this.tabControlBroker.openTask(tabTitle, item, intentId),
         openWorkflow: (sessionId, tabTitle, intentId) => this.tabControlBroker.openWorkflow(sessionId, tabTitle, intentId),
+        openProcesses: (sessionId, tabTitle) => this.tabControlBroker.openProcesses(sessionId, tabTitle),
       })
     const transcriptReader = new SessionTranscriptReader({ transcripts: this.projects.transcripts })
     const transcriptAccess = new SessionTranscriptAccess(this.sessions, transcriptReader)
@@ -600,15 +621,22 @@ export class OrchestratorHub {
         this.broadcast('versioning:commit-changed')
         this.tabControlBroker.commitsChanged()
         this.remoteControl.activity.publish('commits.changed')
+      },
+      onOpenSessionsChanged: () => {
+        this.broadcast('versioning:commit-open-sessions-changed')
         this.remoteInbound?.publishEvent('sessions.changed')
       },
-      committed: (receipt) => this.sessions.noteCommitted(receipt),
+      committed: (receipt) => {
+        this.sessions.noteCommitted(receipt)
+        this.uncommittedOps.committed(receipt)
+      },
     })
     this.versioningCommitIpc = new ServiceVersioningCommitIpc(this.commits, workspaceCallerOwnerIdOf, this.fileChangesAccess, async (sessionId, vcs, scope) => {
       const info = this.sessions.snapshot().sessions.find((session) => session.sessionId === sessionId)
       if (info?.life !== 'live') return { ok: false, error: { code: 'not-found', detail: 'The session is not live' } }
       return this.tabControlBroker.openCommit(sessionId, info.tabTitle, vcs, scope ?? null, null, { showRefusal: true })
     }, reviewInteractions)
+    this.sessionUncommittedIpc = new ServiceSessionUncommittedIpc(this.uncommittedOps, workspaceCallerOwnerIdOf)
     const changedPathHints = new ChangedPathHints(this.fileChanges)
     this.terminalDetector = new TerminalDetector({
       workingContext: (sessionId) => this.sessions.workingContext(sessionId),
@@ -620,7 +648,7 @@ export class OrchestratorHub {
         (message) => this.report(message),
       ),
     })
-    const sessionViewItems = new SessionViewItemsStore(join(ClientStatePaths.directory(configIdentity, channel), 'session-view-items.json'), (message) => this.report(message))
+    const sessionViewItems = this.sessionViewItems = new SessionViewItemsStore(join(ClientStatePaths.directory(configIdentity, channel), 'session-view-items.json'), (message) => this.report(message))
     const itemPages = new RemoteContentPages()
     sessionViewItems.subscribe(() => {
       this.event({ kind: 'session-items-changed' })
@@ -694,7 +722,7 @@ export class OrchestratorHub {
     this.contextCompactionIpc = new ServiceContextCompactionIpc(remoteTerminal, transcriptAccess,
       new ContextCompactionCooldowns(OrchestratorPaths.contextCompactionCooldownsFile(configIdentity, channel), (message) => this.report(message)))
     this.sessions.setMainFinishPort(new MainFinishPortAdapter({ sessions: this.sessions, fileChanges: this.fileChanges,
-      terminal: remoteTerminal, transcripts: transcriptAccess, commits: this.commits,
+      terminal: remoteTerminal, transcripts: transcriptAccess, commits: this.commits, uncommitted: this.uncommitted,
       commandOf: (vcs) => VersioningSettings.finishCommandOf(configStore.readSection(VersioningSettingsSection.spec), vcs) }))
     this.directoryNotes = new DirectoryNotesOperations(
       configStore,
@@ -822,7 +850,8 @@ export class OrchestratorHub {
       configDir: context.config.configDir, claudeHome: accounts.homeOf('claude', 'main'), codexHome: accounts.homeOf('codex', 'main'),
       antigravityHome: AntigravityConfigHome.resolve(),
       records: this.sessions.usageRecords(), accounts: await accounts.list(),
-    }), () => this.broadcast('usage:changed'), workerPerf('tokenUsage'))
+    }), { changed: () => this.broadcast('usage:changed'), progressed: progress => this.broadcast('usage:progress', progress) },
+    workerPerf('tokenUsage'))
     const usageLog = new AccountUsageLog(OrchestratorPaths.accountUsageDirectory(configIdentity, channel))
     new TokenUsageOperations(this.tokenUsage, accounts, usageLog).register(remoteControl.registry)
     new RateMonitorOperations(this.rateMonitor, this.accounts).register(remoteControl.registry)
@@ -844,7 +873,7 @@ export class OrchestratorHub {
           session.agent?.agentId === 'antigravity' && session.life === 'live' && session.admits.includes('restart'))
         const outcomes = await Promise.all(targets.map(async session => ({
           session,
-          result: await this.sessions.stopAndWaitSession(session.sessionId),
+          result: await this.sessions.stopAndWaitSession(session.sessionId, 'restart'),
         })))
         const stopped: { sessionId: string; title: string }[] = []
         const failed: string[] = []
@@ -932,7 +961,7 @@ export class OrchestratorHub {
       })
     this.peerWork = new PeerWorkService({
       views: sourceViews,
-      snapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot(), () => this.commits.discovery()),
+      snapshots: new RemoteSessionSnapshots(() => this.sessions.snapshot(), () => this.commits.discovery(), () => this.uncommittedOps.snapshot()),
       control: remoteControl, files: pastedFiles,
       audit: new RemoteControlAudit(ClientStatePaths.controlAuditFile(configIdentity, channel), message => this.report(message)),
       unknownPeer: (claimant, remoteAddress) => this.remoteInboundApproval.request(claimant, remoteAddress),
@@ -1057,7 +1086,7 @@ export class OrchestratorHub {
       controlExecute: (...args) => this.remoteControl.registry.execute(...args),
       initializeInbound: () => this.remoteInbound.initialize(this.peerProcessIdentity()),
       initializeOutbound: () => { const identity = this.peerProcessIdentity(); return this.remoteConnections.initialize({ identity: identity.identity, privateKey: identity.privateKey }) },
-      configureServices: () => { for (const service of [this.controlIpc, this.remoteSettingsIpc, this.tabRequestsIpc, this.versioningCommitIpc, this.fileChangesIpc, this.fileViewerIpc, this.remarkableIpc, this.contextCompactionIpc, this.cliUpdatesIpc, this.attentionIpc]) { service.setTransport(this.serviceTransport); service.setPerfSpans(this.perf) } },
+      configureServices: () => { for (const service of [this.controlIpc, this.remoteSettingsIpc, this.tabRequestsIpc, this.versioningCommitIpc, this.fileChangesIpc, this.fileViewerIpc, this.remarkableIpc, this.contextCompactionIpc, this.cliUpdatesIpc, this.attentionIpc, this.sessionUncommittedIpc]) { service.setTransport(this.serviceTransport); service.setPerfSpans(this.perf) } },
       initializeRemoteSettingsIpc: () => this.remoteSettingsIpc.initialize(),
       initializeTabRequestsIpc: () => this.tabRequestsIpc.initialize(),
       initializeVersioningCommitIpc: () => this.versioningCommitIpc.initialize(),
@@ -1067,9 +1096,11 @@ export class OrchestratorHub {
       initializeContextCompactionIpc: () => this.contextCompactionIpc.initialize(),
       initializeCliUpdatesIpc: () => this.cliUpdatesIpc.initialize(),
       initializeAttentionIpc: () => this.attentionIpc.initialize(),
+      initializeSessionUncommittedIpc: () => this.sessionUncommittedIpc.initialize(),
       beginStopRemarkable: () => this.remarkable.beginStop(),
       beginStopFileDiffWorker: () => this.fileDiffWorker.beginStop(),
       beginStopTokenUsage: () => this.tokenUsage.beginStop(),
+      beginStopSessionUncommitted: () => { this.uncommittedOps.stop(); this.uncommitted.beginStop() },
       beginStopRemoteControlServer: () => this.remoteControlServer.beginStop(),
       beginStopPeerWork: () => this.peerWork.beginStop(),
       beginStopRemoteListener: () => this.remoteListener.beginStop(),
@@ -1090,6 +1121,7 @@ export class OrchestratorHub {
       stopSnapins: () => this.snapins.stop(),
       stopSessions: () => this.sessions.stop(),
       stopSvnAssemblyWorker: () => this.svnAssemblyWorker.stop(),
+      stopSessionUncommitted: () => this.uncommitted.stop(),
       cancelTabs: () => this.tabControlBroker.cancelAll(),
       disposeGroups: () => this.sessionGroups.dispose(),
       disposeNotices: () => this.notices.dispose(),
@@ -1099,7 +1131,7 @@ export class OrchestratorHub {
       tabsChanged: () => { this.remoteControlServer.publishEvent('tabs.changed'); this.remoteControl.activity.publish('tabs.changed') },
       revokeCommitOwner: windowId => this.commits.revokeOwner(windowId),
       revokeOwner: windowId => { this.fileChangesAccess.revokeOwner(windowId); this.fileViewer.revokeOwner(windowId) },
-      setPresentation: value => { this.presentation = structuredClone(value); this.sessions.setWindowVisible(value.anythingVisible); this.rateMonitor.setWindowVisible(value.anythingVisible); this.sessionAttention.seen(this.presentation.seen) },
+      setPresentation: value => { this.presentation = structuredClone(value); this.sessions.setWindowVisible(value.anythingVisible); this.rateMonitor.setWindowVisible(value.anythingVisible); this.uncommittedOps.setVisible(value.anythingVisible); this.sessionAttention.seen(this.presentation.seen) },
       startBackground: () => this.startBackground(),
       runaway: row => { const notice = RunawayTracker.notice(row, async sessionId => { const opened = await this.tabControlBroker.open(sessionId, this.tabTitleOf(sessionId) ?? `Session ${row.session}`, 'person'); if (!opened.ok) throw new Error(`The session could not be opened: ${opened.error.detail}`) }); this.notices.show(notice, notice.click) },
       hostConnection: value => { this.hostConnectionDebug = value.debug; this.hostConnection.update(value.descriptor, value.leaseId) },
@@ -1119,7 +1151,7 @@ export class OrchestratorHub {
     for (const initialize of [this.api.initializeRemoteSettingsIpc, this.api.initializeTabRequestsIpc,
       this.api.initializeVersioningCommitIpc, this.api.initializeFileChangesIpc, this.api.initializeFileViewerIpc,
       this.api.initializeRemarkableIpc, this.api.initializeContextCompactionIpc, this.api.initializeCliUpdatesIpc,
-      this.api.initializeAttentionIpc]) initialize()
+      this.api.initializeAttentionIpc, this.api.initializeSessionUncommittedIpc]) initialize()
     this.publishProjection()
   }
 
@@ -1129,6 +1161,14 @@ export class OrchestratorHub {
   private reconcileTabs(): void {
     try { this.staleTabs.reconcile() }
     catch (error) { this.report(`Tabs of removed sessions could not be closed: ${ErrorText.of(error)}`) }
+  }
+
+  private pruneSessionViewItems(): void {
+    if (!this.sessionViewItems) return
+    const isKnown = (sessionId: string): boolean => this.sessions.hasKnownSession(sessionId)
+    if (!this.sessionViewItems.hasItemsOutside(isKnown)) return
+    void this.sessionViewItems.pruneItems(isKnown).catch((error: unknown) =>
+      this.report(`Shared session opens could not be pruned: ${ErrorText.of(error)}`))
   }
 
   publishProjection(): void {
@@ -1143,6 +1183,7 @@ export class OrchestratorHub {
     this.api.beginStopRemarkable()
     this.api.beginStopFileDiffWorker()
     this.api.beginStopTokenUsage()
+    this.api.beginStopSessionUncommitted()
     this.api.beginStopRemoteControlServer()
     this.api.beginStopPeerWork()
     this.api.beginStopRemoteListener()
@@ -1182,6 +1223,7 @@ export class OrchestratorHub {
       } },
       { subject: 'the accepted peer work', run: () => this.api.stopPeerWork() },
       { subject: 'the svn assembly worker', run: () => this.api.stopSvnAssemblyWorker() },
+      { subject: 'the session uncommitted worker', run: () => this.api.stopSessionUncommitted() },
     ]
     const settle = async (step: typeof steps[number]): Promise<void> => {
       try { await step.run() }
@@ -1245,7 +1287,7 @@ export class OrchestratorHub {
     void this.projects.start()
     // Same reasoning, and the manager reports through the same channel: reaching the Host, reading
     // what it has and possibly starting one all take longer than a window should wait for.
-    void this.sessions.start().then(() => this.tokenUsage.start())
+    void this.sessions.start().then(() => { if (!this.quitting) this.pruneSessionViewItems() })
     // The cache first, and then a live read of whatever it could not answer for. The windows are
     // already up by this line, so a provider whose cached success is older than one interval is read
     // now, and on a machine with no cache at all that is both of them. The monitor reports its own

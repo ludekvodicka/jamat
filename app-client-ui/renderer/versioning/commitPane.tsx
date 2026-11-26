@@ -39,6 +39,12 @@ export function CommitPane(props: {
   item: PanelSplitCommitItem
   ports: CommitPanePorts
   reviewOnly?: boolean
+  /**
+   * False while the pane is not on screen (a hidden tab or another split item). Its working tree is
+   * read only while it is shown, and once again when it comes back; 39 hidden panes read `svn status`
+   * at every start and froze the orchestrator. Absent means shown.
+   */
+  visible?: boolean
   footer?(state: CommitPaneDraftState): React.ReactNode
   /** Per-repository inline message editors rendered inside each repository group card. */
   repositoryMessages?: readonly CommitRepositoryMessageItem[]
@@ -52,7 +58,8 @@ export function CommitPane(props: {
   onOpenReview?(review: { draftId: string; scopeRoot: string; title: string }): void
 }): React.JSX.Element {
   const ports = props.ports
-  const model = useCommitDraft(props.sessionId, props.item, ports, props.reviewOnly)
+  const shown = props.visible !== false
+  const model = useCommitDraft(props.sessionId, props.item, ports, props.reviewOnly, shown)
   const draft = model.draft
   const draftId = draft?.draftId
   // The rows main checks by default, kept per list: a review that named its targets starts with
@@ -68,13 +75,21 @@ export function CommitPane(props: {
     }
     return answer
   }, [ports, draftId, model.sync])
-  const working = useWorkingTreeChanges(props.sessionId, read, draft !== null, draft?.source)
+  const working = useWorkingTreeChanges(props.sessionId, read, draft !== null && shown, shown ? draft?.source : undefined, props.item.vcs)
   useEffect(() => { if (draft !== null) working.select(draft.source) }, [draft?.source])
   const snapshot = draft === null ? null : working.snapshotFor(draft.source)
   const latestSnapshot = useRef(snapshot)
   useEffect(() => { latestSnapshot.current = snapshot }, [snapshot])
   const [selection, setSelection] = useState<{ draftId: string; paths: ReadonlySet<string> } | null>(null)
   const namedTargets = draft?.paths !== undefined
+  const eligible = useMemo(() => snapshot === null ? [] : CommitTargets.eligible(snapshot), [snapshot])
+  const externalFileIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (snapshot !== null)
+      for (const root of snapshot.externalRoots)
+        for (const id of root.fileIds) ids.add(id)
+    return ids
+  }, [snapshot])
   // SVN recovery can introduce conflict backups after the person reviewed the original paths.
   useEffect(() => {
     if (draftId === undefined || snapshot === null || working.loading || working.requiredLoading
@@ -84,16 +99,18 @@ export function CommitPane(props: {
     if (namedTargets && named === null) return
     if (model.conflict) return
     setSelection((held) => draft?.selection !== undefined ? { draftId, paths: new Set(draft.selection.paths) } : held?.draftId === draftId ? held
-      : { draftId, paths: new Set(CommitTargets.eligible(snapshot).filter((entry) => entry.origin !== 'setup' && (named === null || named.has(entry.path))).map((entry) => entry.path)) })
-  }, [draftId, draft?.selection, model.conflict, namedTargets, snapshot, working.loading, working.requiredLoading, working.error, working.requiredError])
-  const held = selection?.draftId === draftId ? selection
-    : draft?.selection ? { draftId, paths: new Set(draft.selection.paths) } : null
-  const checked = new Set(snapshot === null || (namedTargets && held === null) ? [] : CommitTargets.eligible(snapshot)
-    .filter((entry) => held === null ? entry.origin !== 'setup' : held.paths.has(entry.path)).map((entry) => entry.fileId))
-  const selectedCount = snapshot === null ? 0 : CommitTargets.selected(CommitTargets.eligible(snapshot), checked).length
-  const revertible = snapshot === null ? [] : CommitTargets.eligible(snapshot)
-    .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry)
-      && !snapshot.externalRoots.some((root) => root.fileIds.includes(entry.fileId)))
+      : { draftId, paths: new Set(eligible.filter((entry) => entry.origin !== 'setup' && (named === null || named.has(entry.path))).map((entry) => entry.path)) })
+  }, [draftId, draft?.selection, eligible, model.conflict, namedTargets, snapshot, working.loading, working.requiredLoading, working.error, working.requiredError])
+  const heldPaths = useMemo(() => selection !== null && selection.draftId === draftId ? selection.paths
+    : draft?.selection ? new Set(draft.selection.paths) : null, [selection, draftId, draft?.selection])
+  const checked = useMemo(() => new Set(snapshot === null || (namedTargets && heldPaths === null) ? [] : eligible
+    .filter((entry) => heldPaths === null ? entry.origin !== 'setup' : heldPaths.has(entry.path)).map((entry) => entry.fileId)),
+  [snapshot, namedTargets, heldPaths, eligible])
+  const selectedEntries = useMemo(() => snapshot === null ? [] : CommitTargets.selected(eligible, checked), [snapshot, eligible, checked])
+  const selectedCount = selectedEntries.length
+  const revertible = useMemo(() => snapshot === null ? [] : eligible
+    .filter((entry) => checked.has(entry.fileId) && VersioningRevert.allows(entry) && !externalFileIds.has(entry.fileId)),
+  [snapshot, eligible, checked, externalFileIds])
   const setChecked = (ids: ReadonlySet<string>): void => {
     if (snapshot === null || draftId === undefined) return
     void model.saveSelection(snapshot.snapshotId, [...ids])
@@ -296,9 +313,9 @@ export function CommitPane(props: {
   const nothingToCommit = snapshot !== null && !working.loading && snapshot.entries.length === 0
     && snapshot.warnings.length === 0 && snapshot.source.selected !== null
   const closeView = (): void => { if (nothingToCommit) closeEmptyReview(); else props.onClose() }
-  const checkedPaths = JSON.stringify(snapshot === null ? [] : CommitTargets.selected(CommitTargets.eligible(snapshot), checked)
-    .flatMap((entry) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path]))
-  const selectedIds = JSON.stringify([...checked])
+  const checkedPaths = useMemo(() => JSON.stringify(selectedEntries
+    .flatMap((entry) => entry.status === 'renamed' && entry.previousPath !== null ? [entry.path, entry.previousPath] : [entry.path])), [selectedEntries])
+  const selectedIds = useMemo(() => JSON.stringify([...checked]), [checked])
   const review = useCallback(async () => {
     if (!snapshot) return null
     const fileIds: string[] = JSON.parse(selectedIds)
@@ -319,12 +336,23 @@ export function CommitPane(props: {
   const scopeRoot = draft?.scopeRoot ?? props.item.scopeRoot
   const scopeTooltip = draft?.scopeTooltip ?? props.item.scopeRoot
   const singleMessageOpen = messageOpen ?? true
-  const filesNode = done ? null : snapshot !== null
+  // Keep file-list callbacks referentially stable so typing in CommitMessageBox skips re-rendering CommitTargetsList.
+  const listActions = useRef({ refreshDiffSettings, openExternal, setChecked, open, revert, openSeparate })
+  listActions.current = { refreshDiffSettings, openExternal, setChecked, open, revert, openSeparate }
+  const handleMenuOpen = useCallback(() => { void listActions.current.refreshDiffSettings() }, [])
+  const handleOpenExternal = useCallback((entry: FileChangeEntry) => { void listActions.current.openExternal(entry) }, [])
+  const handleCheckedChange = useCallback((ids: ReadonlySet<string>) => { listActions.current.setChecked(ids) }, [])
+  const handleOpenEntry = useCallback((entry: FileChangeEntry) => { void listActions.current.open(entry) }, [])
+  const handleRevertEntry = useCallback((entry: FileChangeEntry) => { void listActions.current.revert([entry.fileId]) }, [])
+  const handleOpenSeparate = useCallback((root: string) => { void listActions.current.openSeparate(root) }, [])
+  const filesNode = useMemo(() => done ? null : snapshot !== null
     ? <CommitTargetsList snapshot={snapshot} checked={checked} disabled={busy} separateMessages={separateMessages}
       repositoryMessages={props.repositoryMessages} scopeRoot={scopeRoot} scopeTooltip={scopeTooltip}
-      onMenuOpen={() => { void refreshDiffSettings() }} onOpenExternal={externalConfigured ? (entry) => { void openExternal(entry) } : null}
-      onChange={setChecked} onOpen={(entry) => { void open(entry) }} onRevert={(entry) => { void revert([entry.fileId]) }} onOpenSeparately={(root) => { void openSeparate(root) }} />
-    : <div className="commit-targets commit-targets--loading" aria-busy="true" />
+      onMenuOpen={handleMenuOpen} onOpenExternal={externalConfigured ? handleOpenExternal : null}
+      onChange={handleCheckedChange} onOpen={handleOpenEntry} onRevert={handleRevertEntry} onOpenSeparately={handleOpenSeparate} />
+    : <div className="commit-targets commit-targets--loading" aria-busy="true" />,
+  [done, snapshot, checked, busy, separateMessages, props.repositoryMessages, scopeRoot, scopeTooltip, externalConfigured,
+    handleMenuOpen, handleOpenExternal, handleCheckedChange, handleOpenEntry, handleRevertEntry, handleOpenSeparate])
   return <section className="commit-pane" tabIndex={-1} aria-label={`${props.item.vcs.toUpperCase()} commit dialog`}
     onKeyDownCapture={(event) => {
       if (props.reviewOnly) return

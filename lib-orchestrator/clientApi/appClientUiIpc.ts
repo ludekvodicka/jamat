@@ -57,6 +57,7 @@ import type {
   RemoteSettingsSnapshotDto,
 } from './remoteSettingsSnapshot'
 import type { VersioningCommitDraftDto, VersioningCommitOpenResult, VersioningCommitOpenSessions, VersioningCommitRunRequest, VersioningCommitRunResult } from '../versioning/versioningCommit'
+import type { SessionUncommittedSnapshot } from '../sessionUncommitted/sessionUncommitted.types'
 import type {
   RemarkableDependencyStatus,
   RemarkableOpenDocumentPages,
@@ -387,6 +388,7 @@ export interface AppClientUiIpcInvokeMap extends WindowRemoteInvokeMap {
   'versioning:commit-cancel': (draftId: string) => import('../remoteControl/remoteControlApi.types').RemoteControlStepResult<import('../remoteControl/remoteControlApi.types').RemoteControlCommitStatusDto>
   'versioning:commit-close': (draftId: string) => void
   'versioning:commit-open-sessions': () => VersioningCommitOpenSessions
+  'sessions:uncommitted': () => SessionUncommittedSnapshot
   'fileChanges:list': (
     sessionId: string,
     preferredVcs: FileChangesVcsId | null,
@@ -496,11 +498,14 @@ export interface AppClientUiIpcEventMap {
   'attention:changed': () => void
   'autolauncher:changed': (snapshot: AutolauncherSnapshot) => void
   'versioning:commit-changed': () => void
+  'versioning:commit-open-sessions-changed': () => void
   'menu:command': (commandId: BareCommandId) => void
   'app:error': (message: string) => void
   'window:changed': () => void
   /** Parameter-less on purpose: the answer is the snapshot, and it is read through its own channel. */
   'sessions:changed': () => void
+  /** Parameter-less too: `sessions:uncommitted` answers, and its revision moved. */
+  'sessions:uncommitted-changed': () => void
   /**
    * Parameter-less like the pair above it, and sent only when something OTHER than the tree wrote:
    * today that is a fork taking the group its parent was put in by hand. The main window reads the
@@ -538,6 +543,8 @@ export interface AppClientUiIpcEventMap {
    */
   'rate:changed': () => void
   'usage:changed': () => void
+  /** The token scan state alone, sent while a scan runs; totals are read again only on `usage:changed`. */
+  'usage:progress': (progress: import('../tokenUsage/tokenUsageApi.types').TokenScanProgress) => void
   /** A broker pick was logged; only the Callers tab of Usage reads again, never the quota cards. */
   'usage:callers-changed': () => void
   'snapins:changed': (change: { kind: string }) => void
@@ -606,6 +613,9 @@ export const AppClientUiBridgeCallsConst = {
   attention: {
     get: 'attention:get',
     next: 'attention:next',
+  },
+  sessions: {
+    uncommitted: 'sessions:uncommitted',
   },
   rendererReady: 'app:renderer-ready',
   windows: {
@@ -822,6 +832,7 @@ export const AppClientUiBridgeEventsConst = {
   onAppError: 'app:error',
   onWindowChanged: 'window:changed',
   onSessionsChanged: 'sessions:changed',
+  onSessionsUncommittedChanged: 'sessions:uncommitted-changed',
   onSessionGroupsChanged: 'state:session-groups-changed',
   onRemoteChanged: 'remote:changed',
   onTabsActivatePanel: 'tabs:activate-panel',
@@ -835,11 +846,13 @@ export const AppClientUiBridgeEventsConst = {
   onTabsControlCommand: 'tabs:control-command',
   onUiSettingsChanged: 'ui:settings-changed',
   onCommitChanged: 'versioning:commit-changed',
+  onCommitOpenSessionsChanged: 'versioning:commit-open-sessions-changed',
   onAgentSettingsChanged: 'agents:settings-changed',
   onRateChanged: 'rate:changed',
   onAgentCliUpdatesChanged: 'agentCliUpdates:changed',
   onAttentionChanged: 'attention:changed',
   onUsageChanged: 'usage:changed',
+  onUsageProgress: 'usage:progress',
   onUsageCallersChanged: 'usage:callers-changed',
   onSnapinsChanged: 'snapins:changed',
   onHostPingResult: 'debug:host-ping-result',
@@ -974,6 +987,7 @@ export const OrchestratorChannelsConst = {
   'versioning:commit-cancel': true,
   'versioning:commit-close': true,
   'versioning:commit-open-sessions': true,
+  'sessions:uncommitted': true,
   'fileChanges:list': true,
   'fileChanges:working-tree': true,
   'fileChanges:scoped-working-tree': true,
@@ -1160,6 +1174,7 @@ export const AppClientUiChannelOwnersConst = {
   'versioning:commit-cancel': 'orchestrator',
   'versioning:commit-close': 'orchestrator',
   'versioning:commit-open-sessions': 'orchestrator',
+  'sessions:uncommitted': 'orchestrator',
   'fileChanges:list': 'orchestrator',
   'fileChanges:working-tree': 'orchestrator',
   'fileChanges:scoped-working-tree': 'orchestrator',
@@ -1213,10 +1228,12 @@ export const AppClientUiChannelOwnersConst = {
   'attention:changed': 'orchestrator',
   'autolauncher:changed': 'orchestrator',
   'versioning:commit-changed': 'orchestrator',
+  'versioning:commit-open-sessions-changed': 'orchestrator',
   'menu:command': 'main',
   'app:error': 'main',
   'window:changed': 'main',
   'sessions:changed': 'orchestrator',
+  'sessions:uncommitted-changed': 'orchestrator',
   'state:session-groups-changed': 'main',
   'remote:changed': 'gateway',
   'tabs:activate-panel': 'main',
@@ -1232,6 +1249,7 @@ export const AppClientUiChannelOwnersConst = {
   'agents:settings-changed': 'orchestrator',
   'rate:changed': 'orchestrator',
   'usage:changed': 'orchestrator',
+  'usage:progress': 'orchestrator',
   'usage:callers-changed': 'orchestrator',
   'snapins:changed': 'orchestrator',
   'debug:host-ping-result': 'main',

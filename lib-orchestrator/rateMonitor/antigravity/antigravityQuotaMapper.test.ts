@@ -87,4 +87,17 @@ describe('lib-orchestrator/rateMonitor/antigravity/antigravityQuotaMapper', () =
       { durationMinutes: 10_080, usedPercent: 100, resetsAt: null },
     ])
   })
+
+  it('does not promote 3p-only buckets to plain windows and clears epoch placeholder reset times', () => {
+    const at = Date.parse('2026-11-25T17:02:17.000Z')
+    const mapped = AntigravityQuotaMapper.map({
+      '3p-5h': { remaining_fraction: 1, reset_time: '1970-01-01T00:00:00Z', reset_in_seconds: 0 },
+      '3p-weekly': { remaining_fraction: 1, reset_time: '1970-01-01T00:00:00Z', reset_in_seconds: 0 },
+    }, at)
+
+    expect(mapped.windows).toEqual([
+      { durationMinutes: 300, usedPercent: 0, resetsAt: null, model: '3p' },
+      { durationMinutes: 10_080, usedPercent: 0, resetsAt: null, model: '3p' },
+    ])
+  })
 })

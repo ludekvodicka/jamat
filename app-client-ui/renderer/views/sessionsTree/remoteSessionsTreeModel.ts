@@ -7,6 +7,7 @@ import type {
   RemoteOutboundEndpointDto,
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import type { SessionInfo, SessionsSnapshot } from '../../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionUncommittedEntry } from '../../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import {
   SessionsTreeModel,
   type TreeResult,
@@ -44,6 +45,8 @@ export class RemoteSessionsTreeModel {
     tasks: ReadonlyMap<string, RemoteTaskListing> = new Map(),
     /** Local session ids and remote target keys with a pending review, as the local tree reads them. */
     commitOpen: ReadonlySet<string> = new Set(),
+    /** Local session ids and remote target keys with uncommitted files, as `UncommittedStore.withRemote` merges them. */
+    uncommitted: Readonly<Record<string, SessionUncommittedEntry>> = {},
   ): RemoteSessionsSections {
     const next = new Map<string, TreeResult>()
     const outbound = RemoteSessionsTreeModel.outbound(
@@ -54,6 +57,7 @@ export class RemoteSessionsTreeModel {
       next,
       tasks,
       commitOpen,
+      uncommitted,
     )
     const inbound = RemoteSessionsTreeModel.inbound(
       remote.inbound,
@@ -63,6 +67,7 @@ export class RemoteSessionsTreeModel {
       previous,
       next,
       commitOpen,
+      uncommitted,
     )
     return { outbound, inbound, previous: next }
   }
@@ -75,6 +80,7 @@ export class RemoteSessionsTreeModel {
     next: Map<string, TreeResult>,
     tasks: ReadonlyMap<string, RemoteTaskListing>,
     commitOpen: ReadonlySet<string>,
+    uncommitted: Readonly<Record<string, SessionUncommittedEntry>>,
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
@@ -110,6 +116,7 @@ export class RemoteSessionsTreeModel {
         },
         commitOpen,
         listings,
+        uncommitted,
       )
       next.set(key, tree)
       if (tree.nodes.length === 0) continue
@@ -137,6 +144,7 @@ export class RemoteSessionsTreeModel {
     previous: ReadonlyMap<string, TreeResult>,
     next: Map<string, TreeResult>,
     commitOpen: ReadonlySet<string>,
+    uncommitted: Readonly<Record<string, SessionUncommittedEntry>>,
   ): readonly RemoteSessionsComputerTree[] {
     const computers = new Map<string, RemoteSessionsComputerTree>()
     for (const entry of entries) {
@@ -155,6 +163,8 @@ export class RemoteSessionsTreeModel {
           allowLocalPaths: true,
         },
         commitOpen,
+        undefined,
+        uncommitted,
       )
       next.set(key, tree)
       if ((view.stateGroup !== undefined || view.group !== undefined) && tree.nodes.length === 0) continue

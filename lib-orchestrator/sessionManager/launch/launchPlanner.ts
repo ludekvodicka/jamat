@@ -72,6 +72,12 @@ export interface LaunchPlanOptions {
    */
   effort?: string
   /**
+   * Additional directories granted to Claude via `--add-dir` (for example the parent session's
+   * script-logs brief directory under `--permission-mode acceptEdits`). Only Claude accepts this;
+   * callers keep a flag after it before any positional prompt because `--add-dir` is variadic.
+   */
+  claudeAddDirs?: readonly string[]
+  /**
    * A Claude `--settings` file, today the status line relay (`ClaudeStatusLine`). Absent emits
    * nothing; Codex has no such flag and is never handed one.
    */
@@ -178,6 +184,9 @@ export class LaunchPlanner {
         ...(options?.effort === undefined
           ? []
           : LaunchPlanner.effortArgsOf(agent.agentId, options.effort)),
+        ...(options?.claudeAddDirs === undefined || options.claudeAddDirs.length === 0
+          ? []
+          : LaunchPlanner.addDirArgsOf(agent.agentId, options.claudeAddDirs)),
         ...(options?.claudeSettingsFile === undefined
           ? []
           : LaunchPlanner.settingsArgsOf(agent.agentId, options.claudeSettingsFile)),
@@ -393,6 +402,20 @@ export class LaunchPlanner {
     if (agentId === 'claude' || agentId === 'antigravity') return ['--effort', effort]
     else if (agentId === 'codex')
       return ['-c', `model_reasoning_effort=${JSON.stringify(effort)}`]
+    else
+      throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
+  }
+
+  /**
+   * Claude Code's `--permission-mode acceptEdits` confines file tools to `cwd` and `--add-dir`
+   * directories; in print mode no prompt can grant a brief file stored under Jamat's local state.
+   * `--add-dir` is variadic, so every caller that passes it must keep a flag (such as `--settings`,
+   * `--disallowedTools` or `--allowedTools`) directly behind it before any bare prompt argument.
+   */
+  private static addDirArgsOf(agentId: SessionRecordAgent['agentId'], dirs: readonly string[]): string[] {
+    if (agentId === 'claude') return dirs.flatMap((dir) => ['--add-dir', dir])
+    else if (agentId === 'codex' || agentId === 'antigravity')
+      throw new Error(`${agentId} has no --add-dir flag; only a Claude launch takes additional directories`)
     else
       throw new Error(`Unknown agent: ${JSON.stringify(agentId satisfies never)}`)
   }

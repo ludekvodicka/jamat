@@ -97,7 +97,7 @@
 /* Figures: a row of small cards that wraps instead of a sentence per value. */
 .jamat-usage__tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(170px * var(--ui-font-scale))), 1fr));
   gap: var(--space-2);
 }
 

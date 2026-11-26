@@ -759,6 +759,52 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
       } })
     })
 
+    it('sets stateWord Exited only for a service that ended without a stop, both live and from log', async () => {
+      const context = await harness()
+      await context.store.put(record('p'))
+      await context.store.put(install('svc-exit', {
+        exitCode: 0,
+        scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'ping' },
+      }))
+      await context.store.put(install('svc-stop', {
+        exitCode: 0,
+        stopRequested: true,
+        scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'dev' },
+      }))
+      await context.store.put(install('req-fail', {
+        exitCode: 1,
+        scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'requested', name: 'tests' },
+      }))
+      context.runtimes.set('svc-exit', dead('svc-exit', ['bye']))
+      context.runtimes.set('svc-stop', dead('svc-stop', ['stopped']))
+      context.runtimes.set('req-fail', dead('req-fail', ['boom']))
+
+      const liveExit = await context.manager.outputOf('p', 'svc-exit')
+      expect(liveExit).toMatchObject({ ok: true, value: { state: 'failed', stateWord: 'Exited', source: 'live' } })
+      const liveStop = await context.manager.outputOf('p', 'svc-stop')
+      expect(liveStop).toMatchObject({ ok: true, value: { state: 'stopped', source: 'live' } })
+      expect(liveStop.ok && 'stateWord' in liveStop.value).toBe(false)
+      const liveReq = await context.manager.outputOf('p', 'req-fail')
+      expect(liveReq).toMatchObject({ ok: true, value: { state: 'failed', source: 'live' } })
+      expect(liveReq.ok && 'stateWord' in liveReq.value).toBe(false)
+
+      await context.manager.settle('svc-exit')
+      await context.manager.collapse('svc-exit')
+      await context.manager.settle('svc-stop')
+      await context.manager.collapse('svc-stop')
+      await context.manager.settle('req-fail')
+      await context.manager.collapse('req-fail')
+
+      const logExit = await context.manager.outputOf('p', 'svc-exit')
+      expect(logExit).toMatchObject({ ok: true, value: { state: 'failed', stateWord: 'Exited', source: 'log' } })
+      const logStop = await context.manager.outputOf('p', 'svc-stop')
+      expect(logStop).toMatchObject({ ok: true, value: { state: 'stopped', source: 'log' } })
+      expect(logStop.ok && 'stateWord' in logStop.value).toBe(false)
+      const logReq = await context.manager.outputOf('p', 'req-fail')
+      expect(logReq).toMatchObject({ ok: true, value: { state: 'failed', source: 'log' } })
+      expect(logReq.ok && 'stateWord' in logReq.value).toBe(false)
+    })
+
     it('reads a retained failed run from its saved log after the Host instance changes', async () => {
       const context = await harness()
       await context.store.put(record('p', { life: 'starting', pendingSetup: { setupSessionId: 's' } }))
@@ -1139,22 +1185,33 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptsManager', () => 
     })
 
     // The snapshot reaches every paired peer, and an agent's command may carry a token.
-    it('leaves the commands of a requested run out of the snapshot and keeps them for sessions.scripts', async () => {
+    it('leaves the commands of requested and service runs out of the snapshot and keeps them for sessions.scripts', async () => {
       const context = await harness()
       await context.store.put(record('p'))
       await context.store.put(install('r', {
         life: 'live',
         exitCode: undefined,
         endedAt: undefined,
+        createdAt: 3_000,
         commands: [{ command: 'curl -H "Authorization: secret" x', cwd: 'C:\\w' }],
         scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'requested', name: 'call' },
+      }))
+      await context.store.put(install('sv', {
+        life: 'live',
+        exitCode: undefined,
+        endedAt: undefined,
+        createdAt: 4_000,
+        commands: [{ command: 'API_KEY=secret pnpm dev', cwd: 'C:\\w' }],
+        scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' },
       }))
       await context.store.put(install('s', { createdAt: 1_000 }))
 
       const runs = context.manager.infoOf(context.store.get('p') ?? fail()).scripts?.runs ?? []
-      expect(runs.map((run) => [run.runId, run.commands])).toEqual([['r', []], ['s', ['pnpm install']]])
+      expect(runs.map((run) => [run.runId, run.commands, run.startedAt]))
+        .toEqual([['sv', [], 4_000], ['r', [], 3_000], ['s', ['pnpm install'], 1_000]])
       const read = await context.manager.scriptsOf('p')
-      expect(read.ok && read.value.runs[0]?.commands).toEqual(['curl -H "Authorization: secret" x'])
+      expect(read.ok && read.value.runs.map((run) => [run.runId, run.commands]))
+        .toEqual([['sv', ['API_KEY=secret pnpm dev']], ['r', ['curl -H "Authorization: secret" x']], ['s', ['pnpm install']]])
     })
 
     it('leaves a run whose history expired out of the rows, as the full scan did', async () => {

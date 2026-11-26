@@ -2,8 +2,10 @@ import { RemoteSessionCommands } from './remoteSessionCommands'
 import { RemoteSessionTasksStore } from '../sessions/remoteSessionTasksStore'
 import { SessionContentPanel } from '../panels/terminal/sessionContentPanel'
 import { SessionWorkspaceTargets } from '../../shared/sessionWorkspace'
+import { ProcessesPorts } from '../processes/processesPane'
 import { WorkflowPortsOf } from '../workflow/workflowPorts'
 import { CommitOpenStore } from '../versioning/commitOpenStore'
+import { UncommittedStore } from '../versioning/uncommittedStore'
 import {
   Suspense,
   lazy,
@@ -160,10 +162,46 @@ export function HolderShell(): React.JSX.Element {
   return <WorkspaceShell wiring={wiring} sidebars={null} hostStatus={null} />
 }
 
+interface WorkspaceStatusBarProps {
+  appInfo: AppInfo | null
+  wiring: WorkspaceShellWiring
+  hostStatus: AppShellHostStatus | null
+}
+
+/**
+ * Isolated status-bar subscriber so model polls, attention queue updates, window appearance changes
+ * and active-terminal focus switches redraw only the bar rather than the whole shell and tab host.
+ */
+function WorkspaceStatusBar(props: WorkspaceStatusBarProps): React.JSX.Element {
+  const { wiring } = props
+  const [windowInfo, setWindowInfo] = useState<WindowInfo | null>(() => WindowInfoStore.snapshot())
+  // What both terminal widgets are about: the session of the tab in front, and whose agent it is.
+  const focus = useActiveAgentTerminal(wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot)
+  const currentProject = useCurrentProject(
+    wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
+  )
+  const sessionModel = useSessionModel(wiring.sessionModel, focus)
+  const attention = useSnapshotStore(wiring.attentionSnapshot).snapshot
+
+  useEffect(() => wiring.sessionModel.setFocus(focus), [wiring, focus])
+  useEffect(() => WindowInfoStore.subscribe(() => setWindowInfo(WindowInfoStore.current())), [])
+
+  return (
+    <StatusBar
+      left={AppShellItems.left(props.appInfo, wiring.autoUpdate, props.hostStatus, currentProject, wiring.cliUpdates)}
+      right={AppShellItems.right(props.appInfo, windowInfo, focus, {
+        sessionModel,
+        compact: wiring.contextCompact,
+        rate: { ports: wiring.ratePorts, store: wiring.rateSnapshot },
+        attention: { snapshot: attention, ports: wiring.attentionPorts },
+      })}
+    />
+  )
+}
+
 /** The composition shared by both renderer roles, without any main-only readers or sidebars. */
 function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
-  const [windowInfo, setWindowInfo] = useState<WindowInfo | null>(() => WindowInfoStore.snapshot())
   const [launcherOpen, setLauncherOpen] = useState(false)
   const [settingsRequest, setSettingsRequest] = useState<ConfigurationOpenRequest | null>(null)
   const [detailsRequest, setDetailsRequest] = useState<SessionDetailsOpenRequest | null>(null)
@@ -172,13 +210,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   const [memoryRequest, setMemoryRequest] = useState<MemoryOpenRequest | null>(null)
   const overlayOpen = useRef(false)
   const { wiring } = props
-  // What both terminal widgets are about: the session of the tab in front, and whose agent it is.
-  const focus = useActiveAgentTerminal(wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot)
-  const currentProject = useCurrentProject(
-    wiring.activeTerminal, wiring.sessionsSnapshot, wiring.remoteSnapshot,
-  )
-  const sessionModel = useSessionModel(wiring.sessionModel, focus)
-  const attention = useSnapshotStore(wiring.attentionSnapshot).snapshot
 
   // Started here rather than in the main shell: a holder window draws session tabs too, and each
   // document has one reader of its own.
@@ -190,6 +221,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   // looked at.
   useEffect(() => wiring.sessionsMarks.start(), [wiring])
   useEffect(() => wiring.commitOpen.start(), [wiring])
+  useEffect(() => wiring.uncommitted.start(), [wiring])
   useEffect(() => {
     wiring.remoteTasks.setWindowVisible(document.visibilityState === 'visible')
     wiring.sessionTasks.setWindowVisible(document.visibilityState === 'visible')
@@ -213,7 +245,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
   useEffect(() => wiring.sessionModel.start(), [wiring])
   useEffect(() => wiring.agentSettings.start(), [wiring])
   useEffect(() => wiring.contextCompaction.start(), [wiring])
-  useEffect(() => wiring.sessionModel.setFocus(focus), [wiring, focus])
   // And it stands still while the whole window is out of sight, which is a different question from
   // "no agent terminal in front" and was the one this poll did not ask: the sessions poll and the
   // rate monitor both take it from the main process, and a holder minimised for the afternoon kept
@@ -323,7 +354,6 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
         initialSession: active,
       }))
   }), [wiring, claimOverlay])
-  useEffect(() => WindowInfoStore.subscribe(() => setWindowInfo(WindowInfoStore.current())), [])
 
   useEffect(() => {
     let disposed = false
@@ -441,15 +471,7 @@ function WorkspaceShell(props: WorkspaceShellProps): React.JSX.Element {
           ? null
           : AppShellSidebars.render('right', props.sidebars.registry, props.sidebars.handle)}
       </div>
-      <StatusBar
-        left={AppShellItems.left(appInfo, wiring.autoUpdate, props.hostStatus, currentProject, wiring.cliUpdates)}
-        right={AppShellItems.right(appInfo, windowInfo, focus, {
-          sessionModel,
-          compact: wiring.contextCompact,
-          rate: { ports: wiring.ratePorts, store: wiring.rateSnapshot },
-          attention: { snapshot: attention, ports: wiring.attentionPorts },
-        })}
-      />
+      <WorkspaceStatusBar appInfo={appInfo} wiring={wiring} hostStatus={props.hostStatus} />
       {launcherOpen && (
         <LauncherOverlay
           intents={wiring.intents}
@@ -563,7 +585,7 @@ class AppShellComposition {
     if (role === 'main') {
       const sidebarCommands = new LateBoundCommand<SidebarSide>('sidebar')
       const common = AppShellComposition.workspaceWiring(role, sidebarCommands)
-      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen, sessionTasks, remoteTasks } = common
+      const { sessionPorts, sessionsSnapshot, sessionsMarks, commitOpen, uncommitted, sessionTasks, remoteTasks } = common
       const restartChain = new SessionRestartChain({
         read: async () => {
           const snapshot = sessionsSnapshot.current().snapshot
@@ -603,6 +625,7 @@ class AppShellComposition {
               sessionFacts={common.sessionFacts}
               marks={sessionsMarks}
               commitOpen={commitOpen}
+              uncommitted={uncommitted}
               tasks={sessionTasks}
               remoteTasks={remoteTasks}
               onOpenTask={(target, task, title) => void WorkspacePanels.openTask(common.controller, target, task, title)}
@@ -679,7 +702,9 @@ class AppShellComposition {
     const remoteTasks = new RemoteSessionTasksStore(remoteSnapshot)
     const sessionsMarks = new SessionsMarksStore(sessionsSnapshot, remoteSnapshot)
     const commitOpen = new CommitOpenStore({ read: () => window.appClient.versioning.openCommitSessions(),
-      subscribe: (onChanged) => window.appClient.onCommitChanged(onChanged), reportError: AppClientUiReport.error })
+      subscribe: (onChanged) => (window.appClient.onCommitOpenSessionsChanged ?? window.appClient.onCommitChanged)(onChanged), reportError: AppClientUiReport.error })
+    const uncommitted = new UncommittedStore({ read: () => window.appClient.sessions.uncommitted(),
+      subscribe: (onChanged) => window.appClient.onSessionsUncommittedChanged(onChanged), reportError: AppClientUiReport.error })
     const ratePorts = AppShellComposition.ratePorts()
     const rateSnapshot = new SnapshotStore<RateMonitorSnapshot>('The rate limits', ratePorts)
     const attentionPorts: AttentionStatusPorts = {
@@ -709,7 +734,7 @@ class AppShellComposition {
     panels.register({
       key: PanelKeysConst.usage,
       title: 'Usage',
-      component: () => <ErrorBoundary what="Usage"><UsagePanel /></ErrorBoundary>,
+      component: (props) => <ErrorBoundary what="Usage"><UsagePanel api={props.api} /></ErrorBoundary>,
     })
     panels.register({
       key: PanelKeysConst.debug,
@@ -773,6 +798,7 @@ class AppShellComposition {
             compaction={contextCompaction}
             marks={sessionsMarks}
             commitOpen={commitOpen}
+            uncommitted={uncommitted}
             fileTools={fileTools}
             history={panelHistory}
             splitPins={splitPins}
@@ -863,6 +889,7 @@ class AppShellComposition {
       remoteSnapshot,
       sessionsMarks,
       commitOpen,
+      uncommitted,
       ratePorts,
       rateSnapshot,
       attentionPorts,
@@ -1310,6 +1337,10 @@ class AppShellComposition {
         const detail = !answer.ok ? answer.error : !answer.value.ok ? answer.value.error.detail : null
         if (detail !== null) AppClientUiReport.error(`The project todo list could not open: ${detail}`)
       })
+    })
+    commands.register('session.showProcesses', (arg) => {
+      const target = WorkspacePanels.commandTargetOf(controller, arg)
+      if (target !== null) ProcessesPorts.open(target.sessionId)
     })
     // The row's own Finish, handed to the sessions tree that draws it.
     commands.register('session.finish', (arg) => {

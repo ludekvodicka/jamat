@@ -5,11 +5,13 @@ import type { MainFinishChanges, MainFinishPort } from '../../../lib-orchestrato
 import type { SessionManager } from '../../../lib-orchestrator/sessionManager/sessionManager'
 import type { VersioningCommitManager } from '../versioning/versioningCommitManager'
 import type { SessionTranscriptAccess } from '../sessionTranscript/sessionTranscriptAccess'
+import type { SessionUncommittedWorker } from '../sessionUncommitted/sessionUncommittedWorker'
 
 /**
  * The Finish of a main-copy session reads its changes, types its command and asks about reviews
  * through the owners this process composes. SVN is asked first, as the main-copy commit reads do,
- * so a project with a human Git mirror beside its SVN working copy commits to SVN.
+ * so a project with a human Git mirror beside its SVN working copy commits to SVN. The session's
+ * own paths come from the claims of the uncommitted mark (D15), the same set the grey `*` counts.
  */
 export class MainFinishPortAdapter implements MainFinishPort {
   private readonly sessions: Pick<SessionManager, 'workingContext'>
@@ -17,6 +19,7 @@ export class MainFinishPortAdapter implements MainFinishPort {
   private readonly terminal: Pick<RemoteControlTerminal, 'deliver'>
   private readonly transcripts: Pick<SessionTranscriptAccess, 'read'>
   private readonly commits: Pick<VersioningCommitManager, 'discovery'>
+  private readonly uncommitted: Pick<SessionUncommittedWorker, 'claims'>
   private readonly commandOf: (vcs: 'svn' | 'git') => string
 
   constructor(deps: {
@@ -25,6 +28,7 @@ export class MainFinishPortAdapter implements MainFinishPort {
     terminal: Pick<RemoteControlTerminal, 'deliver'>
     transcripts: Pick<SessionTranscriptAccess, 'read'>
     commits: Pick<VersioningCommitManager, 'discovery'>
+    uncommitted: Pick<SessionUncommittedWorker, 'claims'>
     commandOf: (vcs: 'svn' | 'git') => string
   }) {
     this.sessions = deps.sessions
@@ -32,6 +36,7 @@ export class MainFinishPortAdapter implements MainFinishPort {
     this.terminal = deps.terminal
     this.transcripts = deps.transcripts
     this.commits = deps.commits
+    this.uncommitted = deps.uncommitted
     this.commandOf = deps.commandOf
   }
 
@@ -39,7 +44,10 @@ export class MainFinishPortAdapter implements MainFinishPort {
     const context = await this.sessions.workingContext(sessionId)
     if (!context.ok) return { ok: false, detail: context.detail }
     const { cwd, agent } = context.value
-    const read = await this.fileChanges.sessionChanges({ sessionId, cwd, agent }, 'svn')
+    // A failed or stopping worker answers like none: Finish reads the transcript itself.
+    const read = await this.fileChanges.sessionChanges({ sessionId, cwd, agent }, 'svn', {
+      claims: () => this.uncommitted.claims(sessionId).catch(() => null),
+    })
     return read.ok ? { ok: true, vcs: read.value.vcs, paths: read.value.paths } : read
   }
 

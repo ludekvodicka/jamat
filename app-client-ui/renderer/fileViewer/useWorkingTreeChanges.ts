@@ -25,8 +25,9 @@ export function useWorkingTreeChanges(
   reader: AppClientUiBridge['fileChanges']['workingTree'] | null,
   enabled: boolean,
   requiredSource?: FileChangesWorkingTreeSource,
+  initialSource: FileChangesWorkingTreeSource | null = null,
 ): FileChangesWorkingTreeViewModel {
-  const [selected, setSelected] = useState<FileChangesWorkingTreeSource | null>(null)
+  const [selected, setSelected] = useState<FileChangesWorkingTreeSource | null>(initialSource)
   const [readings, setReadings] = useState<Record<string, WorkingTreeReading>>({})
   const generations = useRef(new Map<string, number>())
   const desired = useRef(new Set<string>())

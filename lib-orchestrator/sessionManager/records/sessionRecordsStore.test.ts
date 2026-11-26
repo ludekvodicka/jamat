@@ -1873,6 +1873,27 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
     expect(store.list()).toHaveLength(1)
   })
 
+  it('loads a service run record and a parent history entry for inner/service without dropping either', async () => {
+    const history: NonNullable<SessionRecord['scriptRuns']>[number] = {
+      runId: 'sv-old', phase: 'inner', scriptId: 'service', name: 'web', title: 'web',
+      commands: ['pnpm dev'], startedAt: 1, endedAt: 5, exitCode: 0, outcome: 'failed',
+      reason: 'the service ended with 0', log: { state: 'saved', bytes: 12, truncated: false },
+    }
+    const context = harness({
+      schemaVersion: 1,
+      savedAt: 5,
+      records: [
+        record('p', { life: 'live', scriptRuns: [history] }),
+        record('sv', { life: 'live', scriptOf: { sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' } }),
+      ],
+    })
+    const store = await context.load()
+    expect(context.reports).toEqual([])
+    expect(store.list().map((entry) => entry.sessionId)).toEqual(['p', 'sv'])
+    expect(store.get('p')?.scriptRuns).toEqual([history])
+    expect(store.get('sv')?.scriptOf).toEqual({ sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' })
+  })
+
   it('accepts every directory mode and refuses an unknown one', async () => {
     const context = harness()
     const store = await context.load()
@@ -1981,6 +2002,68 @@ describe('lib-orchestrator/sessionManager/records/sessionRecordsStore', () => {
       }
       expect((await h.load()).get('combined')?.worktreeLifecycle).toEqual(state)
     }
+  })
+
+  it('throttles periodic flushUserInput writes to at most once per 30 s while keeping live timestamps in memory and flushing when forced', async () => {
+    let clock = 100_000
+    const h = harness()
+    const store = await SessionRecordsStore.load(h.file, { snapshotsDirectory: h.snapshotsDirectory, report: (m) => h.reports.push(m), now: () => clock })
+    await store.put(record('typing'))
+    const writeSpy = vi.spyOn(AtomicJsonFile, 'writeAsync')
+    try {
+      store.noteUserInput('typing', 100_100)
+      expect(await store.flushUserInput({ force: false, now: clock })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+
+      // Subsequent typing ticks inside 30 s keep live timestamps in memory without touching disk.
+      clock += 2_000
+      store.noteUserInput('typing', 102_000)
+      expect(store.lastUserInputAt('typing')).toBe(102_000)
+      expect(await store.flushUserInput({ force: false, now: clock })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+
+      clock += 25_000
+      store.noteUserInput('typing', 127_000)
+      expect(await store.flushUserInput({ force: false, now: clock })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+
+      // Past 30 s: next periodic flush lands on disk.
+      clock += 3_000
+      expect(await store.flushUserInput({ force: false, now: clock })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(2)
+      expect((await h.load()).get('typing')?.lastUserInputAt).toBe(127_000)
+
+      // Forced flush (shutdown) persists immediately even inside the 30 s window.
+      clock += 1_000
+      store.noteUserInput('typing', 131_000)
+      expect(await store.flushUserInput({ force: true, now: clock })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(3)
+      expect((await h.load()).get('typing')?.lastUserInputAt).toBe(131_000)
+    } finally { writeSpy.mockRestore() }
+  })
+
+  it('migrates inline commitReceipts out of session-records.json into a sidecar and rehydrates transparently', async () => {
+    const receipt: NonNullable<SessionRecord['commitReceipts']>[number] = { scopeRoot: '/w/app', revision: 88, paths: ['src/a.ts', 'src/b.ts'], at: 500 }
+    const h = harness({ schemaVersion: 1, records: [record('s1', { commitReceipts: [receipt] })] })
+    const store = await h.load()
+    expect(store.get('s1')?.commitReceipts).toEqual([receipt])
+
+    // session-records.json no longer carries the bloated commitReceipts array on disk.
+    const hotDocument = JSON.parse(readFileSync(h.file, 'utf8')) as { records: SessionRecord[] }
+    expect(hotDocument.records[0]?.commitReceipts).toBeUndefined()
+
+    // Reloading rehydrates commitReceipts from the sidecar transparently.
+    const reloaded = await h.load()
+    expect(reloaded.get('s1')?.commitReceipts).toEqual([receipt])
+
+    // Routine user-input flush writes only session-records.json, never the receipts sidecar.
+    const writeSpy = vi.spyOn(AtomicJsonFile, 'writeAsync')
+    try {
+      reloaded.noteUserInput('s1', 999)
+      expect(await reloaded.flushUserInput({ force: true })).toBe(true)
+      expect(writeSpy).toHaveBeenCalledTimes(1)
+      expect(writeSpy.mock.calls[0]?.[0]).toBe(h.file)
+    } finally { writeSpy.mockRestore() }
   })
 
 })

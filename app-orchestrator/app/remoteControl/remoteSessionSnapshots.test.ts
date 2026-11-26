@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { RemoteSessionActions } from './remoteSessionActions'
 
 import type { SessionInfo, SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
-import type { RemoteSessionRevision, RemoteSessionStatePage, RemoteSessionStateRequest } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
+import type { RemoteSessionRevision, RemoteSessionStatePage, RemoteSessionStateRequest, RemoteSessionSummary } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/remoteSessionSchemas'
+import type { SessionUncommittedSnapshot } from '../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import { RemoteSessionSnapshots } from './remoteSessionSnapshots'
 
 function session(sessionId: string): SessionInfo {
@@ -110,6 +111,64 @@ describe('RemoteSessionSnapshots', () => {
     expect(RemoteSessionSchemas.stateRequest({ ...request, offset: 1 })).toBeNull()
     expect(owner.page({ ...request, expected, offset: 99 })).toMatchObject({ ok: false, error: { code: 'invalid-request' } })
   })
+
+  it('omits service records and service script runs for viewers without processes capability and keeps paged offsets consistent', () => {
+    const parent: SessionInfo = {
+      ...session('parent'),
+      scripts: {
+        runs: [
+          { runId: 'svc-1', phase: 'inner', scriptId: 'service', name: 'dev', title: 'dev', state: 'running', summary: 'dev', startedAt: 20, commands: [], row: true, log: 'none' },
+          { runId: 'req-1', phase: 'inner', scriptId: 'requested', name: 'test', title: 'test', state: 'running', summary: 'test', startedAt: 10, commands: [], row: true, log: 'none' },
+        ],
+      },
+    }
+    const serviceRow: SessionInfo = {
+      ...session('svc-1'),
+      script: { parentId: 'parent', phase: 'inner', scriptId: 'service' },
+    }
+    const fillers = Array.from({ length: 1000 }, (_, i) => session(`live-${i}`))
+    const rows = [parent, serviceRow, ...fillers.slice(0, 500), { ...session('svc-2'), script: { parentId: 'parent', phase: 'inner' as const, scriptId: 'service' as const } }, ...fillers.slice(500)]
+    const owner = new RemoteSessionSnapshots(() => snapshot(rows))
+
+    const collect = (processes: boolean): SessionInfo[] => {
+      const out: SessionInfo[] = []
+      let offset = 0
+      let expected: RemoteSessionRevision | null = null
+      let pages = 0
+      do {
+        const answer = owner.page({ requestId: 'cap', kind: 'sessions', expected, offset }, { processes })
+        expect(answer.ok).toBe(true)
+        if (!answer.ok || answer.value.kind !== 'sessions') throw new Error('No session page')
+        out.push(...answer.value.snapshot.sessions)
+        expected = answer.value
+        offset = answer.value.next ?? -1
+        pages++
+      } while (offset !== -1)
+      expect(pages).toBeGreaterThan(1)
+      return out
+    }
+
+    const withoutProcesses = collect(false)
+    expect(withoutProcesses).toHaveLength(1001)
+    expect(withoutProcesses.some((row) => row.script?.scriptId === 'service')).toBe(false)
+    expect(new Set(withoutProcesses.map((row) => row.sessionId)).size).toBe(1001)
+
+    const withProcesses = collect(true)
+    expect(withProcesses).toHaveLength(1003)
+    expect(withProcesses.filter((row) => row.script?.scriptId === 'service').map((row) => row.sessionId)).toEqual(['svc-1', 'svc-2'])
+
+    expect(owner.page({ requestId: 'svc-detail', kind: 'detail', sessionId: 'svc-1', expected: null, offset: 0 }, { processes: false }))
+      .toMatchObject({ ok: false, error: { code: 'not-found' } })
+    const oldDetail = owner.page({ requestId: 'p-detail-old', kind: 'detail', sessionId: 'parent', expected: null, offset: 0 }, { processes: false })
+    if (!oldDetail.ok || oldDetail.value.kind !== 'detail') throw new Error('Expected parent detail')
+    const oldParsed = JSON.parse(Buffer.from(oldDetail.value.base64, 'base64').toString('utf8')) as SessionInfo
+    expect(oldParsed.scripts?.runs.map((run) => run.scriptId)).toEqual(['requested'])
+
+    const newDetail = owner.page({ requestId: 'p-detail-new', kind: 'detail', sessionId: 'parent', expected: null, offset: 0 }, { processes: true })
+    if (!newDetail.ok || newDetail.value.kind !== 'detail') throw new Error('Expected parent detail')
+    const newParsed = JSON.parse(Buffer.from(newDetail.value.base64, 'base64').toString('utf8')) as SessionInfo
+    expect(newParsed.scripts?.runs.map((run) => run.scriptId)).toEqual(['service', 'requested'])
+  })
 })
 
 it('retains ended standalone reviews and keeps workflow action revision separate from review-only discovery edits', async () => {
@@ -134,4 +193,50 @@ it('retains ended standalone reviews and keeps workflow action revision separate
   expect(await actions.press({ peerId: 'peer', viewId: 'view', viewerId: 'viewer', epoch: 'epoch', sessionId: 'pending' },
     { revision: detail.value.sourceRevision!, workflowId: 'workflow', actionId: 'keep', agreement: {} }, 'operation')).toEqual({ ok: true, value: null })
   expect(execute).toHaveBeenCalledTimes(1)
+})
+
+describe('RemoteSessionSnapshots uncommitted files', () => {
+  const first = (owner: RemoteSessionSnapshots): Extract<RemoteSessionStatePage, { kind: 'sessions' | 'categories' }> => {
+    const answer = owner.page({ requestId: 'uncommitted', kind: 'sessions', expected: null, offset: 0 })
+    if (!answer.ok || answer.value.kind !== 'sessions') throw new Error('No session page')
+    return answer.value
+  }
+
+  it('sends the count of a marked session, keeps an ended marked row and moves discovery with the uncommitted revision', () => {
+    const state = snapshot([session('live'), { ...session('ended'), life: 'ended' }, { ...session('history'), life: 'ended' }])
+    let uncommitted: SessionUncommittedSnapshot = { revision: 1, sessions: { live: { files: 3, sample: ['a.ts'] }, ended: { files: 1, sample: ['b.ts'] } } }
+    const owner = new RemoteSessionSnapshots(() => state, undefined, () => uncommitted)
+    const page = first(owner)
+    expect(page.snapshot.sessions.map((row) => [row.sessionId, (row as RemoteSessionSummary).uncommittedFiles]))
+      .toEqual([['live', 3], ['ended', 1]])
+    expect(JSON.stringify(page)).not.toContain('a.ts')
+    expect(RemoteSessionSchemas.stateResponse({ requestId: 'uncommitted', result: { ok: true, value: page } })).not.toBeNull()
+    uncommitted = { revision: 2, sessions: { live: { files: 3, sample: ['a.ts'] }, ended: { files: 1, sample: ['b.ts'] } } }
+    const moved = first(owner)
+    expect(moved.revision).toBeGreaterThan(page.revision)
+    expect(owner.page({ requestId: 'stale', kind: 'sessions', expected: page, offset: 0 })).toMatchObject({ ok: false, error: { code: 'conflict' } })
+    uncommitted = { revision: 3, sessions: {} }
+    const cleared = first(owner)
+    expect(cleared.snapshot.sessions.map((row) => row.sessionId)).toEqual(['live'])
+    expect('uncommittedFiles' in cleared.snapshot.sessions[0]!).toBe(false)
+  })
+
+  it('sends no field without an uncommitted source, as an older peer does, and that page stays valid', () => {
+    const page = first(new RemoteSessionSnapshots(() => snapshot([session('a')])))
+    expect('uncommittedFiles' in page.snapshot.sessions[0]!).toBe(false)
+    expect(RemoteSessionSchemas.stateResponse({ requestId: 'uncommitted', result: { ok: true, value: page } })).not.toBeNull()
+  })
+
+  it.each([0, -1, 1.5, '3'])('refuses a page whose row says uncommittedFiles %j, like a bad reviewPending', (value) => {
+    const page = first(new RemoteSessionSnapshots(() => snapshot([session('a')])))
+    const valid = structuredClone(page)
+    ;(valid.snapshot.sessions[0] as unknown as Record<string, unknown>).uncommittedFiles = 3
+    expect(RemoteSessionSchemas.stateResponse({ requestId: 'uncommitted', result: { ok: true, value: valid } })).not.toBeNull()
+    const bad = structuredClone(page)
+    ;(bad.snapshot.sessions[0] as unknown as Record<string, unknown>).uncommittedFiles = value
+    expect(RemoteSessionSchemas.stateResponse({ requestId: 'uncommitted', result: { ok: true, value: bad } })).toBeNull()
+    const review = structuredClone(page)
+    ;(review.snapshot.sessions[0] as unknown as Record<string, unknown>).reviewPending = 'yes'
+    expect(RemoteSessionSchemas.stateResponse({ requestId: 'uncommitted', result: { ok: true, value: review } })).toBeNull()
+  })
 })

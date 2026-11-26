@@ -19,7 +19,7 @@ export class ScriptLogStore {
     this.directory = directory
   }
 
-  private static isPlainId(value: string): boolean {
+  static isPlainId(value: string): boolean {
     return ScriptLogStore.plainIdConst.test(value)
   }
 

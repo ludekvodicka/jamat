@@ -66,6 +66,7 @@ import type {
   SessionHistoryOpenSpec,
   SessionHistoryReference,
   SessionScriptRequest,
+  SessionScriptStart,
   SessionScriptsReading,
   SessionFinishPress,
   SessionsOpResult,
@@ -1351,8 +1352,12 @@ class SmokeSessionsObserver implements RemoteControlSessionsPort {
     return this.sessions.solveWithAgent(sessionId)
   }
 
-  runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+  runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>> {
     return this.sessions.runScript(parentId, request)
+  }
+
+  stopScriptRun(parentId: string, runId: string): Promise<SessionsOpResult> {
+    return this.sessions.stopScriptRun(parentId, runId)
   }
 
   scriptsOf(parentId: string, runId?: string): Promise<SessionsOpResult<SessionScriptsReading>> {
@@ -1792,7 +1797,11 @@ class SmokeUnavailableSessions implements RemoteControlSessionsPort, RemoteContr
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 
-  runScript(_parentId: string, _request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+  runScript(_parentId: string, _request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>> {
+    return Promise.resolve(SmokeUnavailableSessions.refused())
+  }
+
+  stopScriptRun(_parentId: string, _runId: string): Promise<SessionsOpResult> {
     return Promise.resolve(SmokeUnavailableSessions.refused())
   }
 

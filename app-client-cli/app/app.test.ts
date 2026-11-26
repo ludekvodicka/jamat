@@ -215,6 +215,7 @@ class FakeCliClient implements AppClientCliClientPort {
   openCommitError: RemoteControlError | null = null
   /** The status read throws, the way a client that went away makes it. */
   statusThrows = false
+  serviceReused = false
   /** What `agents.describe` answers: the target's catalog, with Claude configured on an id it does not list. */
   describedAgents: unknown = { agents: [
     { agentId: 'antigravity', configuredModel: null, models: [
@@ -264,7 +265,7 @@ class FakeCliClient implements AppClientCliClientPort {
       operation: request.operation,
       operationId: request.operationId ?? null,
       ok: true,
-      value: this.value(request.operation),
+      value: this.value(request),
     } as RemoteControlResponse)
   }
 
@@ -296,11 +297,12 @@ class FakeCliClient implements AppClientCliClientPort {
       operation: request.operation,
       operationId: request.operationId ?? null,
       ok: true,
-      value: this.value(request.operation),
+      value: this.value(request),
     } as RemoteControlResponse)
   }
 
-  private value(operation: RemoteControlRequestUnion['operation']): unknown {
+  private value(request: RemoteControlRequestUnion): unknown {
+    const operation = request.operation
     if (operation === 'accounts.list') return [{ agentId: 'claude', accountId: 'work-1', label: 'Work' }]
     if (operation === 'agents.describe') return this.describedAgents
     if (operation === 'tabs.openCommit') return { kind: 'commit-opened', commitSessionId: '11111111-1111-4111-8111-111111111111',
@@ -337,7 +339,14 @@ class FakeCliClient implements AppClientCliClientPort {
       }
     if (operation === 'sessions.list')
       return this.invalidSessionsSnapshot ? { sessions: [null] } : FakeCliClient.snapshot(this.sessions)
-    if (operation === 'sessions.runScript') return { sessionId: 'session-007', runId: 'run-1' }
+    if (request.operation === 'sessions.runScript')
+      return {
+        sessionId: 'session-007',
+        runId: 'run-1',
+        ...(request.body.kind === 'service' ? { reused: this.serviceReused } : {}),
+      }
+    if (request.operation === 'sessions.stopScript')
+      return { sessionId: 'session-007', runId: request.body.runId }
     if (operation === 'sessions.scripts')
       return {
         sessionId: 'session-007',
@@ -1691,6 +1700,10 @@ describe('app-client-cli/app/app', () => {
       ['sessions', 'scripts', 'run', '--self', '--number', '001', '--command', 'pnpm test'],
       ['sessions', 'scripts', 'run', '--number', '001', '--command', 'pnpm test', '--timeout-ms', '1000'],
       ['sessions', 'scripts', 'run', '--number', '001'],
+      ['sessions', 'scripts', 'run', '--number', '001', '--command', 'pnpm dev', '--kind', 'service', '--wait'],
+      ['sessions', 'scripts', 'run', '--number', '001', '--command', 'pnpm dev', '--kind', 'service', '--timeout-ms', '5000'],
+      ['sessions', 'scripts', 'run', '--number', '001', '--command', 'pnpm dev', '--kind', 'other'],
+      ['sessions', 'scripts', 'stop', '--number', '001'],
     ]) {
       const refused = new CliHarness()
       expect(await new AppClientCli(args, refused.deps()).run()).toBe(2)
@@ -1767,6 +1780,77 @@ describe('app-client-cli/app/app', () => {
       expect(old.client.requests).toEqual([])
       expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable' } })
       expect(String((old.parsedOutput().error as { detail: string }).detail)).toContain('sessions.scripts')
+    }
+  })
+
+  it('starts services with --kind service, settles or reuses them, stops with sessions scripts stop, and gates both on sessions.stopScript', async () => {
+    const started = new CliHarness()
+    started.client.scriptRun = { state: 'running', log: 'none' }
+    started.env.JAMAT_V3_SESSION_ID = 'session-007'
+    expect(await new AppClientCli(
+      ['sessions', 'scripts', 'run', '--self', '--kind', 'service', '--command', 'pnpm dev', '--title', 'web', '--operation-id', 'sv-op'],
+      started.deps(),
+    ).run()).toBe(0)
+    expect(started.client.requests[0]).toMatchObject({
+      operation: 'sessions.runScript',
+      operationId: 'sv-op',
+      body: { session: { kind: 'sessionId', sessionId: 'session-007' }, command: 'pnpm dev', title: 'web', kind: 'service' },
+    })
+    expect(started.parsedOutput()).toMatchObject({
+      ok: true,
+      operation: 'sessions.runScript',
+      operationId: 'sv-op',
+      value: { sessionId: 'session-007', runId: 'run-1', kind: 'service', reused: false, state: 'running', startedAt: 1 },
+    })
+    expect(started.client.requests.length).toBeGreaterThan(2)
+
+    const reused = new CliHarness()
+    reused.client.serviceReused = true
+    reused.client.scriptRun = { state: 'running', log: 'none' }
+    expect(await new AppClientCli(
+      ['sessions', 'scripts', 'run', '--session-id', 'session-007', '--kind', 'service', '--command', 'pnpm dev'],
+      reused.deps(),
+    ).run()).toBe(0)
+    expect(reused.client.requests.map((request) => request.operation)).toEqual(['sessions.runScript', 'sessions.scripts'])
+    expect(reused.parsedOutput()).toMatchObject({
+      ok: true,
+      value: { sessionId: 'session-007', runId: 'run-1', kind: 'service', reused: true, state: 'running', startedAt: 1 },
+    })
+
+    const crashed = new CliHarness()
+    crashed.client.scriptRun = { state: 'failed', log: 'saved' }
+    expect(await new AppClientCli(
+      ['sessions', 'scripts', 'run', '--session-id', 'session-007', '--kind', 'service', '--command', 'exit 3'],
+      crashed.deps(),
+    ).run()).toBe(7)
+    expect(crashed.parsedOutput()).toMatchObject({
+      ok: false,
+      error: { code: 'operation-failed', data: { run: { state: 'failed' }, log: { text: 'untrusted output' } } },
+    })
+
+    const stopped = new CliHarness()
+    stopped.env.JAMAT_V3_SESSION_ID = 'session-007'
+    expect(await new AppClientCli(
+      ['sessions', 'scripts', 'stop', '--self', '--run-id', 'run-1', '--operation-id', 'stop-op'],
+      stopped.deps(),
+    ).run()).toBe(0)
+    expect(stopped.client.requests).toEqual([expect.objectContaining({
+      operation: 'sessions.stopScript',
+      operationId: 'stop-op',
+      body: { session: { kind: 'sessionId', sessionId: 'session-007' }, runId: 'run-1' },
+    })])
+
+    for (const args of [
+      ['sessions', 'scripts', 'run', '--session-id', 'session-007', '--kind', 'service', '--command', 'pnpm dev'],
+      ['sessions', 'scripts', 'stop', '--session-id', 'session-007', '--run-id', 'run-1'],
+    ]) {
+      const old = new CliHarness()
+      old.descriptor.optionalOperations = RemoteControlConst.optionalOperations
+        .filter((operation) => operation !== 'sessions.stopScript')
+      expect(await new AppClientCli(args, old.deps()).run()).toBe(6)
+      expect(old.client.requests).toEqual([])
+      expect(old.parsedOutput()).toMatchObject({ ok: false, error: { code: 'unavailable' } })
+      expect(String((old.parsedOutput().error as { detail: string }).detail)).toContain('sessions.stopScript')
     }
   })
 

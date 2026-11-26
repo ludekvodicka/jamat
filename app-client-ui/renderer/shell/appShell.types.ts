@@ -1,5 +1,6 @@
 import type { RemoteSessionTasksStore } from '../sessions/remoteSessionTasksStore'
 import type { CommitOpenStore } from '../versioning/commitOpenStore'
+import type { UncommittedStore } from '../versioning/uncommittedStore'
 import type {
   RateMonitorSnapshot,
 } from '../../../lib-orchestrator/rateMonitor/rateMonitorApi.types'
@@ -111,6 +112,8 @@ export interface WorkspaceShellWiring {
    * same mark a tree row does.
    */
   commitOpen: CommitOpenStore
+  /** The grey `*` of local sessions, read once per window like the red one above. */
+  uncommitted: UncommittedStore
   sessionsMarks: SessionsMarksStore
   /**
    * Every workspace draws the rate limits too: what is spent is the machine's, not this window's,

@@ -150,12 +150,6 @@ export class WorkStateMonitor {
     return state?.activity === 'working' && state.inspection.hint === 'compacting'
   }
 
-  /** An idle session whose background shells still run; a working turn says nothing about them. */
-  shellsRunning(runtimeSessionId: string): boolean {
-    const state = this.states.get(runtimeSessionId)
-    return state?.activity === 'idle' && state.inspection.shellsRunning === true
-  }
-
   /**
    * Why that activity: the hint and the evidence of the last screen actually rendered. Null for a
    * session never classified. Read by the Debug tab through the session manager, and by nothing
@@ -267,7 +261,6 @@ export class WorkStateMonitor {
     const previousActivity = state.activity
     const previousDetail = state.activityDetail
     const previousCompacting = this.compacting(session.runtimeSessionId)
-    const previousShells = this.shellsRunning(session.runtimeSessionId)
     state.polledAt = now
     state.inspection = inspection
     const mapped = WorkStateMonitor.activityOf(inspection.hint)
@@ -294,7 +287,6 @@ export class WorkStateMonitor {
     this.states.set(session.runtimeSessionId, state)
     return state.activity !== previousActivity || state.activityDetail !== previousDetail
       || this.compacting(session.runtimeSessionId) !== previousCompacting
-      || this.shellsRunning(session.runtimeSessionId) !== previousShells
   }
 
   /**

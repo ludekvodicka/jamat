@@ -5,6 +5,7 @@ import { SessionModelReader } from './sessionModelReader'
 import type { SessionModelTranscriptResolver } from './sessionModelReader'
 import type { SessionModelReading } from './sessionModelReaderApi.types'
 import type { SessionModelContext, SessionModelSource } from './sessionModelSource'
+import { TranscriptTailReader } from '../shared/transcriptTailReader'
 
 describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
   interface World {
@@ -132,26 +133,18 @@ describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
         return { kind: 'none', reason: 'nothing to say yet' }
       },
     }
+    const cap = TranscriptTailReader.maxCacheEntriesConst
     const reader = new SessionModelReader({ transcripts, sources: [source] })
-    for (let index = 0; index < 17; index += 1) await reader.read(contextOf(`s${index}`))
-    expect(opened).toBe(17)
+    for (let index = 0; index <= cap; index += 1) await reader.read(contextOf(`s${index}`))
+    expect(opened).toBe(cap + 1)
 
-    await reader.read(contextOf('s16'))
-    expect(opened).toBe(17)
+    await reader.read(contextOf(`s${cap}`))
+    expect(opened).toBe(cap + 1)
 
     await reader.read(contextOf('s0'))
-    expect(opened).toBe(18)
+    expect(opened).toBe(cap + 2)
   })
 
-  /*
-   * The touch, and what it is actually for. A HIT returns the entry where it stands - the order is
-   * the order transcripts arrived, which the test above measures. The delete-then-set is about a
-   * MISS on a file already in the cache: the transcript moved, so its reading is rebuilt, and the
-   * rebuilt one must count as young. `Map.set` on a key that is already there leaves it where it
-   * was, so without the delete the file somebody is actively writing to is the next one evicted.
-   *
-   * Deleting that one line left every other case in this file green.
-   */
   it('makes a transcript that moved the youngest, not the one it already was', async () => {
     let opened = 0
     const mtimes = new Map<string, number>()
@@ -174,25 +167,26 @@ describe('lib-orchestrator/sessionModelReader/sessionModelReader', () => {
         return { kind: 'none', reason: 'nothing to say yet' }
       },
     }
+    const cap = TranscriptTailReader.maxCacheEntriesConst
     const reader = new SessionModelReader({ transcripts, sources: [source] })
     const read = (name: string): Promise<SessionModelReading> => reader.read(contextOf(name))
 
-    for (let index = 0; index < 16; index += 1) await read(`s${index}`)
-    expect(opened).toBe(16)
+    for (let index = 0; index < cap; index += 1) await read(`s${index}`)
+    expect(opened).toBe(cap)
 
     // `s0` is the oldest entry, and its file just moved: read again, and now it is the youngest.
     mtimes.set('s0', 2_000)
     await read('s0')
-    expect(opened).toBe(17)
+    expect(opened).toBe(cap + 1)
 
-    // Seventeen entries for sixteen places, so one goes - and it is `s1`, the oldest that stood.
-    await read('s16')
-    expect(opened).toBe(18)
+    // One more entry exceeds capacity, so one goes - and it is `s1`, the oldest that stood.
+    await read(`s${cap}`)
+    expect(opened).toBe(cap + 2)
 
     await read('s0')
-    expect(opened).toBe(18)
+    expect(opened).toBe(cap + 2)
     await read('s1')
-    expect(opened).toBe(19)
+    expect(opened).toBe(cap + 3)
   })
 
   it('throws when an agent arrives that no source was wired for', async () => {

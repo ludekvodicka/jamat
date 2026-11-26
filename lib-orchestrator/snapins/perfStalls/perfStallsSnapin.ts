@@ -55,7 +55,8 @@ export class PerfStallsSnapin implements SnapinDefinition {
       const clusters = await PerfReportView.clusters(this.source.directories, {
         since: until - 7 * 86_400_000, until, hostProcess: this.source.hostProcess(),
         runningBuilds: { main: build, renderer: build, gateway: build, orchestrator: build,
-          'worker:tokenUsage': build, 'worker:fileDiff': build, 'worker:svnAssembly': build },
+          'worker:tokenUsage': build, 'worker:fileDiff': build, 'worker:svnAssembly': build,
+          'worker:sessionUncommitted': build },
         selfMsPerActiveHour: this.threshold(values, 'selfMsPerActiveHour', 1_000), maxSpanMs: this.threshold(values, 'maxSpanMs', 2_000),
       })
       const target = this.target(values)

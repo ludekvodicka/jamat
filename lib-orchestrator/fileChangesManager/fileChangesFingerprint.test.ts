@@ -33,4 +33,18 @@ describe('reviewed file content', () => {
     await rm(file)
     expect(await FileChangesFingerprint.of(file)).toBe(missing)
   })
+
+  it('caches fingerprints by stat tuple and recomputes when the file changes', async () => {
+    FileChangesFingerprint.clearCache()
+    const root = await mkdtemp(join(tmpdir(), 'jamat-reviewed-cache-'))
+    roots.push(root)
+    const file = join(root, 'cached.txt')
+    await writeFile(file, 'hello world')
+    const first = await FileChangesFingerprint.of(file)
+    const second = await FileChangesFingerprint.of(file)
+    expect(second).toBe(first)
+    await writeFile(file, 'hello world!')
+    const third = await FileChangesFingerprint.of(file)
+    expect(third).not.toBe(first)
+  })
 })

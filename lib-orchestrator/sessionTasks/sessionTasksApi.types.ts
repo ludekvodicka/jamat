@@ -29,6 +29,8 @@ export interface SessionSubagentRow {
 
 export type SessionShellState = 'running' | 'done' | 'failed' | 'killed' | 'unfinished'
 
+export type SessionShellCommandKind = 'agent' | 'command'
+
 /** A background shell the session's own agent started; a sub-agent's own shells are not listed. */
 export interface SessionShellRow {
   kind: 'shell'
@@ -41,6 +43,8 @@ export interface SessionShellRow {
   state: SessionShellState
   startedAt: number
   endedAt: number | null
+  /** Display only, from the full command. Absent: an older source. */
+  runs?: SessionShellCommandKind
 }
 
 export type SessionTaskRow = SessionSubagentRow | SessionShellRow

@@ -13,6 +13,7 @@ export async function prepareOrchestrator(root: string, identity: PerfBuild = cl
       fileDiffWorker: resolve(root, 'app-orchestrator/app/fileChanges/diff/fileDiffWorkerEntry.ts'),
       tokenUsageWorker: resolve(root, 'app-orchestrator/app/tokenUsage/tokenUsageWorkerEntry.ts'),
       svnAssemblyWorker: resolve(root, 'app-orchestrator/app/worktrees/svnAssemblyWorkerEntry.ts'),
+      sessionUncommittedWorker: resolve(root, 'app-orchestrator/app/sessionUncommitted/sessionUncommittedWorkerEntry.ts'),
     }, outdir: output, outExtension: { '.js': '.cjs' },
     bundle: true, platform: 'node', target: 'node22', format: 'cjs', logLevel: 'warning', metafile: true,
     define: { __JAMAT_V3_BUILD__: JSON.stringify(identity) }, external: ['original-fs'] })

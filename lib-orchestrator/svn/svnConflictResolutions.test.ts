@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.types'
 import type { SvnConflictApply, SvnConflictJournal, SvnConflictKind, SvnConflictOption } from './svn.types'
 import { SvnConflictResolutions } from './svnConflictResolutions'
+import { SvnExecutable } from './svnExecutable'
 import { SvnTextResolution } from './svnTextResolution'
 
 vi.mock('node:fs/promises', async (original) => {
@@ -296,6 +297,7 @@ describe('lib-orchestrator/svn/svnConflictResolutions', () => {
   })
 
   it('refuses a name svn cannot take, on the victim or below it, before any step', async () => {
+    vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
     const it_ = harness()
     it_.write(it_.root, 'docs/ř.md', 'text')
 

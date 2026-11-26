@@ -32,6 +32,19 @@ describe('app-client-ui/renderer/fileViewer/useFileViewerFreshness', () => {
     delete (window as unknown as { appClient?: unknown }).appClient
   })
 
+  it('asks nothing while its tab is hidden and asks once when the tab is shown again', async () => {
+    vi.useFakeTimers()
+    const ports = { version: vi.fn(async () => ({ ok: true as const, value: { ok: true as const, kind: 'unchanged' as const } })) }
+    const view = renderHook(({ visible }) => useFileViewerFreshness('document', () => {}, ports, visible), { initialProps: { visible: false } })
+    await FreshnessHarness.tick(3)
+    expect(ports.version).not.toHaveBeenCalled()
+    view.rerender({ visible: true })
+    await act(async () => { await Promise.resolve() })
+    expect(ports.version).toHaveBeenCalledTimes(1)
+    await FreshnessHarness.tick()
+    expect(ports.version).toHaveBeenCalledTimes(2)
+  })
+
   it('retires an in-flight poll when the target ports change', async () => {
     vi.useFakeTimers()
     let settle!: (value: unknown) => void

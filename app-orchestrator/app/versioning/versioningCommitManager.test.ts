@@ -2516,4 +2516,70 @@ describe('app-client-ui/app/versioning/versioningCommitManager', () => {
     f.deps.vcsStatus.detect = async () => null
     expect(await f.manager.prepare('session', 'svn', null, null)).toMatchObject({ ok: false, code: 'no-working-copy' })
   })
+
+  it('does not persist or emit openSessions changes during transient commit progress, and slims completed records', async () => {
+    const f = await fixture()
+    const savedBatches: ReadonlyArray<import('./versioningReviewStore').VersioningReviewRecord>[] = []
+    const save = vi.fn((records: readonly import('./versioningReviewStore').VersioningReviewRecord[]) => {
+      savedBatches.push(structuredClone([...records]))
+      return true
+    })
+    const onChanged = vi.fn()
+    const onOpenSessionsChanged = vi.fn()
+    let now = 1_000
+    f.deps.reviews = { read: () => [], save }
+    f.deps.onChanged = onChanged
+    f.deps.onOpenSessionsChanged = onOpenSessionsChanged
+    f.deps.now = () => now
+    const manager = new VersioningCommitManager(f.deps)
+    const opened = await manager.prepare('session', 'svn', null, f.request.message, [f.path])
+    if (!opened.ok) throw new Error(opened.detail)
+    const draftId = opened.value.draftId
+    manager.attach(draftId, 'window')
+    manager.files('window', draftId, f.snapshot)
+    const beforeOpen = manager.openSessions()
+    save.mockClear()
+    onChanged.mockClear()
+    onOpenSessionsChanged.mockClear()
+
+    let savesDuringCommit = 0
+    let changesDuringCommit = 0
+    let openChangesDuringCommit = 0
+    let openRevisionDuringCommit = beforeOpen.revision
+    const bigOutput = `${'Adding    src/file.ts\n'.repeat(600)}Committed revision 99.`
+    f.deps.svn.commit = async (_scope, _targets, _messageFile, onProgress) => {
+      for (let i = 1; i <= 10; i += 1) {
+        now += 150
+        onProgress?.({ stage: 'sending', completed: i, total: 10 })
+      }
+      savesDuringCommit = save.mock.calls.length
+      changesDuringCommit = onChanged.mock.calls.length
+      openChangesDuringCommit = onOpenSessionsChanged.mock.calls.length
+      openRevisionDuringCommit = manager.openSessions().revision
+      return { ok: true, value: { committedPaths: [f.path], revision: '99', output: bigOutput } }
+    }
+
+    expect(await manager.run('window', { ...f.request, draftId })).toEqual({ ok: true, revision: '99' })
+    // Only the initial running phase transition persisted before commit finished; 10 progress ticks persisted 0 times.
+    expect(savesDuringCommit).toBe(1)
+    expect(changesDuringCommit).toBeGreaterThanOrEqual(11)
+    expect(openChangesDuringCommit).toBe(0)
+    expect(openRevisionDuringCommit).toBe(beforeOpen.revision)
+    // Completing the commit removed the draft from openSessions, so openSessions changed once at the end.
+    expect(onOpenSessionsChanged).toHaveBeenCalledTimes(1)
+    expect(manager.openSessions().revision).toBe(beforeOpen.revision + 1)
+
+    const finalRecord = savedBatches.at(-1)?.find((record) => record.dto.draftId === draftId)
+    expect(finalRecord).toBeDefined()
+    expect(finalRecord?.targets).toBeUndefined()
+    expect(finalRecord?.dto.selection).toBeUndefined()
+    expect(finalRecord?.committedPaths).toBeUndefined()
+    expect(finalRecord?.dto.phase.kind).toBe('done')
+    if (finalRecord?.dto.phase.kind === 'done') {
+      expect(finalRecord.dto.phase.output.length).toBeLessThan(bigOutput.length)
+      expect(finalRecord.dto.phase.output).toContain('Committed revision 99.')
+    }
+    // Status contract reconstructs committedPaths from dto.published.
+    expect(manager.status(draftId)).toMatchObject({ state: 'committed', revision: '99', committedPaths: [f.path] })
+  })
 })

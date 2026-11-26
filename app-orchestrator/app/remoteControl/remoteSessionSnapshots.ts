@@ -4,32 +4,38 @@ import type { RemoteControlStepResult } from '../../../lib-orchestrator/remoteCo
 import type { RemoteSessionStatePage, RemoteSessionStateRequest, RemoteSessionSummary } from '../../../lib-orchestrator/remoteControl/remoteSessionApi.types'
 import { RemoteSessionSchemas } from '../../../lib-orchestrator/remoteControl/remoteSessionSchemas'
 import type { SessionInfo, SessionsSnapshot } from '../../../lib-orchestrator/sessionManager/sessionManagerApi.types'
+import type { SessionUncommittedSnapshot } from '../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 
 export class RemoteSessionSnapshots {
   private readonly read: () => SessionsSnapshot
   private readonly reviews?: () => { revision: number; pending: readonly string[]; results: readonly string[] }
+  private readonly uncommitted?: () => SessionUncommittedSnapshot
   private discoveryRevision = 0
   private discoveryKey = ''
   private readonly epoch = randomUUID()
 
-  constructor(read: () => SessionsSnapshot, reviews?: RemoteSessionSnapshots['reviews']) {
+  constructor(read: () => SessionsSnapshot, reviews?: RemoteSessionSnapshots['reviews'], uncommitted?: RemoteSessionSnapshots['uncommitted']) {
     this.read = read
     this.reviews = reviews
+    this.uncommitted = uncommitted
   }
 
-  page(request: RemoteSessionStateRequest): RemoteControlStepResult<RemoteSessionStatePage> {
+  page(request: RemoteSessionStateRequest, viewer: { processes: boolean } = { processes: true }): RemoteControlStepResult<RemoteSessionStatePage> {
     const source = this.read()
     const reviews = this.reviews?.()
-    const key = JSON.stringify([source.revision, reviews?.revision, reviews?.pending, reviews?.results])
+    const uncommitted = this.uncommitted?.()
+    const key = JSON.stringify([source.revision, reviews?.revision, reviews?.pending, reviews?.results, uncommitted?.revision])
     if (key !== this.discoveryKey) { this.discoveryKey = key; this.discoveryRevision++ }
-    const snapshot = reviews ? { ...source, revision: this.discoveryRevision } : source
+    const snapshot = reviews || uncommitted ? { ...source, revision: this.discoveryRevision } : source
     if (request.expected !== null
       && (request.expected.epoch !== this.epoch || request.expected.revision !== snapshot.revision))
       return { ok: false, error: { code: 'conflict', detail: 'Remote session state changed; restart discovery.' } }
     const cursor = { epoch: this.epoch, revision: snapshot.revision, offset: request.offset }
     if (request.kind === 'detail') {
-      const session = snapshot.sessions.find((row) => row.sessionId === request.sessionId)
-      if (!session) return { ok: false, error: { code: 'not-found', detail: 'Remote session no longer exists.' } }
+      const found = snapshot.sessions.find((row) => row.sessionId === request.sessionId)
+      if (!found || (!viewer.processes && found.script?.scriptId === 'service'))
+        return { ok: false, error: { code: 'not-found', detail: 'Remote session no longer exists.' } }
+      const session = viewer.processes ? found : RemoteSessionSnapshots.withoutServices(found)
       const bytes = Buffer.from(JSON.stringify(session), 'utf8')
       if (request.offset >= bytes.length) return RemoteSessionSnapshots.badOffset()
       const end = Math.min(bytes.length, request.offset + RemoteSessionSchemas.chunkBytes)
@@ -38,12 +44,16 @@ export class RemoteSessionSnapshots {
         next: end < bytes.length ? end : null } }
     } else if (request.kind === 'sessions' || request.kind === 'categories') {
       const rows = request.kind === 'sessions'
-        ? snapshot.sessions.map((session) => {
-          const summary = RemoteSessionSnapshots.summary(session)
-          return { ...summary, reviewPending: reviews?.pending.includes(session.sessionId) === true,
-            pending: summary.pending || reviews?.pending.includes(session.sessionId) === true,
-            hasResult: summary.hasResult || reviews?.results.includes(session.sessionId) === true }
-        }).filter((row) => row.life !== 'ended' || row.pending || row.hasResult)
+        ? snapshot.sessions
+          .filter((session) => viewer.processes || session.script?.scriptId !== 'service')
+          .map((session) => {
+            const summary = RemoteSessionSnapshots.summary(session)
+            const files = uncommitted?.sessions[session.sessionId]?.files ?? 0
+            return { ...summary, reviewPending: reviews?.pending.includes(session.sessionId) === true,
+              pending: summary.pending || reviews?.pending.includes(session.sessionId) === true,
+              hasResult: summary.hasResult || reviews?.results.includes(session.sessionId) === true,
+              ...(files > 0 ? { uncommittedFiles: files } : {}) }
+          }).filter((row) => row.life !== 'ended' || row.pending || row.hasResult || row.uncommittedFiles !== undefined)
         : snapshot.categories
       if (request.offset > rows.length) return RemoteSessionSnapshots.badOffset()
       const value: RemoteSessionStatePage = { ...cursor, kind: request.kind, next: null,
@@ -97,6 +107,13 @@ export class RemoteSessionSnapshots {
   /** The page as the transport frames it, in UTF-8 bytes. */
   static bytesOf(requestId: string, value: RemoteSessionStatePage): number {
     return Buffer.byteLength(JSON.stringify({ type: 'session-state-response', response: { requestId, result: { ok: true, value } } }), 'utf8')
+  }
+
+  private static withoutServices(session: SessionInfo): SessionInfo {
+    if (session.scripts === undefined) return session
+    const runs = session.scripts.runs.filter((run) => run.scriptId !== 'service')
+    if (runs.length === session.scripts.runs.length) return session
+    return { ...session, scripts: { ...session.scripts, runs } }
   }
 
   private static badOffset(): RemoteControlStepResult<never> {

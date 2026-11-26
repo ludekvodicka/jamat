@@ -174,7 +174,8 @@ function world(options?: {
   conflicts?: SessionsOpResult<SessionConflictList>
   resolved?: SessionsOpResult<SessionConflictResolved>
   scripts?: SessionsOpResult<SessionScriptsReading>
-  runScript?: SessionsOpResult<{ runId: string }>
+  runScript?: SessionsOpResult<{ runId: string; reused: boolean }>
+  stopScriptRun?: SessionsOpResult
   results?: WorktreeResultDto[]
   notifies?: SessionNotifyDto[]
   create?: (spec: SessionCreateSpec, origin?: SessionCreateOrigin) => Promise<SessionsOpResult<SessionCreated>>
@@ -369,7 +370,11 @@ function world(options?: {
       },
       runScript: async (parentId, scriptRequest) => {
         scriptCalls.push({ method: 'runScript', parentId, request: scriptRequest })
-        return options?.runScript ?? { ok: true, value: { runId: 'run-1' } }
+        return options?.runScript ?? { ok: true, value: { runId: 'run-1', reused: false } }
+      },
+      stopScriptRun: async (parentId, runId) => {
+        scriptCalls.push({ method: 'stopScriptRun', parentId, runId })
+        return options?.stopScriptRun ?? { ok: true, value: undefined }
       },
       clearActions: async (sessionId) => {
         sessionCalls.push({ method: 'clearActions', args: [sessionId] })
@@ -728,6 +733,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
       request('sessions.scripts', { session: { kind: 'sessionId', sessionId: 'session-1' } }),
       request('sessions.clearActions', { session: { kind: 'sessionId', sessionId: 'session-1' } }, 'op-clear'),
       request('sessions.runScript', { session: { kind: 'sessionId', sessionId: 'session-1' }, command: 'pnpm test' }, 'op-run'),
+      request('sessions.stopScript', { session: { kind: 'sessionId', sessionId: 'session-1' }, runId: 'run-1' }, 'op-stop-script'),
       request('sessions.color', {
         session: { kind: 'sessionId', sessionId: 'session-1' },
         color: 'cyan',
@@ -2030,11 +2036,33 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
     peer.callerKind = 'remote-peer'
     expect(RemoteControlPeerConst.controlOperations).toContain('sessions.scripts')
     expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.runScript')
+    expect(RemoteControlPeerConst.controlOperations).not.toContain('sessions.stopScript')
     await expect(found.control.execute(request('sessions.scripts', { session: one }), peer))
       .resolves.toMatchObject({ ok: true })
     await expect(found.control.execute(request('sessions.runScript', { session: one, command: 'pnpm test' }, 'run-peer'), peer))
       .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
+    await expect(found.control.execute(request('sessions.stopScript', { session: one, runId: 'run-1' }, 'stop-peer'), peer))
+      .resolves.toMatchObject({ ok: false, error: { code: 'forbidden' } })
     expect(found.scriptCalls).toHaveLength(3)
+  })
+
+  it('starts and stops services through sessions.runScript and sessions.stopScript and refuses invalid kinds', async () => {
+    const one = { kind: 'number', number: '001' } as const
+    const reused = world({ runScript: { ok: true, value: { runId: 'sv-1', reused: true } } })
+    await expect(reused.control.execute(request('sessions.runScript', { session: one, command: 'pnpm dev', kind: 'service' }, 'sv-op'), context()))
+      .resolves.toMatchObject({ ok: true, operationId: 'sv-op', value: { sessionId: 'session-1', runId: 'sv-1', reused: true } })
+    expect(reused.scriptCalls).toEqual([{ method: 'runScript', parentId: 'session-1', request: { command: 'pnpm dev', kind: 'service' } }])
+
+    await expect(reused.control.execute(request('sessions.runScript', { session: one, command: 'pnpm dev', kind: 'other' as never }, 'bad-kind'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'invalid-request' } })
+
+    await expect(reused.control.execute(request('sessions.stopScript', { session: one, runId: 'sv-1' }, 'stop-op'), context()))
+      .resolves.toMatchObject({ ok: true, operationId: 'stop-op', value: { sessionId: 'session-1', runId: 'sv-1' } })
+    expect(reused.scriptCalls.at(-1)).toEqual({ method: 'stopScriptRun', parentId: 'session-1', runId: 'sv-1' })
+
+    const missing = world({ stopScriptRun: { ok: false, code: 'not-found', detail: 'Session session-1 has no script run other' } })
+    await expect(missing.control.execute(request('sessions.stopScript', { session: one, runId: 'other' }, 'stop-missing'), context()))
+      .resolves.toMatchObject({ ok: false, error: { code: 'not-found' } })
   })
 
   /*
@@ -2170,6 +2198,7 @@ describe('lib-orchestrator/remoteControl/remoteControl', () => {
         solveWithAgent: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         backToWork: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         runScript: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
+        stopScriptRun: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         scriptsOf: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),
         clearActions: async () => ({ ok: true, value: undefined }),
         setSessionColor: async () => ({ ok: false, code: 'not-found', detail: 'unused' }),

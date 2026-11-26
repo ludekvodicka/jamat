@@ -89,9 +89,9 @@ export class PeerWorkService implements PeerForwardPort {
     }))
   }
 
-  async state(_peer: PeerAuthority, request: RemoteSessionStateRequest, signal: AbortSignal): ReturnType<PeerForwardPort['state']> {
+  async state(peer: PeerAuthority, request: RemoteSessionStateRequest, signal: AbortSignal): ReturnType<PeerForwardPort['state']> {
     signal.throwIfAborted()
-    return this.deps.snapshots.page(request)
+    return this.deps.snapshots.page(request, { processes: peer.capabilities.includes('session-workspace.processes') })
   }
 
   releaseConnection(peer: PeerAuthority): void { this.deps.views.releaseConnection(peer) }

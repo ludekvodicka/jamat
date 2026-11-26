@@ -40,12 +40,14 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
     }))
   })
 
-  it('answers a requested run with no gate, no replay and a stop with its parent', () => {
+  it('answers a requested run with no gate, no replay and a stop with its parent process', () => {
     expect(SessionScriptDefinitions.of({ phase: 'inner', scriptId: 'requested' })).toEqual(expect.objectContaining({
       gate: null,
       words: { session: 'run', actor: 'run' },
       replayable: false,
-      stopsWithParent: true,
+      stopsWith: 'parent-process',
+      collapsesOnEnd: false,
+      endsBy: 'exit-code',
       handoff: 'close',
     }))
     expect(SessionScriptDefinitions.linkOf('p', 'inner', 'requested', 'tests'))
@@ -56,19 +58,40 @@ describe('lib-orchestrator/sessionManager/scripts/sessionScriptDefinitions', () 
     expect(SessionScriptDefinitions.gatesOf(record({ life: 'live' }))).toEqual([])
   })
 
-  it('draws a live line for the seven scripted kinds and never for the resolvers or the review', () => {
+  it('answers a service run with parent-session stop, collapse on end, stop-based end and no live line', () => {
+    expect(SessionScriptDefinitions.of({ phase: 'inner', scriptId: 'service' })).toEqual(expect.objectContaining({
+      gate: null,
+      words: { session: 'service', actor: 'service' },
+      replayable: false,
+      stopsWith: 'parent-session',
+      collapsesOnEnd: true,
+      endsBy: 'stop',
+      handoff: 'close',
+      liveLine: false,
+    }))
+    expect(SessionScriptDefinitions.known({ phase: 'inner', scriptId: 'service' })).toBe(true)
+    expect(SessionScriptDefinitions.known({ phase: 'before', scriptId: 'service' })).toBe(false)
+    expect(SessionScriptDefinitions.linkOf('p', 'inner', 'service', 'web'))
+      .toEqual({ sessionId: 'p', phase: 'inner', scriptId: 'service', name: 'web' })
+    expect(SessionScriptDefinitions.wordsOf({ phase: 'inner', scriptId: 'service', name: 'web' }))
+      .toEqual({ session: 'service', actor: 'service' })
+  })
+
+  it('draws a live line for the seven scripted kinds and never for services, resolvers or the review', () => {
     const live = [
       ['before', 'setup'], ['before', 'declared'], ['before', 'svn'], ['after', 'declared'],
       ['after', 'checks'], ['after', 'svn'], ['inner', 'requested'],
     ] as const
-    const silent = [['after', 'merge-resolve'], ['after', 'svn-resolve'], ['after', 'svn-merge'], ['after', 'review']] as const
+    const silent = [
+      ['inner', 'service'], ['after', 'merge-resolve'], ['after', 'svn-resolve'], ['after', 'svn-merge'], ['after', 'review'],
+    ] as const
     for (const [phase, scriptId] of live) expect(SessionScriptDefinitions.of({ phase, scriptId }).liveLine).toBe(true)
     for (const [phase, scriptId] of silent) expect(SessionScriptDefinitions.of({ phase, scriptId }).liveLine).toBe(false)
   })
 
   it('knows the SVN merger as a replayable run of the action gate whose tab closes, named merge and merger', () => {
     expect(SessionScriptDefinitions.of({ phase: 'after', scriptId: 'svn-merge' })).toEqual(expect.objectContaining({
-      gate: 'action', replayable: true, stopsWithParent: false, handoff: 'close', liveLine: false,
+      gate: 'action', replayable: true, stopsWith: 'gate', collapsesOnEnd: false, endsBy: 'exit-code', handoff: 'close', liveLine: false,
     }))
     expect(SessionScriptDefinitions.wordsOf({ phase: 'after', scriptId: 'svn-merge', name: 'merger' })).toEqual({ session: 'merge', actor: 'merger' })
     expect(SessionScriptDefinitions.linkOf('p', 'after', 'svn-merge', 'merger')).toEqual({ sessionId: 'p', phase: 'after', scriptId: 'svn-merge', name: 'merger' })

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { VersioningCommitPaths, VersioningCommitReceipts, type VersioningCommitDraftDto } from './versioningCommit'
+import { FileChangesLimits } from '../fileChangesManager/fileChangesLimits'
+import { RemoteReviewSchemas } from '../remoteControl/remoteReviewSchemas'
+import { VersioningCommitLimits, VersioningCommitPaths, VersioningCommitReceipts, type VersioningCommitDraftDto } from './versioningCommit'
 import { versioningReviewSchema } from './versioningReviewSchemas'
 
 describe('commit review targets', () => {
@@ -51,5 +53,23 @@ describe('commit receipt omissions', () => {
     expect(VersioningCommitReceipts.forLegacyPeer(retried).phase.kind).toBe('done')
     retried.published[1].paths = ['C:/app/B']
     expect(VersioningCommitReceipts.unresolved(retried)).toHaveLength(1)
+  })
+})
+
+describe('commit target limit', () => {
+  // A list of 2,001 changed files used to open and then fail saving its selection (dto.selection.paths).
+  it('lets every listed row be selected, saved and approved, and nothing more', () => {
+    const max = VersioningCommitLimits.targetsMaxConst
+    expect(max).toBe(FileChangesLimits.listingEntriesMax)
+    const paths = (count: number) => Array.from({ length: count }, (_, index) => `Q:/app/file-${index}.ts`)
+    const selection = versioningReviewSchema.shape.selection.unwrap()
+    expect(selection.safeParse({ snapshotId: 's', paths: paths(max) }).success).toBe(true)
+    expect(selection.safeParse({ snapshotId: 's', paths: paths(max + 1) }).success).toBe(false)
+    expect(versioningReviewSchema.shape.paths.safeParse(paths(max)).success).toBe(true)
+    expect(versioningReviewSchema.shape.paths.safeParse(paths(max + 1)).success).toBe(false)
+    const approve = (count: number) => RemoteReviewSchemas.decision.safeParse({ draftId: 'd', epoch: 'e', expectedRevision: 1,
+      kind: 'approve', operationId: 'o', snapshotId: 's', fileIds: paths(count), message: 'm' }).success
+    expect(approve(max)).toBe(true)
+    expect(approve(max + 1)).toBe(false)
   })
 })

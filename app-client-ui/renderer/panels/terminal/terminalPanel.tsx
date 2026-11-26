@@ -26,7 +26,7 @@ import type {
 } from '../../../../lib-orchestrator/remoteControl/remoteConnectionsApi.types'
 import { ErrorText } from '../../../shared/errorText'
 import { VersioningCommitPaths } from '../../../shared/versioningCommit'
-import { TabControlTask } from '../../../shared/tabControl'
+import { TabControlTask, type TabControlTaskRef } from '../../../shared/tabControl'
 import {
   type TerminalPanelReading,
   TerminalTargetCodec,
@@ -38,7 +38,9 @@ import { SessionActionsPane } from '../../sessionActions/sessionActionsPane'
 import { SessionWorkspaceProviders } from './sessionWorkspaceProviders'
 import { SessionDrag } from '../../sessions/sessionDrag'
 import { SessionOperations } from '../../shell/sessionOperations'
-import { type CommitOpenStore, useCommitOpen } from '../../versioning/commitOpenStore'
+import { type CommitOpenStore, useSessionCommitOpen } from '../../versioning/commitOpenStore'
+import { UncommittedStore, useSessionUncommitted } from '../../versioning/uncommittedStore'
+import type { SessionUncommittedEntry } from '../../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import { FileViewerPane } from '../../fileViewer/fileViewerPane'
 import type { AgentSettingsStore } from '../../contextCompaction/agentSettingsStore'
 import { ContextCompactionPanel } from '../../contextCompaction/contextCompactionPanel'
@@ -83,6 +85,7 @@ import { TerminalClipboard } from './input/terminalClipboard'
 import { TerminalNotesPanel } from './notes/terminalNotesPanel'
 import { useTerminalNotes } from './notes/useTerminalNotes'
 import { ProjectTodosPanel } from '../../projectTodos/projectTodosPanel'
+import { ProcessesPane, ProcessesPorts } from '../../processes/processesPane'
 import { TerminalPostMortem } from './view/terminalPostMortem'
 import { TerminalTransports } from './attach/terminalTransport'
 import { useTerminalHostInstance, useTerminalSessionInfo } from './attach/useTerminalSessionInfo'
@@ -120,6 +123,8 @@ export type TerminalPanelProps = IDockviewPanelProps & {
   /** What this window has seen. A tab draws the same mark a tree row does, off the same answer. */
   marks: SessionsMarksStore
   commitOpen: CommitOpenStore
+  /** The grey `*` of a local session; a remote tab draws none. */
+  uncommitted: UncommittedStore
   fileTools: PanelFileToolsRegistry
   history: PanelHistoryRegistry
   /** Where the session's pinned split items outlive the tab. */
@@ -219,14 +224,14 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const publish = useTabDecorationsPublisher(props.api.id)
   const glyph = info === null
     ? null
-    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning)
+    : SessionNodeState.glyphOf(info.life, info.kind, info.activity, info.activityDetail, info.compacting, info.shellsRunning, info.script?.scriptId)
   const outcome = info?.outcome ?? null
   const endedAt = info?.endedAt ?? null
   const color = info?.color ?? null
   const marked = useSessionMarked(props.marks, targetKey)
-  const openCommits = useCommitOpen(props.commitOpen)
-  const commitOpen = localTools && openCommits.has(sessionId)
-  const commitState = useSnapshotStore(props.commitOpen)
+  const sessionCommit = useSessionCommitOpen(props.commitOpen, sessionId, localTools)
+  const commitOpen = sessionCommit.open
+  const uncommitted = useSessionUncommitted(props.uncommitted, localTools ? sessionId : null)
   // Two strings rather than the object: a new snapshot is a new object, and the tab would publish
   // again on every tick for a worktree that did not move.
   const worktreeKind = info?.worktree?.kind ?? null
@@ -238,9 +243,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const closable = useCallback((item: PanelSplitItem): string | null =>
     PanelSplitParams.closeRefusalOf(item, (id) => id === sessionId && workflowOpen), [sessionId, workflowOpen])
   const split = usePanelSplit(props, closable)
-  const pendingReviews = localTools ? commitState.snapshot?.reviews ?? [] : []
+  const pendingReviews = sessionCommit.reviews
   const hiddenReviews = pendingReviews.filter((review) =>
-    review.sessionId === sessionId && !split.state.items.some((item) => TerminalSplitMarks.shows(review, item, sessionId)))
+    !split.state.items.some((item) => TerminalSplitMarks.shows(review, item, sessionId)))
   const reviewItemOf = useCallback((review: (typeof pendingReviews)[number]): PanelSplitItem => review.workflow
     ? PanelSplitParams.workflowItemOf(sessionId, target) : {
       kind: 'commit' as const, key: SessionWorkspaceKeys.of(target, review.draftId), target, reviewId: review.draftId,
@@ -272,9 +277,11 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [workspace, targetKey, contentRevision])
 
   useTerminalSplitPins(sessionId, localTools, split, props.splitPins)
-  const actionSessions = workspace.sessions ?? props.sessions
-  const actionState = useSnapshotStore(actionSessions)
   const actionsShown = split.state.items.some((item) => item.kind === 'workflow')
+  const actionSessions = workspace.sessions ?? props.sessions
+  // A local panel reads its own session through `info`; it listens to every session only while a
+  // workflow item shows them. Listening always re-rendered every open panel on each change of any session.
+  const actionState = useSnapshotStore(actionSessions, Boolean(workspace.sessions) || actionsShown)
   useEffect(() => {
     if (!workspace.sessions || !actionsShown) return
     const stop = workspace.sessions.start()
@@ -394,24 +401,32 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
     onTaken: () => { if (localTools) drafts.cleared(sessionId) },
   })
   const activeItem = split.state.items.find((item) => item.key === split.state.active) ?? null
-  const requiredWorkingTreeSource = workspace.changes !== null && activeItem?.kind === 'file'
-    ? activeItem?.baselineHint?.workingTreeSource
+  const activeItemKey = activeItem?.key ?? null
+  const [splitDiffItemKey, setSplitDiffItemKey] = useState<string | null>(null)
+  const handleSplitDiffModeChange = useCallback((active: boolean) => {
+    setSplitDiffItemKey(active ? activeItemKey : null)
+  }, [activeItemKey])
+  const activeItemDiff = activeItem?.kind === 'file'
+    && (activeItem.baselineHint !== undefined || splitDiffItemKey === activeItem.key)
+  const requiredWorkingTreeSource = panelVisible && workspace.changes !== null && activeItem?.kind === 'file'
+    ? activeItem.baselineHint?.workingTreeSource
     : undefined
-  // One read for all readers. Every visible pane gets the full Changelog target set; a working-tree
-  // hint asks its exact source from the second model below without creating another model.
+  // One read for all readers. Only enable Changelog polling when the sidebar shows it, post-mortem
+  // is on screen, or the active split file actually needs diff/baseline history (never for plain
+  // `.md`/`.mdext`/task/todo split items). A hidden tab reads nothing.
   const changes = useFileChanges(
     sessionId,
     workspace.changes,
-    workspace.changes !== null && (
+    panelVisible && workspace.changes !== null && (
       (sidebar.state.visible && toolsTab === 'fileChanges')
       || TerminalPanelState.showsPostMortem(state)
-      || split.state.items.length > 0
+      || activeItemDiff
     ),
   )
   const workingTree = useWorkingTreeChanges(
     sessionId,
     workspace.changes?.workingTree ?? null,
-    workspace.changes !== null && sidebar.state.visible && toolsTab === 'workingTree',
+    panelVisible && workspace.changes !== null && sidebar.state.visible && toolsTab === 'workingTree',
     requiredWorkingTreeSource,
   )
 
@@ -451,6 +466,17 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   const openTodosInSplit = useCallback(() => {
     setMenuNote(splitRef.current.open(PanelSplitParams.todosItemOf(sessionId)))
   }, [sessionId])
+  const processesPorts = useMemo(() => localTools ? ProcessesPorts.local() : null, [localTools])
+  const openTaskInSplit = useCallback((task: TabControlTaskRef, title: string): void => {
+    const trimmed = title.length <= 200 ? title : `${title.slice(0, 199)}…`
+    setMenuNote(openSplitItem({
+      kind: 'task',
+      key: TabControlTask.keyOf(sessionId, task),
+      title: trimmed,
+      sessionId,
+      task,
+    }, splitReading()))
+  }, [openSplitItem, sessionId, splitReading])
 
   const workflowPorts = useMemo(() => ({ ...workspace.actions(setMenuNote, (document) => openInSplit(document)),
     tasks: taskPorts ?? undefined }), [workspace, openInSplit, taskPorts])
@@ -622,9 +648,9 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
   }, [remoteTarget, state.ended, state.status, attachEpoch])
 
   useEffect(
-    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, commitOpen,
+    () => publish(TerminalPanelState.decorationsOf(state, glyph, color, marked, commitOpen, uncommitted,
       worktreeKind === null || worktreePath === null ? null : { kind: worktreeKind, worktreePath, cleanup: worktreeCleanup })),
-    [publish, state, glyph, color, marked, commitOpen, worktreeKind, worktreePath, worktreeCleanup],
+    [publish, state, glyph, color, marked, commitOpen, uncommitted, worktreeKind, worktreePath, worktreeCleanup],
   )
 
   useEffect(() => {
@@ -800,7 +826,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             openFile: localTools ? window.appClient.terminalMenu.openFile : workspace.paths!.openFile,
             openDirectory: localTools ? window.appClient.terminalMenu.openDirectory : workspace.paths!.openDirectory,
             release: workspace.files!.viewer.release,
-            copyPath: window.appClient.clipboard.writeText,
+            copyText: window.appClient.clipboard.writeText,
             openUrl: window.appClient.fileViewer.openExternal,
             ...(localTools ? { native: window.appClient.terminalMenu } : {}),
           }}
@@ -854,9 +880,10 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
         ? null
         : (<>
           {(activeItem.kind === 'file' && workspace.files === null || activeItem.kind === 'task' && workspace.tasks === null
-            || activeItem.kind === 'commit' && workspace.reviews === null || activeItem.kind === 'todos' && workspace.todos === null)
+            || activeItem.kind === 'commit' && workspace.reviews === null || activeItem.kind === 'todos' && workspace.todos === null
+            || activeItem.kind === 'processes' && processesPorts === null)
             && <p role="status">This pane is unavailable for this session workspace.</p>}
-          {activeItem.kind === 'file' && workspace.files !== null && <FileViewerPane ports={workspace.files}
+          {activeItem.kind === 'file' && workspace.files !== null && <FileViewerPane ports={workspace.files} visible={panelVisible}
             insertPrompt={localTools ? insertPrompt : undefined}
             key={`${activeItem.key}:${contentRevision}`}
             ref={attachFilePane}
@@ -870,6 +897,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             onOpenItem={openSplitItem}
             onRememberReading={rememberSplitReading}
             onRefused={setMenuNote}
+            onDiffModeChange={handleSplitDiffModeChange}
           />}
           {activeItem.kind === 'task' && taskPorts !== null && <TaskPane key={activeItem.key} ports={taskPorts} ref={attachFilePane} item={activeItem} visible={panelVisible} />}
           {/* A sibling diff must not release the review draft or reset its checked paths. */}
@@ -885,10 +913,17 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
               <ProjectTodosPanel key={item.sessionId} sessionId={item.sessionId} ports={todosPorts} variant="pane"
                 ref={item.key === activeItem.key ? attachFilePane : undefined} />
             </div>)}
+          {processesPorts !== null && split.state.items.filter((item) => item.kind === 'processes').map((item) =>
+            <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
+              <ProcessesPane key={item.sessionId} ref={item.key === activeItem.key ? attachFilePane : undefined}
+                sessionId={item.sessionId} runs={info?.scripts?.runs ?? []}
+                visible={panelVisible && item.key === activeItem.key}
+                ports={processesPorts} onOpen={openTaskInSplit} />
+            </div>)}
           <div ref={commitPanes} className="commit-pane-slots">{split.state.items.map((item) => {
-            if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow' || item.kind === 'todos') return null
+            if (item.kind === 'file' || item.kind === 'task' || item.kind === 'workflow' || item.kind === 'todos' || item.kind === 'processes') return null
             else if (item.kind === 'commit') return workspace.reviews === null ? null : <div key={item.key} className="commit-pane-slot" hidden={item.key !== activeItem.key}>
-              <CommitPane ports={workspace.reviews} sessionId={sessionId} item={item} onClose={() => closeCommitItem(item.key)}
+              <CommitPane ports={workspace.reviews} sessionId={sessionId} item={item} visible={panelVisible && item.key === activeItem.key} onClose={() => closeCommitItem(item.key)}
                 onOpenChanged={(value) => openInSplit(value.document, value.baselineHint ?? undefined)}
                 onOpenReview={(review) => { setMenuNote(split.open({ kind: 'commit', key: SessionWorkspaceKeys.of(target, review.draftId),
                   target, reviewId: review.draftId, vcs: item.vcs, scopeRoot: review.scopeRoot, title: review.title }, true)) }}
@@ -919,6 +954,7 @@ export function TerminalPanel(props: TerminalPanelProps): React.JSX.Element {
             sessionId={sessionId}
             documentId={null}
             selected={toolsTab}
+            visible={panelVisible && sidebar.state.visible}
             changes={changes}
             workingTree={workingTree}
             onSelect={sidebar.open}
@@ -1048,6 +1084,8 @@ class TerminalPanelState {
     color: SessionColorName | null,
     marked: boolean,
     commitOpen: boolean,
+    /** Files the session changed and has not committed: a grey `*` that the red one replaces. */
+    uncommitted: SessionUncommittedEntry | null,
     /** `cleanup` is the library's sentence for a worktree that waits to be removed or was kept. */
     worktree: Pick<SessionWorktreeInfo, 'kind' | 'worktreePath'> & { cleanup: string | null } | null,
   ): TabDecorations {
@@ -1055,9 +1093,10 @@ class TerminalPanelState {
       ? null
       : TerminalPanelState.attachmentSignalOf(state)
     // The first badge a session tab has ever published: a commit review that waits for the person.
+    // Uncommitted changes share its key, so the two never take both badge slots.
     const badges: TabBadge[] = commitOpen
       ? [{ key: 'vcs', text: '*', tone: 'danger', title: 'Commit review pending' }]
-      : []
+      : uncommitted === null ? [] : [{ key: 'vcs', text: '*', tone: 'muted', title: UncommittedStore.titleOf(uncommitted) }]
     // A badge and not the second slot: that slot carries the attachment, which a worktree session
     // needs as much as any other.
     if (worktree !== null)

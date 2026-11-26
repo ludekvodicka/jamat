@@ -1,8 +1,8 @@
 export interface PerfBuild { version: string; inputHash: string; builtAt: string }
-export type PerfWorkerName = 'tokenUsage' | 'fileDiff' | 'svnAssembly'
+export type PerfWorkerName = 'tokenUsage' | 'fileDiff' | 'svnAssembly' | 'sessionUncommitted'
 export type PerfProcess = 'main' | 'gateway' | 'orchestrator' | 'renderer' | 'host' | 'machine' | `worker:${PerfWorkerName}`
 export type PerfSpanName = 'sessions.recompose' | 'records.commit' | 'finish.commit' | 'finish.sync'
-  | 'snapins.tick' | 'fileChanges.poll' | 'rate.pass' | 'gateway.frame'
+  | 'snapins.tick' | 'fileChanges.poll' | 'rate.pass' | 'gateway.frame' | 'sessions.queue' | 'sessions.reconcile'
 export type PerfName = PerfSpanName | `ipc:${string}` | `op:${string}` | `svn:${string}` | `git:${string}` | 'other' | 'unattributed'
 export interface PerfBase { v: 1; at: number; process: PerfProcess; pid: number; build: PerfBuild }
 export type PerfRecord = PerfBase & (

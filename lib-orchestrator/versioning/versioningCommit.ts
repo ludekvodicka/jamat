@@ -22,7 +22,11 @@ export type VersioningTortoiseResult = { ok: true } | Extract<VersioningCommitRu
 
 export class VersioningCommitLimits {
   static readonly messageMaxCharactersConst = 16_384
-  static readonly targetsMaxConst = 2_000
+  /**
+   * Equal to `FileChangesLimits.listingEntriesMax`: a smaller limit let a review list rows it could
+   * neither save nor commit. The review schemas repeat the literal because they import only zod.
+   */
+  static readonly targetsMaxConst = 5_000
 }
 
 /** A requested review target: a literal path, or a directory with the depth of its selection. */

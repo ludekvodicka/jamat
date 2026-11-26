@@ -123,12 +123,12 @@ export abstract class JsonDocumentStore<TDocument> {
     return true
   }
 
-  /** The same write for a store whose own surface is synchronous. */
-  protected writeDocumentSync(document: unknown): boolean {
+  /** The same write for a store whose own surface is synchronous; `compact` as in `writeDocument`. */
+  protected writeDocumentSync(document: unknown, compact = false): boolean {
     if (!this.mayWrite()) return false
     try {
       AtomicJsonFile.ensureDirectory(dirname(this.file))
-      AtomicJsonFile.write(this.file, document)
+      AtomicJsonFile.write(this.file, document, undefined, compact)
     } catch (error) {
       this.report(this.writeFailureMessage(ErrorText.of(error)))
       return false

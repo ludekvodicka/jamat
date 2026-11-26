@@ -9,12 +9,15 @@ import type {
 import { ProviderTranscriptView } from '../projectManager/providerTranscriptView'
 import { ErrorText } from '../shared/errorText'
 import { PathCompare } from '../shared/pathCompare'
+import { BoundedMap } from '../shared/boundedMap'
 import { FileDiffBuilder } from './diff/fileDiffBuilder'
+import { FileChangesLimits } from './fileChangesLimits'
 import type { FileDiffExecutionContext, FileDiffExecutor } from './diff/fileDiffExecutor'
 import type {
   FileChangeBaseline,
   FileChangeEntry,
   FileChangeGroup,
+  FileChangeNodeKind,
   FileChangesAgentId,
   FileChangesContext,
   FileChangesHistoryResult,
@@ -92,6 +95,20 @@ export interface FileChangesManagerDeps {
   workingSources?: FileChangesWorkingTreeSources
   svnUntracked?: Pick<FileChangesSvnUntracked, 'expand'>
   svnCopied?: Pick<FileChangesSvnCopied, 'expand'>
+  /**
+   * Called after each successful SVN status read with the working-copy root and its entries, so a
+   * reader of the same facts needs no status of its own. It owns no timer and must not throw.
+   */
+  statusObserved?: (root: string, entries: readonly { absolutePath: string; nodeKind: FileChangeNodeKind }[]) => void
+}
+
+/**
+ * Where `sessionChanges` takes a session's touched paths and shell runs from instead of its own
+ * transcript read (D15): the open claims of the uncommitted mark, read from the whole transcript
+ * history. Null when the claims are not known (no worker, or one that never scanned the session).
+ */
+export interface FileChangesSessionClaims {
+  claims(): Promise<{ touched: readonly string[]; shellRuns: readonly FileChangesShellRun[] } | null>
 }
 
 /** The session's own current changes: `vcs` null when no VCS governs its directory. */
@@ -142,6 +159,7 @@ export class FileChangesManager {
   private readonly workingSources: FileChangesWorkingTreeSources
   private readonly svnUntracked: Pick<FileChangesSvnUntracked, 'expand'>
   private readonly svnCopied: Pick<FileChangesSvnCopied, 'expand'>
+  private readonly statusObserved: FileChangesManagerDeps['statusObserved']
 
   constructor(deps: FileChangesManagerDeps) {
     this.perf = deps.perf
@@ -161,6 +179,7 @@ export class FileChangesManager {
     this.workingSources = deps.workingSources ?? new FileChangesWorkingTreeSources({ perf: deps.perf })
     this.svnUntracked = deps.svnUntracked ?? new FileChangesSvnUntracked()
     this.svnCopied = deps.svnCopied ?? new FileChangesSvnCopied()
+    this.statusObserved = deps.statusObserved
   }
 
   async workingTree(
@@ -186,6 +205,7 @@ export class FileChangesManager {
       return { ok: false, code: 'invalid-context', detail: 'Explicit commit paths must be inside their SVN or Git scope' }
     const named = filePath === undefined ? includedPaths : [...includedPaths, filePath]
     const read = await this.workingSources.read(context, requested, filePath, forCommit, named)
+    if (read.selected !== null) this.observed(read.selected.adapter.id, read.selected.detection.root, read.entries)
     let vcsEntries = read.entries
     if (forCommit && read.selection.selected === 'svn') {
       // Untracked first: it can turn a new directory into the files under it, and a copied one
@@ -207,16 +227,18 @@ export class FileChangesManager {
     const registry: FileRegistry = { ids: new Map(), files: new Map() }
     const composeEntries = () => items.map((item) => this.publicEntry(item, item.absolutePath, registry))
     const entries = this.perf ? this.perf.span('fileChanges.poll', composeEntries) : composeEntries()
-    for (const item of items) {
-      const file = registry.files.get(registry.ids.get(PathCompare.normalized(item.absolutePath))!)!
-      // Folder labels show the newest descendant; committing needs the node's own timestamp.
-      const stamp = await lstat(item.absolutePath).then((value) => Math.round(value.mtimeMs)).catch(() => null)
-      file.workingState = { modifiedAt: stamp, vcsEntry: item.repositoryPath !== null }
-      if (forCommit) {
-        try { file.workingState.fingerprint = await FileChangesFingerprint.of(item.absolutePath) }
-        catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
-      }
+    // Bounded rather than one at a time: hashing 2,851 files in sequence took 1.3 s of a 3.1 s commit
+    // listing (2026-11-25).
+    try {
+      await BoundedMap.run(items, FileChangesLimits.listingConcurrency, async (item) => {
+        const file = registry.files.get(registry.ids.get(PathCompare.normalized(item.absolutePath))!)!
+        // Folder labels show the newest descendant; committing needs the node's own timestamp.
+        const stamp = await lstat(item.absolutePath).then((value) => Math.round(value.mtimeMs)).catch(() => null)
+        file.workingState = { modifiedAt: stamp, vcsEntry: item.repositoryPath !== null }
+        if (forCommit) file.workingState.fingerprint = await FileChangesFingerprint.of(item.absolutePath)
+      })
     }
+    catch (error) { return { ok: false, code: 'invalid-context', detail: ErrorText.of(error) } }
     const compose = (): FileChangesWorkingTreeSnapshotResult => {
       const baselines = new Map<string, SnapshotBaseline>()
       const defaultBaseline = read.selected === null
@@ -287,7 +309,10 @@ export class FileChangesManager {
           detail: ErrorText.of(error),
         })),
       ])
-      if (status.ok) vcsEntries = status.value.entries
+      if (status.ok) {
+        vcsEntries = status.value.entries
+        this.observed(selection.selected.adapter.id, selection.selected.detection.root, vcsEntries)
+      }
       else warnings.push(`${selection.selected.adapter.id} status: ${status.detail}`)
       if (history.ok) vcsGroups = history.value
       else warnings.push(`${selection.selected.adapter.id} history: ${history.detail}`)
@@ -346,33 +371,32 @@ export class FileChangesManager {
    * inside it. A path a shell command of the session names and that was last written while that
    * command ran counts too (`FileChangesShellRuns`); a deletion by a shell command has no file time
    * and does not. The status is the authority, so a write the agent reverted is no change.
+   * With `claims` answering, its open claims replace the transcript read: an edit older than the
+   * read's 32 MiB tail counts, and a claim already committed or seen clean after its last write
+   * stays out even when another session dirtied the file since.
    * Main-only, like `readBaseline`: it issues no snapshot and no id.
    */
-  async sessionChanges(context: FileChangesContext, preferredVcs: FileChangesVcsId): Promise<FileChangesSessionResult> {
+  async sessionChanges(context: FileChangesContext, preferredVcs: FileChangesVcsId, claims?: FileChangesSessionClaims): Promise<FileChangesSessionResult> {
     const invalid = await FileChangesManager.invalidContext(context)
     if (invalid !== null) return { ok: false, detail: invalid }
     const warnings: string[] = []
-    const [selection, log] = await Promise.all([
+    const [selection, own] = await Promise.all([
       this.detector.select(context.cwd, preferredVcs),
-      this.readLog(context, warnings, true),
+      this.sessionTouched(context, warnings, claims),
     ])
     if (warnings.length > 0) return { ok: false, detail: warnings.join('; ') }
     const selected = selection.selected
     if (selected === null) return { ok: true, value: { vcs: null, paths: [] } }
-    const touched = new Set<string>()
-    for (const group of log.groups)
-      for (const mutation of group.mutations) {
-        touched.add(PathCompare.comparable(mutation.path))
-        if (mutation.previousPath !== null) touched.add(PathCompare.comparable(mutation.previousPath))
-      }
-    const shells = new FileChangesShellRuns(log.shellRuns)
+    const touched = own.touched
+    const shells = new FileChangesShellRuns(own.shellRuns)
     if (touched.size === 0 && shells.empty) return { ok: true, value: { vcs: selected.adapter.id, paths: [] } }
     let status: Awaited<ReturnType<FileChangesVcs['status']>>
     try { status = await selected.adapter.status(selected.detection) }
     catch (error) { return { ok: false, detail: `${selected.adapter.id} status: ${ErrorText.of(error)}` } }
     if (!status.ok) return { ok: false, detail: `${selected.adapter.id} status: ${status.detail}` }
+    this.observed(selected.adapter.id, selected.detection.root, status.value.entries)
     const bases = [context.cwd, selected.detection.root]
-    const own = await Promise.all(status.value.entries.map(async (entry) => {
+    const owned = await Promise.all(status.value.entries.map(async (entry) => {
       if (touched.has(PathCompare.comparable(entry.absolutePath))
         || entry.previousAbsolutePath !== null && touched.has(PathCompare.comparable(entry.previousAbsolutePath))
         || entry.nodeKind === 'directory' && [...touched].some((path) => PathCompare.isInside(entry.absolutePath, path)))
@@ -382,9 +406,15 @@ export class FileChangesManager {
       const modifiedAt = await lstat(entry.absolutePath).then((stats) => stats.mtimeMs, () => null)
       return modifiedAt !== null && FileChangesShellRuns.ranAt(runs, modifiedAt)
     }))
-    const paths = status.value.entries.filter((_entry, index) => own[index])
+    const paths = status.value.entries.filter((_entry, index) => owned[index])
       .map((entry) => FileChangesListing.displayPath(context.cwd, entry.absolutePath))
     return { ok: true, value: { vcs: selected.adapter.id, paths } }
+  }
+
+  private observed(vcs: FileChangesVcsId, root: string, entries: readonly FileChangesVcsEntry[]): void {
+    if (vcs !== 'svn' || this.statusObserved === undefined) return
+    try { this.statusObserved(root, entries.map(({ absolutePath, nodeKind }) => ({ absolutePath, nodeKind }))) }
+    catch { /* an observer never breaks the read it watches */ }
   }
 
   history(snapshotId: string, cursor: string): FileChangesHistoryResult {
@@ -516,6 +546,25 @@ export class FileChangesManager {
   private static withProperties(result: FileDiffResult, properties: FileChangeEntry['properties']): FileDiffResult {
     if (properties === undefined || !result.ok) return result
     return result.kind === 'text' ? { ...result, data: { ...result.data, properties } } : { ...result, properties }
+  }
+
+  /** The comparable paths the session wrote and its shell runs: from `claims` when it knows them, else from the transcript. */
+  private async sessionTouched(
+    context: FileChangesContext,
+    warnings: string[],
+    claims: FileChangesSessionClaims | undefined,
+  ): Promise<{ touched: ReadonlySet<string>; shellRuns: readonly FileChangesShellRun[] }> {
+    const claimed = claims === undefined ? null : await claims.claims()
+    if (claimed !== null)
+      return { touched: new Set(claimed.touched.map((path) => PathCompare.comparable(path))), shellRuns: claimed.shellRuns }
+    const log = await this.readLog(context, warnings, true)
+    const touched = new Set<string>()
+    for (const group of log.groups)
+      for (const mutation of group.mutations) {
+        touched.add(PathCompare.comparable(mutation.path))
+        if (mutation.previousPath !== null) touched.add(PathCompare.comparable(mutation.previousPath))
+      }
+    return { touched, shellRuns: log.shellRuns }
   }
 
   private async readLogGroups(
@@ -665,8 +714,9 @@ export class FileChangesManager {
   ): FileChangeGroup[] {
     const recent = groups.slice(-FileChangesManager.chatHistoryLimitConst)
     const offset = groups.length - recent.length
+    const latestAfterGroup = FileChangesManager.latestPathsAfterGroups(groups, offset)
     return recent.map((group, recentIndex) => {
-      const groupIndex = offset + recentIndex
+      const latestMap = latestAfterGroup[recentIndex]!
       const baseline: FileChangeBaseline = {
         baselineId: randomUUID(),
         kind: 'chat-message',
@@ -676,7 +726,7 @@ export class FileChangesManager {
       }
       const files = new Map<string, SnapshotBaselineFile>()
       const entries = FileChangesManager.lastGroupMutations(group).map((mutation) => {
-        const currentPath = FileChangesManager.latestPathOf(mutation.path, groups.slice(groupIndex + 1))
+        const currentPath = latestMap.get(PathCompare.comparable(mutation.path)) ?? mutation.path
         const item = this.listing.fromLogMutation(cwd, mutation)
         const publicEntry = this.publicEntry(item, currentPath, registry)
         files.set(publicEntry.fileId, {
@@ -741,15 +791,29 @@ export class FileChangesManager {
     return [...found.values()]
   }
 
-  private static latestPathOf(path: string, groups: readonly FileChangesLogGroup[]): string {
-    let current = path
-    for (const group of groups)
-      for (const mutation of group.mutations)
-        if (mutation.kind === 'move'
-          && mutation.previousPath !== null
-          && PathCompare.comparable(mutation.previousPath) === PathCompare.comparable(current))
-          current = mutation.path
-    return current
+  /**
+   * Resolves renamed paths across subsequent groups in one backwards O(M) pass rather than
+   * rescanning every later mutation per entry.
+   */
+  static latestPathsAfterGroups(
+    groups: readonly FileChangesLogGroup[],
+    fromIndex = 0,
+  ): ReadonlyArray<ReadonlyMap<string, string>> {
+    const count = Math.max(0, groups.length - fromIndex)
+    const result = new Array<ReadonlyMap<string, string>>(count)
+    const resolved = new Map<string, string>()
+    for (let groupIndex = groups.length - 1; groupIndex >= fromIndex; groupIndex -= 1) {
+      result[groupIndex - fromIndex] = new Map(resolved)
+      const mutations = groups[groupIndex]!.mutations
+      for (let mutationIndex = mutations.length - 1; mutationIndex >= 0; mutationIndex -= 1) {
+        const mutation = mutations[mutationIndex]!
+        if (mutation.kind === 'move' && mutation.previousPath !== null) {
+          const target = resolved.get(PathCompare.comparable(mutation.path)) ?? mutation.path
+          resolved.set(PathCompare.comparable(mutation.previousPath), target)
+        }
+      }
+    }
+    return result
   }
 
   private static async invalidContext(context: FileChangesContext): Promise<string | null> {

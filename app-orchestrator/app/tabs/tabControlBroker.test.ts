@@ -1328,6 +1328,33 @@ describe('app-client-ui/app/tabs/tabControlBroker', () => {
       await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'todos-opened', panelId: 'session-1', windowId: 'holder' } })
     })
   })
+
+  describe('openProcesses', () => {
+    it('opens a missing tab first, then sends open-processes where it landed', async () => {
+      const harness = new TabControlHarness()
+      const opened = harness.broker.openProcesses('session-1', 'Project - 001')
+
+      const sessionCommand = await harness.command(0)
+      expect(sessionCommand).toMatchObject({ kind: 'open-session', sessionId: 'session-1', activate: true })
+      harness.acknowledge('main', sessionCommand, { kind: 'opened', panelId: 'terminal:session-1' })
+      const processesCommand = await harness.command(1)
+      expect(processesCommand).toEqual({ kind: 'open-processes', requestId: 'request-2', panelId: 'terminal:session-1', sessionId: 'session-1' })
+      harness.acknowledge('main', processesCommand, { kind: 'processes-opened', panelId: 'terminal:session-1' })
+
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'processes-opened', panelId: 'terminal:session-1', windowId: 'main' } })
+    })
+
+    it("sends open-processes to the window that holds the session's local tab", async () => {
+      const harness = new TabControlHarness()
+      harness.session('session-1', 'holder')
+      const opened = harness.broker.openProcesses('session-1', 'Project - 001')
+
+      const command = await harness.command()
+      expect(command).toEqual({ kind: 'open-processes', requestId: 'request-1', panelId: 'session-1', sessionId: 'session-1' })
+      harness.acknowledge('holder', command, { kind: 'processes-opened', panelId: 'session-1' })
+      await expect(opened).resolves.toEqual({ ok: true, value: { kind: 'processes-opened', panelId: 'session-1', windowId: 'holder' } })
+    })
+  })
 })
 
 

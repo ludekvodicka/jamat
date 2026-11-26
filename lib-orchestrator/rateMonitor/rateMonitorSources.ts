@@ -18,8 +18,12 @@ import { RolloutRateReader } from './codex/rolloutRateReader'
  * pair: whether this machine has a Claude token at all.
  */
 export class RateMonitorSources {
-  static statusLine(directory: string, accountFor: ConstructorParameters<typeof StatusLineRateReader>[1]): StatusLineRateReader {
-    return new StatusLineRateReader(directory, accountFor)
+  static statusLine(
+    directory: string,
+    accountFor: ConstructorParameters<typeof StatusLineRateReader>[1],
+    options?: ConstructorParameters<typeof StatusLineRateReader>[2],
+  ): StatusLineRateReader {
+    return new StatusLineRateReader(directory, accountFor, options)
   }
 
   static rollouts(home: string, accounts: () => Promise<readonly AccountView[]>): RolloutRateReader {

@@ -78,6 +78,7 @@ export class RemoteControlConst {
     'sessions.scripts',
     'sessions.clearActions',
     'sessions.runScript',
+    'sessions.stopScript',
     'sessions.finishWorktree',
     'sessions.updateMain',
     'sessions.worktreeReview',
@@ -133,6 +134,7 @@ export class RemoteControlConst {
     'terminal.deliver',
     'sessions.clearActions',
     'sessions.runScript',
+    'sessions.stopScript',
     'sessions.finishWorktree',
     'sessions.updateMain',
     'sessions.worktreeReview',
@@ -173,8 +175,9 @@ export class RemoteControlConst {
 }
 
 /**
- * The bounds of one `terminal.deliver`. The typed cap keeps a wrapped draft inside the composer
- * reader's 16-row window at 80 columns; a paste collapses to a placeholder and has no such limit.
+ * The bounds of one `terminal.deliver`. The typed cap keeps a wrapped draft compact; paste mode has
+ * no such limit because Claude and Codex collapse pastes to a placeholder, and Antigravity's
+ * inline-expanded paste is read through `ScreenTail.composerRowsConst`.
  */
 export class RemoteControlDeliverConst {
   static readonly textLengthConst = 800

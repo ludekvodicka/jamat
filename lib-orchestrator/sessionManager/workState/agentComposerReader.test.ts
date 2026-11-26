@@ -203,6 +203,94 @@ describe('lib-orchestrator/sessionManager/workState/agentComposerReader', () => 
       .toThrow('Unknown agent')
   })
 
+  it('reads a tall expanded Antigravity paste and tall echo from composerFrameOf while rejecting historical boxes and queue rows', () => {
+    const rule = '─'.repeat(120)
+    const draftLines = [
+      '2 conflicts wait for the worker in Q:\\Project\\.worktrees\\116.',
+      'Preserve both sides, edit the working files, then settle each path using the Jamat CLI.',
+      ...Array.from({ length: 31 }, (_, index) => `command line ${index + 1} '--option' 'merged'`),
+      "Once every file holds both sides: '--all' '--option' 'merged'",
+    ]
+    const tallPasteScreen = [
+      '  Earlier reply',
+      rule,
+      `> ${draftLines[0]}`,
+      ...draftLines.slice(1).map((line) => `  ${line}`),
+      rule,
+      'auto · Gemini 4 Neon · high',
+    ]
+    const projection = { screen: '', cols: 120, screenLines: tallPasteScreen, screenLinesStyled: true as const }
+    expect(AgentComposerReader.read('antigravity', ScreenTail.frameOf(projection)).composer).toEqual({ state: 'absent' })
+    expect(AgentComposerReader.read('antigravity', ScreenTail.composerFrameOf(projection)).composer)
+      .toEqual({ state: 'text', text: draftLines.join('\n') })
+
+    const tallEchoScreen = [
+      `> ${draftLines[0]}`,
+      ...draftLines.slice(1).map((line) => `  ${line}`),
+      '',
+      '⣾  Generating...',
+      rule,
+      '> Auto mode: edits & safe commands auto-approved (shift+tab to cycle)',
+      rule,
+      'esc to cancel                                                              auto · Gemini 4 Neon · high',
+    ]
+    expect(AgentComposerReader.read('antigravity', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: tallEchoScreen, screenLinesStyled: true,
+    }))).toMatchObject({
+      composer: { state: 'empty' },
+      echoHead: ScreenTail.normalizeTty(draftLines[0]),
+    })
+
+    // A quoted ruled block above a permission dialog is too far from the bottom to be a live box.
+    const quotedAboveDialog = [
+      rule,
+      '> quoted block',
+      rule,
+      ...Array.from({ length: 18 }, (_, index) => `  dialog row ${index + 1}`),
+      '↑/↓ Navigate · enter Confirm',
+    ]
+    expect(AgentComposerReader.read('antigravity', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: quotedAboveDialog, screenLinesStyled: true,
+    })).composer).toEqual({ state: 'absent' })
+    expect(AgentComposerReader.read('claude', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: quotedAboveDialog, screenLinesStyled: true,
+    })).composer).toEqual({ state: 'absent' })
+
+    // An old Codex echo far above a footerless dialog must not read as a live composer, even if
+    // indented dialog rows sit beneath it.
+    const codexOldEcho = [
+      '› old user message',
+      ...Array.from({ length: 18 }, (_, index) => `  dialog row ${index + 1}`),
+    ]
+    expect(AgentComposerReader.read('codex', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: codexOldEcho, screenLinesStyled: true,
+    })).composer).toEqual({ state: 'absent' })
+
+    // Historical queued hints more than 16 rows above the composer must not trigger queuedRow.
+    const oldClaudeQueue = [
+      '  Press up to edit queued messages · ctrl+x ctrl+s to send now',
+      ...Array.from({ length: 18 }, (_, index) => `  reply line ${index + 1}`),
+      rule,
+      '> ',
+      rule,
+    ]
+    expect(AgentComposerReader.read('claude', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: oldClaudeQueue, screenLinesStyled: true,
+    })).queuedRow).toBe(false)
+
+    const oldCodexQueue = [
+      '• Queued follow-up inputs',
+      ...Array.from({ length: 18 }, (_, index) => `  reply line ${index + 1}`),
+      '',
+      '› \x1b[2mAsk Codex to do anything\x1b[22m',
+      '',
+      '  gpt-6-astra xhigh · Q:\\PROJECT',
+    ]
+    expect(AgentComposerReader.read('codex', ScreenTail.composerFrameOf({
+      screen: '', cols: 120, screenLines: oldCodexQueue, screenLinesStyled: true,
+    })).queuedRow).toBe(false)
+  })
+
   describe('content', () => {
     const contentFixtures = fixtures.filter((fixture) => fixture.expected.content !== undefined)
     const rule = '─'.repeat(120)

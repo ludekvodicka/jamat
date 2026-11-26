@@ -4,7 +4,7 @@ import { SyncStep } from '../worktrees/worktreeFinish'
 import { FinishDriver } from '../worktrees/finish/finishDriver'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { constants, getPriority, setPriority, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -250,6 +250,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       onRemovedItself?: SessionManagerDeps['onRemovedItself']
       onScriptCollapsed?: SessionManagerDeps['onScriptCollapsed']
       erase?: SessionManagerDeps['erase']
+      perf?: SessionManagerDeps['perf']
     },
   ): Client {
     const errors: string[] = []
@@ -294,6 +295,7 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       onRemovedItself: options?.onRemovedItself,
       onScriptCollapsed: options?.onScriptCollapsed,
       erase: options?.erase,
+      perf: options?.perf,
       // The machine's real name would put the host running the suite into an asserted block.
       computerName: () => 'TEST-PC',
     })
@@ -971,6 +973,36 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.runScript('nobody', { command: 'pnpm test' })).toMatchObject({ ok: false, code: 'not-found' })
   })
 
+  it('stops an own running service through stopScriptRun and refuses another parent or a gated run', async () => {
+    const context = await world()
+    seedRecords(context, [
+      recordOf(context, 'p', { life: 'live' }),
+      recordOf(context, 'other', { life: 'live' }),
+      recordOf(context, 'w', { life: 'starting', binding: null, pendingOperationId: 'op-w', pendingOperationKind: 'create', pendingSetup: { setupSessionId: 'setup-run' } }),
+      recordOf(context, 'setup-run', {
+        life: 'live',
+        commands: [{ command: 'pnpm install', cwd: context.root }],
+        scriptOf: { sessionId: 'w', phase: 'before', scriptId: 'setup', name: 'setup' },
+      }),
+    ])
+    context.runtimes.set('p', runtime('p'))
+    context.runtimes.set('other', runtime('other'))
+    context.runtimes.set('setup-run', runtime('setup-run'))
+    context.publishDescriptor()
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+
+    context.host.handle('runtime.stop', (body) => ({ body: { servedByHostInstanceId: 'fake-host-1', target: body.target, diagnostic: 'stopped' } }))
+    const { runId } = valueOf(await client.manager.runScript('p', { kind: 'service', command: 'pnpm dev', title: 'web' }))
+    expect(await client.manager.stopScriptRun('other', runId)).toMatchObject({ ok: false, code: 'not-found' })
+    expect(await client.manager.stopScriptRun('w', 'setup-run')).toMatchObject({ ok: false, code: 'invalid-spec' })
+    expect(await client.manager.stopScriptRun('p', runId)).toEqual({ ok: true, value: undefined })
+    expect(context.host.calls.filter((call) => call.name === 'runtime.stop')
+      .map((call) => (call.body as { target: { runtimeSessionId: string } }).target.runtimeSessionId)).toContain(runId)
+  })
+
   it('composes the last output line of a running run as its step, and never one for its parent', async () => {
     const context = await world()
     seedRecords(context, [recordOf(context, 'p', { life: 'live' })])
@@ -1468,6 +1500,64 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     expect(await client.manager.terminalComposer('composer-blind')).toEqual({ ok: false, code: 'no-projection' })
   })
 
+  it('reads a tall Antigravity composer box through composerViewConst while keeping work hint on the 16-row frame', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const binding = { hostInstanceId: context.host.descriptor().hostInstanceId, generation: 1 }
+    const directory = { mode: 'project' as const, categoryId: 'code', projectPath: join(context.categoryRoot, 'Alpha') }
+    context.runtimes.set('composer-agy', runtime('composer-agy'))
+    seedRecords(context, [recordOf(context, 'composer-agy', {
+      kind: 'agent', life: 'live', binding, directory,
+      agent: { agentId: 'antigravity', launchMode: 'new', nativeSessionId: 'agy-native' },
+    })])
+    const client = clientOf(context)
+    await client.start()
+    await writable(client)
+    await reconciled(client)
+    const rule = '─'.repeat(120)
+    const draftLines = [
+      '2 conflicts wait for the worker in Q:\\Project\\.worktrees\\116.',
+      ...Array.from({ length: 32 }, (_, index) => `detail line ${index + 1}`),
+      "'--all' '--option' 'merged'",
+    ]
+    const screenLines = [
+      '  Previous reply',
+      rule,
+      `> ${draftLines[0]}`,
+      ...draftLines.slice(1).map((line) => `  ${line}`),
+      rule,
+      'auto · Gemini 4 Neon · high',
+    ]
+    const views: ({ screenScrollbackRows?: number } | undefined)[] = []
+    context.host.handle('runtime.inspect', (body) => {
+      const target = body.target as RuntimeRef
+      const session = context.runtimes.get(target.runtimeSessionId)!
+      views.push(body.view as { screenScrollbackRows?: number } | undefined)
+      return {
+        body: {
+          session,
+          projection: { ...session, raw: '', screen: '', screenLines, screenLinesStyled: true },
+        } satisfies RuntimeInspectResult,
+      }
+    })
+
+    expect(await client.manager.terminalComposer('composer-agy')).toEqual({
+      ok: true,
+      reading: {
+        agentId: 'antigravity',
+        alive: true,
+        hint: 'unknown',
+        composer: { state: 'text', text: draftLines.join('\n') },
+        queuedRow: false,
+        echoHead: null,
+        pastePlaceholders: 0,
+        onlyPlaceholders: false,
+      },
+    })
+    expect(views.filter((view) => view?.screenScrollbackRows === ScreenTail.composerRowsConst))
+      .toEqual([ScreenTail.composerViewConst])
+  })
+
   it('reads an agent session\'s whole draft off one viewport inspect and refuses what has none', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -1817,6 +1907,22 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     await writable(restarted)
     const next = valueOf(await restarted.manager.createSession({ kind: 'shell', directory, title: 'Next task' }))
     expect(next.number).toBe('002')
+  }, 20_000)
+
+  it('measures how long a create waited in the session queue and in its closing reconcile', async () => {
+    const context = await world()
+    context.publishDescriptor()
+    const operations: string[] = []
+    const client = clientOf(context, { perf: {
+      span: (_name, work) => work(),
+      operation: (name, work) => { operations.push(name); return work() },
+    } })
+    await client.start()
+    await writable(client)
+    operations.length = 0
+    valueOf(await client.manager.createSession({ kind: 'shell', directory: { mode: 'adHoc', path: context.root }, title: 'Measured' }))
+    expect(operations).toContain('sessions.queue')
+    expect(operations).toContain('sessions.reconcile')
   }, 20_000)
 
   it('keeps directory creates below a project or outside the catalog in their requested directory', async () => {
@@ -3899,6 +4005,335 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     if (!refusal.ok) expect(refusal.code).toBe('not-found')
   }, 20_000)
 
+  describe('service lifetime across restarts', () => {
+    function serviceRecord(context: World, runId: string, parentId: string): SessionRecord {
+      return recordOf(context, runId, {
+        life: 'live',
+        title: 'web',
+        binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+        commands: [{ command: 'pnpm dev', cwd: context.root }],
+        scriptOf: { sessionId: parentId, phase: 'inner', scriptId: 'service', name: 'web' },
+      })
+    }
+
+    function requestedRecord(context: World, runId: string, parentId: string): SessionRecord {
+      return recordOf(context, runId, {
+        life: 'live',
+        title: 'tests',
+        binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+        commands: [{ command: 'pnpm test', cwd: context.root }],
+        scriptOf: { sessionId: parentId, phase: 'inner', scriptId: 'requested', name: 'tests' },
+      })
+    }
+
+    it('keeps a live service with its binding across restartSession while stopping a requested run', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+        requestedRecord(context, 'req-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1', 'req-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      expect(await client.manager.restartSession('p1')).toEqual({ ok: true, value: undefined })
+      expect(sessionOf(client, 'p1')?.life).toBe('live')
+      expect(sessionOf(client, 'svc-1')?.life).toBe('live')
+      expect(storedRecord(context, 'svc-1')?.binding).toEqual({ hostInstanceId: 'fake-host-1', generation: 1 })
+      expect(storedRecord(context, 'svc-1')?.stopRequested).toBeUndefined()
+      expect(context.runtimes.has('svc-1')).toBe(true)
+      expect(context.runtimes.has('req-1')).toBe(false)
+      expect(client.manager.heldParents(Date.now()).has('p1')).toBe(false)
+    }, 20_000)
+
+    it('stops a live service on stopSession and collapses it with a stopped history entry', async () => {
+      const context = await world()
+      context.host.handle('runtime.stop', (body) => {
+        const target = body.target as RuntimeRef
+        const existing = context.runtimes.get(target.runtimeSessionId)
+        if (existing) context.runtimes.set(target.runtimeSessionId, { ...existing, alive: false, exitCode: 0, exitedAt: Date.now() })
+        return { body: { servedByHostInstanceId: context.host.descriptor().hostInstanceId, target, diagnostic: 'stopped' } satisfies RuntimeMutationAck }
+      })
+      seedRecords(context, [
+        recordOf(context, 'p1', {
+          life: 'live',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          worktree: { kind: 'svn', repositoryRoot: context.root, worktreePath: context.root, branch: 'http://svn.local/p', baseCommit: 'r1' },
+        }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      expect(await client.manager.stopSession('p1')).toEqual({ ok: true, value: undefined })
+      // Additional reconcile passes settle and collapse the stopped service.
+      await client.manager.removeSession('never-existed')
+      await client.manager.removeSession('never-existed')
+      expect(storedRecord(context, 'svc-1')).toBeUndefined()
+      expect(storedRecord(context, 'p1')?.scriptRuns).toContainEqual(expect.objectContaining({
+        runId: 'svc-1', scriptId: 'service', outcome: 'stopped',
+      }))
+    }, 20_000)
+
+    it('clears the hold when restart reopen fails, and stops the service on the next pass', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      context.host.handle('runtime.create', () => ({ status: 400, body: { error: 'reopen rejected' } }))
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      const restarted = await client.manager.restartSession('p1')
+      expect(restarted.ok).toBe(false)
+      expect(client.manager.heldParents(Date.now()).has('p1')).toBe(false)
+
+      // Next pass sees parent ended with no hold and stops the service.
+      await client.manager.removeSession('never-existed')
+      expect(context.runtimes.has('svc-1')).toBe(false)
+    }, 20_000)
+
+    it('stops protecting a service once the restart hold expires', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      const now = Date.now()
+      const past = now - SessionManager.restartHoldMillisecondsConst
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(past)
+      try {
+        expect(await client.manager.stopAndWaitSession('p1', 'restart')).toEqual({ ok: true, value: undefined })
+        expect(client.manager.heldParents(past).has('p1')).toBe(true)
+        await client.manager.removeSession('never-existed')
+        expect(context.runtimes.has('svc-1')).toBe(true)
+      } finally {
+        nowSpy.mockRestore()
+      }
+      // Once the real clock is past the hold deadline (while the Host lease stays valid), the next pass stops the service.
+      expect(client.manager.heldParents(Date.now()).has('p1')).toBe(false)
+      await client.manager.removeSession('never-existed')
+      expect(context.runtimes.has('svc-1')).toBe(false)
+    }, 20_000)
+
+    it('stops the service when the agent ends by itself without a hold', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      context.runtimes.set('p1', runtime('p1', { alive: false, exitCode: 0, exitedAt: Date.now() }))
+      await client.manager.removeSession('never-existed')
+      await client.manager.removeSession('never-existed')
+      expect(sessionOf(client, 'p1')?.life).toBe('ended')
+      expect(context.runtimes.has('svc-1')).toBe(false)
+    }, 20_000)
+
+    it('keeps a live service running through switchAccount', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      seedRecords(context, [
+        recordOf(context, 'switch', {
+          kind: 'agent',
+          life: 'live',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'conversation', accountId: 'a' },
+          accountSegments: [{ accountId: 'a', from: 1_000, to: null }],
+        }),
+        serviceRecord(context, 'svc-1', 'switch'),
+      ])
+      for (const id of ['switch', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context, {
+        accounts: {
+          exists: () => true,
+          defaultAccount: () => ({ accountId: 'main', noFreeAccount: false }),
+          launchEnv: async () => ({}),
+          usable: async () => true,
+        },
+      })
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      expect(await client.manager.switchAccount('switch', 'b')).toEqual({ ok: true, value: undefined })
+      expect(sessionOf(client, 'switch')?.life).toBe('live')
+      expect(sessionOf(client, 'svc-1')?.life).toBe('live')
+      expect(context.runtimes.has('svc-1')).toBe(true)
+    }, 20_000)
+  })
+
+  describe('services across Host restart', () => {
+    function serviceRecord(context: World, runId: string, parentId: string, cwd = context.root): SessionRecord {
+      return recordOf(context, runId, {
+        life: 'live',
+        title: 'web',
+        binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+        commands: [{ command: 'pnpm dev', cwd }],
+        scriptOf: { sessionId: parentId, phase: 'inner', scriptId: 'service', name: 'web' },
+      })
+    }
+
+    it('restarts the Host with a live service, restores it with the same command/cwd/title and records the old run stopped', async () => {
+      const context = await world()
+      const serviceCwd = join(context.root, 'service-app')
+      mkdirSync(serviceCwd, { recursive: true })
+      seedRecords(context, [
+        recordOf(context, 'p1', {
+          kind: 'agent',
+          life: 'live',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: 'p1-conversation' },
+        }),
+        serviceRecord(context, 'svc-1', 'p1', serviceCwd),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context, { spawnPublishes: true })
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+      await replacementHost(context)
+
+      expect(await client.manager.restartHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
+      expect(sessionOf(client, 'p1')?.life).toBe('live')
+
+      // Settle and collapse the old lost service run now that the parent is live on the replacement Host.
+      await client.manager.removeSession('never-existed')
+      await client.manager.removeSession('never-existed')
+      expect(storedRecord(context, 'svc-1')).toBeUndefined()
+      expect(storedRecord(context, 'p1')?.scriptRuns).toContainEqual(expect.objectContaining({
+        runId: 'svc-1', scriptId: 'service', outcome: 'stopped',
+      }))
+
+      const restored = client.manager.snapshot().sessions.filter((session) => session.script?.scriptId === 'service')
+      expect(restored).toHaveLength(1)
+      expect(restored[0].sessionId).not.toBe('svc-1')
+      expect(restored[0]).toMatchObject({ life: 'live', title: 'web', script: { parentId: 'p1', phase: 'inner', scriptId: 'service' } })
+      expect(storedRecord(context, restored[0].sessionId)?.commands).toEqual([{ command: 'pnpm dev', cwd: serviceCwd }])
+    }, 20_000)
+
+    it('leaves every service live and unmarked when controller.restart is refused, and a later stop still stops it', async () => {
+      const context = await world()
+      handleStop(context, { exits: true })
+      context.host.handle('host.stop', () => ({ status: 500, body: { error: 'host refused stop' } }))
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+
+      const restarted = await client.manager.restartHost('fake-host-1')
+      expect(restarted.ok).toBe(false)
+      expect(sessionOf(client, 'svc-1')?.life).toBe('live')
+      expect(storedRecord(context, 'svc-1')?.stopRequested).toBeUndefined()
+      expect(context.runtimes.has('svc-1')).toBe(true)
+
+      expect(await client.manager.stopSession('p1')).toEqual({ ok: true, value: undefined })
+      expect(context.runtimes.has('p1')).toBe(false)
+      expect(context.runtimes.has('svc-1')).toBe(false)
+    }, 20_000)
+
+    it('does not start a service whose parent failed to reopen during Host restart and adds no service failure', async () => {
+      const context = await world()
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context, { spawnPublishes: true })
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+      const replacement = await replacementHost(context)
+      replacement.handle('runtime.create', (body) => {
+        if (body.runtimeSessionId === 'p1') return { status: 400, body: { error: 'parent launch rejected' } }
+        return { body: { session: runtime(String(body.runtimeSessionId)), hostInstanceId: 'replacement-host' } satisfies RuntimeResult }
+      })
+
+      const result = await client.manager.restartHost('fake-host-1')
+      expect(result).toMatchObject({ ok: false, code: 'op-rejected' })
+      if (result.ok) throw new Error('expected restartHost to report parent failure')
+      expect(result.detail).toContain('p1')
+      expect(result.detail).not.toContain('web')
+      expect(replacement.calls.filter((call) => call.name === 'runtime.create').map((call) => call.body.runtimeSessionId))
+        .toEqual(['p1'])
+      expect(client.manager.snapshot().sessions.filter((session) => session.script?.scriptId === 'service' && session.life === 'live'))
+        .toEqual([])
+    }, 20_000)
+
+    it('restores nothing after stopHost with a live service', async () => {
+      const context = await world()
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        serviceRecord(context, 'svc-1', 'p1'),
+      ])
+      for (const id of ['p1', 'svc-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context, { spawnPublishes: true })
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+      const file = HostDescriptorPaths.descriptorFile(context.configIdentity, 'development')
+      context.host.handle('host.stop', () => {
+        context.host.publish({ kind: 'host-stopping' })
+        rmSync(file)
+        return { body: { stopping: true, live: context.runtimes.size } }
+      })
+
+      expect(await client.manager.stopHost('fake-host-1')).toEqual({ ok: true, value: { warnings: [] } })
+      await vi.waitFor(() => expect(client.manager.snapshot().host.presence).toBe('unreachable'))
+      expect(client.spawns()).toBe(0)
+      expect(storedRecord(context, 'svc-1')?.stopRequested).toBeUndefined()
+
+      // Even if a replacement Host starts later, nothing restores the stopped Host's service.
+      const replacement = await replacementHost(context)
+      context.publishDescriptor()
+      await writable(client)
+      await client.manager.removeSession('never-existed')
+      await client.manager.removeSession('never-existed')
+      expect(replacement.calls.filter((call) => call.name === 'runtime.create')).toEqual([])
+      expect(storedRecord(context, 'svc-1')).toBeUndefined()
+    }, 20_000)
+  })
+
   it('reports a live runtime nobody recorded as an orphan, and adopts it into a record', async () => {
     const context = await world()
     context.publishDescriptor()
@@ -4239,8 +4674,8 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     } finally { idleness.mockRestore(); resumed.mockRestore() }
   }, 20_000)
 
-  // Shells alone over a finished turn: idle, with the shells beside it on the wire.
-  it('publishes an idle agent whose background shells still run', async () => {
+  // Native Claude background shells read background; `shellsRunning` comes only from a live service on an idle agent.
+  it('publishes background for native shells and shellsRunning only for an idle agent with a live service', async () => {
     const context = await world()
     context.publishDescriptor()
     const client = clientOf(context)
@@ -4253,12 +4688,67 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
     }))
     const running = context.runtimes.get(created.sessionId)
     if (!running) throw new Error('the fake Host lost the runtime it created')
-    context.screens.set(created.sessionId, screenOf('claude-live-background-tasks.json'))
-    context.runtimes.set(created.sessionId, { ...running, outputSeq: 7, lastOutputAt: Date.now() })
+
+    // Idle with no service: plain idle.
+    context.screens.set(created.sessionId, screenOf('claude-live-idle.json'))
+    context.runtimes.set(created.sessionId, { ...running, outputSeq: 7, lastOutputAt: Date.now() - 20_000 })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info?.activity).toBe('idle')
+      expect(info?.shellsRunning).toBeUndefined()
+    }, { timeout: 10_000 })
+
+    // A live requested run does not set shellsRunning.
+    const requested = valueOf(await client.manager.runScript(created.sessionId, { command: 'npm test', title: 'tests' }))
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info?.activity).toBe('idle')
+      expect(info?.shellsRunning).toBeUndefined()
+    }, { timeout: 10_000 })
+    const requestedRuntime = context.runtimes.get(requested.runId)
+    if (!requestedRuntime) throw new Error('the fake Host lost the requested runtime')
+    context.runtimes.set(requested.runId, { ...requestedRuntime, alive: false, exitCode: 0, exitedAt: Date.now() })
+
+    // A live service on an idle agent sets shellsRunning.
+    const service = valueOf(await client.manager.runScript(created.sessionId, { command: 'npm run dev', title: 'dev', kind: 'service' }))
     await vi.waitFor(() => {
       const info = sessionOf(client, created.sessionId)
       expect(info).toMatchObject({ activity: 'idle', shellsRunning: true })
-      expect(info?.activityDetail).toBeUndefined()
+    }, { timeout: 10_000 })
+
+    // While working with a live service, shellsRunning is omitted; returning to idle restores it and moves the revision.
+    context.screens.set(created.sessionId, screenOf('claude-working-spinner.json'))
+    context.runtimes.set(created.sessionId, { ...running, outputSeq: 8, lastOutputAt: Date.now() })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info?.activity).toBe('working')
+      expect(info?.shellsRunning).toBeUndefined()
+    }, { timeout: 10_000 })
+    const workingRevision = client.manager.snapshot().revision
+    context.runtimes.set(created.sessionId, { ...running, outputSeq: 9, lastOutputAt: Date.now() - 20_000 })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info).toMatchObject({ activity: 'idle', shellsRunning: true })
+      expect(client.manager.snapshot().revision).toBeGreaterThan(workingRevision)
+    }, { timeout: 10_000 })
+
+    // Ending the service clears shellsRunning.
+    const serviceRuntime = context.runtimes.get(service.runId)
+    if (!serviceRuntime) throw new Error('the fake Host lost the service runtime')
+    context.runtimes.set(service.runId, { ...serviceRuntime, alive: false, exitCode: 0, exitedAt: Date.now() })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info?.activity).toBe('idle')
+      expect(info?.shellsRunning).toBeUndefined()
+    }, { timeout: 10_000 })
+
+    // Native Claude background shells read background, never idle with shellsRunning.
+    context.screens.set(created.sessionId, screenOf('claude-live-background-tasks.json'))
+    context.runtimes.set(created.sessionId, { ...running, outputSeq: 10, lastOutputAt: Date.now() })
+    await vi.waitFor(() => {
+      const info = sessionOf(client, created.sessionId)
+      expect(info).toMatchObject({ activity: 'working', activityDetail: 'background' })
+      expect(info?.shellsRunning).toBeUndefined()
     }, { timeout: 10_000 })
   })
 
@@ -4778,5 +5268,180 @@ describe('lib-orchestrator/sessionManager/sessionManager', () => {
       expect(existsSync(join(project, CheckpointLayout.storeRelativeConst))).toBe(false)
       expect(existsSync(join(project, '.worktrees'))).toBe(false)
     })
+
+    it('cleans ephemeral statusline/identity/context files on removal and sweeps stale orphans on startup', async () => {
+      const context = await world()
+      const seed = (directory: string, name: string, ageDays?: number): string => {
+        mkdirSync(directory, { recursive: true })
+        const file = join(directory, name)
+        writeFileSync(file, '{}', 'utf8')
+        if (ageDays !== undefined) {
+          const timestamp = (Date.now() - ageDays * 24 * 60 * 60 * 1000) / 1000
+          utimesSync(file, timestamp, timestamp)
+        }
+        return file
+      }
+      const recordsFile = OrchestratorPaths.sessionRecordsFile(context.configIdentity, 'development')
+      mkdirSync(join(recordsFile, '..'), { recursive: true })
+      const endedRecord: SessionRecord = {
+        sessionId: 's-ended-cleanup',
+        kind: 'agent',
+        title: 'Ended agent',
+        directory: { mode: 'adHoc', path: context.categoryRoot },
+        life: 'ended',
+        binding: null,
+        createdAt: Date.now() - 10_000,
+        endedAt: Date.now() - 5_000,
+        agent: { agentId: 'claude', launchMode: 'new', nativeSessionId: '11111111-1111-4111-8111-111111111111' },
+      }
+      writeFileSync(recordsFile, JSON.stringify({
+        schemaVersion: 1,
+        savedAt: Date.now(),
+        records: [endedRecord],
+      }), 'utf8')
+
+      const claudeStatusDir = OrchestratorPaths.claudeStatusLineDirectory(context.configIdentity, 'development')
+      const claudeIdDir = OrchestratorPaths.claudeIdentitiesDirectory(context.configIdentity, 'development')
+      const claudeCtxDir = OrchestratorPaths.claudeContextSnapshotsDirectory(context.configIdentity, 'development')
+      const agyStatusDir = OrchestratorPaths.antigravityStatusLineDirectory(context.configIdentity, 'development')
+      const codexDir = join(OrchestratorPaths.codexSessionsDirectory(context.configIdentity, 'development'), 's-ended-cleanup')
+
+      const relay = seed(claudeStatusDir, 'relay.cjs', 30)
+      const staleOrphan = seed(claudeStatusDir, 'settings-orphan-old.json', 10)
+      const staleOrphanId = seed(claudeIdDir, 'orphan-old.json', 10)
+      const staleAgyOrphan = seed(agyStatusDir, 'settings-orphan-old.json', 10)
+      const knownSettings = seed(claudeStatusDir, 'settings-s-ended-cleanup.json', 10)
+      const knownId = seed(claudeIdDir, 's-ended-cleanup.json', 10)
+      const knownCtx = seed(claudeCtxDir, '11111111-1111-4111-8111-111111111111.json', 10)
+      const codexLaunch = seed(codexDir, 'launch.json', 10)
+
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+
+      // Startup sweep removed stale orphans while keeping shared relay and known session files.
+      expect(existsSync(staleOrphan)).toBe(false)
+      expect(existsSync(staleOrphanId)).toBe(false)
+      expect(existsSync(staleAgyOrphan)).toBe(false)
+      expect(existsSync(relay)).toBe(true)
+      expect(existsSync(knownSettings)).toBe(true)
+      expect(existsSync(knownId)).toBe(true)
+      expect(existsSync(knownCtx)).toBe(true)
+
+      // Removing the session removes its ephemeral files while preserving codex-sessions.
+      const removed = await client.manager.removeSession('s-ended-cleanup')
+      expect(removed).toEqual({ ok: true, value: undefined })
+      expect(existsSync(knownSettings)).toBe(false)
+      expect(existsSync(knownId)).toBe(false)
+      expect(existsSync(knownCtx)).toBe(false)
+      expect(existsSync(relay)).toBe(true)
+      expect(existsSync(codexLaunch)).toBe(true)
+    })
+  })
+
+  describe('service last output lines', () => {
+    it('answers last lines for running services only, isolates inspect failures, answers not-found for unknown parent, and leaves snapshot revision unchanged', async () => {
+      const context = await world()
+      const inspectViews: { runId: string; view: unknown }[] = []
+      const failInspect = new Set<string>()
+      const screenLines = new Map<string, string[]>([
+        ['svc-1', ['Pinging 127.0.0.1', 'Reply from 127.0.0.1: time<1ms', '']],
+        ['svc-2', ['listening on :3000']],
+        ['req-1', ['running tests...']],
+      ])
+      context.host.handle('runtime.inspect', (body) => {
+        const target = body.target as RuntimeRef
+        inspectViews.push({ runId: target.runtimeSessionId, view: body.view })
+        if (failInspect.has(target.runtimeSessionId)) return { status: 500, body: { error: 'inspect failed' } }
+        const session = context.runtimes.get(target.runtimeSessionId)
+        if (session === undefined) return { status: 404, body: { error: 'no such runtime' } }
+        return {
+          body: {
+            session,
+            projection: {
+              ...session,
+              raw: '',
+              screen: '',
+              screenLines: screenLines.get(target.runtimeSessionId) ?? [],
+            },
+          } satisfies RuntimeInspectResult,
+        }
+      })
+      seedRecords(context, [
+        recordOf(context, 'p1', { life: 'live', binding: { hostInstanceId: 'fake-host-1', generation: 1 } }),
+        recordOf(context, 'svc-1', {
+          life: 'live',
+          title: 'ping',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          commands: [{ command: 'ping -t 127.0.0.1', cwd: context.root }],
+          scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'service', name: 'ping' },
+        }),
+        recordOf(context, 'svc-2', {
+          life: 'live',
+          title: 'web',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          commands: [{ command: 'pnpm dev', cwd: context.root }],
+          scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'service', name: 'web' },
+        }),
+        recordOf(context, 'svc-ended', {
+          life: 'ended',
+          title: 'old-web',
+          binding: null,
+          endedAt: Date.now() - 1_000,
+          commands: [{ command: 'pnpm dev', cwd: context.root }],
+          scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'service', name: 'old-web' },
+        }),
+        recordOf(context, 'req-1', {
+          life: 'live',
+          title: 'tests',
+          binding: { hostInstanceId: 'fake-host-1', generation: 1 },
+          commands: [{ command: 'pnpm test', cwd: context.root }],
+          scriptOf: { sessionId: 'p1', phase: 'inner', scriptId: 'requested', name: 'tests' },
+        }),
+      ])
+      for (const id of ['p1', 'svc-1', 'svc-2', 'req-1']) context.runtimes.set(id, runtime(id))
+      context.publishDescriptor()
+      const client = clientOf(context)
+      await client.start()
+      await writable(client)
+      await reconciled(client)
+      // Let RunOutputLines settle its initial live line on the requested run before snapshotting revision.
+      await vi.waitFor(() => expect(sessionOf(client, 'req-1')?.step?.text).toBe('running tests...'))
+      inspectViews.length = 0
+
+      const revisionBefore = client.manager.snapshot().revision
+      const first = await client.manager.scriptLastLinesOf('p1')
+      expect(first).toEqual({
+        ok: true,
+        value: [
+          { runId: 'svc-1', line: 'Reply from 127.0.0.1: time<1ms' },
+          { runId: 'svc-2', line: 'listening on :3000' },
+        ],
+      })
+      expect(inspectViews).toEqual([
+        { runId: 'svc-1', view: { rawTailChars: 1_000, screenScrollbackRows: 0 } },
+        { runId: 'svc-2', view: { rawTailChars: 1_000, screenScrollbackRows: 0 } },
+      ])
+
+      // Repeated polls over unchanged output leave SessionsSnapshot.revision unchanged.
+      const second = await client.manager.scriptLastLinesOf('p1')
+      expect(second).toEqual(first)
+      expect(client.manager.snapshot().revision).toBe(revisionBefore)
+
+      // One service failing inspect answers line: null without failing the others.
+      failInspect.add('svc-2')
+      expect(await client.manager.scriptLastLinesOf('p1')).toEqual({
+        ok: true,
+        value: [
+          { runId: 'svc-1', line: 'Reply from 127.0.0.1: time<1ms' },
+          { runId: 'svc-2', line: null },
+        ],
+      })
+      expect(client.manager.snapshot().revision).toBe(revisionBefore)
+
+      // Unknown parent id answers not-found.
+      expect(await client.manager.scriptLastLinesOf('nobody')).toMatchObject({ ok: false, code: 'not-found' })
+    }, 20_000)
   })
 })

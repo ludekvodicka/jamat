@@ -53,6 +53,7 @@ describe('lib-orchestrator/sessionTasks/claude/claudeShellScan', () => {
         state: 'done',
         startedAt: Date.parse('2026-10-02T05:39:17.008Z'),
         endedAt: Date.parse('2026-10-02T05:39:26.684Z'),
+        runs: 'command',
       },
       {
         kind: 'shell',
@@ -62,6 +63,7 @@ describe('lib-orchestrator/sessionTasks/claude/claudeShellScan', () => {
         state: 'done',
         startedAt: Date.parse('2026-10-02T06:13:03.546Z'),
         endedAt: Date.parse('2026-10-02T06:13:24.238Z'),
+        runs: 'command',
       },
     ])
     expect(reading.shells[1].statedOutput).toBe(`${ClaudeShellFixtures.outputRootConst}\\bk8euh7vf.output`)
@@ -233,5 +235,24 @@ describe('lib-orchestrator/sessionTasks/claude/claudeShellScan', () => {
     expect(reading.shells.some((facts) => facts.shellId === 'brun' && facts.end === null)).toBe(true)
     expect(reading.shells.some((facts) => facts.shellId === 'b70')).toBe(true)
     expect(reading.shells.some((facts) => facts.shellId === 'b69')).toBe(false)
+  })
+
+  it('derives runs from the full command, including past 160 characters and on later command lines', async () => {
+    const longCommand = `echo ${'x'.repeat(170)} && codex exec "after 160"`
+    const multilineCommand = 'cd Q:/Work/App\nnode "C:/tools/agy-run.mjs" --json'
+    const file = transcript(
+      ClaudeShellFixtures.bashUse('toolu_long', { command: longCommand, run_in_background: true }, '2026-10-02T06:00:00.000Z')
+      + ClaudeShellFixtures.launch('toolu_long', 'blong', '2026-10-02T06:00:01.000Z')
+      + ClaudeShellFixtures.bashUse('toolu_multi', { command: multilineCommand, run_in_background: true }, '2026-10-02T06:00:02.000Z')
+      + ClaudeShellFixtures.launch('toolu_multi', 'bmulti', '2026-10-02T06:00:03.000Z'),
+    )
+
+    const rows = await rowsOf(new ClaudeShellScan(), file)
+    expect(rows).toEqual([
+      expect.objectContaining({ shellId: 'blong', runs: 'agent' }),
+      expect.objectContaining({ shellId: 'bmulti', command: 'cd Q:/Work/App', runs: 'agent' }),
+    ])
+    expect(rows[0]!.command.length).toBeLessThanOrEqual(160)
+    expect(rows[0]!.command).not.toContain('codex')
   })
 })

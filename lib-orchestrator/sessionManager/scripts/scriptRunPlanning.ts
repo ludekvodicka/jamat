@@ -1,6 +1,6 @@
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
-import { SessionScriptDefinitions, type SessionScriptDefinition } from './sessionScriptDefinitions'
+import { SessionScriptDefinitions, type SessionScriptDefinition, type SessionScriptStop } from './sessionScriptDefinitions'
 
 /**
  * What the manager does to a run. `stop` ends one whose parent no longer runs while it still does;
@@ -17,8 +17,12 @@ export class ScriptRunPlanning {
   /** Each settle is one `runtime.inspect`; an upgrade with many old runs spreads them over passes. */
   static readonly settlesPerPassConst = 4
 
-  /** `runtimes`: the ids the Host's listing names, alive or dead. */
-  static changes(records: readonly SessionRecord[], runtimes: ReadonlySet<string>): ScriptRunChange[] {
+  /** `runtimes`: the ids the Host's listing names, alive or dead. `held`: parents inside a restart, whose services stay. */
+  static changes(
+    records: readonly SessionRecord[],
+    runtimes: ReadonlySet<string>,
+    held: ReadonlySet<string> = new Set(),
+  ): ScriptRunChange[] {
     const endedHistory = SessionWorkflows.endedHistoryOf(records)
     const byId = new Map(records.map((record) => [record.sessionId, record]))
     const out: ScriptRunChange[] = []
@@ -30,7 +34,8 @@ export class ScriptRunPlanning {
       // Asked on every pass while a process may stand behind it: the manager paces a stop the Host
       // refused and skips one it confirmed, and the Host's report of the exit moves the run on.
       if (ScriptRunPlanning.liveOrBound(run)
-        && (parent === undefined || run.scriptOf.historyExpired === true || (definition.stopsWithParent && !ScriptRunPlanning.running(parent))
+        && (parent === undefined || run.scriptOf.historyExpired === true
+          || ScriptRunPlanning.parentStops(definition.stopsWith, parent, held)
           || (definition.gate === 'action' && definition.pointerOf(parent) !== run.sessionId))) {
         out.push({ kind: 'stop-script-run', runId: run.sessionId })
         continue
@@ -98,6 +103,16 @@ export class ScriptRunPlanning {
     return parent.scriptRuns?.some((entry) => entry.runId === runId) ?? false
   }
 
+  private static parentStops(stopsWith: SessionScriptStop, parent: SessionRecord, held: ReadonlySet<string>): boolean {
+    switch (stopsWith) {
+      case 'gate': return false
+      case 'parent-process': return parent.life !== 'live'
+      // `starting` is a reopen on its way; ended or lost outside a restart is a closed session.
+      case 'parent-session': return (parent.life === 'ended' || parent.life === 'lost') && !held.has(parent.sessionId)
+      default: throw new Error(`Unknown run stop: ${JSON.stringify(stopsWith satisfies never)}`)
+    }
+  }
+
   /** Only a live parent runs: `starting`, `ended` and `lost` all stop a run that stops with its parent. */
   private static running(parent: SessionRecord): boolean {
     return parent.life === 'live'
@@ -117,6 +132,7 @@ export class ScriptRunPlanning {
     definition: SessionScriptDefinition,
     records: readonly SessionRecord[],
   ): boolean {
+    if (definition.collapsesOnEnd) return true
     const entry = parent.scriptRuns?.find((candidate) => candidate.runId === run.sessionId)
     if (definition.gate === null)
       return entry?.outcome === 'succeeded' || !ScriptRunPlanning.running(parent)

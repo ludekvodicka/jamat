@@ -195,4 +195,50 @@ describe('app-client-cli/app/scriptRunReader', () => {
     const f = new ScriptRunFixture()
     await expect(f.reader().read('another', 10)).rejects.toThrow('Invalid answer for script run another')
   })
+
+  describe('settleService', () => {
+    it('watches a new service through the settle window and answers running with startedAt', async () => {
+      const f = new ScriptRunFixture()
+      f.steps = [{ state: 'running', log: 'none' }]
+      expect(await f.reader().settleService({ sessionId: 'parent-1', runId: 'run-1', reused: false })).toEqual({
+        ok: true,
+        value: { sessionId: 'parent-1', runId: 'run-1', kind: 'service', reused: false, state: 'running', startedAt: 1 },
+      })
+      expect(f.time).toBe(ScriptRunReader.settleMillisecondsConst)
+      expect(f.reads).toBe(13)
+    })
+
+    it('answers a reused service after one read without waiting for the settle window', async () => {
+      const f = new ScriptRunFixture()
+      f.steps = [{ state: 'running', log: 'none' }]
+      expect(await f.reader().settleService({ sessionId: 'parent-1', runId: 'run-1', reused: true })).toEqual({
+        ok: true,
+        value: { sessionId: 'parent-1', runId: 'run-1', kind: 'service', reused: true, state: 'running', startedAt: 1 },
+      })
+      expect(f.time).toBe(0)
+      expect(f.reads).toBe(1)
+    })
+
+    it('waits briefly for the saved log when a service exits inside the settle window, then fails with the run and log', async () => {
+      const f = new ScriptRunFixture()
+      f.steps = [
+        { state: 'running', log: 'none' },
+        { state: 'failed', log: 'none', exitCode: 3 },
+        { state: 'failed', log: 'saved', exitCode: 3 },
+      ]
+      expect(await f.reader().settleService({ sessionId: 'parent-1', runId: 'run-1', reused: false })).toEqual({
+        ok: false,
+        error: {
+          code: 'operation-failed',
+          detail: 'Service run-1 ended: tests · failed',
+          data: {
+            run: ScriptRunFixture.run({ state: 'failed', log: 'saved', exitCode: 3 }),
+            logContentUntrusted: true,
+            log: { text: 'untrusted output\n', truncated: false },
+          },
+        },
+      })
+      expect(f.time).toBe(500)
+    })
+  })
 })

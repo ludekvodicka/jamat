@@ -88,6 +88,26 @@ describe('lib-orchestrator/sessionManager/workState/screenTail', () => {
     expect(viewport?.rows).toBe(screenLines)
   })
 
+  it('builds a wider composer tail capped at composerRowsConst while keeping frameOf at 8 and 16 rows', () => {
+    expect(ScreenTail.composerViewConst).toEqual({
+      rawTailChars: ScreenTail.rawCharsConst,
+      screenScrollbackRows: ScreenTail.composerRowsConst,
+    })
+    const rows = Array.from({ length: ScreenTail.composerRowsConst + 30 }, (_, index) => `row ${index + 1}`)
+    const frame = ScreenTail.frameOf({ screen: '', cols: colsConst, screenLines: rows, screenLinesStyled: true })
+    const composerFrame = ScreenTail.composerFrameOf({ screen: '', cols: colsConst, screenLines: rows, screenLinesStyled: true })
+    expect(linesOf(frame.screenTail)).toHaveLength(ScreenTail.screenRowsConst)
+    expect(linesOf(frame.wideScreenTail)).toHaveLength(ScreenTail.wideScreenRowsConst)
+    expect(linesOf(composerFrame.wideScreenTail)).toHaveLength(ScreenTail.composerRowsConst)
+    expect(linesOf(composerFrame.wideScreenTail)[0]).toBe('row 31')
+    expect(composerFrame.screenStyled).toBe(true)
+
+    expect(ScreenTail.composerFrameOf({ screen: '', cols: colsConst, screenLines: rows }).screenStyled).toBe(false)
+    const legacy = ScreenTail.composerFrameOf({ screen: rows.join('\r\n'), cols: colsConst })
+    expect(linesOf(legacy.wideScreenTail)).toHaveLength(ScreenTail.composerRowsConst)
+    expect(legacy.screenStyled).toBeUndefined()
+  })
+
   it.each(WorkFixtures.all().map((fixture) => [fixture.file, fixture] as const))(
     'keeps the work hint of plain physical rows when dim is added: %s',
     (_file, fixture) => {

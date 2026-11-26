@@ -12,6 +12,7 @@ import type { CommandOutcome, CommandRunner } from '../shared/commandInvoker.typ
 import type { SvnRoot, SvnWorktreeLocation } from './svn.types'
 import { SvnWorktreeManager } from './svnWorktreeManager'
 import { CommandInvoker } from '../shared/commandInvoker'
+import { SvnExecutable } from './svnExecutable'
 import { SvnInvoker } from './svnInvoker'
 import { PathCompare } from '../shared/pathCompare'
 
@@ -112,6 +113,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
   })
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     vi.useRealTimers()
     await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
   })
@@ -1051,6 +1053,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
     })
 
     it('names a file deleted from disk whose name svn cannot take, and passes nothing', async () => {
+      vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
       const { manager, calls } = scripted((_cwd, args) => args[0] === 'status'
         ? { stdout: statusXml([{ path: 'složka/ř.txt', item: 'missing', revision: 5 }]) } : undefined)
       expect(await manager.scheduleMissing(temporary)).toMatchObject({ ok: false, code: 'refused', detail: expect.stringMatching(/složka\/ř.txt/) })
@@ -1058,6 +1061,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
     })
 
     it('marks conflicts resolved as the files stand, in batches, and passes no name svn cannot take', async () => {
+      vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
       const { manager, calls } = scripted((cwd, args) => cwd === temporary && args[0] === 'resolve' ? {} : undefined)
       const many = Array.from({ length: 51 }, (_, index) => `src/f${index}.txt`)
       expect(await manager.resolveWorking(temporary, ['a.txt', ...many])).toEqual({ ok: true, value: undefined })
@@ -1220,6 +1224,7 @@ describe('lib-orchestrator/svn/svnWorktreeManager', () => {
       + `<version side="source-right" kind="dir" revision="9" path-in-repos="Project/.aidocs/engines" repos-url="${repository}"/></tree-conflict>`
 
     it('reads every kind together, each victim in its parent, and passes svn no name it cannot take', async () => {
+      vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
       await mkdir(join(temporary, '.aidocs', 'engines', 't1'), { recursive: true })
       await mkdir(join(temporary, '.aidocs', 'engines', 't2'), { recursive: true })
       await writeFile(join(temporary, '.aidocs', 'engines', 't1', 'brief.md'), 'session t1\n')

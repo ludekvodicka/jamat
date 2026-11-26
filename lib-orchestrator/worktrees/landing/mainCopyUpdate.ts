@@ -321,7 +321,8 @@ async recoverStep(sessionId: string, entry: SvnStepJournalEntry): Promise<boolea
 
 async resolveConflict(sessionId: string, request: SvnConflictResolveRequest & { by: SvnConflictActor })
     : Promise<SessionsOpResult<SessionConflictResolved>> {
-    return this.underDrive(sessionId, async () => {
+    let resume = false
+    const answer = await this.underDrive<SessionsOpResult<SessionConflictResolved>>(sessionId, async () => {
       const parent = this.records.get(sessionId)
       if (!parent) return OperationOutcomes.notFound(sessionId)
       if (this.records.latched) return OperationOutcomes.latched()
@@ -330,17 +331,34 @@ async resolveConflict(sessionId: string, request: SvnConflictResolveRequest & { 
         return { ok: false, code: 'not-found', detail: `Session ${sessionId} has no conflicts of an SVN action` }
       const resolved = await this.conflicts.resolve(action, request, (path, journal, kind) => this.noteJournal(sessionId, action.actionId, path, journal, kind))
       if (!resolved.ok) return resolved
+      // Once the last open conflict of a main-copy UPDATE is settled, continue the update and
+      // recording automatically instead of waiting for another Update press.
+      const autoResume = action.kind === 'update-main' && resolved.value.left === 0
+      const pending = autoResume && this.updates.pending(sessionId)
+      const nextAction: SessionRecordSvnAction = autoResume
+        ? {
+          ...resolved.value.action,
+          stage: pending ? 'updating' : 'recording',
+          needs: undefined,
+          runId: undefined,
+          verdict: undefined,
+          retryAt: pending ? this.now() : undefined,
+          rounds: { ...resolved.value.action.rounds, lock: 0 },
+        }
+        : resolved.value.action
       if (!await this.updateRecord(sessionId, (latest) => {
         if (latest.svnAction?.actionId !== action.actionId) return null
         const memory = latest.worktreeLifecycle?.conflictMemory ?? latest.worktree?.conflictMemory
         const settled = resolved.value.action.conflictSet?.entries.filter((entry) => entry.path === request.path && entry.state === 'settled') ?? []
         const paths = memory?.paths.filter((entry) => !settled.some((done) => SvnConflictIdentity.same(done, entry)))
-        return { ...latest, svnAction: SvnActionStages.passedOf(latest.svnAction, resolved.value.action, this.now()),
+        return { ...latest, svnAction: SvnActionStages.passedOf(latest.svnAction, nextAction, this.now()),
           ...resolved.value.state === 'settled' && latest.worktreeLifecycle && memory ? {
             worktreeLifecycle: { ...latest.worktreeLifecycle, conflictMemory: paths!.length > 0 ? { ...memory, paths: paths! } : undefined },
             ...latest.worktree === undefined ? {} : { worktree: { ...latest.worktree, conflictMemory: undefined } },
           } : {} }
       })) return OperationOutcomes.latched()
+      if (pending) await this.updates.retry(sessionId)
+      if (autoResume) resume = true
       this.changed()
       // The last settlement ends the merger's stage: its run is stopped after this answer went out,
       // and its verdict takes the Finish on.
@@ -349,6 +367,8 @@ async resolveConflict(sessionId: string, request: SvnConflictResolveRequest & { 
         this.detach(this.stopRun(merger), `The merger ${merger} of session ${sessionId}`)
       return { ok: true, value: { sessionId, path: request.path, state: resolved.value.state, left: resolved.value.left } }
     })
+    if (resume) this.due(sessionId)
+    return answer
   }
 
 private async noteJournal(sessionId: string, actionId: string, path: string, journal: SvnConflictJournal, kind: SvnConflictKind): Promise<void> {

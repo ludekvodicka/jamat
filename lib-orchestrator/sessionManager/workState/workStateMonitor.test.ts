@@ -620,28 +620,27 @@ describe('lib-orchestrator/sessionManager/workState/workStateMonitor', () => {
     expect(context.changes()).toBe(2)
   })
 
-  // 2026-11-23: a turn that left only a dev server running is finished. It reads idle, raises the
-  // one change a finished turn raises, and keeps the shells beside it until the footer clears.
-  it('reads a finished turn over running shells as idle with shells, then as plain idle', async () => {
+  // Native background shells of a Claude session count as background work until the footer clears.
+  it('holds a Claude session with native background shells as background work, then drops to idle', async () => {
     const context = harness()
     context.add({ runtimeSessionId: 'a', agent: 'claude', screen: claudeWorkingScreenConst })
     await context.observe()
     expect(context.monitor.activity('a')).toBe('working')
-    expect(context.monitor.shellsRunning('a')).toBe(false)
 
     context.emit('a', shellsScreenConst, shellsRawConst)
     await context.observe()
     await vi.advanceTimersByTimeAsync(15_000)
     await context.observe()
-    expect(context.monitor.activity('a')).toBe('idle')
-    expect(context.monitor.activityDetail('a')).toBeNull()
-    expect(context.monitor.shellsRunning('a')).toBe(true)
+    expect(context.monitor.activity('a')).toBe('working')
+    expect(context.monitor.activityDetail('a')).toBe('background')
     expect(context.changes()).toBe(2)
 
     context.emit('a', claudeIdleScreenConst, claudeIdleScreenConst)
     await context.observe()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await context.observe()
     expect(context.monitor.activity('a')).toBe('idle')
-    expect(context.monitor.shellsRunning('a')).toBe(false)
+    expect(context.monitor.activityDetail('a')).toBeNull()
     expect(context.changes()).toBe(3)
   })
 

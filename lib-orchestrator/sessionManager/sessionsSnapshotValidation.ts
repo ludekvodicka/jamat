@@ -46,7 +46,7 @@ export class SessionsSnapshotValidation {
     'out-of-date', 'updated', 'conflict', 'nothing', 'failed', 'interrupted'] satisfies readonly SvnFinishResult[]
   private static readonly scriptPhasesConst: readonly string[] = ['before', 'after', 'inner'] satisfies readonly SessionScriptPhase[]
   private static readonly scriptIdsConst: readonly string[] =
-    ['setup', 'declared', 'merge-resolve', 'requested', 'svn', 'checks', 'svn-resolve', 'svn-merge', 'review'] satisfies readonly SessionScriptId[]
+    ['setup', 'declared', 'merge-resolve', 'requested', 'service', 'svn', 'checks', 'svn-resolve', 'svn-merge', 'review'] satisfies readonly SessionScriptId[]
   private static readonly actionStagesConst: readonly string[] = ['main-update', 'changes', 'committing', 'stopping', 'evidence', 'checks', 'updating', 'cleaning',
     'resolving', 'merging', 'verifying', 'fixing', 'diffing', 'reviewing', 'removing', 'recording'] satisfies readonly SvnActionStage[]
   private static readonly actionNeedsConst: readonly string[] = ['check-failed', 'conflict', 'resolver-failed', 'incoming',

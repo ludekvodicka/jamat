@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { CommandInvoker } from '../shared/commandInvoker'
 import type { CommandOutcome, CommandRunner, CommandRunOptions } from '../shared/commandInvoker.types'
 import type { PerfSpans } from '../perfMonitor/perfSpans'
+import { SvnExecutable } from './svnExecutable'
 
 export interface SvnInvokerOptions {
   perf?: PerfSpans
@@ -31,9 +32,10 @@ export class SvnInvoker implements CommandRunner {
     const separator = args.indexOf('--')
     const optionsAndCommand = separator === -1 ? args : args.slice(0, separator)
     const nonInteractive = optionsAndCommand.some((arg) => writes.has(arg)) && !optionsAndCommand.includes('--non-interactive')
-    return this.invoker.run({ command: 'svn', perfName: `svn:${SvnInvoker.subcommand(optionsAndCommand)}`,
+    const resolved = SvnExecutable.resolve()
+    return this.invoker.run({ command: resolved.command, perfName: `svn:${SvnInvoker.subcommand(optionsAndCommand)}`,
       args: nonInteractive ? ['--non-interactive', ...args] : args,
-      cwd, env: SvnInvoker.childEnv(), ...options })
+      cwd, env: SvnInvoker.childEnv(resolved.dllDirectory), ...options })
   }
 
   private static subcommand(args: readonly string[]): string {
@@ -45,8 +47,8 @@ export class SvnInvoker implements CommandRunner {
     return ''
   }
 
-  private static childEnv(): NodeJS.ProcessEnv {
-    const env = { ...process.env }
+  private static childEnv(dllDirectory: string | null): NodeJS.ProcessEnv {
+    const env = SvnExecutable.applyDllDirectory({ ...process.env }, dllDirectory)
     delete env.SVN_EDITOR
     delete env.SVN_SSH
     // Every parser here reads svn's output as DATA - status letters, error codes, the words in a

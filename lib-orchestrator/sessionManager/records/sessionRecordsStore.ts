@@ -20,6 +20,7 @@ import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { MainFinishWorkflow } from '../lifecycle/mainFinishWorkflow'
 import { SessionWorkflows } from '../lifecycle/sessionWorkflows'
 import { SessionActionHistory } from './sessionActionHistory'
+import { SessionCommitReceiptsStore } from './sessionCommitReceiptsStore'
 import { SessionRecordsArchive } from './sessionRecordsArchive'
 import type {
   SessionRecord,
@@ -55,6 +56,7 @@ export interface SessionRecordsStoreOptions {
   snapshotsDirectory: string
   report?: (message: string) => void
   removeSessionLogs?: (sessionId: string, keepIds?: readonly string[]) => Promise<void>
+  now?: () => number
 }
 
 /**
@@ -70,6 +72,7 @@ export interface SessionRecordsStoreOptions {
  * would push every real recovery point out of the ring within seconds.
  */
 export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
+  static readonly userInputFlushIntervalMillisecondsConst = 30_000
   private static readonly snapshotKeepConst = 10
   private static readonly snapshotPatternConst =
     /^session-records-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/
@@ -101,11 +104,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private writing: Promise<void> | null = null
   private static readonly endedCache = new WeakMap<readonly SessionRecord[], ReadonlySet<string>>()
   private archive: SessionRecordsArchive | null = null
+  private commitReceiptsStore: SessionCommitReceiptsStore | null = null
   /** Records this process moved back out of the archive; see `restore`. */
   private readonly restored = new Set<string>()
   private allCache: { active: readonly SessionRecord[]; archived: readonly SessionRecord[]; all: readonly SessionRecord[] } | null = null
   private readonly unreadableRecords = new Map<string, SessionRecord>()
   private readonly pendingUserInput = new Map<string, number>()
+  private lastUserInputFlushAt = 0
   /** How many records the read turned from a cut-short finish into an `interrupted` outcome. */
   private interruptedFinishes = 0
   private migratedActions = 0
@@ -116,6 +121,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
   private readonly snapshotsDirectory: string
   private readonly perf: SessionRecordsStoreOptions['perf']
   private readonly removeSessionLogs: (sessionId: string, keepIds?: readonly string[]) => Promise<void>
+  private readonly now: () => number
 
   private constructor(
     file: string,
@@ -123,12 +129,14 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     report: (message: string) => void,
     removeSessionLogs: (sessionId: string, keepIds?: readonly string[]) => Promise<void>,
     perf: SessionRecordsStoreOptions['perf'],
+    now: () => number,
   ) {
     super(file, report)
     this.writesSucceeded = true
     this.perf = perf
     this.snapshotsDirectory = snapshotsDirectory
     this.removeSessionLogs = removeSessionLogs
+    this.now = now
   }
 
   protected get subject(): string {
@@ -162,13 +170,41 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       options.report ?? ((message) => console.warn(message)),
       options.removeSessionLogs ?? (() => Promise.resolve()),
       options.perf,
+      options.now ?? Date.now,
     )
     await store.read()
+    store.commitReceiptsStore = await SessionCommitReceiptsStore.load(
+      SessionCommitReceiptsStore.fileOf(file),
+      store.report,
+    )
+    let migratedCommitReceipts = false
+    const mergedReceipts = new Map<string, SessionRecordCommitReceipt[]>()
+    const hydratedRecords = store.records.map((record) => {
+      if (store.unreadableRecords.has(record.sessionId)) return record
+      if (record.commitReceipts !== undefined) {
+        migratedCommitReceipts = true
+        if (record.commitReceipts.length > 0) mergedReceipts.set(record.sessionId, record.commitReceipts)
+        return record
+      }
+      const sidecar = store.commitReceiptsStore!.get(record.sessionId)
+      if (sidecar !== undefined && sidecar.length > 0) {
+        mergedReceipts.set(record.sessionId, sidecar)
+        return { ...record, commitReceipts: structuredClone(sidecar) }
+      }
+      return record
+    })
+    store.setRecords(hydratedRecords)
+    store.setHead(hydratedRecords)
+    if (migratedCommitReceipts && !store.commitReceiptsStore.latched) {
+      const synced = await store.commitReceiptsStore.sync(mergedReceipts)
+      if (!synced) migratedCommitReceipts = false
+    }
     const endedIds = SessionWorkflows.endedHistoryOf(store.records)
     const ended = store.records.filter((record) => endedIds.has(record.sessionId))
-    if ((store.interruptedFinishes + store.migratedActions + store.migratedLifecycles + store.migratedSetups > 0
-      || ended.some((record) => record.actionHistory !== undefined || record.scriptRuns !== undefined))
-      && !await store.inTurn(() => store.commit(store.head, true), true))
+    const needsDestructiveMigration = store.interruptedFinishes + store.migratedActions + store.migratedLifecycles + store.migratedSetups > 0
+      || ended.some((record) => record.actionHistory !== undefined || record.scriptRuns !== undefined)
+    if ((needsDestructiveMigration || migratedCommitReceipts)
+      && !await store.inTurn(() => store.commit(store.head, needsDestructiveMigration), needsDestructiveMigration))
       store.report(`Session records at ${file}: migrated worktree records could not be written back; `
         + 'they stay migrated in memory until the next write')
     if (!store.latched)
@@ -336,9 +372,24 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     return this.writesSucceeded && !this.latched && this.pendingUserInput.size === 0
   }
 
-  async flushUserInput(): Promise<boolean> {
-    return this.inTurn(() => this.pendingUserInput.size === 0
-      ? Promise.resolve(true) : this.commit(this.head, false))
+  async flushUserInput(options?: { force?: boolean; now?: number }): Promise<boolean> {
+    const force = options?.force ?? true
+    const now = options?.now ?? this.now()
+    if (!force && (this.pendingUserInput.size === 0
+      || (this.lastUserInputFlushAt > 0
+        && now - this.lastUserInputFlushAt < SessionRecordsStore.userInputFlushIntervalMillisecondsConst)))
+      return true
+    let committed = false
+    const landed = await this.inTurn(() => {
+      if (this.pendingUserInput.size === 0) return Promise.resolve(true)
+      if (!force && this.lastUserInputFlushAt > 0
+        && now - this.lastUserInputFlushAt < SessionRecordsStore.userInputFlushIntervalMillisecondsConst)
+        return Promise.resolve(true)
+      committed = true
+      return this.commit(this.head, false)
+    })
+    if (committed && landed) this.lastUserInputFlushAt = now
+    return landed
   }
 
   /** Insert or replace. Routine, so it spends no recovery point. Answers whether it landed. */
@@ -589,6 +640,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     records = records.map((record) => {
       const link = record.scriptOf
       return link !== undefined && resetHistory.has(link.sessionId) && !resetHistory.get(link.sessionId)!.has(record.sessionId)
+        && !(SessionScriptDefinitions.of(link).stopsWith === 'parent-session' && (record.life === 'live' || record.life === 'starting'))
         ? { ...record, scriptOf: { ...link, historyExpired: true } } : record
     })
     const ended = SessionWorkflows.endedHistoryOf(records)
@@ -640,8 +692,22 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
         previous.get(record.sessionId)?.lastUserInputAt ?? 0)
       return at > 0 && at !== record.lastUserInputAt ? { ...record, lastUserInputAt: at } : record
     })
-    const document: SessionRecordsDocument = { schemaVersion: 1, savedAt: Date.now(),
-      records: records.map((record) => this.unreadableRecords.get(record.sessionId) ?? record) }
+    const receiptMap = new Map<string, SessionRecordCommitReceipt[]>()
+    for (const record of records)
+      if (!this.unreadableRecords.has(record.sessionId) && record.commitReceipts !== undefined && record.commitReceipts.length > 0)
+        receiptMap.set(record.sessionId, record.commitReceipts)
+    if (this.commitReceiptsStore !== null && !await this.commitReceiptsStore.sync(receiptMap)) {
+      this.writesSucceeded = false
+      return false
+    }
+    const persistedRecords = records.map((record) => {
+      const quarantined = this.unreadableRecords.get(record.sessionId)
+      if (quarantined !== undefined) return quarantined
+      if (this.commitReceiptsStore === null || record.commitReceipts === undefined) return record
+      const { commitReceipts: _omitted, ...withoutReceipts } = record
+      return withoutReceipts
+    })
+    const document: SessionRecordsDocument = { schemaVersion: 1, savedAt: Date.now(), records: persistedRecords }
     const effect = (): Promise<void> => this.afterWrite(records, removedLogs, ended, resetHistory)
     if (!destructive) {
       this.setHead(records)
@@ -685,9 +751,13 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
       ]
       await this.removeLogs(sessionId, keepIds)
     }
+    let flushedInput = false
     for (const [sessionId, at] of this.pendingUserInput)
-      if (!this.get(sessionId) || at <= (this.get(sessionId)?.lastUserInputAt ?? 0))
+      if (!this.get(sessionId) || at <= (this.get(sessionId)?.lastUserInputAt ?? 0)) {
         this.pendingUserInput.delete(sessionId)
+        flushedInput = true
+      }
+    if (flushedInput) this.lastUserInputFlushAt = this.now()
   }
 
   private async removeLogs(sessionId: string, keepIds?: readonly string[]): Promise<void> {
@@ -1775,7 +1845,7 @@ export class SessionRecordsStore extends JsonDocumentStore<SessionRecord[]> {
     if (link.phase !== 'before' && link.phase !== 'after' && link.phase !== 'inner')
       return `unknown script phase ${JSON.stringify(link.phase)}`
     if (link.scriptId !== 'setup' && link.scriptId !== 'declared' && link.scriptId !== 'merge-resolve'
-      && link.scriptId !== 'requested' && link.scriptId !== 'svn' && link.scriptId !== 'checks' && link.scriptId !== 'svn-resolve'
+      && link.scriptId !== 'requested' && link.scriptId !== 'service' && link.scriptId !== 'svn' && link.scriptId !== 'checks' && link.scriptId !== 'svn-resolve'
       && link.scriptId !== 'svn-merge' && link.scriptId !== 'review')
       return `unknown script ${JSON.stringify(link.scriptId)}`
     if (!SessionRecordsStore.isFilledString(link.name)) return 'scriptOf needs a name string'

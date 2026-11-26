@@ -208,7 +208,13 @@ function FileViewerPanelBody(
     })
     modelReload()
   }, [body, modelReload, paramLocation, shownDocumentId, shownKey, visitPlace, visitReady])
-  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, ports.viewer)
+  const [panelVisible, setPanelVisible] = useState(props.api.isVisible)
+  useEffect(() => {
+    setPanelVisible(props.api.isVisible)
+    const subscription = props.api.onDidVisibilityChange(event => setPanelVisible(event.isVisible))
+    return () => subscription.dispose()
+  }, [props.api])
+  const freshness = useFileViewerFreshness(model.document?.documentId ?? null, reload, ports.viewer, panelVisible)
   const step = useCallback((direction: PanelHistoryDirection): void => {
     const current = currentParameters()
     const leaving = FileViewerPanelState.visitOf(current, shown.current, FileViewerScrollTop.of(body.current))
@@ -258,6 +264,7 @@ function FileViewerPanelBody(
         sessionId={params.sessionId}
         documentId={model.document?.documentId ?? null}
         selected={toolsTab}
+        visible={sidebar.state.visible}
         changes={changes}
         workingTree={workingTree}
         onSelect={sidebar.open}

@@ -4,17 +4,78 @@ import type {
 } from '../../../../lib-orchestrator/sessionTasks/sessionTasksApi.types'
 import { SignalGlyph } from '../../widgets/signalGlyph'
 import type { SessionPaint } from './sessionNodeState'
-import type { SessionTasksNode, TaskRowNode } from './sessionsTreeModel'
+import type {
+  ScriptRunNode,
+  SessionProcessesMore,
+  SessionProcessesNode,
+  TaskRowNode,
+} from './sessionsTreeModel'
 
-/** Retained sub-agents and shells, opening in the parent's split. */
+/** Retained processes (inner runs, their history, background shells and sub-agents), at most three rows. */
 export function SessionTaskRows(props: {
-  tasks: SessionTasksNode
+  processes: SessionProcessesNode
+  renderRun?: (sessionId: string) => React.JSX.Element | null
+  renderHistory?: (run: ScriptRunNode) => React.JSX.Element
   onOpen(row: TaskRowNode, title: string): void
+  onOpenProcesses?: () => void
 }): React.JSX.Element {
-  const { tasks } = props
+  const { processes } = props
   return (
     <div className="jamat-sessions__tasks">
-      {tasks.rows.map((row) => <TaskRow key={row.id} row={row} numberPrefix={tasks.numberPrefix} onOpen={props.onOpen} />)}
+      {processes.rows.map((item) => {
+        switch (item.kind) {
+          case 'run':
+            return props.renderRun?.(item.sessionId) ?? null
+          case 'history':
+            return props.renderHistory?.(item.run) ?? null
+          case 'task':
+            return <TaskRow key={item.row.id} row={item.row} numberPrefix={processes.numberPrefix} onOpen={props.onOpen} />
+          default:
+            throw new Error(`Unknown process row: ${JSON.stringify(item satisfies never)}`)
+        }
+      })}
+      {processes.more !== null && (
+        <MoreRow
+          more={processes.more}
+          numberPrefix={processes.numberPrefix}
+          onOpenProcesses={props.onOpenProcesses}
+        />
+      )}
+    </div>
+  )
+}
+
+function MoreRow(props: {
+  more: SessionProcessesMore
+  numberPrefix: string | null
+  onOpenProcesses?: () => void
+}): React.JSX.Element {
+  const { more, numberPrefix } = props
+  const text = `and ${more.count} more…`
+  if (!more.opens)
+    return (
+      <div className="jamat-sessions__task jamat-sessions__task--more" data-processes-more={more.count}>
+        {numberPrefix !== null && <span className="jamat-sessions__task-number">{numberPrefix}</span>}
+        <span className="jamat-sessions__task-more-count">{text}</span>
+      </div>
+    )
+  const open = (): void => props.onOpenProcesses?.()
+  return (
+    <div
+      className="jamat-sessions__task jamat-sessions__task--more"
+      data-processes-more={more.count}
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        open()
+      }}
+    >
+      {numberPrefix !== null && <span className="jamat-sessions__task-number">{numberPrefix}</span>}
+      <span className="jamat-sessions__task-more-count">{text}</span>
+      <span className="jamat-sessions__task-more-link">open processes</span>
     </div>
   )
 }
@@ -60,9 +121,14 @@ function TaskRowText(props: { row: TaskRowNode }): React.JSX.Element {
       )
     case 'shell':
       return (
-        <span className="jamat-sessions__task-description" title={row.description === '' ? row.label : row.description}>
-          {row.label}
-        </span>
+        <>
+          <span className="jamat-sessions__task-description" title={row.description === '' ? row.label : row.description}>
+            {row.label}
+          </span>
+          {row.runs === 'agent' && (
+            <span className="jamat-sessions__task-tag" title="Background shell running an agent">agent</span>
+          )}
+        </>
       )
     default:
       throw new Error(`Unknown session task: ${JSON.stringify(task satisfies never)}`)

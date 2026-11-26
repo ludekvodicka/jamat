@@ -1,15 +1,17 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TokensSection } from './tokensSection'
 
-const { read } = vi.hoisted(() => ({ read: vi.fn() }))
+const { read, progress } = vi.hoisted(() => ({ read: vi.fn(), progress: { listener: null as ((value: unknown) => void) | null } }))
 vi.mock('../ipc/appControl', () => ({ AppControl: { value: read } }))
 vi.mock('./usageChart', () => ({ usageChartTheme: () => ({ text: '', grid: '', accent: '', series: [] }),
   UsageChart: ({ label }: { label: string }) => <div role="img" aria-label={label} /> }))
 describe('TokensSection', () => {
   beforeEach(() => {
     read.mockReset()
-    Object.defineProperty(window, 'appClient', { configurable: true, value: { onUsageChanged: () => () => undefined } })
+    progress.listener = null
+    Object.defineProperty(window, 'appClient', { configurable: true, value: { onUsageChanged: () => () => undefined,
+      onUsageProgress: (listener: (value: unknown) => void) => { progress.listener = listener; return () => { progress.listener = null } } } })
   })
   afterEach(cleanup)
   it('shows an empty period and sends a rescan only after the button is pressed', async () => {
@@ -23,6 +25,20 @@ describe('TokensSection', () => {
     await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ agentId: 'codex', groupBy: 'project' })))
     fireEvent.click(screen.getByRole('button', { name: 'Antigravity' }))
     await waitFor(() => expect(read).toHaveBeenCalledWith('usage.tokens', expect.objectContaining({ agentId: 'antigravity', groupBy: 'session' })))
+  })
+  it('says the statistics are not loaded until Reload, and shows scan progress without reading the totals again', async () => {
+    read.mockResolvedValue({ ok: true, value: { rows: [], progress: { running: false, completed: 0, total: 0, error: null, scannedAt: null } } })
+    render(<TokensSection />)
+    expect(await screen.findByText(/Token statistics are not loaded/)).toBeTruthy()
+    expect(screen.queryByText('No usage in this period')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(read).toHaveBeenCalledWith('usage.refresh', {}))
+    const reads = read.mock.calls.filter(([operation]) => operation === 'usage.tokens').length
+    act(() => progress.listener?.({ running: true, completed: 4, total: 10, error: null, scannedAt: null }))
+    expect(screen.getByText('4 / 10 files', { exact: false })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Reload' })).toBeDisabled()
+    expect(screen.queryByText(/Token statistics are not loaded/)).toBeNull()
+    expect(read.mock.calls.filter(([operation]) => operation === 'usage.tokens')).toHaveLength(reads)
   })
   it('asks for both sources by default, then only the chosen source', async () => {
     read.mockResolvedValue({ ok: true, value: { rows: [], progress: { running: false, completed: 0, total: 0, error: null, scannedAt: 1 } } })

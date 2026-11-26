@@ -1,4 +1,4 @@
-import { PathCompare } from '../shared/pathCompare'
+import { PathSet } from '../shared/pathSet'
 
 /**
  * The paths a commit review that named its targets can show (`VersioningCommitManager.allows`):
@@ -9,7 +9,8 @@ import { PathCompare } from '../shared/pathCompare'
  */
 export class FileChangesReach {
   static of(targets: readonly string[]): (path: string) => boolean {
-    return (path) => targets.length === 0
-      || targets.some((target) => PathCompare.isInside(target, path) || PathCompare.isInside(path, target))
+    if (targets.length === 0) return () => true
+    const named = new PathSet(targets)
+    return (path) => named.hasAncestorOrSelf(path) || named.hasDescendantOrSelf(path)
   }
 }

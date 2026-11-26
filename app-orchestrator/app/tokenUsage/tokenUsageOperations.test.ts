@@ -3,7 +3,7 @@ import { RegistryBench } from '../remoteControl/fixtures/registryBench'
 import { TokenUsageOperations } from './tokenUsageOperations'
 
 describe('TokenUsageOperations', () => {
-  it('refuses unknown grouping and invalid dates and dispatches explicit rescan', async () => {
+  it('refuses unknown grouping and invalid dates and dispatches explicit reload and rescan', async () => {
     const bench = new RegistryBench(), rescans: boolean[] = []
     new TokenUsageOperations({ snapshot: () => ({ buckets: [], sessionBuckets: [], labels: {}, accountLabels: {}, sessionLabels: {},
       progress: { running: true, completed: 3, total: 4, error: null, scannedAt: null } }),
@@ -14,8 +14,9 @@ describe('TokenUsageOperations', () => {
     expect(await bench.call('usage.tokens', { from: '2026-10-01', to: '2026-10-26', groupBy: 'day' })).toMatchObject({
       ok: true, value: { rows: [], progress: { running: true, completed: 3, total: 4 } },
     })
+    expect((await bench.call('usage.refresh')).ok).toBe(true)
     expect((await bench.call('usage.rescan')).ok).toBe(true)
-    expect(rescans).toEqual([true])
+    expect(rescans).toEqual([false, true])
   })
 
   it('counts session transcripts, reported third-party runs or both, by the chosen origin', async () => {

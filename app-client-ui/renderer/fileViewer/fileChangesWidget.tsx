@@ -18,6 +18,7 @@ export function FileChangesWidget(props: {
   openFile: AppClientUiBridge['fileChanges']['openFile']
   release: AppClientUiBridge['fileViewer']['release']
   model: FileChangesViewModel
+  visible?: boolean
   onOpen(value: FileViewerChangedOpen): void
 }): React.JSX.Element {
   const [opening, setOpening] = useState<string | null>(null)
@@ -26,6 +27,7 @@ export function FileChangesWidget(props: {
   const openings = useRef(0)
   const [sort, setSort] = useState<FileChangesSortKey>('recent')
   const snapshot = props.model.snapshot
+  const visible = props.visible !== false
   const latestSnapshot = useRef(snapshot)
   useEffect(() => {
     latestSnapshot.current = snapshot
@@ -33,12 +35,6 @@ export function FileChangesWidget(props: {
     setOpenError(null)
   }, [snapshot?.snapshotId])
   useEffect(() => () => { openings.current += 1 }, [])
-  // The newest thing on screen decides whether the clock is worth running at all.
-  const youngest = useMemo(
-    () => FileChangesAges.youngestOf(snapshot?.entries ?? [], props.model.groups),
-    [props.model.groups, snapshot],
-  )
-  const now = useSecondsClock(youngest)
 
   /**
    * Two clicks are one keystroke apart in a list of changes, and the answers come back in whatever
@@ -144,7 +140,7 @@ export function FileChangesWidget(props: {
             baseline={snapshot.defaultBaseline}
             conventions={FileChangesStatusMark.ofVcs(snapshot.vcs.selected)}
             sort={sort}
-            now={now}
+            visible={visible}
             opening={opening}
             onOpen={open}
             measured={snapshot.warnings.length === 0}
@@ -155,7 +151,7 @@ export function FileChangesWidget(props: {
               group={group}
               conventions={FileChangesStatusMark.ofVcs(snapshot.vcs.selected)}
               sort={sort}
-              now={now}
+              visible={visible}
               opening={opening}
               onOpen={open}
             />
@@ -176,89 +172,91 @@ export function FileChangesWidget(props: {
   )
 }
 
-/**
- * A clock for second-precision "ago" labels, which only exist near the present.
- *
- * It used to tick for the life of the panel, in every panel: a sidebar the layout hides is not
- * unmounted (`SidebarDock` says so out loud), and a dockview tab that is not on top is not either,
- * so a dozen invisible widgets re-rendered once a second forever - for labels that read `3d ago` and
- * do not change again this decade. It ticks while anything on screen is young enough to need it.
- */
-class FileChangesAges {
-  /** The newest timestamp anything on screen carries, or null when nothing carries one. */
-  static youngestOf(
-    entries: readonly FileChangeEntry[],
-    groups: readonly FileChangeGroup[],
-  ): number | null {
-    let youngest: number | null = null
-    const consider = (stamp: number | null): void => {
-      if (stamp !== null && (youngest === null || stamp > youngest)) youngest = stamp
-    }
-    for (const entry of entries) consider(entry.modifiedAt)
-    for (const group of groups) {
-      consider(group.createdAt)
-      for (const entry of group.entries) consider(entry.modifiedAt)
-    }
-    return youngest
-  }
-}
-
-/**
- * The letter on a row's badge.
- *
- * It was `status.slice(0, 1)` over a ten-member union, so `modified`/`missing` both drew M,
- * `copied`/`conflicted` both C and `renamed`/`replaced` both R - and the last pair share a colour
- * too, which made them identical on screen. An eleventh status would have got a letter and a CSS
- * class nobody had written a rule for; here it is a compile error.
- */
-function useSecondsClock(youngest: number | null): number {
-  const [now, setNow] = useState(() => Date.now())
-  const ticking = youngest !== null
-    && Date.now() - youngest < FileChangesWidgetConst.tickWhileYoungerThanMilliseconds
-  useEffect(() => {
-    if (!ticking) return
-    const timer = setInterval(
-      () => setNow(Date.now()),
-      FileChangesWidgetConst.tickMilliseconds,
-    )
-    return () => clearInterval(timer)
-  }, [ticking])
-  return now
-}
-
 class FileChangesWidgetConst {
-  static readonly tickMilliseconds = 1_000
+  static readonly secondTickMilliseconds = 1_000
+  static readonly minuteTickMilliseconds = 60_000
   /**
    * Past an hour every label this draws is in whole days or hours, so a second-by-second clock
    * changes nothing anybody can see.
    */
   static readonly tickWhileYoungerThanMilliseconds = 60 * 60_000
+
+  static nextTickDelay(elapsedMs: number): number | null {
+    const elapsed = Math.max(0, elapsedMs)
+    if (elapsed >= FileChangesWidgetConst.tickWhileYoungerThanMilliseconds) return null
+    if (elapsed < FileChangesWidgetConst.minuteTickMilliseconds) return FileChangesWidgetConst.secondTickMilliseconds
+    return FileChangesWidgetConst.minuteTickMilliseconds
+  }
+}
+
+/**
+ * Leaf clock for one row's "ago" label: updates only its own span, pauses while the panel or
+ * sidebar is hidden, backs off from 1 s to 1 min past a minute, and stops past an hour.
+ */
+function FileChangeAge(props: {
+  modifiedAt: number | null
+  status: string
+  visible: boolean
+}): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!props.visible || props.modifiedAt === null) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const schedule = (): void => {
+      const current = Date.now()
+      setNow(current)
+      const delay = FileChangesWidgetConst.nextTickDelay(current - props.modifiedAt!)
+      if (delay !== null) timer = setTimeout(schedule, delay)
+    }
+    const current = Date.now()
+    if (current - now >= FileChangesWidgetConst.secondTickMilliseconds) setNow(current)
+    const initialDelay = FileChangesWidgetConst.nextTickDelay(current - props.modifiedAt)
+    if (initialDelay !== null) timer = setTimeout(schedule, initialDelay)
+    return () => { if (timer !== null) clearTimeout(timer) }
+  }, [props.modifiedAt, props.visible])
+  return (
+    <span className="file-tools-when" title={props.status}>
+      {props.modifiedAt === null
+        ? props.status
+        : FileChangesTime.agoOf(props.modifiedAt, now)}
+    </span>
+  )
 }
 
 function FileChangeHistoryGroup(props: {
   group: FileChangeGroup
   conventions: FileChangesMarkConventions
   sort: FileChangesSortKey
-  now: number
+  visible: boolean
   opening: string | null
   onOpen(entry: FileChangeEntry, baseline: FileChangeBaseline): Promise<void>
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const createdLabel = useMemo(() => new Date(props.group.createdAt).toLocaleString(), [props.group.createdAt])
   return (
-    <details className="file-tools-history">
+    <details
+      className="file-tools-history"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <span>{props.group.label}</span>
-        <span>{new Date(props.group.createdAt).toLocaleString()}</span>
+        <span>{createdLabel}</span>
       </summary>
-      {props.group.message && <p>{props.group.message}</p>}
-      <FileChangeEntries
-        entries={props.group.entries}
-        baseline={props.group.baseline}
-        conventions={props.conventions}
-        sort={props.sort}
-        now={props.now}
-        opening={props.opening}
-        onOpen={props.onOpen}
-      />
+      {open && (
+        <>
+          {props.group.message && <p>{props.group.message}</p>}
+          <FileChangeEntries
+            entries={props.group.entries}
+            baseline={props.group.baseline}
+            conventions={props.conventions}
+            sort={props.sort}
+            visible={props.visible}
+            opening={props.opening}
+            onOpen={props.onOpen}
+          />
+        </>
+      )}
     </details>
   )
 }
@@ -268,14 +266,12 @@ function FileChangeEntries(props: {
   baseline: FileChangeBaseline | null
   conventions: FileChangesMarkConventions
   sort: FileChangesSortKey
-  now: number
+  visible: boolean
   opening: string | null
   onOpen(entry: FileChangeEntry, baseline: FileChangeBaseline | null): Promise<void>
   /** False when something above this list failed, so an empty list is not an answer about the tree. */
   measured?: boolean
 }): React.JSX.Element {
-  // Memoised because the seconds clock above re-renders this every second: without it a list of a
-  // few thousand entries is copied and locale-compared once a second, per open panel, forever.
   const sorted = useMemo(
     () => FileChangesSort.apply(props.entries, props.sort),
     [props.entries, props.sort],
@@ -305,11 +301,7 @@ function FileChangeEntries(props: {
                 ? `${entry.previousDisplayPath} → ${entry.displayPath}`
                 : entry.displayPath}
             </span>
-            <span className="file-tools-when" title={entry.status}>
-              {entry.modifiedAt === null
-                ? entry.status
-                : FileChangesTime.agoOf(entry.modifiedAt, props.now)}
-            </span>
+            <FileChangeAge modifiedAt={entry.modifiedAt} status={entry.status} visible={props.visible} />
             {entry.gitState && (
               <span className="file-tools-location" title="Git index / worktree">
                 {entry.gitState.index}/{entry.gitState.worktree}

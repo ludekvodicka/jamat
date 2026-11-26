@@ -78,8 +78,7 @@ export class ServiceVersioningCommitIpc extends ServiceIpcBase<typeof ServiceVer
         undefined, draft.paths?.map(VersioningCommitPaths.pathOf))
       if (!result.ok) return result
       if (!this.transport.isCurrent(event)) return { ok: false, code: 'invalid-context', detail: 'The commit renderer is no longer available' }
-      const snapshot = this.manager.files(ownerId, draftId, result.value)
-      const checkedPaths = this.manager.checkedPaths(ownerId, draftId, snapshot)
+      const { snapshot, checkedPaths } = this.manager.filesWithCheckedPaths(ownerId, draftId, result.value)
       return { ok: true, value: snapshot, ...(checkedPaths === null ? {} : { checkedPaths }) }
     })
     this.register('versioning:commit-edit', (event, request) => this.manager.edit(this.owner(event), RemoteReviewSchemas.edit.parse(request), request.messageSource === 'restored-draft' ? 'restored-draft' : 'person-local'))

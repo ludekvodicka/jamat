@@ -637,6 +637,7 @@ export class RateMonitor {
         if (!this.sources.has(key) || reading.at > this.now()
           || (floor > 0 && reading.at <= floor)
           || reading.at <= (this.lastGood.get(key)?.fetchedAt ?? -Infinity) || this.repeats(key, reading)
+          || this.incomplete(key, reading)
           || this.behind(key, reading)) continue
         if (reading.extras !== undefined) this.extras[key] = reading.extras
         if (reading.raw !== undefined) this.raw[key] = reading.raw
@@ -664,19 +665,46 @@ export class RateMonitor {
     })
   }
 
+  /** A transient feed payload with only model-scoped pools must not erase held plain windows. */
+  private incomplete(key: string, reading: RateExternalReading): boolean {
+    const held = this.lastGood.get(key)
+    return held !== undefined && held.windows.some(window => window.model === undefined)
+      && !reading.windows.some(window => window.model === undefined)
+  }
+
   /**
-   * An idle Claude session redraws its status line with the windows of its last answer and a new
-   * `at`, so one relay file can carry 17 % while the account is at 21 %. Use only grows until the
-   * window resets, so a lower percent for the same reset is such a stale answer. The poll is not
-   * filtered here and still corrects a held value that was too high.
+   * An idle session redraws its status line with the windows of its last answer and a new `at`, so
+   * one relay file can carry stale percentages while the account has already moved on. A newer reset
+   * cycle or a higher percent on a shorter plain window (5h before weekly) proves a fresher server
+   * answer even when a passive provider adjusts its weekly percent slightly downward; an older reset
+   * cycle on a plain window while another still shares the same reset is a stale idle redraw.
    */
   private behind(key: string, reading: RateExternalReading): boolean {
     const held = this.lastGood.get(key)
     if (held === undefined) return false
-    return reading.windows.some(next => held.windows.some(window => window.durationMinutes === next.durationMinutes
-      && window.model === next.model && window.resetsAt !== null && next.resetsAt !== null
-      && Math.abs(Date.parse(window.resetsAt) - Date.parse(next.resetsAt)) < RateMonitor.sameResetMillisecondsConst
-      && next.usedPercent < window.usedPercent))
+    const pairs = reading.windows.flatMap(next => {
+      if (next.resetsAt === null) return []
+      const nextReset = Date.parse(next.resetsAt)
+      if (!Number.isFinite(nextReset)) return []
+      const match = held.windows.find(window => window.durationMinutes === next.durationMinutes
+        && window.model === next.model && window.resetsAt !== null)
+      if (!match || match.resetsAt === null) return []
+      const heldReset = Date.parse(match.resetsAt)
+      if (!Number.isFinite(heldReset)) return []
+      return [{ durationMinutes: next.durationMinutes, scoped: next.model !== undefined,
+        resetDelta: nextReset - heldReset, usedDelta: next.usedPercent - match.usedPercent }]
+    })
+    const sameReset = pairs.filter(pair => Math.abs(pair.resetDelta) < RateMonitor.sameResetMillisecondsConst)
+    if (sameReset.length === 0) return false
+    const plain = pairs.filter(pair => !pair.scoped)
+    if (plain.some(pair => pair.resetDelta >= RateMonitor.sameResetMillisecondsConst)) return false
+    if (plain.some(pair => pair.resetDelta <= -RateMonitor.sameResetMillisecondsConst)) return true
+    const plainSame = sameReset.filter(pair => !pair.scoped).sort((a, b) => a.durationMinutes - b.durationMinutes)
+    for (const pair of plainSame) {
+      if (pair.usedDelta > 0) return false
+      if (pair.usedDelta < 0) return true
+    }
+    return sameReset.some(pair => pair.scoped && pair.usedDelta < 0)
   }
 
   accountsChanged(): void {

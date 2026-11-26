@@ -8,7 +8,7 @@ import type { SessionRecordsStore } from '../records/sessionRecordsStore'
 import { ScriptRunRecords } from '../scripts/scriptRunRecords'
 import { SessionScriptDefinitions } from '../scripts/sessionScriptDefinitions'
 import { SessionLimits } from '../sessionLimits'
-import type { SessionScriptRequest, SessionsOpResult } from '../sessionManagerApi.types'
+import type { SessionScriptRequest, SessionScriptStart, SessionsOpResult } from '../sessionManagerApi.types'
 import { SessionWorkingDirectory } from '../sessionWorkingDirectory'
 import { OperationOutcomes } from './operationOutcomes'
 import { ScriptRunLauncher } from './scriptRunLauncher'
@@ -51,7 +51,8 @@ export class InnerRunFlow {
    * launch the Host did not decide answers the run id, since the Host may run it; its verdict comes
    * through `sessions.scripts` once a listing bound it or found it missing.
    */
-  async start(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+  async start(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>> {
+    const kind = request.kind ?? 'requested'
     const parent = this.records.get(parentId)
     if (!parent) return OperationOutcomes.notFound(parentId)
     if (parent.scriptOf !== undefined)
@@ -66,15 +67,25 @@ export class InnerRunFlow {
     if (problem !== null) return InnerRunFlow.refusal(problem)
     const cwd = await InnerRunFlow.cwdOf(InnerRunFlow.boundOf(parent), SessionWorkingDirectory.ofRecord(parent), request.cwd)
     if (!cwd.ok) return InnerRunFlow.refusal(cwd.problem)
-    if (this.liveRuns(parentId) >= InnerRunFlow.liveRunsPerParentMaxConst)
-      return InnerRunFlow.refusal(`Session ${parentId} already runs ${InnerRunFlow.liveRunsPerParentMaxConst} `
-        + 'requested runs; wait for one to end or stop it')
+    switch (kind) {
+      case 'service': {
+        const running = this.runningService(parentId, request.command.trim(), cwd.value)
+        if (running !== null) return { ok: true, value: { runId: running.sessionId, reused: true } }
+        break
+      }
+      case 'requested':
+        if (this.liveRuns(parentId) >= InnerRunFlow.liveRunsPerParentMaxConst)
+          return InnerRunFlow.refusal(`Session ${parentId} already runs ${InnerRunFlow.liveRunsPerParentMaxConst} `
+            + 'requested runs; wait for one to end or stop it')
+        break
+      default: throw new Error(`Unknown script kind: ${JSON.stringify(kind satisfies never)}`)
+    }
     if (this.records.latched) return OperationOutcomes.latched()
     const name = InnerRunFlow.nameOf(request)
     const run = ScriptRunRecords.shellRun({
       runId: this.newId(),
       operationId: this.newId(),
-      link: SessionScriptDefinitions.linkOf(parentId, 'inner', 'requested', name),
+      link: SessionScriptDefinitions.linkOf(parentId, 'inner', kind, name),
       title: name,
       commands: [{ command: request.command, cwd: cwd.value }],
       now: this.now(),
@@ -82,8 +93,22 @@ export class InnerRunFlow {
     if (!await this.records.put(run)) return OperationOutcomes.latched()
     const launched = await this.runs.launch(run)
     return launched.ok || ScriptRunLauncher.replayArmed(this.records.get(run.sessionId))
-      ? { ok: true, value: { runId: run.sessionId } }
+      ? { ok: true, value: { runId: run.sessionId, reused: false } }
       : launched
+  }
+
+  /** Same parent, same trimmed command, same directory by `PathCompare.comparable`, still starting or live. */
+  private runningService(parentId: string, command: string, cwd: string): SessionRecord | null {
+    const comparable = PathCompare.comparable(cwd)
+    for (const record of this.records.runsOf(parentId)) {
+      const link = record.scriptOf
+      if (link?.sessionId !== parentId || link.phase !== 'inner' || link.scriptId !== 'service') continue
+      if (record.life !== 'live' && record.life !== 'starting') continue
+      const first = record.commands?.[0]
+      if (first !== undefined && first.command.trim() === command && PathCompare.comparable(first.cwd) === comparable)
+        return record
+    }
+    return null
   }
 
   private liveRuns(parentId: string): number {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -118,5 +118,82 @@ test('distributed wrappers keep arguments, process state and delayed exits witho
     }
     assert.deepEqual(readFileSync(join(root, 'skills/claude/appjamat-v3/scripts/jamat-v3.mjs')),
       readFileSync(join(root, 'skills/codex/appjamat-v3/scripts/jamat-v3.mjs')))
+    assert.deepEqual(readFileSync(join(root, 'skills/claude/appjamat-v3/scripts/jamat-v3.mjs')),
+      readFileSync(join(root, 'skills/antigravity/appjamat-v3/scripts/jamat-v3.mjs')))
   } finally { rmSync(output, { recursive: true, force: true }) }
+})
+
+test('source checkout wrapper uses fresh prebuilt dev bundle and falls back to tsx when stale, missing or opted out', () => {
+  const root = resolve(import.meta.dirname, '../..')
+  const checkout = mkdtempSync(join(tmpdir(), 'jamat dev bundle '))
+  try {
+    const cliSource = join(checkout, 'app-client-cli/start.ts')
+    const libSource = join(checkout, 'lib-orchestrator/clientApi/contract.ts')
+    const fakeTsx = join(checkout, 'app-client-cli/node_modules/tsx/dist/cli.mjs')
+    const devBundle = join(checkout, 'out/skills-bundle/cli/jamat-v3.cjs')
+    mkdirSync(join(checkout, 'app-client-cli/node_modules/tsx/dist'), { recursive: true })
+    mkdirSync(join(checkout, 'lib-orchestrator/clientApi'), { recursive: true })
+    mkdirSync(join(checkout, 'out/skills-bundle/cli'), { recursive: true })
+    writeFileSync(cliSource, 'export {}\n')
+    writeFileSync(libSource, 'export {}\n')
+    writeFileSync(join(checkout, 'app-client-cli/tsconfig.json'), '{}')
+    writeFileSync(fakeTsx, "process.stdout.write(JSON.stringify({ via: 'tsx', args: process.argv.slice(2) }) + '\\n')\n")
+    writeFileSync(devBundle, "process.stdout.write(JSON.stringify({ via: 'bundle', pid: process.pid, args: process.argv.slice(2) }) + '\\n')\n")
+
+    const baseSeconds = Math.floor(Date.now() / 1000)
+    const setTime = (file: string, offsetSeconds: number) => utimesSync(file, baseSeconds + offsetSeconds, baseSeconds + offsetSeconds)
+    setTime(cliSource, -20)
+    setTime(libSource, -20)
+    setTime(join(checkout, 'app-client-cli/tsconfig.json'), -20)
+    setTime(devBundle, 0)
+
+    for (const agent of ['claude', 'codex', 'antigravity']) {
+      const directory = join(checkout, 'skills', agent, 'appjamat-v3/scripts')
+      mkdirSync(directory, { recursive: true })
+      const wrapper = join(directory, 'jamat-v3.mjs')
+      copyFileSync(join(root, 'skills', agent, 'appjamat-v3/scripts/jamat-v3.mjs'), wrapper)
+
+      // Fresh bundle: runs directly in-process without spawning tsx.
+      const fresh = spawnSync(process.execPath, [wrapper, 'status'],
+        { encoding: 'utf8', windowsHide: true, cwd: checkout, timeout: 5000 })
+      assert.equal(fresh.status, 0, fresh.stderr + fresh.stdout)
+      const freshOut = JSON.parse(fresh.stdout)
+      assert.equal(freshOut.via, 'bundle')
+      assert.equal(freshOut.pid, fresh.pid)
+      assert.deepEqual(freshOut.args, ['status'])
+
+      // Opt-out env var forces tsx fallback even when the bundle is fresh.
+      const optOut = spawnSync(process.execPath, [wrapper, 'status'], {
+        encoding: 'utf8', windowsHide: true, cwd: checkout, timeout: 5000,
+        env: { ...process.env, JAMAT_V3_CLI_NO_BUNDLE: '1' },
+      })
+      assert.equal(optOut.status, 0, optOut.stderr + optOut.stdout)
+      assert.equal(JSON.parse(optOut.stdout).via, 'tsx')
+    }
+
+    const wrapper = join(checkout, 'skills/claude/appjamat-v3/scripts/jamat-v3.mjs')
+
+    // Newer file in lib-orchestrator/clientApi marks the bundle stale -> falls back to tsx.
+    setTime(libSource, 10)
+    const staleLib = spawnSync(process.execPath, [wrapper, 'status'],
+      { encoding: 'utf8', windowsHide: true, cwd: checkout, timeout: 5000 })
+    assert.equal(staleLib.status, 0, staleLib.stderr + staleLib.stdout)
+    assert.equal(JSON.parse(staleLib.stdout).via, 'tsx')
+
+    // Restore lib timestamp, touch app-client-cli/start.ts -> still stale -> tsx.
+    setTime(libSource, -20)
+    setTime(cliSource, 10)
+    const staleCli = spawnSync(process.execPath, [wrapper, 'status'],
+      { encoding: 'utf8', windowsHide: true, cwd: checkout, timeout: 5000 })
+    assert.equal(staleCli.status, 0, staleCli.stderr + staleCli.stdout)
+    assert.equal(JSON.parse(staleCli.stdout).via, 'tsx')
+
+    // Missing bundle -> falls back to tsx.
+    setTime(cliSource, -20)
+    rmSync(devBundle)
+    const missing = spawnSync(process.execPath, [wrapper, 'status'],
+      { encoding: 'utf8', windowsHide: true, cwd: checkout, timeout: 5000 })
+    assert.equal(missing.status, 0, missing.stderr + missing.stdout)
+    assert.equal(JSON.parse(missing.stdout).via, 'tsx')
+  } finally { rmSync(checkout, { recursive: true, force: true }) }
 })

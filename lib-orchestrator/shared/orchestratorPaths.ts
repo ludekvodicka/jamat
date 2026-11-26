@@ -33,6 +33,8 @@ export class OrchestratorPaths {
   private static readonly antigravityIdentitiesNameConst = 'antigravity-identity'
   private static readonly pastedFilesNameConst = 'pasted-files'
   private static readonly codexSessionsNameConst = 'codex-sessions'
+  private static readonly toolsScopeNameConst = 'tools'
+  private static readonly svnUtf8NameConst = 'svn-utf8'
 
   // The override names the state ROOT, never one channel's directory: consuming it verbatim
   // collapses two channels into one state directory.
@@ -190,15 +192,20 @@ export class OrchestratorPaths {
     )
   }
 
+  static scriptLogsIn(localStateDir: string): string {
+    return join(localStateDir, OrchestratorPaths.scriptLogsNameConst)
+  }
+
   /**
    * The saved output of finished script runs, one folder per parent session. Machine state: the
    * output of a repository's commands on this machine, owner-only like the records beside it.
    */
   static scriptLogsDirectory(configIdentity: string, channel: RuntimeChannel): string {
-    return join(
-      OrchestratorPaths.directory(configIdentity, channel),
-      OrchestratorPaths.scriptLogsNameConst,
-    )
+    return OrchestratorPaths.scriptLogsIn(OrchestratorPaths.directory(configIdentity, channel))
+  }
+
+  static worktreeResultsIn(localStateDir: string): string {
+    return join(localStateDir, OrchestratorPaths.worktreeResultsNameConst)
   }
 
   /**
@@ -206,10 +213,7 @@ export class OrchestratorPaths {
    * `script-logs` because a result outlives its session, whose removal takes that folder.
    */
   static worktreeResultsDirectory(configIdentity: string, channel: RuntimeChannel): string {
-    return join(
-      OrchestratorPaths.directory(configIdentity, channel),
-      OrchestratorPaths.worktreeResultsNameConst,
-    )
+    return OrchestratorPaths.worktreeResultsIn(OrchestratorPaths.directory(configIdentity, channel))
   }
 
   /**
@@ -267,5 +271,13 @@ export class OrchestratorPaths {
    */
   static pastedFilesDirectory(configIdentity: string, channel: RuntimeChannel): string {
     return join(OrchestratorPaths.directory(configIdentity, channel), OrchestratorPaths.pastedFilesNameConst)
+  }
+
+  /**
+   * Cached Windows `svn.exe` copies paired with an `activeCodePage: UTF-8` manifest, keyed by source
+   * binary metadata so TortoiseSVN / Subversion upgrades regenerate cleanly.
+   */
+  static svnUtf8Directory(): string {
+    return join(OrchestratorPaths.machineRoot(), OrchestratorPaths.toolsScopeNameConst, OrchestratorPaths.svnUtf8NameConst)
   }
 }

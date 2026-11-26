@@ -33,6 +33,15 @@ describe('lib-orchestrator/sessionManager/launch/windowsCommand', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  it('searches again when the program it remembered was removed', () => {
+    const early = put(first, 'remembered.exe')
+    const late = put(second, 'remembered.exe')
+    const path = environment([first, second])
+    expect(WindowsCommand.programOf('remembered', path)).toBe(early)
+    rmSync(early)
+    expect(WindowsCommand.programOf('remembered', path)).toBe(late)
+  })
+
   it('answers the executable a bare name would start', () => {
     const image = put(first, 'claude.exe')
     expect(WindowsCommand.imageOf('claude', environment([first]))).toBe(image)

@@ -1,14 +1,67 @@
 import type { FileChangeEntry, FileChangesWorkingTreeSnapshot } from '../fileChangesManager/fileChangesManagerApi.types'
 
+export interface CommitTargetsIndex {
+  removedBy(entry: FileChangeEntry): FileChangeEntry | null
+  carrier(entry: FileChangeEntry): FileChangeEntry | null
+  requiredParents(checked: ReadonlySet<string>): ReadonlySet<string>
+}
+
 export class CommitTargets {
   static blocked(entry: FileChangeEntry): boolean {
     return entry.status === 'conflicted' || entry.status === 'obstructed'
   }
 
+  static index(entries: readonly FileChangeEntry[]): CommitTargetsIndex {
+    const deletedDirs = new Map<string, FileChangeEntry>()
+    const addedDirs = new Map<string, FileChangeEntry>()
+    const normalizedPathById = new Map<string, string>()
+    const requiredCandidates: Array<{ fileId: string; normalizedPath: string }> = []
+    for (const entry of entries) {
+      const normalized = CommitTargets.normalize(entry.path)
+      normalizedPathById.set(entry.fileId, normalized)
+      if (entry.nodeKind === 'directory') {
+        if (entry.status === 'deleted') deletedDirs.set(normalized, entry)
+        else if (entry.status === 'added') addedDirs.set(normalized, entry)
+        if (entry.status === 'added' || entry.status === 'untracked')
+          requiredCandidates.push({ fileId: entry.fileId, normalizedPath: normalized })
+      }
+    }
+    return {
+      removedBy: (entry) => entry.status === 'untracked' && deletedDirs.size > 0
+        ? CommitTargets.deepestAncestor(entry.path.replace(/\\/g, '/'), deletedDirs)
+        : null,
+      carrier: (entry) => entry.status === 'copied' && addedDirs.size > 0
+        ? CommitTargets.deepestAncestor(entry.path.replace(/\\/g, '/'), addedDirs)
+        : null,
+      requiredParents: (checked) => {
+        const required = new Set<string>()
+        if (requiredCandidates.length === 0 || checked.size === 0) return required
+        const checkedAncestors = new Set<string>()
+        for (const entry of entries) {
+          if (!checked.has(entry.fileId)) continue
+          CommitTargets.addAncestors(entry.path.replace(/\\/g, '/'), checkedAncestors)
+        }
+        for (const candidate of requiredCandidates)
+          if (checkedAncestors.has(candidate.normalizedPath)) required.add(candidate.fileId)
+        return required
+      },
+    }
+  }
+
+  static externalRootMap(
+    externalRoots: FileChangesWorkingTreeSnapshot['externalRoots'],
+  ): ReadonlyMap<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]> {
+    const map = new Map<string, FileChangesWorkingTreeSnapshot['externalRoots'][number]>()
+    for (const root of [...externalRoots].sort((left, right) => left.path.length - right.path.length))
+      for (const id of root.fileIds) map.set(id, root)
+    return map
+  }
+
   static eligible(snapshot: FileChangesWorkingTreeSnapshot): readonly FileChangeEntry[] {
+    const indexed = CommitTargets.index(snapshot.entries)
     return snapshot.entries.filter((entry) => !CommitTargets.blocked(entry)
-      && CommitTargets.carrier(entry, snapshot.entries) === null
-      && CommitTargets.removedBy(entry, snapshot.entries) === null)
+      && indexed.carrier(entry) === null
+      && indexed.removedBy(entry) === null)
   }
 
   /**
@@ -27,10 +80,12 @@ export class CommitTargets {
    */
   static removedBy(entry: FileChangeEntry, entries: readonly FileChangeEntry[]): FileChangeEntry | null {
     if (entry.status !== 'untracked') return null
-    const path = entry.path.replace(/\\/g, '/')
-    return entries.filter((candidate) => candidate.nodeKind === 'directory' && candidate.status === 'deleted'
-      && path.startsWith(`${candidate.path.replace(/\\/g, '/').replace(/\/$/, '')}/`))
-      .sort((left, right) => right.path.length - left.path.length)[0] ?? null
+    const deletedDirs = new Map<string, FileChangeEntry>()
+    for (const candidate of entries)
+      if (candidate.nodeKind === 'directory' && candidate.status === 'deleted')
+        deletedDirs.set(CommitTargets.normalize(candidate.path), candidate)
+    if (deletedDirs.size === 0) return null
+    return CommitTargets.deepestAncestor(entry.path.replace(/\\/g, '/'), deletedDirs)
   }
 
   /**
@@ -43,20 +98,24 @@ export class CommitTargets {
    */
   static carrier(entry: FileChangeEntry, entries: readonly FileChangeEntry[]): FileChangeEntry | null {
     if (entry.status !== 'copied') return null
-    const path = entry.path.replace(/\\/g, '/')
-    return entries.filter((candidate) => candidate.nodeKind === 'directory' && candidate.status === 'added'
-      && path.startsWith(`${candidate.path.replace(/\\/g, '/').replace(/\/$/, '')}/`))
-      .sort((left, right) => right.path.length - left.path.length)[0] ?? null
+    const addedDirs = new Map<string, FileChangeEntry>()
+    for (const candidate of entries)
+      if (candidate.nodeKind === 'directory' && candidate.status === 'added')
+        addedDirs.set(CommitTargets.normalize(candidate.path), candidate)
+    if (addedDirs.size === 0) return null
+    return CommitTargets.deepestAncestor(entry.path.replace(/\\/g, '/'), addedDirs)
   }
 
   static requiredParent(entry: FileChangeEntry, entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): boolean {
-    const prefix = `${entry.path.replace(/\\/g, '/').replace(/\/$/, '')}/`
-    return entry.nodeKind === 'directory' && (entry.status === 'added' || entry.status === 'untracked')
-      && entries.some((child) => checked.has(child.fileId) && child.path.replace(/\\/g, '/').startsWith(prefix))
+    if (entry.nodeKind !== 'directory' || (entry.status !== 'added' && entry.status !== 'untracked')) return false
+    const prefix = `${CommitTargets.normalize(entry.path)}/`
+    return entries.some((child) => checked.has(child.fileId) && child.path.replace(/\\/g, '/').startsWith(prefix))
   }
 
   static selected(entries: readonly FileChangeEntry[], checked: ReadonlySet<string>): readonly FileChangeEntry[] {
-    return entries.filter((entry) => checked.has(entry.fileId) || CommitTargets.requiredParent(entry, entries, checked))
+    if (checked.size === 0) return []
+    const required = CommitTargets.index(entries).requiredParents(checked)
+    return entries.filter((entry) => checked.has(entry.fileId) || required.has(entry.fileId))
   }
 
   /**
@@ -71,6 +130,33 @@ export class CommitTargets {
       if (order !== 0) return order
     }
     return leftSegments.length - rightSegments.length
+  }
+
+  private static normalize(path: string): string {
+    return path.replace(/\\/g, '/').replace(/\/$/, '')
+  }
+
+  private static deepestAncestor(
+    slashedPath: string,
+    directories: ReadonlyMap<string, FileChangeEntry>,
+  ): FileChangeEntry | null {
+    let slash = slashedPath.lastIndexOf('/')
+    while (slash >= 0) {
+      const hit = directories.get(slashedPath.slice(0, slash))
+      if (hit !== undefined) return hit
+      if (slash === 0) break
+      slash = slashedPath.lastIndexOf('/', slash - 1)
+    }
+    return null
+  }
+
+  private static addAncestors(slashedPath: string, target: Set<string>): void {
+    let slash = slashedPath.lastIndexOf('/')
+    while (slash >= 0) {
+      target.add(slashedPath.slice(0, slash))
+      if (slash === 0) break
+      slash = slashedPath.lastIndexOf('/', slash - 1)
+    }
   }
 }
 

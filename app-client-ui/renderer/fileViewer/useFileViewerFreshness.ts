@@ -23,9 +23,12 @@ export function useFileViewerFreshness(
   documentId: string | null,
   reload: () => void,
   ports: Pick<SessionFilePorts['viewer'], 'version'>,
+  /** False while the tab holding the file is hidden: it asks nothing then, and asks once when shown. */
+  visible = true,
 ): FileViewerFreshnessModel {
   const [missing, setMissing] = useState(false)
   const reloadRef = useRef(reload)
+  const hidden = useRef(false)
 
   useLayoutEffect(() => {
     reloadRef.current = reload
@@ -36,6 +39,9 @@ export function useFileViewerFreshness(
       setMissing(false)
       return
     }
+    if (!visible) { hidden.current = true; return }
+    const shownAgain = hidden.current
+    hidden.current = false
     let alive = true
     let asking = false
     let reloadedVersion: string | null = null
@@ -66,6 +72,7 @@ export function useFileViewerFreshness(
       finally { asking = false }
     }
     setMissing(false)
+    if (shownAgain) void ask()
     const timer = window.setInterval(
       () => { void ask() },
       FileViewerFreshness.pollMillisecondsConst,
@@ -77,7 +84,7 @@ export function useFileViewerFreshness(
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [documentId, ports])
+  }, [documentId, ports, visible])
 
   return { missing }
 }

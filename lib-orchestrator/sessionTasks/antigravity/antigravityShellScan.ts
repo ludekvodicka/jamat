@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises'
 import type { ProviderTranscriptRef } from '../../projectManager/providerTranscriptView'
 import { JsonShape } from '../../shared/jsonShape'
 import type { SessionShellRow, SessionShellState, SessionTaskParentState } from '../sessionTasksApi.types'
+import { ShellCommandKind } from '../shellCommandKind'
 
 export type AntigravityTaskEndStatus = 'completed' | 'failed' | 'killed'
 
@@ -92,6 +93,7 @@ export class AntigravityShellScan {
         : AntigravityShellScan.shellStateOf(facts.end.status),
       startedAt: facts.startedAt,
       endedAt: facts.end?.at ?? null,
+      runs: ShellCommandKind.of(facts.command),
     }
   }
 
@@ -220,7 +222,7 @@ export class AntigravityShellScan {
             : state.recentCommands.at(-1)
           state.shells.set(shellId, {
             shellId,
-            command: commandFromTask || matched?.command || shellId,
+            command: matched?.command || commandFromTask || shellId,
             description: matched?.description ?? null,
             startedAt: at,
             end: state.earlyEnds.get(shellId) ?? null,

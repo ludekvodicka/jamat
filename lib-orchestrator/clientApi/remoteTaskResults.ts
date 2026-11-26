@@ -27,15 +27,15 @@ const transcript = z.union([none, unchanged, z.strictObject({ kind: z.literal('t
   entries: z.array(entry).max(65536), earlierStepsOmitted: z.boolean() })])
 const shell = z.union([none, unchanged, z.strictObject({ kind: z.literal('output'), revision: id, command: text,
   state: shellState, startedAt: at, endedAt: at.nullable(), text, earlierOutputOmitted: z.boolean() })])
-const script = z.strictObject({ state: scriptState, source: z.enum(['live', 'log']), lines: z.array(text).max(65537), logReason: text.optional(),
+const script = z.strictObject({ state: scriptState, stateWord: text.optional(), source: z.enum(['live', 'log']), lines: z.array(text).max(65537), logReason: text.optional(),
   terminal: z.strictObject({ hostInstanceId: id, runtimeSessionId: id, generation: count }).nullable(), endedAt: at.optional() })
 const listing = z.union([none, z.strictObject({ kind: z.literal('tasks'), olderFinished: count, catchingUp: z.boolean(), rows: z.array(z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('subagent'), subagentId: id, agentType: text, description: text, depth: z.union([z.literal(1), z.literal(2)]),
     parentSubagentId: id.nullable(), state: subagentState, startedAt: at, endedAt: at.nullable(), model: text.nullable(), step: text.nullable() }),
-  z.strictObject({ kind: z.literal('shell'), shellId: id, command: text, description: text.nullable(), state: shellState, startedAt: at, endedAt: at.nullable() }),
+  z.strictObject({ kind: z.literal('shell'), shellId: id, command: text, description: text.nullable(), state: shellState, startedAt: at, endedAt: at.nullable(), runs: z.enum(['agent', 'command']).optional() }),
 ])).max(10000) })])
 const scripts = z.strictObject({ runs: z.array(z.strictObject({ runId: id, phase: z.enum(['before', 'after', 'inner']),
-  scriptId: z.enum(['setup', 'declared', 'merge-resolve', 'requested', 'svn', 'checks', 'svn-resolve', 'svn-merge', 'review']),
+  scriptId: z.enum(['setup', 'declared', 'merge-resolve', 'requested', 'service', 'svn', 'checks', 'svn-resolve', 'svn-merge', 'review']),
   name: text, title: text, state: scriptState, summary: text, startedAt: at, endedAt: at.optional(), durationText: text.optional(), exitCode: z.number().int().optional(),
   commands: z.array(text), row: z.boolean(), log: z.enum(['saved', 'unavailable', 'none']), logDetail: text.optional() })).max(10000),
   badge: z.strictObject({ phase: z.enum(['before', 'after']), state: z.enum(['running', 'failed', 'skipped', 'succeeded']), text, title: text, runId: id.optional() }).optional(), waitingOn: id.optional(),

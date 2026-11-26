@@ -1,7 +1,7 @@
 {
   "agent": "claude",
   "expected": {
-    "hint": "idle"
+    "hint": "background"
   },
   "provenance": {
     "origin": "AppJamat (V1) core/agents/claude/fixtures/work-detection.json",
@@ -10,7 +10,7 @@
     "ported": "rawTail, screenTail and wideScreenTail copied byte for byte from the V1 case; nothing was written for this tree. The V1 `phase` field is dropped: frames here carry no phase.",
     "identical": "AppJamatV2 core/agents/*/fixtures/work-detection.json holds the same corpus byte for byte",
     "note": "The 2026-08-20 decision made background work green, so this frame's truthful verdict moved from idle to background: its footer says tasks are still running. It is also the frame that admits the shell pattern.",
-    "shells": "On 2026-11-23 the person asked for a turn that left only background shells running (a dev server) to read idle: a shell counter with no sub-agent strip under the footer is now idle with shellsRunning, and only a sub-agent or another task keeps the background hint."
+    "shells": "On 2026-11-23 the person asked for a turn that left only background shells running (a dev server) to read idle; on 2026-11-26 Jamat services took over the idle ring, so native Claude background shells read background again."
   },
   "frame": {
     "rawTail": "",

@@ -3,6 +3,7 @@ import { relative, resolve } from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
 
 import { JsonShape } from '../shared/jsonShape'
+import { SvnExecutable } from './svnExecutable'
 import { SvnExternalDefinitions } from './svnExternalDefinitions'
 import type {
   SvnAttribution,
@@ -47,12 +48,14 @@ export class SvnWorktreeEvidence {
   })
 
   /**
-   * Whether svn.exe can take `text` as an argument. It reads its command line in the ANSI code page
-   * and maps a character outside it to a look-alike (`ř` arrives as `r`), which names another file
-   * without an error, so only ASCII is safe on every machine. A working directory is not affected.
+   * Whether svn can take `text` as an argument without corrupting it. Control characters are always
+   * refused (NUL truncates argv and CR/LF split `--targets`). Non-ASCII characters are admitted when
+   * `SvnExecutable` provides a UTF-8 `activeCodePage` binary on Windows; otherwise svn.exe maps them
+   * through the ANSI code page (`ř` arrives as `r`) and only ASCII is safe.
    */
   static takesArgument(text: string): boolean {
-    return /^[\x20-\x7e]*$/.test(text)
+    if (/[\x00-\x1f\x7f]/.test(text)) return false
+    return /^[\x20-\x7e]*$/.test(text) || SvnExecutable.supportsUtf8Arguments()
   }
 
   static relativeTo(root: string, path: string): string {

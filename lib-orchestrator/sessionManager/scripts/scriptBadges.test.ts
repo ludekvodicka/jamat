@@ -94,6 +94,11 @@ describe('lib-orchestrator/sessionManager/scripts/scriptBadges', () => {
       // A stopped run's code is whatever a kill reports.
       expect(ScriptBadges.summaryOf({ title: 'Setup i12-x', state: 'stopped', exitCode: 1, durationText: '3.0 s' }))
         .toBe('Setup i12-x · stopped · 3.0 s')
+      // A service that ended without a stop is worded `exited`, even for exit 0.
+      expect(ScriptBadges.summaryOf({ title: 'web', state: 'failed', exitCode: 0, durationText: '2 min', endsBy: 'stop' }))
+        .toBe('web · exited · exit 0 · 2 min')
+      expect(ScriptBadges.summaryOf({ title: 'web', state: 'stopped', exitCode: 0, durationText: '2 min', endsBy: 'stop' }))
+        .toBe('web · stopped · 2 min')
     })
   })
 

@@ -74,7 +74,7 @@ import { LaunchBackoff } from './lifecycle/launchBackoff'
 import type { ReconcileChange } from './lifecycle/reconciler'
 import { MainFinishFlow } from './lifecycle/mainFinishFlow'
 import type { MainFinishPort } from './mainFinishPort.types'
-import { SessionLifecycle } from './lifecycle/sessionLifecycle'
+import { SessionLifecycle, type SessionStopIntent } from './lifecycle/sessionLifecycle'
 import type { SessionWorktreePort, WorktreeFinisherRegistration } from '../worktrees/worktreeLifecycle.types'
 import { SessionSteps } from './lifecycle/sessionSteps'
 import { SessionWorkflows } from './lifecycle/sessionWorkflows'
@@ -115,6 +115,7 @@ import { SvnWaitNotices } from '../worktrees/worktreeResults'
 import { WorktreeWords } from '../worktrees/worktreeViews'
 import type { SessionChildInfo, SessionErasure, SessionMainFinishChoice, SessionMainFinishOutcome, SessionNotifyDto, SessionProcessPriorityLevel, SessionStepInfo } from './sessionManagerApi.types'
 import type { AgentHistoryEraser } from './purge/agentHistoryEraser.types'
+import { EphemeralSessionFiles } from './purge/ephemeralSessionFiles'
 import { SessionPurge } from './purge/sessionPurge'
 import { LaunchPlanner } from './launch/launchPlanner'
 import { RunOutputLines } from './scripts/runOutputLines'
@@ -147,6 +148,7 @@ import type {
   SessionOperation,
   SessionScriptOutput,
   SessionScriptRequest,
+  SessionScriptStart,
   SessionScriptsReading,
   SessionSetupInfo,
   SessionsOpErrorCode,
@@ -427,6 +429,7 @@ export class SessionManager {
   private runtimeHostId: string | undefined
   private pendingInputHints: ReadonlyMap<string, number> = new Map()
   private readonly scriptLogs: ScriptLogStore
+  private readonly ephemeralFiles: EphemeralSessionFiles
   /** Outlives the sessions it reports; loaded and swept at start. */
   private readonly results: WorktreeResultsStore
   private readonly notifyStore: SessionNotifyStore
@@ -466,12 +469,16 @@ export class SessionManager {
   /** Bound late for the same reason: the file changes, the terminal and the commit reviews are the client's. */
   private mainFinish: MainFinishFlow | null = null
   private readonly worktreeLifecycle: WorktreeLifecycle
+  static readonly restartHoldMillisecondsConst = 300_000
+  private readonly restartHolds = new Map<string, number>()
 
   /**
    * Sessions whose Finish or Discard this client has begun, from before its first await until it
    * answers: a reopen must not slip in before the first phase write lands on the record.
    */
   private readonly finishing = new Set<string>()
+  /** Sessions currently inside `eraseSession`, whose files `SessionPurge.erase` deletes and reports itself. */
+  private readonly erasing = new Set<string>()
   /** Ended while `finishing` still held them; the Finish or Discard that holds them removes them as it lets go. */
   private readonly endedWhileFinishing = new Set<string>()
   /** The cleanups after a session's end running now, each until it let go of `finishing`. */
@@ -638,6 +645,7 @@ export class SessionManager {
     this.terminals = deps.terminals
     this.terminalsFeed = deps.terminalsFeed
     this.scriptLogs = new ScriptLogStore(OrchestratorPaths.scriptLogsDirectory(deps.configIdentity, deps.channel))
+    this.ephemeralFiles = new EphemeralSessionFiles({ instance: { configIdentity: deps.configIdentity, channel: deps.channel } })
     this.results = new WorktreeResultsStore(OrchestratorPaths.worktreeResultsDirectory(deps.configIdentity, deps.channel), {
       now: () => Date.now(),
       logs: this.scriptLogs,
@@ -720,6 +728,7 @@ export class SessionManager {
       if (this.stopping) return
       // Only folders: the runs an older build left are settled by the ordinary planning.
       await this.scripts?.sweep()
+      await this.sweepEphemeralFiles()
       await this.results.load()
       await this.notifyStore.load()
       if (this.stopping) return
@@ -757,7 +766,7 @@ export class SessionManager {
       try { this.deps.onError(`Terminal drain failed: ${ErrorText.of(error)}`) }
       catch { /* Lost diagnostics must not skip persisted records during crash cleanup. */ }
     }
-    const inputSettled = await this.records?.flushUserInput() ?? false
+    const inputSettled = await this.records?.flushUserInput({ force: true }) ?? false
     await this.client.stop()
     const workSettled = await this.settleWork()
     const recordsSettled = await this.records?.settlement() ?? false
@@ -795,6 +804,9 @@ export class SessionManager {
 
   usageRecords() { return sessionUsageRecords(this.records?.listAll() ?? []) }
 
+  /** The records the snapshot's sessions are composed from, for the uncommitted mark's eligibility (D17). */
+  recordsInTree(): readonly SessionRecord[] { return this.records?.list() ?? [] }
+
   /** Whether `sessionId` has a record; null until the records file has been read, when nobody can tell. */
   knowsSession(sessionId: string): boolean | null {
     return this.records === null ? null : this.records.get(sessionId) !== null
@@ -806,6 +818,12 @@ export class SessionManager {
     const composed = this.recompose()
     this.emittedRevision = composed.revision
     return composed
+  }
+
+  /** True while records/archive are unloaded or latched, or when `sessionId` exists in active or archived records. */
+  hasKnownSession(sessionId: string): boolean {
+    if (this.records === null || this.records.latched || !this.records.archiveRead) return true
+    return this.records.getAny(sessionId) !== null
   }
 
   accountForLaunch(sessionId: string, launchId: string, at: number): import('./sessionAccounts').SessionAccountRef | null {
@@ -893,6 +911,13 @@ export class SessionManager {
     await this.lifecycle()
     if (this.scripts === null) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
     return this.scripts.outputOf(parentId, runId)
+  }
+
+  /** The last output line of each running service of `parentId`, read on demand without touching the snapshot. */
+  async scriptLastLinesOf(parentId: string): Promise<SessionsOpResult<readonly { runId: string; line: string | null }[]>> {
+    await this.lifecycle()
+    if (this.scripts === null) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
+    return this.scripts.lastLinesOf(parentId)
   }
 
   /** A session's runs and, with `runId`, one run's saved log text; for the control API. */
@@ -1362,16 +1387,22 @@ export class SessionManager {
 
   /** A person's resume, the window's Resume session and the worker-lost wait's Resume worker alike. */
   async reopenSession(sessionId: string): Promise<SessionsOpResult> {
-    const refused = await this.restored(sessionId)
-    if (refused !== null) return refused
-    const result = await this.operate((lifecycle) => lifecycle.reopen(sessionId))
-    // The session runs again whatever this write says; a refusal is reported, not answered.
-    if (result.ok) await this.workerLiveness?.reopened(sessionId).catch((error: unknown) => this.deps.onError(`Session ${sessionId}: ${ErrorText.of(error)}`))
-    return result
+    try {
+      const refused = await this.restored(sessionId)
+      if (refused !== null) return refused
+      const result = await this.operate((lifecycle) => lifecycle.reopen(sessionId))
+      // The session runs again whatever this write says; a refusal is reported, not answered.
+      if (result.ok) await this.workerLiveness?.reopened(sessionId).catch((error: unknown) => this.deps.onError(`Session ${sessionId}: ${ErrorText.of(error)}`))
+      return result
+    } finally {
+      this.restartHolds.delete(sessionId)
+    }
   }
 
-  async stopSession(sessionId: string): Promise<SessionsOpResult> {
-    return this.operate((lifecycle) => lifecycle.stop(sessionId))
+  async stopSession(sessionId: string, intent: SessionStopIntent = 'close'): Promise<SessionsOpResult> {
+    if (intent === 'close') this.restartHolds.delete(sessionId)
+    else if (intent !== 'restart') throw new Error(`Unknown stop intent: ${JSON.stringify(intent satisfies never)}`)
+    return this.operate((lifecycle) => lifecycle.stop(sessionId, intent))
   }
 
   /**
@@ -1506,30 +1537,50 @@ export class SessionManager {
     } finally { this.switchingAccounts.delete(sessionId) }
   }
 
-  async stopAndWaitSession(sessionId: string): Promise<SessionsOpResult> {
+  async stopAndWaitSession(sessionId: string, intent: SessionStopIntent = 'close'): Promise<SessionsOpResult> {
     const refused = await this.restored(sessionId)
     if (refused !== null) return refused
     const record = this.records?.get(sessionId)
     if (!record) return { ok: false, code: 'not-found', detail: `No session ${sessionId}` }
     if (record.life !== 'live') return { ok: true, value: undefined }
-    const stopped = await this.stopSession(sessionId)
-    if (!stopped.ok) return stopped
+    if (intent === 'restart') this.restartHolds.set(sessionId, Date.now() + SessionManager.restartHoldMillisecondsConst)
+    else if (intent !== 'close') throw new Error(`Unknown stop intent: ${JSON.stringify(intent satisfies never)}`)
+    const stopped = await this.stopSession(sessionId, intent)
+    if (!stopped.ok) {
+      if (intent === 'restart') this.restartHolds.delete(sessionId)
+      return stopped
+    }
     // The Host answers a stop before the process is gone, and a reopen against a runtime that is
     // still alive comes back `live-refused`. The wait for the exit is what closes that race.
-    if (!await this.awaitRuntimeExit(sessionId))
+    if (!await this.awaitRuntimeExit(sessionId)) {
+      if (intent === 'restart') this.restartHolds.delete(sessionId)
       return {
         ok: false,
         code: 'live-refused',
         detail: `Session ${sessionId} was asked to stop and was still running ${
           SessionManager.exitBudgetMillisecondsConst / 1_000} s later`,
       }
+    }
     return { ok: true, value: undefined }
   }
 
   async restartSession(sessionId: string): Promise<SessionsOpResult> {
-    const stopped = await this.stopAndWaitSession(sessionId)
-    if (!stopped.ok) return stopped
+    const stopped = await this.stopAndWaitSession(sessionId, 'restart')
+    if (!stopped.ok) {
+      this.restartHolds.delete(sessionId)
+      return stopped
+    }
     return this.reopenSession(sessionId)
+  }
+
+  /** Unexpired holds; the reconciler hands them to `ScriptRunPlanning.changes`. */
+  heldParents(now: number = Date.now()): ReadonlySet<string> {
+    const active = new Set<string>()
+    for (const [sessionId, until] of this.restartHolds) {
+      if (until > now) active.add(sessionId)
+      else this.restartHolds.delete(sessionId)
+    }
+    return active
   }
 
   /**
@@ -1612,7 +1663,10 @@ export class SessionManager {
     const conversations = SessionPurge.conversationIdsOf(record)
     const forks = records.listAll().filter((one) => one.sessionId !== sessionId
       && one.agent?.forkParentId !== undefined && conversations.includes(one.agent.forkParentId))
-    const removed = await this.removeSession(sessionId)
+    this.erasing.add(sessionId)
+    let removed: SessionsOpResult
+    try { removed = await this.removeSession(sessionId) }
+    finally { this.erasing.delete(sessionId) }
     if (!removed.ok) return removed
     if (records.get(sessionId) !== null)
       return {
@@ -1747,8 +1801,28 @@ export class SessionManager {
    * A shell run the live session `parentId` asks for, drawn as its child and judged by its exit code.
    * On the operation queue because it writes a record and launches a runtime.
    */
-  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<{ runId: string }>> {
+  async runScript(parentId: string, request: SessionScriptRequest): Promise<SessionsOpResult<SessionScriptStart>> {
     return this.operate((lifecycle) => lifecycle.runScript(parentId, request))
+  }
+
+  /** Stops one inner run of `parentId`. Refuses another session's run as `not-found` and a gated run as `invalid-spec`. */
+  async stopScriptRun(parentId: string, runId: string): Promise<SessionsOpResult> {
+    return this.operate(async () => {
+      const parent = this.records?.get(parentId)
+      if (!parent) return { ok: false, code: 'not-found', detail: `No session ${parentId}` }
+      const run = this.records?.get(runId)
+      if (!run || run.scriptOf?.sessionId !== parentId)
+        return { ok: false, code: 'not-found', detail: `Session ${parentId} has no script run ${runId}` }
+      if (SessionScriptDefinitions.of(run.scriptOf).gate !== null)
+        return { ok: false, code: 'invalid-spec', detail: `Script run ${runId} belongs to a gated workflow and cannot be stopped here` }
+      if (this.scripts === null) return { ok: false, code: 'records-latched', detail: 'Session scripts are unavailable' }
+      const stopped = await this.scripts.stopRun(runId)
+      if (!stopped) {
+        const refusal = this.scripts.stopRefusalOf(runId)
+        if (refusal !== undefined) return { ok: false, code: 'op-rejected', detail: refusal }
+      }
+      return { ok: true, value: undefined }
+    })
   }
 
   async clearActions(sessionId: string): Promise<SessionsOpResult> {
@@ -2216,6 +2290,8 @@ export class SessionManager {
       if (!prepared.ok) return prepared
       const restarted = await this.controller.restart(expectedHostInstanceId)
       if (!restarted.ok) return restarted
+      // Marked before the reconcile that settles the old runs, so their history reads `stopped`.
+      await this.scripts?.markStopsRequested(prepared.value.services.map((service) => service.runId))
       // The event socket can be ready before controller authority on the replacement Host.
       const clock = this.deps.exitClock ?? SessionManager.realExitClockConst
       const until = clock.now() + SessionManager.exitBudgetMillisecondsConst
@@ -2223,7 +2299,7 @@ export class SessionManager {
         await clock.wait(SessionManager.exitPollMillisecondsConst)
       await this.reconcileNow(lifecycle, 'operation')
       const failures: string[] = []
-      for (const sessionId of prepared.value) {
+      for (const sessionId of prepared.value.sessions) {
         // A worktree worker came back through its liveness inside that reconcile; asking again would be
         // refused by the Finish that holds its worktree and read as a failure (UA1-J10-6).
         const life = this.records?.get(sessionId)?.life
@@ -2236,6 +2312,12 @@ export class SessionManager {
           failures.push(`${sessionId}: ${ErrorText.of(error)}`)
         }
       }
+      const serviceParents = new Set(prepared.value.services.map((service) => service.parentId))
+      while ([...serviceParents].some((id) => this.records?.get(id)?.life === 'starting') && clock.now() < until) {
+        await clock.wait(SessionManager.exitPollMillisecondsConst)
+        await this.reconcileNow(lifecycle, 'operation')
+      }
+      failures.push(...await lifecycle.restoreServices(prepared.value.services))
       const { warnings } = restarted.value
       const survived = warnings.length === 0 ? '' : ` The Host could not stop everything: ${warnings.join('; ')}`
       return failures.length === 0
@@ -2255,7 +2337,7 @@ export class SessionManager {
     if (!resolution.ok) return { ok: false, code: resolution.code }
     const agentId = this.agentOf(sessionId)
     if (agentId === null) return { ok: false, code: 'not-agent' }
-    const inspected = await this.client.runtimeInspect(resolution.ref, ScreenTail.viewConst)
+    const inspected = await this.client.runtimeInspect(resolution.ref, ScreenTail.composerViewConst)
     if (!inspected.ok || inspected.value.projection === null) return { ok: false, code: 'no-projection' }
     const frame = ScreenTail.frameOf(inspected.value.projection)
     return {
@@ -2264,7 +2346,7 @@ export class SessionManager {
         agentId,
         alive: inspected.value.session.alive,
         hint: WorkStateMonitor.agedHint(agentId, frame, inspected.value.projection.lastOutputAt, Date.now()),
-        ...AgentComposerReader.read(agentId, frame),
+        ...AgentComposerReader.read(agentId, ScreenTail.composerFrameOf(inspected.value.projection)),
       },
     }
   }
@@ -2398,7 +2480,8 @@ export class SessionManager {
       const result = await work(lifecycle)
       // What the Host answered is not the whole picture; what it lists afterwards is. Taking that
       // here is what makes the snapshot true by the time the call returns.
-      await this.reconcileNow(lifecycle, 'operation')
+      const reconcile = (): Promise<void> => this.reconcileNow(lifecycle, 'operation')
+      await (this.deps.perf ? this.deps.perf.operation('sessions.reconcile', reconcile) : reconcile())
       this.changed()
       return result
     })
@@ -2409,6 +2492,10 @@ export class SessionManager {
    * work is the caller's to see, and it must not stop everything queued behind it.
    */
   private serialize<T>(work: () => Promise<T>): Promise<T> {
+    // How long work waited behind the queue: a slow `sessions.create` is either this wait, its own
+    // Host call, or `sessions.reconcile` after it. Recorded only when it reaches two seconds.
+    const before = this.queue
+    if (this.deps.perf) void this.deps.perf.operation('sessions.queue', () => before)
     const run = this.queue.then(work)
     this.queue = run.then(() => undefined, () => undefined)
     return run
@@ -2439,7 +2526,7 @@ export class SessionManager {
     // the reconciler is handed null and relabels nothing: unreachable is not lost.
     const listing = listed.ok ? listed.value : null
     if (listing !== null) this.applyListing(listing)
-    const changes = await lifecycle.reconcile(listing)
+    const changes = await lifecycle.reconcile(listing, this.heldParents(Date.now()))
     await this.publishTerminalRefs()
     if (listing !== null) await this.workerLiveness?.observe(this.records?.list() ?? [], (text) => this.deps.onError(text))
     if (listing !== null) {
@@ -2460,7 +2547,7 @@ export class SessionManager {
     this.changed()
     this.runtimes = new Map(listing.sessions.map((session) => [session.runtimeSessionId, session]))
     // Every operation ends with a listing, so a session started by one is lowered before it returns.
-    this.processPriority.observe(listing.sessions, (runtimeSessionId) => {
+    void this.processPriority.observe(listing.sessions, (runtimeSessionId) => {
       const record = this.records?.get(runtimeSessionId) ?? null
       return record !== null && (record.kind === 'agent' || record.scriptOf !== undefined)
     }, this.deps.processPriorityOf?.() ?? 'below-normal')
@@ -2604,6 +2691,7 @@ export class SessionManager {
         steps: this.steps,
       },
       report: this.deps.onError,
+      onRemoved: (removed) => this.cleanRemovedEphemeralFiles(removed),
       yoloFor: this.deps.yoloFor,
       accounts: this.deps.accounts,
       modelFor: this.deps.modelFor,
@@ -2668,7 +2756,7 @@ export class SessionManager {
   private async tick(): Promise<void> {
     this.lastTickAt = Date.now()
     try {
-      await this.records?.flushUserInput()
+      await this.records?.flushUserInput({ force: false, now: this.lastTickAt })
       this.detach(this.refreshLanded(), 'The landed rows')
       this.detach(this.observeHostMemory(), 'The Host memory reading')
       await this.refresh('poll')
@@ -2684,8 +2772,45 @@ export class SessionManager {
 
   /** Old ended records leave the records file; a landed row still waiting for its UPDATE stays. */
   private async archiveEnded(): Promise<void> {
+    const previouslyArchived = new Set((this.records?.archived() ?? []).map((record) => record.sessionId))
     const moved = await this.records?.archiveEnded(Date.now(), (record) => LandedRows.landingOf(record) === null || record.completed === true) ?? 0
-    if (moved > 0) this.changed()
+    if (moved > 0) {
+      const newlyArchived = (this.records?.archived() ?? []).filter((record) => !previouslyArchived.has(record.sessionId))
+      await this.cleanArchivedEphemeralFiles(newlyArchived)
+      this.changed()
+    }
+    await this.sweepEphemeralFiles()
+  }
+
+  private async cleanRemovedEphemeralFiles(removed: readonly SessionRecord[]): Promise<void> {
+    const targets = removed.filter((record) => !this.erasing.has(record.sessionId))
+    if (targets.length === 0) return
+    try {
+      const knownConversations = new Set<string>()
+      for (const record of this.records?.listAll() ?? [])
+        for (const id of SessionPurge.conversationIdsOf(record)) knownConversations.add(id)
+      await this.ephemeralFiles.removeForSessions(targets, knownConversations, { includeConversationContext: true })
+    } catch (error) {
+      this.deps.onError(`Ephemeral session files could not be removed: ${ErrorText.of(error)}`)
+    }
+  }
+
+  private async cleanArchivedEphemeralFiles(archived: readonly SessionRecord[]): Promise<void> {
+    if (archived.length === 0) return
+    try {
+      await this.ephemeralFiles.removeForSessions(archived, new Set(), { includeConversationContext: false })
+    } catch (error) {
+      this.deps.onError(`Archived session files could not be removed: ${ErrorText.of(error)}`)
+    }
+  }
+
+  private async sweepEphemeralFiles(): Promise<void> {
+    if (this.records === null || this.records.latched || !this.records.loadedFromFile || !this.records.archiveRead) return
+    try {
+      await this.ephemeralFiles.sweepStale(this.records.listAll())
+    } catch (error) {
+      this.deps.onError(`Stale session files could not be swept: ${ErrorText.of(error)}`)
+    }
   }
 
   private async observeHostMemory(): Promise<void> {
@@ -2844,12 +2969,17 @@ export class SessionManager {
     // project, not to a project called `.worktrees`.
     const bindings = new Map(records.map((record) => [record.sessionId,
       catalog.bind(SessionWorkingDirectory.ofRecord(record), SessionManager.bindRootOf(record))]))
+    let liveCount = 0
+    for (const runtime of this.runtimes.values()) if (runtime.alive) liveCount += 1
+    const exhaustedRates = new Set<string>()
+    for (const rate of this.deps.rates?.() ?? [])
+      if (accountExhausted(rate)) exhaustedRates.add(`${rate.key.agentId}:${rate.key.accountId}`)
     return {
       host: {
         presence: this.controller.presence(),
         hostVersion: this.controller.hostVersion(),
         hostInstanceId: this.controller.hostInstanceId(),
-        liveCount: [...this.runtimes.values()].filter((runtime) => runtime.alive).length,
+        liveCount,
         workingAgents: this.workingAgents(),
         lastStartError: this.controller.lastStartError(),
         memory: this.hostMemory.reading(),
@@ -2859,14 +2989,18 @@ export class SessionManager {
         label: category.label,
         path: category.path,
       })),
-      sessions: records.map((record) => this.sessionInfoOf(record, bindings)),
+      sessions: records.map((record) => this.sessionInfoOf(record, bindings, exhaustedRates)),
       orphans: this.orphans,
       reconciled: this.reconciled,
     }
   }
 
   /** `bindings` holds every record's binding by session id, its own included. */
-  private sessionInfoOf(record: SessionRecord, bindings: ReadonlyMap<string, ProjectBinding>): SessionInfo {
+  private sessionInfoOf(
+    record: SessionRecord,
+    bindings: ReadonlyMap<string, ProjectBinding>,
+    exhaustedRates: ReadonlySet<string>,
+  ): SessionInfo {
     const project = bindings.get(record.sessionId)
     if (project === undefined) throw new Error(`Session ${record.sessionId}: no project binding was composed`)
     const info: SessionInfo = {
@@ -2885,14 +3019,13 @@ export class SessionManager {
     const activityDetail = this.monitor.activityDetail(record.sessionId)
     if (activityDetail !== null) info.activityDetail = activityDetail
     if (this.monitor.compacting(record.sessionId)) info.compacting = true
-    if (info.activity === 'idle' && this.monitor.shellsRunning(record.sessionId)) info.shellsRunning = true
+    if (info.activity === 'idle' && this.scripts?.serviceRunning(record.sessionId)) info.shellsRunning = true
     if (record.agent)
       info.agent = {
         agentId: record.agent.agentId,
         nativeSessionId: record.agent.nativeSessionId,
         accountId: record.agent.accountId ?? 'main',
-        ...(accountExhausted(this.deps.rates?.().find(rate => rate.key.agentId === record.agent!.agentId
-          && rate.key.accountId === (record.agent!.accountId ?? 'main'))) ? { accountExhausted: true } : {}),
+        ...(exhaustedRates.has(`${record.agent.agentId}:${record.agent.accountId ?? 'main'}`) ? { accountExhausted: true } : {}),
         ...(record.agent.accountId && record.agent.accountId !== 'main'
           ? {
             accountLabel: (record.agent.agentId === 'claude' || record.agent.agentId === 'codex'
@@ -3178,7 +3311,7 @@ export class SessionManager {
    * every run but the resolver by `setupFor`, so a new kind of run joins the `setupFor` branch.
    */
   private static legacyLinkInto(info: SessionInfo, link: SessionRecordScriptLink): void {
-    if (link.scriptId === 'setup' || link.scriptId === 'declared' || link.scriptId === 'requested'
+    if (link.scriptId === 'setup' || link.scriptId === 'declared' || link.scriptId === 'requested' || link.scriptId === 'service'
       || link.scriptId === 'svn' || link.scriptId === 'checks' || link.scriptId === 'svn-resolve' || link.scriptId === 'svn-merge'
       || link.scriptId === 'review')
       info.setupFor = link.sessionId

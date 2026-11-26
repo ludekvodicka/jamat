@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises'
 import type { ProviderTranscriptRef } from '../../projectManager/providerTranscriptView'
 import { JsonShape } from '../../shared/jsonShape'
 import type { SessionShellRow, SessionShellState, SessionTaskParentState } from '../sessionTasksApi.types'
+import { ShellCommandKind } from '../shellCommandKind'
 import { SessionTasksSourceClaude } from './sessionTasksSourceClaude'
 
 /** The `<status>` of a `<task-notification>` this scan acts on; any other status is ignored. */
@@ -115,6 +116,7 @@ export class ClaudeShellScan {
         : ClaudeShellScan.shellStateOf(facts.end.status),
       startedAt: facts.startedAt,
       endedAt: facts.end?.at ?? null,
+      runs: ShellCommandKind.of(facts.command),
     }
   }
 

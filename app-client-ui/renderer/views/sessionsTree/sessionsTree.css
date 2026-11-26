@@ -221,12 +221,41 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.jamat-sessions__task-tag {
+  flex: none;
+  padding: 0 var(--space-1);
+  font-size: var(--fs-chip);
+  line-height: 1.3;
+  color: var(--color-accent);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+}
 .jamat-sessions__task-step {
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--color-text-5);
+}
+.jamat-sessions__task--more {
+  color: var(--color-text-4);
+}
+.jamat-sessions__task--more[role='button'] {
+  cursor: pointer;
+}
+.jamat-sessions__task-more-count {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jamat-sessions__task-more-link {
+  flex: none;
+  color: var(--color-accent);
+}
+.jamat-sessions__task--more[role='button']:hover .jamat-sessions__task-more-link,
+.jamat-sessions__task--more[role='button']:focus-visible .jamat-sessions__task-more-link {
+  text-decoration: underline;
 }
 /* What the client does for the session now: read, never acted on, aligned with the task rows. */
 .jamat-sessions__step {
@@ -711,6 +740,11 @@ button.jamat-sessions__script:hover {
 .jamat-sessions__vcs {
   font-size: var(--fs-chip);
   color: var(--color-text-4);
+}
+.jamat-sessions__elapsed {
+  font-size: var(--fs-chip);
+  color: var(--color-text-4);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Shown on hover or keyboard focus: the row is read far more often than it is acted on, and three

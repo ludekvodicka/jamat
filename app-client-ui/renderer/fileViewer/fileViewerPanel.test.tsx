@@ -125,6 +125,8 @@ class PanelHarness {
       params,
       api: {
         id: 'panel-1',
+        isVisible: true,
+        onDidVisibilityChange: () => ({ dispose: () => {} }),
         close,
         setTitle: vi.fn(),
         getParameters: () => ({}),

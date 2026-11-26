@@ -1,7 +1,7 @@
 import type { RuntimeSessionInfo } from '../../../app-host/app/wire/hostWire.js'
 import type { SessionRecord } from '../records/sessionRecord.types'
 import { SessionOutcomes } from '../records/sessionOutcomes'
-import type { SessionScriptWords } from './sessionScriptDefinitions'
+import type { SessionScriptEnd, SessionScriptWords } from './sessionScriptDefinitions'
 
 /** What a run that is no longer running did, in the words its history entry keeps. */
 export type ScriptRunEndedOutcome = 'succeeded' | 'failed' | 'stopped' | 'lost'
@@ -30,6 +30,7 @@ export class ScriptRunOutcome {
     records: readonly SessionRecord[],
     live: ReadonlyMap<string, RuntimeSessionInfo>,
     words: SessionScriptWords,
+    endsBy: SessionScriptEnd = 'exit-code',
   ): ScriptRunJudgement {
     const { session, actor } = words
     const run = records.find((record) => record.sessionId === runId)
@@ -43,9 +44,13 @@ export class ScriptRunOutcome {
     if (runtime) {
       if (runtime.alive) return { kind: 'running' }
       if (runtime.exitReason === 'stopped') return ScriptRunOutcome.failed('stopped', `its ${actor} was stopped`)
-      return runtime.exitCode === 0
-        ? ScriptRunOutcome.succeededConst
-        : ScriptRunOutcome.failed('failed', `the ${actor} exited with ${runtime.exitCode ?? 'no exit code'}`, runtime.exitCode)
+      switch (endsBy) {
+        case 'exit-code': return runtime.exitCode === 0
+          ? ScriptRunOutcome.succeededConst
+          : ScriptRunOutcome.failed('failed', `the ${actor} exited with ${runtime.exitCode ?? 'no exit code'}`, runtime.exitCode)
+        case 'stop': return ScriptRunOutcome.failed('failed', `the ${actor} exited with ${runtime.exitCode ?? 'no exit code'}`, runtime.exitCode)
+        default: throw new Error(`Unknown run end: ${JSON.stringify(endsBy satisfies never)}`)
+      }
     }
     if (run.life === 'starting') {
       // The Host has no runtime for it either, so the run's own replay is what this pass is about:
@@ -54,11 +59,16 @@ export class ScriptRunOutcome {
       return ScriptRunOutcome.failed('lost', `its ${session} session names no launch to replay`)
     }
     else if (run.life === 'ended') {
-      if (run.exitCode === 0) return ScriptRunOutcome.succeededConst
       // A run the Host refused to launch never ran; the Host's own words say why.
       if (run.exitCode === undefined && run.endedReason !== undefined)
         return ScriptRunOutcome.failed('failed', `the ${actor} could not start: ${run.endedReason}`)
-      return ScriptRunOutcome.failed('failed', `the ${actor} ended with ${run.exitCode ?? 'no exit code'}`, run.exitCode)
+      switch (endsBy) {
+        case 'exit-code': return run.exitCode === 0
+          ? ScriptRunOutcome.succeededConst
+          : ScriptRunOutcome.failed('failed', `the ${actor} ended with ${run.exitCode ?? 'no exit code'}`, run.exitCode)
+        case 'stop': return ScriptRunOutcome.failed('failed', `the ${actor} ended with ${run.exitCode ?? 'no exit code'}`, run.exitCode)
+        default: throw new Error(`Unknown run end: ${JSON.stringify(endsBy satisfies never)}`)
+      }
     }
     else if (run.life === 'live')
       return ScriptRunOutcome.failed('lost', `its ${session} session is not on the Host any more`)

@@ -7,6 +7,7 @@ import type {
 import { FileTail } from '../../shared/fileTail'
 import { PathCompare } from '../../shared/pathCompare'
 import type { FileChangesAgentId } from '../fileChangesManagerApi.types'
+import { SessionMutationRules, type SessionMutationEvents } from '../sessionMutationsView'
 import type {
   FileChangesLogGroup,
   FileChangesLogMutation,
@@ -53,7 +54,9 @@ export abstract class FileChangesLogSource {
   private readonly subagentCache = new Map<string, CacheEntry<ParsedSubagentLog>>()
 
   /** Where the sub-agent listing of this transcript starts; null lists none. */
-  abstract subagentsSince(ref: ProviderTranscriptRef): number | null
+  subagentsSince(ref: ProviderTranscriptRef): number | null {
+    return SessionMutationRules.subagentsSince(ref)
+  }
 
   async load(
     ref: ProviderTranscriptRef,
@@ -88,9 +91,38 @@ export abstract class FileChangesLogSource {
     return runs
   }
 
-  protected abstract parse(content: string): ParsedFileChangesLog
+  /** Through the rules of `sessionMutationsView.ts`, which the incremental cursor of the uncommitted mark reads with too. */
+  protected parse(content: string): ParsedFileChangesLog {
+    const groups: (RawFileChangesLogGroup & { mutations: RawFileChangesLogMutation[] })[] = []
+    const spawns = new Map<string, number>()
+    const shellRuns: FileChangesShellRun[] = []
+    const rules = SessionMutationRules.of(this.agentId, 'session')
+    const events: SessionMutationEvents = {
+      group: (group) => { groups.push({ ...group, mutations: [] }) },
+      spawn: (key, group) => { spawns.set(key, group) },
+      mutation: (mutation, group) => { groups[group].mutations.push(mutation) },
+      shellRun: (run) => { shellRuns.push(run) },
+    }
+    for (const raw of FileChangesLogSource.records(content))
+      rules.record(raw, events)
+    return { groups, spawns, shellRuns }
+  }
 
-  protected abstract parseSubagent(content: string): ParsedSubagentLog
+  /** A sub-agent's file opens no group: its prompt is the parent's spawn call, not a user message. */
+  protected parseSubagent(content: string): ParsedSubagentLog {
+    const mutations: RawFileChangesLogMutation[] = []
+    const shellRuns: FileChangesShellRun[] = []
+    const rules = SessionMutationRules.of(this.agentId, 'subagent')
+    const events: SessionMutationEvents = {
+      group: () => {},
+      spawn: () => {},
+      mutation: (mutation) => { mutations.push(mutation) },
+      shellRun: (run) => { shellRuns.push(run) },
+    }
+    for (const raw of FileChangesLogSource.records(content))
+      rules.record(raw, events)
+    return { startedAt: rules.startedAt, mutations, shellRuns }
+  }
 
   protected static records(content: string): unknown[] {
     return content.split(/\r?\n/).flatMap((line) => {
@@ -98,22 +130,6 @@ export abstract class FileChangesLogSource {
       try { return [JSON.parse(line) as unknown] }
       catch { return [] }
     })
-  }
-
-  /**
-   * The fallback is a TIME, and both callers used to pass the record's position in the file - so a
-   * record with no readable timestamp became `createdAt: 7`, drew as a date in 1970, and sorted to
-   * the very end of the history where it fell off the first page altogether. The previous record's
-   * time is the honest guess: these files are written in order.
-   */
-  protected static timestamp(value: unknown, fallback: number): number {
-    if (typeof value !== 'string') return fallback
-    const parsed = Date.parse(value)
-    return Number.isNaN(parsed) ? fallback : parsed
-  }
-
-  protected static shortMessage(value: string): string {
-    return value.replace(/\s+/g, ' ').trim().slice(0, 240)
   }
 
   private parent(ref: ProviderTranscriptRef): Promise<ParsedFileChangesLog> {

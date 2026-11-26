@@ -37,13 +37,16 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
     return JSON.parse(readFileSync(file, 'utf8'))
   }
 
-  it('names the relay as one bare forward-slash path and writes what it runs', () => {
+  it('names the relay with forward-slash node command when paths need no quoting and writes what it runs', () => {
     const { root, cwd, relay } = world()
     const file = relay('win32').settingsFileFor(cwd)
-    const wrapper = join(root, 'claude-statusline', 'relay.cmd')
-    expect(settingsOf(file)).toEqual({ statusLine: { type: 'command', command: wrapper.replaceAll('\\', '/') } })
-    expect(readFileSync(wrapper, 'utf8')).toBe(
-      `@"${process.execPath}" "${join(root, 'claude-statusline', 'relay.cjs')}" "${join(root, 'claude-context')}" "${join(root, 'claude-identity')}" %*\r\n`)
+    const expectedCommand = [
+      process.execPath,
+      join(root, 'claude-statusline', 'relay.cjs'),
+      join(root, 'claude-context'),
+      join(root, 'claude-identity'),
+    ].map((value) => value.replaceAll('\\', '/')).join(' ')
+    expect(settingsOf(file)).toEqual({ statusLine: { type: 'command', command: expectedCommand } })
     expect(readFileSync(join(root, 'claude-statusline', 'relay.cjs'), 'utf8')).toBe(ClaudeStatusLine.relaySourceConst)
   })
 
@@ -57,7 +60,7 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
       JSON.stringify({ statusLine: { type: 'command', command: 'node ./line.js', padding: 2 } }))
     const { statusLine } = settingsOf(relay('win32').settingsFileFor(cwd))
     expect(statusLine).toMatchObject({ type: 'command', padding: 2 })
-    expect(statusLine['command']).toMatch(/\/relay\.cmd --pass \| node \.\/line\.js$/)
+    expect(statusLine['command']).toMatch(/\/claude-identity --pass \| node \.\/line\.js$/)
   })
 
   it('names one settings file per content, so a second launch reuses it', () => {
@@ -93,12 +96,17 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
     const { root, cwd, home, relay } = world()
     const statusLine = relay('win32')
     const file = statusLine.settingsFileFor(cwd, { sessionId: 'jamat-1', launchId: 'launch-1' })
-    const wrapper = join(root, 'claude-statusline', 'relay.cmd').replaceAll('\\', '/')
-    expect(settingsOf(file).statusLine['command']).toBe(`${wrapper} --session jamat-1 --launch launch-1`)
+    const direct = [
+      process.execPath,
+      join(root, 'claude-statusline', 'relay.cjs'),
+      join(root, 'claude-context'),
+      join(root, 'claude-identity'),
+    ].map((value) => value.replaceAll('\\', '/')).join(' ')
+    expect(settingsOf(file).statusLine['command']).toBe(`${direct} --session jamat-1 --launch launch-1`)
     expect(file).toBe(join(root, 'claude-statusline', 'settings-jamat-1.json'))
     writeFileSync(join(home, 'settings.json'), JSON.stringify({ statusLine: { type: 'command', command: 'mine' } }))
     expect(settingsOf(statusLine.settingsFileFor(cwd, { sessionId: 'jamat-1', launchId: 'launch-2' })).statusLine['command'])
-      .toBe(`${wrapper} --session jamat-1 --launch launch-2 --pass | mine`)
+      .toBe(`${direct} --session jamat-1 --launch launch-2 --pass | mine`)
   })
 
   it('refuses a session or launch id that is not one, and says so once', () => {
@@ -228,5 +236,67 @@ describe('lib-orchestrator/sessionManager/launch/claudeStatusLine', () => {
       expect(run(root, 'not json', '--pass')).toEqual({ stdout: 'not json', status: 0 })
       expect(existsSync(join(root, 'snapshots'))).toBe(false)
     })
+
+    it('skips rewriting claude-context when content is unchanged and throttles unchanged rates to 60 s', () => {
+      const { root } = world()
+      const flags = ['--session', 'jamat-1', '--launch', 'launch-1']
+      const limits = { five_hour: { used_percentage: 25, resets_at: 1793115673 } }
+      const withRates = JSON.stringify({ ...JSON.parse(input), rate_limits: limits })
+      expect(run(root, withRates, undefined, flags)).toEqual({ stdout: '', status: 0 })
+
+      const contextFile = join(root, 'snapshots', '44e51484-ec6d-420e-afce-d0d621d9f40b.json')
+      const rateFile = join(root, 'rates', 'jamat-1.json')
+      const oldTime = new Date(Date.now() - 120_000)
+      utimesSync(contextFile, oldTime, oldTime)
+      const firstRate = JSON.parse(readFileSync(rateFile, 'utf8')) as { at: number }
+
+      // Identical payload within 60 s skips rewriting both context and rates files.
+      expect(run(root, withRates, undefined, flags)).toEqual({ stdout: '', status: 0 })
+      expect(Math.round(existsSync(contextFile) ? readFileSync(contextFile, 'utf8').length : 0)).toBeGreaterThan(0)
+      const afterSkipRate = JSON.parse(readFileSync(rateFile, 'utf8')) as { at: number }
+      expect(afterSkipRate.at).toBe(firstRate.at)
+
+      // Changed rateLimits rewrites rates immediately.
+      const updatedRates = JSON.stringify({ ...JSON.parse(input), rate_limits: { five_hour: { used_percentage: 30, resets_at: 1793115673 } } })
+      expect(run(root, updatedRates, undefined, flags)).toEqual({ stdout: '', status: 0 })
+      const afterChangedRate = JSON.parse(readFileSync(rateFile, 'utf8')) as { rateLimits: { five_hour: { used_percentage: number } } }
+      expect(afterChangedRate.rateLimits.five_hour.used_percentage).toBe(30)
+
+      // After 60 s elapsed on disk, unchanged rateLimits refreshes the file.
+      writeFileSync(rateFile, JSON.stringify({ ...afterChangedRate, at: Date.now() - 61_000 }))
+      expect(run(root, updatedRates, undefined, flags)).toEqual({ stdout: '', status: 0 })
+      const refreshed = JSON.parse(readFileSync(rateFile, 'utf8')) as { at: number }
+      expect(Date.now() - refreshed.at).toBeLessThan(10_000)
+    })
+  })
+
+  it('invokes node directly on Windows when all paths need no quoting, and falls back to relay.cmd otherwise', () => {
+    const { root, cwd, home, reports } = world('jamat-direct-')
+    const safeRelay = new ClaudeStatusLine({
+      directory: join(root, 'claude-statusline'),
+      snapshots: join(root, 'claude-context'),
+      identities: join(root, 'claude-identity'),
+      claudeHome: home,
+      tools: { node: () => ({ ok: true, command: 'C:\\node\\node.exe' }) },
+      report: (message) => reports.push(message),
+      platform: 'win32',
+    })
+    const safeFile = safeRelay.settingsFileFor(cwd)
+    const safeCmd = String(settingsOf(safeFile).statusLine['command'])
+    expect(safeCmd).toContain('C:/node/node.exe ')
+    expect(safeCmd).toContain('/relay.cjs ')
+    expect(safeCmd).not.toContain('relay.cmd')
+
+    const quotedRelay = new ClaudeStatusLine({
+      directory: join(root, 'claude-statusline'),
+      snapshots: join(root, 'claude-context'),
+      identities: join(root, 'claude-identity'),
+      claudeHome: home,
+      tools: { node: () => ({ ok: true, command: 'C:\\Program Files\\nodejs\\node.exe' }) },
+      report: (message) => reports.push(message),
+      platform: 'win32',
+    })
+    const quotedFile = quotedRelay.settingsFileFor(cwd)
+    expect(String(settingsOf(quotedFile).statusLine['command'])).toMatch(/\/relay\.cmd$/)
   })
 })

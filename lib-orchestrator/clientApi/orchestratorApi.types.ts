@@ -63,9 +63,11 @@ export interface OrchestratorApi {
   initializeContextCompactionIpc(): void
   initializeCliUpdatesIpc(): void
   initializeAttentionIpc(): void
+  initializeSessionUncommittedIpc(): void
   beginStopRemarkable(): void
   beginStopFileDiffWorker(): void
   beginStopTokenUsage(): void
+  beginStopSessionUncommitted(): void
   beginStopRemoteControlServer(): void
   beginStopPeerWork(): void
   beginStopRemoteListener(): void
@@ -86,6 +88,7 @@ export interface OrchestratorApi {
   stopSnapins(): void | Promise<void>
   stopSessions(): void | Promise<void>
   stopSvnAssemblyWorker(): void | Promise<void>
+  stopSessionUncommitted(): Promise<void>
   cancelTabs(): void
   disposeGroups(): void
   disposeNotices(): void

@@ -309,25 +309,89 @@ describe('MainCopyUpdate', () => {
     expect(h.results.list({})[0].lines).toEqual([`   main copy update: 1 of your changes overlaps what lands; saved before the update in ${join(h.root, 'saved')}`])
   })
 
-  it('lets the person settle a conflict of the waiting UPDATE in the main copy, saved beside the UPDATE (UA1-J08-2)', async () => {
+  it('lets the person settle conflicts of the waiting UPDATE in the main copy and automatically finishes once the last one is settled (UA1-J08-2)', async () => {
     const h = await harness()
-    h.setConflicts([], ['a'], { a: 'property' })
-    await h.update.startUpdate('worker', h.root, 'window')
+    const landedDue = vi.fn()
+    Object.assign(h.deps, { landedDue })
+    const update = new MainCopyUpdate(h.deps)
+    h.setConflicts([], ['a', 'b'], { a: 'property', b: 'property' })
+    await update.startUpdate('worker', h.root, 'window')
     await h.settled()
     expect(h.records.get('worker')!.svnAction?.needs?.kind).toBe('conflict')
     const applied: unknown[] = []
+    let remaining = ['a', 'b']
     Object.assign(h.deps.resolutions, { apply: async (input: { root: string; savedDir: string; path: string; option: string; mainCopy?: true; onStep: (journal: unknown, diverged: string[]) => Promise<void> }) => {
       applied.push({ root: input.root, path: input.path, option: input.option, mainCopy: input.mainCopy, saved: input.savedDir.startsWith(h.results.savedDirectoryOf(h.records.get('worker')!.svnAction!.actionId)) })
       await input.onStep({ option: input.option, done: 1 }, [])
-      h.setConflicts([], [])
+      remaining = remaining.filter((path) => path !== input.path)
+      h.setConflicts(remaining, remaining, Object.fromEntries(remaining.map((path) => [path, 'property' as const])))
       return { ok: true, value: undefined }
     } })
-    expect(await h.update.resolveConflict('worker', { path: 'a', option: 'take-incoming', confirm: false, requestedBy: 'window', by: 'person' }))
-      .toEqual({ ok: true, value: { sessionId: 'worker', path: 'a', state: 'settled', left: 0 } })
-    expect(applied).toEqual([{ root: h.root, path: 'a', option: 'take-incoming', mainCopy: true, saved: true }])
-    const action = h.records.get('worker')!.svnAction!
-    expect(action.conflictSet?.entries[0]).toMatchObject({ path: 'a', state: 'settled', by: 'person', settledWith: 'take-incoming' })
-    expect(action.needs).toMatchObject({ kind: 'conflict', reason: '1 conflict: you fixed 1; all are settled, press Update to go on' })
+    expect(await update.resolveConflict('worker', { path: 'a', option: 'take-incoming', confirm: false, requestedBy: 'window', by: 'person' }))
+      .toEqual({ ok: true, value: { sessionId: 'worker', path: 'a', state: 'settled', left: 1 } })
+    await h.settled()
+    expect(h.records.get('worker')!.svnAction?.conflictSet?.entries[0]).toMatchObject({ path: 'a', state: 'settled', by: 'person', settledWith: 'take-incoming' })
+    expect(h.records.get('worker')!.svnAction?.needs?.kind).toBe('conflict')
+    expect(h.results.list({})[0].main).toBeUndefined()
+    expect(landedDue).not.toHaveBeenCalled()
+
+    expect(await update.resolveConflict('worker', { path: 'b', option: 'take-incoming', confirm: false, requestedBy: 'window', by: 'person' }))
+      .toEqual({ ok: true, value: { sessionId: 'worker', path: 'b', state: 'settled', left: 0 } })
+    await h.settled()
+    expect(applied).toEqual([
+      { root: h.root, path: 'a', option: 'take-incoming', mainCopy: true, saved: true },
+      { root: h.root, path: 'b', option: 'take-incoming', mainCopy: true, saved: true },
+    ])
+    expect(h.records.get('worker')!.svnAction).toBeUndefined()
+    expect(h.records.get('worker')!.worktreeLifecycle?.update?.completed).toBe(true)
+    expect(h.results.list({})[0].main).toEqual({ revision: 2, by: 'person', at: 10 })
+    expect(landedDue).toHaveBeenCalledWith(h.root)
+  })
+
+  it('automatically resumes remaining mounts, records the UPDATE and notifies landedDue when the resolver finishes', async () => {
+    const h = await harness()
+    const landedDue = vi.fn()
+    Object.assign(h.deps, { landedDue })
+    const mount = { path: join(h.root, 'shared', 'lib'), revision: 5, url: 'https://svn.test/lib', repository: 'https://svn.test', kind: 'dir' as const, pinned: false }
+    const updateTargets: typeof emptyUpdateTargets = {
+      ...emptyUpdateTargets,
+      snapshot: async (target, discover = true) => ({
+        properties: {}, localMappingChanges: false,
+        children: discover && target.path === h.root ? [mount] : [], missing: [], mismatched: [],
+      }),
+    }
+    const update = new MainCopyUpdate({ ...h.deps, svn: { ...h.deps.svn, updateTargets } })
+    h.setConflicts([], ['a'])
+    expect(await update.startUpdate('worker', h.root, 'window', false, false)).toMatchObject({ ok: true })
+    await h.settled()
+    expect(h.records.get('worker')!.svnAction?.needs?.kind).toBe('conflict')
+    expect(h.records.get('worker')!.worktreeLifecycle?.update?.completed).toBe(false)
+
+    // Person clicks Resolve with agent; resolver resolves 'a' and exits 0.
+    h.setConflicts(['a'], ['a'])
+    expect(await update.startUpdate('worker', h.root, 'window')).toMatchObject({ ok: true })
+    await h.settled()
+    const resolving = h.records.get('worker')!.svnAction!
+    expect(resolving).toMatchObject({ stage: 'resolving', conflicts: { paths: ['a'] } })
+    const runId = resolving.runId!
+    await h.records.put({
+      sessionId: runId, kind: 'agent', title: 'resolver',
+      directory: { mode: 'adHoc', path: h.root }, life: 'ended', exitCode: 0, binding: null,
+      agent: { agentId: 'claude', launchMode: 'new', oneShot: true, permission: 'accept-edits' },
+      scriptOf: { sessionId: 'worker', phase: 'after', scriptId: 'svn-resolve', name: 'resolver' },
+      createdAt: 10,
+    })
+    await h.records.update('worker', (record) => ({
+      ...record,
+      scriptRuns: [{ runId, phase: 'after', scriptId: 'svn-resolve', name: 'resolver', title: 'resolver', commands: [], startedAt: 10, endedAt: 10, outcome: 'succeeded', log: { state: 'saved', bytes: 0, truncated: false } }],
+    }))
+    h.setConflicts([], [])
+    expect(await update.noteVerdict('worker', { kind: 'succeeded' })).toBe(true)
+    await h.settled()
+    expect(h.records.get('worker')!.svnAction).toBeUndefined()
+    expect(h.records.get('worker')!.worktreeLifecycle?.update?.completed).toBe(true)
+    expect(h.results.list({})[0].main).toMatchObject({ revision: 2, by: 'person', at: 10 })
+    expect(landedDue).toHaveBeenCalledWith(h.root)
   })
 
   it.each([true, false])('stops an UPDATE resolver past its limit and says whether the stop held (stop confirmed: %s)', async (confirmed) => {

@@ -1,5 +1,7 @@
 import type { RemoteChangesRequest, RemoteFileRequest } from '../../../../lib-orchestrator/remoteControl/remoteContentApi.types'
 import { CommitOpenStore } from '../../versioning/commitOpenStore'
+import { UncommittedStore } from '../../versioning/uncommittedStore'
+import type { SessionUncommittedEntry } from '../../../../lib-orchestrator/sessionUncommitted/sessionUncommitted.types'
 import { act, cleanup, fireEvent, render, type RenderResult, waitFor, within } from '@testing-library/react'
 import type { IDockviewPanelProps } from 'dockview'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -110,6 +112,7 @@ class PanelApiFake {
   private readonly visibility: ((event: { isVisible: boolean }) => void)[] = []
   private readonly parameterChanges: ((params: Record<string, unknown>) => void)[] = []
   private parameters: Record<string, unknown> = {}
+  startsVisible = true
 
   /** A tab opened by the launcher is active before its content mounts, so it fires no event. */
   constructor(private readonly panelId: string, private readonly startsActive = false) {}
@@ -120,7 +123,7 @@ class PanelApiFake {
       api: {
         id: this.panelId,
         isActive: this.startsActive,
-        isVisible: true,
+        isVisible: this.startsVisible,
         setActive: () => this.activate(),
         getParameters: () => this.parameters,
         updateParameters: (next: Record<string, unknown>) => this.writeParameters(next),
@@ -629,7 +632,12 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     params?: Record<string, unknown>
     openFile?: TerminalPanelProps['openFile']
     commitOpen?: CommitOpenStore
+    uncommitted?: UncommittedStore
     fileTools?: PanelFileToolsRegistry
+  }
+
+  function uncommittedOf(sessions: Readonly<Record<string, SessionUncommittedEntry>> = {}): UncommittedStore {
+    return new UncommittedStore({ read: async () => ({ ok: true, value: { revision: 1, sessions } }), subscribe: () => () => undefined, reportError: vi.fn() })
   }
 
   function mount(api: PanelApiFake, sessionId = 'session-1', options: MountOptions = {}): RenderResult {
@@ -655,6 +663,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
           commitOpen={options.commitOpen ?? new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
+          uncommitted={options.uncommitted ?? uncommittedOf()}
           fileTools={options.fileTools ?? new PanelFileToolsRegistry()}
           splitPins={splitPins}
           openFile={options.openFile ?? (() => Promise.resolve({
@@ -672,6 +681,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
     sessionId = 'remote-session',
     params: Record<string, unknown> = {},
     taskOptions: Pick<TerminalPanelProps, 'openTerminal'> = {},
+    uncommitted: UncommittedStore = uncommittedOf(),
   ): RenderResult {
     return render(
       <TabDecorationsProvider store={store}>
@@ -691,6 +701,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
           commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
+          uncommitted={uncommitted}
           fileTools={new PanelFileToolsRegistry()}
           splitPins={splitPins}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:remote' })}
@@ -1175,6 +1186,37 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
       expect(fileChangesReads).toBe(0)
       expect(workingTreeReads).toEqual([])
       expect(restoredSources).toEqual([])
+    })
+
+    it('does not poll fileChanges for a plain markdown split item or workingTree while hidden', async () => {
+      const api = new PanelApiFake('terminal:plain-md-split')
+      api.startsVisible = false
+      const view = mount(api, 'session-1', {
+        params: {
+          sidebar: visibleFileChanges,
+          split: {
+            ratio: 0.5,
+            active: 'doc-md',
+            items: [{
+              kind: 'file',
+              key: 'doc-md',
+              title: 'notes.md',
+              source: { kind: 'workspace', sessionId: 'session-1', path: 'Q:/work/notes.md' },
+            }],
+          },
+        },
+      })
+      await act(async () => { await Promise.resolve() })
+      // While panel is hidden: neither workingTree nor fileChanges should read.
+      expect(fileChangesReads).toBe(0)
+      expect(workingTreeReads).toEqual([])
+
+      // Make panel visible with plain markdown split item (no baselineHint): workingTree reads for sidebar, fileChanges still stays off.
+      api.emitVisibility(true)
+      await act(async () => { await Promise.resolve() })
+      expect(fileChangesReads).toBe(0)
+      expect(workingTreeReads.length).toBeGreaterThan(0)
+      view.unmount()
     })
 
     it('opens a File Changes row beside the terminal and releases the incoming grant', async () => {
@@ -2054,6 +2096,62 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           { key: 'vcs', text: '*', tone: 'danger', title: 'Commit review pending' },
         ))
         expect(store.get('terminal:1').primary).toEqual({ glyph: '!', tone: 'danger', title: 'Commit review required' })
+      } finally { stop() }
+    })
+
+    it('marks a session with uncommitted changes grey, with the tree\'s title', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const uncommitted = uncommittedOf({ 's-clean': { files: 2, sample: ['app/a.ts', 'docs/b.md'] } })
+      const stop = uncommitted.start()
+      try {
+        mount(new PanelApiFake('terminal:1'), 's-clean', { uncommitted })
+        await waitFor(() => expect(store.get('terminal:1').badges.filter((badge) => badge.key === 'vcs')).toEqual([
+          { key: 'vcs', text: '*', tone: 'muted', title: 'Uncommitted session changes: 2 files\napp/a.ts\ndocs/b.md' },
+        ]))
+        expect(store.get('terminal:1').primary?.glyph).not.toBe('!')
+      } finally { stop() }
+    })
+
+    it('turns the uncommitted mark red while a commit review is open', async () => {
+      await withSessions(SessionsFixtures.stoppedWorktree())
+      const uncommitted = uncommittedOf({ 's-clean': { files: 1, sample: ['a.ts'] } })
+      const commitOpen = new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 1, sessionIds: ['s-clean'] } }), subscribe: () => () => undefined, reportError: vi.fn() })
+      const stops = [uncommitted.start(), commitOpen.start()]
+      try {
+        mount(new PanelApiFake('terminal:1'), 's-clean', { uncommitted, commitOpen })
+        await waitFor(() => expect(store.get('terminal:1').badges.filter((badge) => badge.key === 'vcs')).toEqual([
+          { key: 'vcs', text: '*', tone: 'danger', title: 'Commit review pending' },
+        ]))
+      } finally { for (const stop of stops) stop() }
+    })
+
+    it('keeps the worktree badge beside the uncommitted mark, under unique keys', async () => {
+      const svn = SessionsFixtures.svnWorktrees()
+      await withSessions({
+        ...svn,
+        sessions: svn.sessions.map((session) => session.sessionId === 's-svn'
+          ? { ...session, life: 'live' as const, activity: 'waiting' as const } : session),
+      })
+      const uncommitted = uncommittedOf({ 's-svn': { files: 1, sample: ['a.ts'] } })
+      const stop = uncommitted.start()
+      try {
+        mount(new PanelApiFake('terminal:1'), 's-svn', { uncommitted })
+        await waitFor(() => expect(store.get('terminal:1').badges).toEqual([
+          { key: 'vcs', text: '*', tone: 'muted', title: 'Uncommitted session changes: 1 file\na.ts' },
+          { key: 'worktree', text: 'WT', tone: 'accent', title: 'SVN worktree C:/Projects/NodeJs/AppJamatV3/.worktrees/014-svn-worktree' },
+        ]))
+      } finally { stop() }
+    })
+
+    it('draws no uncommitted mark on the tab of a remote session', async () => {
+      const uncommitted = uncommittedOf({ 'remote-session': { files: 1, sample: ['a.ts'] } })
+      const stop = uncommitted.start()
+      try {
+        await act(async () => { await Promise.resolve() })
+        expect(uncommitted.current().snapshot?.sessions).toHaveProperty('remote-session')
+        mountRemote(new PanelApiFake('terminal:remote'), 'remote-pc::default::stable', 'remote-session', {}, {}, uncommitted)
+        await act(async () => { await Promise.resolve() })
+        expect(store.get('terminal:remote').badges).toEqual([])
       } finally { stop() }
     })
 
@@ -3082,6 +3180,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
           commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
+          uncommitted={uncommittedOf()}
           fileTools={new PanelFileToolsRegistry()}
           splitPins={splitPins}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:default' })}
@@ -3118,6 +3217,7 @@ describe('app-client-ui/renderer/panels/terminal/terminalPanel', () => {
           compaction={{ inspect: () => Promise.resolve({ reason: 'Test session', nextCheckAt: null, cooldown: null }) }}
           marks={marks}
           commitOpen={new CommitOpenStore({ read: async () => ({ ok: true, value: { revision: 0, sessionIds: [] } }), subscribe: () => () => undefined, reportError: vi.fn() })}
+          uncommitted={uncommittedOf()}
           fileTools={new PanelFileToolsRegistry()}
           splitPins={splitPins}
           openFile={() => Promise.resolve({ kind: 'opened', panelId: 'file:invalid' })}

@@ -72,3 +72,16 @@ it('backfills older samples once across restart and preserves recent poll dedupl
   await store.append({ ...recent, at: recent.at + 60_000 })
   expect(await store.read({ from: 0, to: Infinity })).toEqual([old, changed, recent])
 })
+
+it('reads only what another writer appended, and a file that became shorter again from its start', async () => {
+  const { root, store } = world()
+  const file = join(root, '2026-10.jsonl')
+  await store.append(sample)
+  expect(await store.read({ from: 0, to: Infinity })).toEqual([sample])
+  const appended = { ...sample, accountId: 'work', at: sample.at + 60_000 }
+  appendFileSync(file, JSON.stringify(appended) + '\n')
+  expect(await store.read({ from: 0, to: Infinity })).toEqual([sample, appended])
+  const replaced = { ...sample, at: sample.at + 120_000 }
+  writeFileSync(file, JSON.stringify(replaced) + '\n')
+  expect(await store.read({ from: 0, to: Infinity })).toEqual([replaced])
+})

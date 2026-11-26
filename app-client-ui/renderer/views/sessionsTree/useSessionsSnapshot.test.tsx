@@ -5,7 +5,7 @@ import type { SessionsSnapshot } from '../../../../lib-orchestrator/sessionManag
 import type { IpcResult } from '../../../shared/appClientUiIpc'
 import { SnapshotStore, type SnapshotStorePorts } from '../../ipc/snapshotStore'
 import { SessionsFixtures } from '../../sessions/fixtures/sessionsFixtures'
-import { useSessionsSnapshot } from './useSessionsSnapshot'
+import { useSessionsSnapshot, useSnapshotStore } from './useSessionsSnapshot'
 
 describe('app-client-ui/renderer/views/sessionsTree/useSessionsSnapshot', () => {
   class Ports implements SnapshotStorePorts<SessionsSnapshot> {
@@ -52,6 +52,27 @@ describe('app-client-ui/renderer/views/sessionsTree/useSessionsSnapshot', () => 
     expect(first.result.current.snapshot).toBe(snapshot)
     expect(second.result.current.snapshot).toBe(snapshot)
     expect(first.result.current.error).toBe(second.result.current.error)
+
+    stop()
+  })
+
+  it('does not re-render a hook that does not listen, and reads the current document once it listens', async () => {
+    const ports = new Ports()
+    const store = new SnapshotStore<SessionsSnapshot>('The sessions snapshot', ports)
+    const stop = store.start()
+    let renders = 0
+    const quiet = renderHook(({ subscribed }) => { renders += 1; return useSnapshotStore(store, subscribed) }, { initialProps: { subscribed: false } })
+    const snapshot = SessionsFixtures.mixed()
+    const before = renders
+
+    await act(async () => {
+      ports.settle(snapshot)
+      await Promise.resolve()
+    })
+
+    expect(renders).toBe(before)
+    quiet.rerender({ subscribed: true })
+    expect(quiet.result.current.snapshot).toBe(snapshot)
 
     stop()
   })

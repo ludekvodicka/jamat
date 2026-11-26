@@ -27,6 +27,16 @@ export interface ScriptRunSucceeded {
   logDetail?: string
 }
 
+/** What `--kind service` answers once the service survives its settle window (or was reused). */
+export interface ServiceStarted {
+  sessionId: string
+  runId: string
+  kind: 'service'
+  reused: boolean
+  state: 'running'
+  startedAt: number
+}
+
 /**
  * The `--wait` of `sessions scripts run`: the run is read once a second until it is over and its log
  * was saved, because the verdict and the log arrive together in the run's history entry. A run that
@@ -36,7 +46,10 @@ export interface ScriptRunSucceeded {
 export class ScriptRunReader {
   static readonly timeoutMillisecondsConst = 600_000
   static readonly timeoutMaximumMillisecondsConst = 3_600_000
+  static readonly settleMillisecondsConst = 3_000
   private static readonly pollMillisecondsConst = 1_000
+  private static readonly settlePollMillisecondsConst = 250
+  private static readonly logWaitMillisecondsConst = 2_000
   private static readonly retryMillisecondsConst = 250
   private static readonly statesConst: readonly string[] = ['running', 'succeeded', 'failed', 'stopped', 'lost']
   private static readonly logStatesConst: readonly string[] = ['saved', 'unavailable', 'none']
@@ -79,6 +92,83 @@ export class ScriptRunReader {
       if (this.deps.now() >= deadline)
         throw new AppClientCliError('timeout', `Script run ${runId} is still running; read it with sessions scripts --run-id ${runId}`)
       await this.pause(runId, ScriptRunReader.pollMillisecondsConst, deadline, signal)
+    }
+  }
+
+  /**
+   * Reused: one `sessions.scripts` read for its `startedAt`, no window.
+   * New: reads `sessions.scripts` every 250 ms for the settle window; ended: waits up to 2 s
+   * for its log, then answers `operation-failed` (exit 7) with `data.run` and `data.log`.
+   */
+  async settleService(
+    start: { sessionId: string; runId: string; reused: boolean },
+    signal?: AbortSignal,
+  ): Promise<RemoteControlStepResult<ServiceStarted>> {
+    const windowEnd = start.reused ? this.deps.now() : this.deps.now() + ScriptRunReader.settleMillisecondsConst
+    let endedDeadline: number | null = null
+    let failures = 0
+    for (;;) {
+      const deadline = endedDeadline ?? windowEnd
+      if (signal?.aborted)
+        throw new AppClientCliError('operation-failed', `Stopped waiting for service ${start.runId}; it may still be running`)
+      const answer = await this.deps.read().catch((error: unknown) =>
+        new AppClientCliError('operation-failed', `Cannot read service ${start.runId}; its state is unknown: ${ErrorText.of(error)}`))
+      if (answer instanceof AppClientCliError) {
+        if (this.deps.now() >= deadline) throw answer
+        failures += 1
+        await this.pause(start.runId, ScriptRunReader.backoffOf(failures), deadline, signal)
+        continue
+      }
+      if (!answer.ok) {
+        const refusal = { ok: false as const, error: { ...answer.error,
+          detail: `Service ${start.runId}: ${answer.error.detail}`,
+          data: { ...JsonShape.record(answer.error.data), runId: start.runId } } }
+        if (!ScriptRunReader.transient(answer.error.code) || this.deps.now() >= deadline) return refusal
+        failures += 1
+        await this.pause(start.runId, ScriptRunReader.backoffOf(failures), deadline, signal)
+        continue
+      }
+      failures = 0
+      const reading = ScriptRunReader.readingOf(answer.value)
+      const run: unknown = reading?.runs.find((candidate: unknown) => JsonShape.isRecord(candidate) && candidate.runId === start.runId)
+      if (reading === null || !ScriptRunReader.validRun(run))
+        throw new AppClientCliError('operation-failed', `Invalid answer for service ${start.runId}; its state is unknown`)
+      if (run.state === 'running') {
+        if (start.reused || this.deps.now() >= windowEnd)
+          return {
+            ok: true,
+            value: {
+              sessionId: reading.sessionId,
+              runId: run.runId,
+              kind: 'service',
+              reused: start.reused,
+              state: 'running',
+              startedAt: run.startedAt,
+            },
+          }
+        await this.pause(start.runId, ScriptRunReader.settlePollMillisecondsConst, windowEnd, signal)
+        continue
+      }
+      if (ScriptRunReader.over(run)) return ScriptRunReader.serviceEnded(reading, run)
+      endedDeadline ??= this.deps.now() + ScriptRunReader.logWaitMillisecondsConst
+      if (this.deps.now() >= endedDeadline) return ScriptRunReader.serviceEnded(reading, run)
+      await this.pause(start.runId, ScriptRunReader.settlePollMillisecondsConst, endedDeadline, signal)
+    }
+  }
+
+  private static serviceEnded(
+    reading: RemoteControlSessionScriptsDto,
+    run: SessionScriptRunInfo,
+  ): RemoteControlStepResult<ServiceStarted> {
+    const log = reading.log?.runId === run.runId ? { text: reading.log.text, truncated: reading.log.truncated } : null
+    const logDetail = reading.logDetail === undefined ? {} : { logDetail: reading.logDetail }
+    return {
+      ok: false,
+      error: {
+        code: 'operation-failed',
+        detail: `Service ${run.runId} ended: ${run.summary}`,
+        data: { run, logContentUntrusted: true, log, ...logDetail },
+      },
     }
   }
 
@@ -148,6 +238,7 @@ export class ScriptRunReader {
 
   private static validRun(run: unknown): run is SessionScriptRunInfo {
     return JsonShape.isRecord(run) && typeof run.runId === 'string' && typeof run.summary === 'string'
+      && typeof run.startedAt === 'number'
       && typeof run.state === 'string' && ScriptRunReader.statesConst.includes(run.state)
       && typeof run.log === 'string' && ScriptRunReader.logStatesConst.includes(run.log)
   }

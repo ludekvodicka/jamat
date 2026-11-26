@@ -32,18 +32,19 @@ export interface TerminalMenuHandlers {
   openVsCode(requestId: string, detectionId: string): void
   openProjectVsCode(): void
   copyPath(path: string): void
+  copyUrl(url: string): void
   openUrl(url: string): void
 }
 
 interface TerminalDetectionMenuItems {
   openings: ContextMenuItem[]
-  copyPaths: ContextMenuAction[]
+  copies: ContextMenuAction[]
 }
 export interface TerminalMenuPorts {
   openFile: AppClientUiBridge['terminalMenu']['openFile']
   openDirectory: AppClientUiBridge['terminalMenu']['openDirectory']
   release: AppClientUiBridge['fileViewer']['release']
-  copyPath: AppClientUiBridge['clipboard']['writeText']
+  copyText: AppClientUiBridge['clipboard']['writeText']
   openUrl: AppClientUiBridge['fileViewer']['openExternal']
   native?: Pick<AppClientUiBridge['terminalMenu'], 'openExternal' | 'openVsCode' | 'openProjectVsCode'>
 }
@@ -134,7 +135,10 @@ export function TerminalContextMenu(props: {
       )
     },
     copyPath: (path) => {
-      void TerminalMenuActions.run(props.ports.copyPath(path), refused)
+      void TerminalMenuActions.run(props.ports.copyText(path), refused)
+    },
+    copyUrl: (url) => {
+      void TerminalMenuActions.run(props.ports.copyText(url), refused)
     },
     openUrl: (url) => {
       void TerminalMenuActions.run(props.ports.openUrl(url), refused)
@@ -181,9 +185,9 @@ export class TerminalMenuItems {
         label: 'Open project in VS Code',
         onSelect: () => handlers.openProjectVsCode(),
       }] : []),
-      ...(detections.copyPaths.length === 0
+      ...(detections.copies.length === 0
         ? []
-        : [{ kind: 'separator', key: 'paths' } as ContextMenuEntry, ...detections.copyPaths]),
+        : [{ kind: 'separator', key: 'copies' } as ContextMenuEntry, ...detections.copies]),
       { kind: 'separator', key: 'clipboard' },
       ...TerminalMenuItems.documentHalf(context),
     ]
@@ -195,14 +199,14 @@ export class TerminalMenuItems {
     handlers: TerminalMenuHandlers,
     native = true,
   ): TerminalDetectionMenuItems {
-    const items: TerminalDetectionMenuItems = { openings: [], copyPaths: [] }
+    const items: TerminalDetectionMenuItems = { openings: [], copies: [] }
     if (result === null) return items
     for (const detection of result.detections) {
       const candidate = !native && detection.kind === 'file' ? { ...detection, opensExternally: false } : !native && detection.kind === 'directory' ? { ...detection, children: detection.children.map((child) => ({ ...child, opensExternally: false })) } : detection
       const detected = TerminalMenuItems.itemsOf(result.requestId, candidate, handlers)
       if (!native) detected.openings = detected.openings.filter((item) => !item.key.startsWith('vscode:'))
       items.openings.push(...detected.openings)
-      items.copyPaths.push(...detected.copyPaths)
+      items.copies.push(...detected.copies)
     }
     return items
   }
@@ -251,7 +255,7 @@ export class TerminalMenuItems {
           label: `Open ${detection.name} in VS Code`,
           onSelect: () => handlers.openVsCode(requestId, detection.detectionId),
         }],
-        copyPaths: [{
+        copies: [{
           key: `copy-path:${detection.detectionId}`,
           label: `Copy ${detection.name} path`,
           onSelect: () => handlers.copyPath(detection.path),
@@ -280,22 +284,28 @@ export class TerminalMenuItems {
       })
       return {
         openings,
-        copyPaths: [{
+        copies: [{
           key: `copy-path:${detection.detectionId}`,
           label: `Copy ${detection.name} path`,
           onSelect: () => handlers.copyPath(detection.path),
         }],
       }
     }
-    else if (detection.kind === 'url')
+    else if (detection.kind === 'url') {
+      const label = TerminalMenuItems.shortened(detection.url)
       return {
         openings: [{
           key: `url:${detection.detectionId}`,
-          label: `Open ${TerminalMenuItems.shortened(detection.url)}`,
+          label: `Open ${label}`,
           onSelect: () => handlers.openUrl(detection.url),
         }],
-        copyPaths: [],
+        copies: [{
+          key: `copy-url:${detection.detectionId}`,
+          label: `Copy ${label}`,
+          onSelect: () => handlers.copyUrl(detection.url),
+        }],
       }
+    }
     else
       throw new Error(`Unknown terminal detection: ${JSON.stringify(detection)}`)
   }

@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SvnLoggedRow, SvnVerboseItem } from './svn.types'
+import { SvnExecutable } from './svnExecutable'
 import { SvnWorktreeEvidence } from './svnWorktreeEvidence'
 
 // Captured by `pnpm smoke:svn-worktree --capture` from a disposable svnadmin repository; the smoke
@@ -379,7 +380,17 @@ describe('lib-orchestrator/svn/svnWorktreeEvidence', () => {
   })
 
   describe('arguments', () => {
-    it('takes only ASCII names, because svn.exe maps the rest through the ANSI code page', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    it('admits non-ASCII names when UTF-8 svn is active, refuses them on ANSI fallback, and always refuses control characters', () => {
+      vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(true)
+      expect(SvnWorktreeEvidence.takesArgument('src/a b@.txt')).toBe(true)
+      expect(SvnWorktreeEvidence.takesArgument('ř.txt')).toBe(true)
+      expect(SvnWorktreeEvidence.takesArgument('složka/Měřicí stanice LS-200.md')).toBe(true)
+      expect(SvnWorktreeEvidence.takesArgument('bad\nname.txt')).toBe(false)
+      expect(SvnWorktreeEvidence.takesArgument('bad\0name.txt')).toBe(false)
+
+      vi.spyOn(SvnExecutable, 'supportsUtf8Arguments').mockReturnValue(false)
       expect(SvnWorktreeEvidence.takesArgument('src/a b@.txt')).toBe(true)
       expect(SvnWorktreeEvidence.takesArgument('ř.txt')).toBe(false)
       expect(SvnWorktreeEvidence.takesArgument('složka/x.txt')).toBe(false)

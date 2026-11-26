@@ -1258,7 +1258,7 @@ class SmokeSvnWorktree extends SmokeHarness {
       if (id === 'D02-many' || id === 'D02-500')
         this.check(`${id} metadata and staging use bounded batches`, [...this.counts.values()].reduce((sum, count) => sum + count, 0) < 250)
       console.log(`  state ${id}: ${JSON.stringify({ answer: result.answer, outcome: result.outcome, needs: result.action?.needs, opened: actions.opened.length })}`)
-      if (id === 'D10-unicode') {
+      if (id === 'D10-unicode' && !SvnWorktreeEvidence.takesArgument('žluťoučký/ř.txt')) {
         this.check(`${id} unsupported path operation publishes nothing and retains all local bytes`, actions.opened.length === 0
           && result.action?.needs?.kind === 'svn-failed' && result.outcome === undefined && existsSync(tree)
           && [...expected].every(([path, bytes]) => existsSync(join(tree, path)) && bytes.length > 0))
@@ -1442,9 +1442,10 @@ class SmokeSvnWorktree extends SmokeHarness {
     const answered = asked.code === 0 ? SvnWorktreeEvidence.infoEntries(asked.stdout).map((entry) => entry.path) : []
     const intact = answered.length === 1 && answered[0] === 'ř.txt'
     console.log(`  info: svn.exe received the argument ř.txt ${intact ? 'intact' : `as ${JSON.stringify(answered[0] ?? asked.stderr.trim())}`}`)
-    this.check('spike: a name svn.exe may not receive intact is refused before it is passed',
-      !SvnWorktreeEvidence.takesArgument('ř.txt') && !SvnWorktreeEvidence.takesArgument('složka/soubor ž.txt')
-      && SvnWorktreeEvidence.takesArgument('src/a b@.txt'))
+    const utf8 = SvnWorktreeEvidence.takesArgument('ř.txt')
+    this.check('spike: takesArgument agrees with whether svn.exe receives non-ASCII arguments intact',
+      (utf8 ? intact && SvnWorktreeEvidence.takesArgument('složka/soubor ž.txt') : !SvnWorktreeEvidence.takesArgument('složka/soubor ž.txt'))
+      && SvnWorktreeEvidence.takesArgument('src/a b@.txt') && !SvnWorktreeEvidence.takesArgument('bad\nname.txt'))
 
     await repository.run(nested, ['delete', '--force', '--', 'plain.txt@'])
     await rm(join(b, 'ř.txt'))
